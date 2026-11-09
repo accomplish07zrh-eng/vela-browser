@@ -41,77 +41,67 @@
 :root {
   color-scheme: light;
 
-  /* Surfaces. The app sits on a warm stone canvas and floats pure-white cards
-     on top of it — warm neutrals keep long sessions easier on the eye than the
-     blue-grey greys most dashboards default to. */
-  --bg: #ecebe7;
+  /* Surfaces. Minimalist gallery canvas (#f5f5f7) with pure-white architectural
+     cards floating above crisp 1px hairlines. */
+  --bg: #f5f5f7;
   --surface: #ffffff;
-  --surface-sunken: #f8f7f5;
-  --surface-hover: #f3f2ef;
-  --surface-active: #e9e7e2;
+  --surface-sunken: #fafafa;
+  --surface-hover: #f2f2f4;
+  --surface-active: #e6e6ea;
 
-  /* Ink, from headings down to placeholder text. Warm near-black, not navy. */
-  --ink: #1b1a18;
-  --ink-soft: #45423d;
-  --muted: #76736d;
-  --faint: #a5a19a;
+  /* Ink, from deep carbon-black headings down to cool neutral placeholders. */
+  --ink: #09090b;
+  --ink-soft: #27272a;
+  --muted: #686870;
+  --faint: #9e9ea8;
 
   /* Hairlines. --line separates regions, --line-soft separates list rows. */
-  --line: #e6e3dd;
-  --line-soft: #f0efeb;
-  --line-strong: #d3cfc7;
+  --line: #e4e4e7;
+  --line-soft: #efefef;
+  --line-strong: #d1d1d6;
 
-  /* Vela Browser brand blue — the exact accent the live beta42 dashboard ships
-     (#3366e6 with its #eef3ff wash, #c5d6fb line and #284a9e ink), so the
-     redesign keeps the colour operators already know. One accent drives every
-     primary action, link and selected state. */
-  --accent: #3366e6;
-  --accent-hover: #2a58cf;
-  --accent-press: #2349ad;
-  --accent-soft: #eef3ff;
-  --accent-soft-hover: #dfe9fd;
-  --accent-line: #c5d6fb;
-  --accent-ink: #284a9e;
-  /* Filled-control blue: the flat #3366e6 the live build paints, shared by
-     BOTH themes so the brand colour never shifts between light and dark. */
-  --accent-fill: #3366e6;
-  --accent-fill-hover: #2a58cf;
-  --accent-fill-press: #2349ad;
+  /* Monochrome primary accent — pure architectural ink black drives every
+     primary action, focus ring, and selected state. */
+  --accent: #09090b;
+  --accent-hover: #27272a;
+  --accent-press: #000000;
+  --accent-soft: #f2f2f4;
+  --accent-soft-hover: #e6e6ea;
+  --accent-line: #d4d4d8;
+  --accent-ink: #09090b;
+  --accent-fill: #09090b;
+  --accent-fill-hover: #27272a;
+  --accent-fill-press: #000000;
   --on-fill: #ffffff;
-  /* Soft colored halo under filled accent controls — quiet at rest, a touch
-     stronger on hover. This is the only decorative shadow in the system. */
-  --glow: 0 4px 14px rgba(51, 102, 230, .22);
-  --glow-strong: 0 6px 18px rgba(51, 102, 230, .32);
+  --glow: 0 2px 6px rgba(9, 9, 11, .10);
+  --glow-strong: 0 4px 12px rgba(9, 9, 11, .16);
 
-  /* The brand's companion accent (--peach on the site). It is not decoration:
-     blue marks things you can DO (buttons, links, active tabs) and peach marks
-     IDENTITY — who this workspace belongs to and which numbers the operator
-     chose. That split means a second colour adds meaning instead of noise. */
-  --accent-2: #ff9e7a;
-  --accent-2-hover: #f8875d;
-  --accent-2-soft: #ffeee6;
-  --accent-2-line: #ffd5c2;
-  --accent-2-ink: #a4451f;
+  /* Companion identity accent — refined graphite/zinc for operator-chosen
+     serials and secondary marks. */
+  --accent-2: #52525b;
+  --accent-2-hover: #3f3f46;
+  --accent-2-soft: #f4f4f5;
+  --accent-2-line: #d4d4d8;
+  --accent-2-ink: #27272a;
 
-  --success: #12a150;
-  --success-soft: #eefaf2;
-  --success-line: #bde9cf;
-  --success-ink: #0d7a3d;
+  --success: #09090b;
+  --success-soft: #f4f4f5;
+  --success-line: #d4d4d8;
+  --success-ink: #09090b;
 
-  --danger: #dc3b32;
-  --danger-hover: #bd2a22;
-  /* Filled-control red, theme-stable for the same reason as --accent-fill. */
-  --danger-fill: #dc3b32;
-  --danger-fill-hover: #bd2a22;
-  --danger-soft: #fdf3f2;
-  --danger-line: #f7cbc7;
-  --danger-ink: #b32620;
-  --danger-lift: #e5544b;
+  --danger: #18181b;
+  --danger-hover: #09090b;
+  --danger-fill: #18181b;
+  --danger-fill-hover: #000000;
+  --danger-soft: #f4f4f5;
+  --danger-line: #c4c4cc;
+  --danger-ink: #09090b;
+  --danger-lift: #27272a;
 
-  --warn: #d98324;
-  --warn-soft: #fdf7ec;
-  --warn-line: #f2ddb5;
-  --warn-ink: #a3611a;
+  --warn: #52525b;
+  --warn-soft: #f4f4f5;
+  --warn-line: #d4d4d8;
+  --warn-ink: #27272a;
 
   --r-xs: 6px;
   --r-sm: 8px;
@@ -120,43 +110,34 @@
   --r-xl: 18px;
   --r-pill: 999px;
 
-  /* Raised-control fill. On light this is a near-white gradient; the dark theme
-     swaps it for a lifted grey, which is how dark UIs express elevation. */
-  --ctl: linear-gradient(180deg, #ffffff, #fbfaf8);
-  --ctl-hover: linear-gradient(180deg, #fbfaf8, #f2f1ee);
+  /* Clean flat control surfaces for a crisp editorial monochrome look. */
+  --ctl: #ffffff;
+  --ctl-hover: #f7f7f8;
   --ctl-border: var(--line);
-  /* Everything painted on top of a filled surface: button labels, chip counts
-     inside an active nav item. Flips to the dark surface in dark mode. */
   --on-accent: #ffffff;
   --raised: #ffffff;
 
-  /* Shadow ink. Dark themes get almost nothing from drop shadows, so the dark
-     block dials these down and leans on borders and --raised instead. */
-  --shadow-rgb: 27, 26, 24;
-  --shadow-a1: 0.04;
-  --shadow-a2: 0.07;
-  --shadow-a3: 0.13;
-  --shadow-a4: 0.22;
+  --shadow-rgb: 9, 9, 11;
+  --shadow-a1: 0.03;
+  --shadow-a2: 0.06;
+  --shadow-a3: 0.11;
+  --shadow-a4: 0.18;
 
-  /* Control shadow: a 1px hairline plus a soft drop, so a raised control reads
-     as a physical surface instead of an outlined rectangle. */
-  --sh-ctl: 0 1px 1px rgba(var(--shadow-rgb), var(--shadow-a1)), 0 1px 2px rgba(var(--shadow-rgb), 0.05);
-  --sh-ctl-hover: 0 1px 2px rgba(var(--shadow-rgb), 0.05), 0 3px 6px rgba(var(--shadow-rgb), var(--shadow-a2));
-  --sh-xs: 0 1px 2px rgba(var(--shadow-rgb), 0.05);
-  --sh-sm: 0 1px 2px rgba(var(--shadow-rgb), var(--shadow-a1)), 0 6px 16px rgba(var(--shadow-rgb), 0.05);
-  --sh-md: 0 4px 14px rgba(var(--shadow-rgb), var(--shadow-a2)), 0 1px 3px rgba(var(--shadow-rgb), 0.05);
-  --sh-pop: 0 14px 36px rgba(var(--shadow-rgb), var(--shadow-a3)), 0 2px 6px rgba(var(--shadow-rgb), 0.06);
-  --sh-modal: 0 30px 74px rgba(var(--shadow-rgb), var(--shadow-a4)), 0 4px 12px rgba(var(--shadow-rgb), 0.10);
-  --sh-field: inset 0 1px 1.5px rgba(var(--shadow-rgb), 0.03);
-  --scroll-thumb: #d3cfc7;
-  --scroll-thumb-hover: #b3aea5;
-  --backdrop: rgba(27, 26, 24, .40);
-  /* The select chevron is a data URI, so its colour cannot be a var — the dark
-     block swaps the whole image instead. */
-  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2376736d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  --sh-ctl: 0 1px 2px rgba(var(--shadow-rgb), var(--shadow-a1));
+  --sh-ctl-hover: 0 2px 5px rgba(var(--shadow-rgb), var(--shadow-a2));
+  --sh-xs: 0 1px 2px rgba(var(--shadow-rgb), 0.04);
+  --sh-sm: 0 1px 2px rgba(var(--shadow-rgb), var(--shadow-a1)), 0 6px 16px rgba(var(--shadow-rgb), 0.04);
+  --sh-md: 0 4px 14px rgba(var(--shadow-rgb), var(--shadow-a2)), 0 1px 3px rgba(var(--shadow-rgb), 0.04);
+  --sh-pop: 0 14px 36px rgba(var(--shadow-rgb), var(--shadow-a3)), 0 2px 6px rgba(var(--shadow-rgb), 0.05);
+  --sh-modal: 0 30px 74px rgba(var(--shadow-rgb), var(--shadow-a4)), 0 4px 12px rgba(var(--shadow-rgb), 0.08);
+  --sh-field: inset 0 1px 1.5px rgba(var(--shadow-rgb), 0.02);
+  --scroll-thumb: #d4d4d8;
+  --scroll-thumb-hover: #a1a1aa;
+  --backdrop: rgba(9, 9, 11, .44);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23686870' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 
-  --ring: 0 0 0 3px rgba(51, 102, 230, 0.18);
-  --ring-danger: 0 0 0 3px rgba(220, 59, 50, 0.15);
+  --ring: 0 0 0 3px rgba(9, 9, 11, 0.10);
+  --ring-danger: 0 0 0 3px rgba(9, 9, 11, 0.14);
   --ease: cubic-bezier(.2, .8, .3, 1);
 
   --sidebar-w: 232px;
@@ -264,18 +245,17 @@ button:disabled { cursor: default; }
 }
 .btn.primary:active:not(:disabled) { background: var(--accent-fill-press); box-shadow: none; }
 
-/* The filled danger matches the primary's recipe: flat, white label, the same
-   red in both themes (the dark theme's lifted --danger is for text, too pale
-   to hold white at this size). */
+/* The filled danger matches the primary's monochrome recipe: high-contrast
+   architectural fill with subtle elevation. */
 .btn.solid-danger {
   color: var(--on-fill); background: var(--danger-fill);
   border-color: var(--danger-fill);
-  box-shadow: 0 1px 2px rgba(220, 59, 50, .26);
+  box-shadow: var(--glow);
 }
 .btn.solid-danger .icon, .btn.solid-danger:hover:not(:disabled) .icon { color: currentColor; }
 .btn.solid-danger:hover:not(:disabled) {
   color: var(--on-fill); background: var(--danger-fill-hover);
-  border-color: var(--danger-fill-hover); box-shadow: 0 2px 7px rgba(220, 59, 50, .30);
+  border-color: var(--danger-fill-hover); box-shadow: var(--glow-strong);
 }
 .btn.solid-danger:active:not(:disabled) { background: var(--danger-fill-hover); box-shadow: none; }
 
@@ -351,31 +331,34 @@ button:disabled { cursor: default; }
 .platform-pill .glyph {
   display: inline-flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; flex: 0 0 auto; border-radius: var(--r-xs);
-  color: #fff; font-size: 10px; font-weight: 700;
-  box-shadow: inset 0 0 0 1px rgba(27, 26, 24, .08);
+  color: var(--on-fill); background: var(--accent-fill);
+  font-size: 10px; font-weight: 700;
+  box-shadow: inset 0 0 0 1px rgba(var(--shadow-rgb), .08);
 }
-/* Real brand marks are filled, not stroked like the rest of the icon set. */
+/* Real brand marks are filled, not stroked like the rest of the icon set.
+   In the monochrome UI, every platform tile shares a unified ink-on-surface or
+   surface-on-ink badge so the roster stays effortlessly editorial. */
 .brandmark { width: 12px; height: 12px; display: block; fill: currentColor; stroke: none; }
-.platform-pill .glyph.pm-x { background: #0b0b0b; }
-.platform-pill .glyph.pm-telegram { background: linear-gradient(180deg, #37bbfe, #007dbb); }
-.platform-pill .glyph.pm-instagram { background: linear-gradient(45deg, #f9ce34, #ee2a7b 55%, #6228d7); }
-.platform-pill .glyph.pm-facebook { background: #0866ff; }
-.platform-pill .glyph.pm-tiktok { background: #0b0b0b; }
-.platform-pill .glyph.pm-linkedin { background: #0a66c2; }
-.platform-pill .glyph.pm-reddit { background: #ff4500; }
-.platform-pill .glyph.pm-youtube { background: #ff0000; }
-.platform-pill .glyph.pm-threads { background: #0b0b0b; }
-.platform-pill .glyph.pm-pinterest { background: #bd081c; }
-.platform-pill .glyph.pm-snapchat { background: #fffc00; color: #0b0b0b; }
-.platform-pill .glyph.pm-discord { background: #5865f2; }
-.platform-pill .glyph.pm-twitch { background: #9146ff; }
-.platform-pill .glyph.pm-gmail { background: #ea4335; }
-.platform-pill .glyph.pm-amazon { background: #232f3e; }
-.platform-pill .glyph.pm-ebay { background: #e53238; }
-.platform-pill .glyph.pm-etsy { background: #f16521; }
-.platform-pill .glyph.pm-other { background: var(--faint); }
+.platform-pill .glyph.pm-x,
+.platform-pill .glyph.pm-telegram,
+.platform-pill .glyph.pm-instagram,
+.platform-pill .glyph.pm-facebook,
+.platform-pill .glyph.pm-tiktok,
+.platform-pill .glyph.pm-linkedin,
+.platform-pill .glyph.pm-reddit,
+.platform-pill .glyph.pm-youtube,
+.platform-pill .glyph.pm-threads,
+.platform-pill .glyph.pm-pinterest,
+.platform-pill .glyph.pm-snapchat,
+.platform-pill .glyph.pm-discord,
+.platform-pill .glyph.pm-twitch,
+.platform-pill .glyph.pm-gmail,
+.platform-pill .glyph.pm-amazon,
+.platform-pill .glyph.pm-ebay,
+.platform-pill .glyph.pm-etsy { background: var(--accent-fill); color: var(--on-fill); }
+.platform-pill .glyph.pm-other { background: var(--surface-active); color: var(--ink-soft); }
 
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); }
 .dot.on { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
 
 /* Tooltip on hover for icon-only controls. */
@@ -416,10 +399,11 @@ button:disabled { cursor: default; }
   font-size: 12.5px; text-align: left;
 }
 .popover button.pop-item .icon { color: var(--faint); }
-.popover button.pop-item:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-ink); }
-.popover button.pop-item:hover:not(:disabled) .icon { color: var(--accent); }
+.popover button.pop-item:hover:not(:disabled) { background: var(--accent-fill); color: var(--on-fill); }
+.popover button.pop-item:hover:not(:disabled) .icon { color: var(--on-fill); }
 .popover button.pop-item:disabled { opacity: .4; }
-.popover button.pop-item.danger:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger-ink); }
+.popover button.pop-item.danger:hover:not(:disabled) { background: var(--danger-fill); color: var(--on-fill); }
+.popover button.pop-item.danger:hover:not(:disabled) .icon { color: var(--on-fill); }
 .popover label.pop-item { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: var(--r-sm); font-size: 12.5px; cursor: pointer; }
 .popover label.pop-item:hover { background: var(--surface-hover); }
 .popover label.pop-item input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
@@ -505,27 +489,30 @@ button:disabled { cursor: default; }
 }
 .rail-toggle:hover { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
 
-.brandrow { display: flex; align-items: center; gap: 8px; padding: 0 6px 14px; }
+.brandrow { display: flex; align-items: center; gap: 8px; padding: 2px 6px 14px; margin-bottom: 12px; border-bottom: 1px solid var(--line-soft); }
 .brand {
   display: inline-flex; align-items: center; gap: 9px; min-width: 0;
   color: var(--ink); font-size: 16px; font-weight: 700; letter-spacing: -0.03em;
 }
-/* Inline Alias Loop mark: the dark arm rides currentColor so it stays visible
-   on a dark surface; the loop arm follows the accent (the logo's own blue). */
+/* Inline Alias Loop mark: the primary arm rides currentColor so it stays visible
+   on a dark surface; the secondary arm follows --accent-2 for dimensional monochrome contrast. */
 .alias-loop { flex: 0 0 auto; display: block; fill: none; color: var(--ink); }
 .alias-loop path { stroke-width: 64; stroke-linecap: round; stroke-linejoin: round; }
 .alias-loop .loop-accent { stroke: var(--accent); }
+.alias-loop path.loop-accent { stroke: var(--accent-2); }
 .brand .alias-loop { width: 22px; height: 22px; }
 .appversion {
-  margin-left: auto; padding: 2px 6px; border-radius: var(--r-xs);
-  color: var(--faint); background: var(--surface-sunken);
-  font: 10px/1.3 var(--mono); max-width: 74px;
+  margin-left: auto; padding: 2px 7px; border-radius: var(--r-pill);
+  color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line);
+  font: 10px/1.3 var(--mono); max-width: 78px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.newrow { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 14px; }
+.newrow { display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 0 2px 14px; }
 .newrow .newbtn { flex: 1; height: 36px; gap: 7px; font-size: 13px; }
-.newrow .importbtn { width: 100%; height: 36px; padding: 0; }
+.newrow .importbtn { width: auto; height: 36px; padding: 0 11px; }
+.sidebar.collapsed .newrow { display: flex; flex-direction: column; gap: 8px; padding: 0 0 14px; }
+.sidebar.collapsed .newrow .importbtn { width: 100%; padding: 0; }
 
 /* Primary navigation. */
 .sidenav { display: flex; flex-direction: column; gap: 2px; padding: 0 2px; min-height: 0; overflow-y: auto; }
@@ -543,17 +530,17 @@ a.navitem { box-sizing: border-box; text-decoration: none; cursor: pointer; }
 .navitem:hover:not(:disabled) { background: var(--surface-hover); color: var(--ink); }
 .navitem:hover:not(:disabled) .icon { color: var(--ink-soft); }
 .navitem.active {
-  background: var(--accent-soft); color: var(--accent-ink); font-weight: 650;
-  box-shadow: inset 0 0 0 1px rgba(51, 102, 230, .12);
+  background: var(--accent-fill); color: var(--on-fill); font-weight: 600;
+  box-shadow: var(--sh-xs);
 }
-.navitem.active .icon { color: var(--accent); }
+.navitem.active .icon { color: var(--on-fill); }
 .navitem:disabled { opacity: .5; }
 .navitem .cnt {
   margin-left: auto; min-width: 22px; padding: 1px 6px; border-radius: var(--r-pill);
   color: var(--muted); background: var(--surface-hover);
   font-size: 11px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums;
 }
-.navitem.active .cnt { color: var(--accent-ink); background: var(--raised); }
+.navitem.active .cnt { color: var(--on-fill); background: rgba(128, 128, 128, .26); }
 /* Buy-proxies cart beside the Proxies item. A sibling of the button, since a
    link cannot nest inside one. */
 .navrow { position: relative; }
@@ -591,8 +578,11 @@ a.navitem { box-sizing: border-box; text-decoration: none; cursor: pointer; }
 }
 .folder .icon { color: var(--faint); }
 .folder:hover { background: var(--surface-hover); color: var(--ink); }
-.folder.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 650; box-shadow: inset 0 0 0 1px rgba(51, 102, 230, .12); }
-.folder.active .icon { color: var(--accent); }
+.folder.active {
+  background: var(--surface-sunken); color: var(--ink); font-weight: 650;
+  box-shadow: inset 2.5px 0 0 var(--ink), inset 0 0 0 1px var(--line-strong);
+}
+.folder.active .icon { color: var(--ink); }
 .folder .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder .cnt {
   min-width: 20px; padding: 1px 6px; border-radius: var(--r-pill);
@@ -677,7 +667,7 @@ button.newgroup:disabled { color: var(--faint); border-color: var(--line); backg
 .footer-mark {
   grid-column: 1 / -1;
   margin: 6px 0 0; padding: 0;
-  background-image: linear-gradient(180deg, rgba(51, 102, 230, .34), rgba(51, 102, 230, .12));
+  background-image: linear-gradient(180deg, rgba(9, 9, 11, .22), rgba(9, 9, 11, .06));
   -webkit-background-clip: text; background-clip: text; color: transparent;
   font-size: 23px; font-weight: 800; letter-spacing: -.045em; line-height: 1.15;
   text-align: center; white-space: nowrap; user-select: none;
@@ -691,30 +681,33 @@ button.newgroup:disabled { color: var(--faint); border-color: var(--line); backg
 
 .pagehead {
   display: flex; align-items: center; gap: 10px;
-  padding: 0 18px; height: 60px; flex: 0 0 auto;
+  padding: 0 22px; height: 60px; flex: 0 0 auto;
   background: var(--surface); border-bottom: 1px solid var(--line);
 }
 .pagehead h1 { margin: 0; font-size: var(--t-lg); font-weight: 700; letter-spacing: -0.035em; }
-.pagehead .pagesub { color: var(--faint); font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
+.pagehead .pagesub {
+  display: inline-flex; align-items: center; height: 22px; padding: 0 9px;
+  border-radius: var(--r-pill); background: var(--surface-sunken); border: 1px solid var(--line);
+  color: var(--muted); font-size: 11.5px; font-weight: 550; font-variant-numeric: tabular-nums;
+}
 .pagehead .headactions { display: flex; align-items: center; gap: 6px; }
 
 /* Account chip, top-right. */
 .account-button {
   display: inline-flex; align-items: center; gap: 9px; max-width: 230px;
   height: 38px; padding: 0 10px 0 5px;
-  color: var(--ink-soft); background: var(--surface);
+  color: var(--ink-soft); background: var(--surface-sunken);
   border: 1px solid var(--line); border-radius: var(--r-pill);
   box-shadow: var(--sh-ctl); text-align: left;
   transition: background .13s var(--ease), border-color .13s var(--ease), box-shadow .13s var(--ease);
 }
-.account-button { background: var(--surface-sunken); }
 .account-button:hover { background: var(--surface-hover); border-color: var(--line-strong); box-shadow: var(--sh-ctl-hover); }
 .account-button:active { transform: translateY(.5px); }
 .account-button .avatar {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; flex: 0 0 auto; border-radius: 50%;
-  color: var(--on-accent); background: linear-gradient(150deg, var(--accent), var(--accent-2));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 1px 2px rgba(51, 102, 230, .28);
+  color: var(--on-fill); background: var(--accent-fill);
+  box-shadow: var(--sh-xs);
 }
 .account-button .avatar .icon { width: 15px; height: 15px; }
 .account-button .who { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
@@ -750,13 +743,13 @@ button.newgroup:disabled { color: var(--faint); border-color: var(--line); backg
   animation: toolbar-in .15s var(--ease);
 }
 @keyframes toolbar-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-.toolbar.active { background: var(--accent-soft); border-bottom-color: var(--accent-line); }
+.toolbar.active { background: var(--surface-sunken); border-bottom-color: var(--line-strong); }
 .toolbar .selcount {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; margin-right: 2px; padding: 0 10px;
   border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line);
   color: var(--muted); font-size: 12.5px; font-weight: 600; white-space: nowrap;
 }
-.toolbar.active .selcount { color: var(--accent-ink); background: var(--raised); border-color: var(--accent-line); }
+.toolbar.active .selcount { color: var(--on-fill); background: var(--accent-fill); border-color: var(--accent-fill); }
 .toolbar .vsep { width: 1px; height: 20px; flex: 0 0 auto; margin: 0 3px; background: var(--line); }
 .toolbar.active .vsep { background: var(--accent-line); }
 .toolbar .movewrap { display: inline-flex; align-items: center; gap: 6px; }
@@ -801,14 +794,14 @@ button.newgroup:disabled { color: var(--faint); border-color: var(--line); backg
 .settingspage .sect-title + * { margin-top: -2px; }
 
 .identity-card {
-  display: flex; align-items: center; gap: 14px; padding: 14px;
+  display: flex; align-items: center; gap: 14px; padding: 16px;
   background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--r-lg);
 }
 .identity-avatar {
   display: inline-flex; align-items: center; justify-content: center;
   width: 46px; height: 46px; flex: 0 0 auto; border-radius: 50%;
-  color: var(--on-accent); background: linear-gradient(150deg, var(--accent), var(--accent-2));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 1px 3px rgba(51, 102, 230, .26);
+  color: var(--on-fill); background: var(--accent-fill);
+  box-shadow: var(--sh-xs);
 }
 .identity-lines { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .identity-lines b { color: var(--ink); font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -873,7 +866,12 @@ td.col-no .no-text.custom { color: var(--accent-2-ink); }
 .name-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .name-cell .n { color: var(--ink); font-weight: 600; font-size: var(--t-base); letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; }
 .name-cell .sub { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11.5px; font-family: var(--mono); letter-spacing: -0.01em; }
-.name-cell .sub .live { display: inline-flex; align-items: center; gap: 4px; color: var(--success-ink); font-family: var(--font); font-weight: 600; }
+.name-cell .sub .live {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px;
+  border-radius: var(--r-pill); background: var(--accent-fill); color: var(--on-fill);
+  font-family: var(--font); font-size: 10.5px; font-weight: 600;
+}
+.name-cell .sub .live .dot.on { width: 5px; height: 5px; background: var(--on-fill); box-shadow: none; }
 /* States that need a click (restart to apply, cookies at next start) get their own line, so
    they stay readable in every language and never widen the row's actions. */
 .name-cell .status { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
@@ -929,8 +927,8 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .emptystate .glyph {
   display: inline-flex; align-items: center; justify-content: center;
   width: 52px; height: 52px; margin-bottom: 6px; border-radius: var(--r-xl);
-  color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line);
-  box-shadow: 0 0 0 6px rgba(37, 99, 235, .05);
+  color: var(--ink); background: var(--surface-sunken); border: 1px solid var(--line-strong);
+  box-shadow: 0 0 0 6px var(--surface-hover);
 }
 .emptystate .glyph .icon { width: 22px; height: 22px; }
 .emptystate b { color: var(--ink); font-size: 14px; font-weight: 600; }
@@ -1086,8 +1084,8 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .dropzone {
   position: fixed; inset: 0; z-index: 50;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-  background: rgba(37, 99, 235, .08); backdrop-filter: blur(2px);
-  border: 3px dashed var(--accent); color: var(--accent-ink);
+  background: rgba(9, 9, 11, .06); backdrop-filter: blur(4px);
+  border: 2px dashed var(--accent); color: var(--accent-ink);
   font-size: 16px; font-weight: 600; pointer-events: none;
 }
 .dropzone .icon { width: 34px; height: 34px; }
@@ -1099,7 +1097,7 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 70;
   display: flex; align-items: center; justify-content: center; padding: 24px;
-  background: var(--backdrop);
+  background: var(--backdrop); backdrop-filter: blur(6px);
   animation: fade-in .12s ease-out;
 }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
@@ -1107,7 +1105,8 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .modal {
   width: 100%; max-width: 560px; max-height: calc(100vh - 48px);
   display: flex; flex-direction: column; overflow: hidden;
-  background: var(--surface); border-radius: var(--r-xl); box-shadow: var(--sh-modal);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-xl); box-shadow: var(--sh-modal);
   animation: modal-in .16s cubic-bezier(.2, .8, .3, 1);
 }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
@@ -1219,10 +1218,10 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 
 /* Browser choice stays monochrome in both themes. */
 .browser-options {
-  --browser-ink: #171717; --browser-surface: #fff; --browser-line: #ddd; --browser-selected: #f3f3f3; --browser-selected-line: #aaa;
+  --browser-ink: #09090b; --browser-surface: #ffffff; --browser-line: #e4e4e7; --browser-selected: var(--accent-fill); --browser-selected-line: var(--accent-fill);
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
 }
-:root[data-theme="dark"] .browser-options { --browser-ink: #f5f5f5; --browser-surface: #171717; --browser-line: #444; --browser-selected: #252525; --browser-selected-line: #666; }
+:root[data-theme="dark"] .browser-options { --browser-ink: #fafafa; --browser-surface: #101012; --browser-line: #222226; --browser-selected: var(--accent-fill); --browser-selected-line: var(--accent-fill); }
 .browser-option { position: relative; min-width: 0; color: var(--browser-ink); }
 .browser-card {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px;
@@ -1231,7 +1230,8 @@ td.col-tags .chip + .chip { margin-left: 4px; }
   font-size: 13px; font-weight: 600; transition: background .13s var(--ease), border-color .13s var(--ease), color .13s var(--ease);
 }
 .browser-card:hover { border-color: var(--browser-ink); }
-.browser-card:has(input:checked) { background: var(--browser-selected); border-color: var(--browser-selected-line); }
+.browser-card:has(input:checked) { background: var(--browser-selected); border-color: var(--browser-selected-line); color: var(--on-fill); box-shadow: var(--glow); }
+.browser-option:has(input:checked) .browser-info { color: var(--on-fill); }
 .browser-card:has(input:focus-visible) { outline: 2px solid var(--browser-ink); outline-offset: 3px; }
 .browser-card input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .browser-logo { display: block; width: 30px; height: 30px; fill: currentColor; }
@@ -1364,9 +1364,9 @@ td.col-tags .chip + .chip { margin-left: 4px; }
   color: var(--warn-ink); background: var(--warn-soft); border: 1px solid var(--warn-line); border-radius: var(--r-lg);
   font-size: 12.5px; line-height: 1.6;
 }
-.persona-warning strong { display: flex; align-items: center; gap: 7px; color: #92400e; font-size: 13px; }
-.persona-convert { align-self: flex-start; color: var(--on-accent); background: var(--warn); border-color: var(--warn); }
-.persona-convert:hover:not(:disabled) { background: #b45309; border-color: #b45309; color: var(--on-accent); }
+.persona-warning strong { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 13px; }
+.persona-convert { align-self: flex-start; color: var(--on-fill); background: var(--accent-fill); border-color: var(--accent-fill); }
+.persona-convert:hover:not(:disabled) { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); color: var(--on-fill); }
 
 /* Settings modal ----------------------------------------------------------- */
 
@@ -1431,7 +1431,7 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 
 .onboarding {
   min-height: 100%; display: grid; place-items: center; padding: 24px;
-  background: radial-gradient(120% 90% at 50% 0%, #fbfaf8 0%, var(--bg) 62%);
+  background: radial-gradient(120% 90% at 50% 0%, #ffffff 0%, var(--bg) 68%);
 }
 .onboarding-card {
   width: min(640px, 100%); padding: 40px;
@@ -1452,20 +1452,18 @@ td.col-tags .chip + .chip { margin-left: 4px; }
   border: 1px solid var(--line); border-radius: var(--r-xl);
   transition: border-color .12s ease, background .12s ease, box-shadow .12s ease, transform .12s ease;
 }
-.mode-option:hover:not(:disabled) { border-color: var(--accent-line); background: var(--accent-soft); box-shadow: var(--sh-sm); transform: translateY(-1px); }
+.mode-option:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface-hover); box-shadow: var(--sh-sm); transform: translateY(-1px); }
 .mode-option .badge {
   display: inline-flex; align-items: center; justify-content: center;
   width: 34px; height: 34px; border-radius: var(--r-md);
-  color: var(--accent); background: var(--accent-soft);
+  color: var(--ink); background: var(--surface-sunken); border: 1px solid var(--line);
 }
 .mode-option strong { font-size: 15px; font-weight: 650; letter-spacing: -0.015em; }
 .mode-option span { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
 .mode-option.primary { color: var(--on-fill); background: var(--accent-fill); border-color: var(--accent-fill); }
 .mode-option.primary:hover:not(:disabled) { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
-/* Literal light blue: the tile's fill is the same in both themes, so its
-   secondary text must not follow the theme-dependent accent-line. */
-.mode-option.primary span { color: #c5d6fb; }
-.mode-option.primary .badge { color: var(--on-fill); background: rgba(255, 255, 255, .18); }
+.mode-option.primary span { color: var(--on-fill); opacity: .72; }
+.mode-option.primary .badge { color: var(--on-fill); background: rgba(128, 128, 128, .22); border-color: transparent; }
 .mode-option:disabled { opacity: .6; cursor: wait; }
 
 .mode-primary {
@@ -1574,76 +1572,69 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  /* Neutral charcoal, not a tinted navy. Pushing the brand blue into the
-     surfaces would make every panel look faintly blue and muddy the accent it
-     is meant to echo — on a neutral ground the blue actually reads as blue.
-     The canvas sits two steps below the cards: dark mode needs the same
-     "cards floating on a canvas" hierarchy the light theme gets from stone
-     vs. white, or every region melts into one dark field. */
-  --bg: #0a0a0e;
-  --surface: #1a1a21;
-  --surface-sunken: #15151a;
-  --surface-hover: #24242c;
-  --surface-active: #2d2d37;
+  /* Deep obsidian canvas (#070708) with elevated carbon cards (#101012) and
+     crisp monochrome hairlines. */
+  --bg: #070708;
+  --surface: #101012;
+  --surface-sunken: #0b0b0d;
+  --surface-hover: #18181b;
+  --surface-active: #222226;
 
-  --ink: #f1f1f4;
-  --ink-soft: #c9c9d2;
-  --muted: #90909d;
-  --faint: #66666f;
+  --ink: #fafafa;
+  --ink-soft: #d4d4d8;
+  --muted: #8e8e96;
+  --faint: #5a5a64;
 
-  --line: #2e2e38;
-  --line-soft: #26262e;
-  --line-strong: #41414e;
+  --line: #222226;
+  --line-soft: #18181b;
+  --line-strong: #34343a;
 
-  /* The accent lifts on dark: #3366e6 is too dense against a near-black ground
-     to read as the same colour the light theme uses. */
-  --accent: #5e88f0;
-  --accent-hover: #7a9df4;
-  --accent-press: #4b74e8;
-  /* The fill itself stays the light theme's #3366e6 — only its hover flips
-     LIGHTER, because darker-on-hover sinks into a dark ground. */
-  --accent-fill-hover: #4573e9;
-  --accent-fill-press: #2a58cf;
-  --accent-soft: #151f38;
-  --accent-soft-hover: #1b2949;
-  --accent-line: #2b3f6e;
-  --accent-ink: #b3c6f8;
-  /* Dark glows can afford a little more presence — they replace the drop
-     shadows this theme barely renders. */
-  --glow: 0 4px 16px rgba(94, 136, 240, .30);
-  --glow-strong: 0 6px 20px rgba(94, 136, 240, .42);
+  /* Primary monochrome accent in dark mode: crisp white/silver controls with
+     deep carbon ink on filled surfaces. */
+  --accent: #fafafa;
+  --accent-hover: #ffffff;
+  --accent-press: #e4e4e7;
+  --accent-fill: #fafafa;
+  --accent-fill-hover: #ffffff;
+  --accent-fill-press: #e4e4e7;
+  --on-fill: #09090b;
+  --accent-soft: #1c1c20;
+  --accent-soft-hover: #26262b;
+  --accent-line: #34343a;
+  --accent-ink: #fafafa;
+  --glow: 0 2px 8px rgba(0, 0, 0, .45);
+  --glow-strong: 0 6px 18px rgba(0, 0, 0, .60);
 
-  --accent-2: #ff9e7a;
-  --accent-2-hover: #ffb497;
-  --accent-2-soft: #2b1c15;
-  --accent-2-line: #4d3226;
-  --accent-2-ink: #ffb69b;
+  --accent-2: #a1a1aa;
+  --accent-2-hover: #d4d4d8;
+  --accent-2-soft: #18181b;
+  --accent-2-line: #34343a;
+  --accent-2-ink: #e4e4e7;
 
-  --success: #35c97d;
-  --success-soft: #12261a;
-  --success-line: #24523a;
-  --success-ink: #6fe0a4;
+  --success: #fafafa;
+  --success-soft: #18181b;
+  --success-line: #34343a;
+  --success-ink: #fafafa;
 
-  --danger: #f0584d;
-  --danger-hover: #d94439;
-  --danger-lift: #ff6d63;
-  --danger-soft: #2a1615;
-  --danger-line: #542825;
-  --danger-ink: #ff9a92;
+  --danger: #fafafa;
+  --danger-hover: #ffffff;
+  --danger-fill: #fafafa;
+  --danger-fill-hover: #e4e4e7;
+  --danger-lift: #d4d4d8;
+  --danger-soft: #18181b;
+  --danger-line: #3f3f46;
+  --danger-ink: #fafafa;
 
-  --warn: #e59a3d;
-  --warn-soft: #2a1f10;
-  --warn-line: #543d1c;
-  --warn-ink: #f3c07a;
+  --warn: #a1a1aa;
+  --warn-soft: #18181b;
+  --warn-line: #34343a;
+  --warn-ink: #d4d4d8;
 
-  /* Elevation without drop shadows: a raised control is simply lighter. The
-     gradient and border stay close in value — a high-contrast rim made every
-     dark button read as a harsh outlined box. */
-  --ctl: linear-gradient(180deg, #2a2a32, #232329);
-  --ctl-hover: linear-gradient(180deg, #31313b, #2a2a32);
-  --ctl-border: #32323c;
-  --on-accent: #0a1220;
-  --raised: #2f2f39;
+  --ctl: #161619;
+  --ctl-hover: #1e1e22;
+  --ctl-border: #26262b;
+  --on-accent: #09090b;
+  --raised: #222227;
 
   --shadow-rgb: 0, 0, 0;
   --shadow-a1: 0.22;
@@ -1652,11 +1643,12 @@ td.col-tags .chip + .chip { margin-left: 4px; }
   --shadow-a4: 0.66;
   --sh-field: inset 0 1px 2px rgba(0, 0, 0, 0.25);
 
-  --scroll-thumb: #3a3a44;
-  --scroll-thumb-hover: #4b4b58;
-  --backdrop: rgba(6, 6, 8, .66);
-  --ring: 0 0 0 3px rgba(94, 136, 240, 0.32);
-  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2390909d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  --scroll-thumb: #2e2e34;
+  --scroll-thumb-hover: #3f3f46;
+  --backdrop: rgba(4, 4, 5, .72);
+  --ring: 0 0 0 3px rgba(250, 250, 250, 0.16);
+  --ring-danger: 0 0 0 3px rgba(250, 250, 250, 0.20);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238e8e96' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 }
 
 
@@ -1664,11 +1656,11 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 :root[data-theme="dark"] .btn.primary .icon,
 :root[data-theme="dark"] .btn.solid-danger .icon { color: currentColor; }
 
-/* Three brand marks are near-black and would vanish against a dark row. */
+/* Brand marks flip cleanly onto dark rows. */
 :root[data-theme="dark"] .platform-pill .glyph.pm-x,
 :root[data-theme="dark"] .platform-pill .glyph.pm-tiktok,
 :root[data-theme="dark"] .platform-pill .glyph.pm-threads {
-  background: #f4f4f5; color: #0b0b0b;
+  background: var(--accent-fill); color: var(--on-fill);
 }
 
 /* Chips drop their hairline on dark: a border-and-fill box per tag made every
@@ -1686,13 +1678,13 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 
 /* The wordmark reads as a faint glow rather than a faint shadow. */
 :root[data-theme="dark"] .footer-mark {
-  background-image: linear-gradient(180deg, rgba(94, 136, 240, .55), rgba(94, 136, 240, .16));
+  background-image: linear-gradient(180deg, rgba(250, 250, 250, .28), rgba(250, 250, 250, .08));
 }
 
 :root[data-theme="dark"] .onboarding {
-  background: radial-gradient(120% 90% at 50% 0%, #1e1e25 0%, var(--bg) 62%);
+  background: radial-gradient(120% 90% at 50% 0%, #141418 0%, var(--bg) 68%);
 }
-:root[data-theme="dark"] .dropzone { background: rgba(94, 136, 240, .12); }
+:root[data-theme="dark"] .dropzone { background: rgba(250, 250, 250, .06); }
 :root[data-theme="dark"] .navitem:hover:not(:disabled),
 :root[data-theme="dark"] .folder:hover { background: var(--surface-hover); }
 
@@ -1704,8 +1696,8 @@ td.col-tags .chip + .chip { margin-left: 4px; }
   font-size: 10.5px; font-weight: 600; letter-spacing: .2px; vertical-align: middle;
   cursor: help;
 }
-.fpbadge.ok { background: var(--green-soft); color: var(--green); border: 1px solid #cbe9d5; }
-.fpbadge.warn { background: #fdf3e2; color: var(--amber); border: 1px solid #f0dcb8; }
+.fpbadge.ok { background: var(--success-soft); color: var(--success-ink); border: 1px solid var(--success-line); }
+.fpbadge.warn { background: var(--warn-soft); color: var(--warn-ink); border: 1px solid var(--warn-line); }
 .hint-note { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line-soft); color: var(--muted); }
 
 /* Local scripts -------------------------------------------------------------- */
@@ -1725,8 +1717,9 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .scripts-run-note:hover { background: var(--accent-soft-hover); }
 .scripts-layout { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); gap: 14px; align-items: start; }
 .scripts-list { display: flex; flex-direction: column; gap: 5px; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); }
-.script-row { display: grid; gap: 2px; width: 100%; padding: 9px 10px; color: var(--ink-soft); text-align: left; background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
-.script-row:hover:not(:disabled), .script-row.active { background: var(--surface-hover); color: var(--ink); }
+.script-row { display: grid; gap: 2px; width: 100%; padding: 9px 10px; color: var(--ink-soft); text-align: left; background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; transition: background .12s ease, color .12s ease; }
+.script-row:hover:not(:disabled) { background: var(--surface-hover); color: var(--ink); }
+.script-row.active { background: var(--accent-soft); color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line-strong); }
 .script-row span, .script-row small { color: var(--muted); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .script-detail { min-width: 0; }
 .script-detail header { justify-content: space-between; }

@@ -2,7 +2,7 @@
 .service-filters { display: flex; flex-wrap: wrap; gap: 8px; }
 .service-filters button { padding: 7px 14px; border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--surface); color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; }
 .service-filters button:hover { color: var(--ink); border-color: var(--line-strong); }
-.service-filters button.selected { color: var(--accent-ink); background: var(--accent-soft); border-color: var(--accent-line); }
+.service-filters button.selected { color: var(--on-fill); background: var(--accent-fill); border-color: var(--accent-fill); }
 .service-filters button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .service-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .service-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); }

@@ -889,16 +889,15 @@ test("no legacy arrow glyphs survive in place of icons", () => {
 });
 
 test("the second accent marks identity, and the credit matches the website", () => {
-  // Two accents only work if each means something: the live build's brand blue
-  // (#3366e6) marks actions, peach marks identity. A peach button or a blue
-  // custom NO. would break that split.
-  expect(styles).toContain("--accent: #3366e6;");
-  expect(styles).toContain("--accent-2: #ff9e7a;");
+  // Two accents only work if each means something: architectural black
+  // (#09090b) marks primary actions, refined graphite (#52525b) marks identity.
+  expect(styles).toContain("--accent: #09090b;");
+  expect(styles).toContain("--accent-2: #52525b;");
   expect(styles).toContain("td.col-no .no-text.custom { color: var(--accent-2-ink); }");
-  expect(styles).toContain("linear-gradient(150deg, var(--accent), var(--accent-2))");
   expect(styles).not.toMatch(/\.btn\.primary \{[^}]*--accent-2/);
-  // The accent is the logo's blue, and no trace of the old violet survives.
-  expect(logo).toContain('stroke="currentColor"');
+  // The logo uses the monochrome palette, and no trace of the old violet survives.
+  expect(logo).toContain('stroke="#09090b"');
+  expect(logo).toContain('stroke="#71717a"');
   expect(styles).not.toContain("#6d4aff");
   expect(styles).not.toContain("#8b6dff");
 
