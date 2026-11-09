@@ -1,7 +1,8 @@
 /* The bundled base stylesheet can load last. Keep scroll and visibility rules
    more specific than .workspace, including in the standalone web dashboard. */
 .workspace.proxy-page {
-  padding: 26px; overflow: auto; gap: 20px; background: var(--bg);
+  max-width: 1320px; width: 100%; margin: 0 auto;
+  padding: 28px 32px; overflow: auto; gap: 22px; background: var(--bg);
   border: 0; box-shadow: none; scrollbar-gutter: stable;
 }
 .workspace.proxy-page[hidden] { display: none; }
