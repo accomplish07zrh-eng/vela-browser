@@ -214,11 +214,11 @@ button:disabled { cursor: default; }
   height: 32px; padding: 0 12px;
   color: var(--ink-soft);
   background: var(--ctl);
-  border: 1px solid var(--ctl-border); border-radius: var(--r-md);
+  border: 1px solid var(--ctl-border); border-radius: var(--r-sm);
   box-shadow: var(--sh-ctl);
-  font-size: var(--t-sm); font-weight: 600; letter-spacing: -0.005em; white-space: nowrap;
-  transition: background .13s var(--ease), border-color .13s var(--ease),
-    color .13s var(--ease), box-shadow .13s var(--ease), transform .08s var(--ease);
+  font-size: var(--t-sm); font-weight: 500; letter-spacing: -0.008em; white-space: nowrap;
+  transition: background .15s var(--ease), border-color .15s var(--ease),
+    color .15s var(--ease), box-shadow .15s var(--ease), transform .1s var(--ease);
 }
 .btn:hover:not(:disabled), .iconbtn:hover:not(:disabled) {
   background: var(--ctl-hover);
@@ -227,16 +227,15 @@ button:disabled { cursor: default; }
 .btn:active:not(:disabled), .iconbtn:active:not(:disabled) {
   background: var(--surface-active); box-shadow: none; transform: translateY(.5px);
 }
-.btn:disabled, .iconbtn:disabled { opacity: .5; box-shadow: none; filter: saturate(.65); }
-.btn .icon { color: var(--muted); transition: color .13s var(--ease); }
+.btn:disabled, .iconbtn:disabled { opacity: .45; box-shadow: none; }
+.btn .icon { color: var(--muted); transition: color .15s var(--ease); }
 .btn:hover:not(:disabled) .icon { color: currentColor; }
 
-/* The filled primary is flat — the live build's exact blue, identical in both
-   themes; the glow is its only decoration. */
+/* The filled primary is flat — architectural monochrome with subtle elevation. */
 .btn.primary {
   color: var(--on-fill); background: var(--accent-fill);
-  border-color: var(--accent-fill);
-  box-shadow: var(--glow);
+  border-color: var(--accent-fill); font-weight: 550;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), var(--glow);
 }
 .btn.primary .icon, .btn.primary:hover:not(:disabled) .icon { color: currentColor; }
 .btn.primary:hover:not(:disabled) {
@@ -320,24 +319,24 @@ button:disabled { cursor: default; }
 
 .chip {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 22px;
-  padding: 0 9px; border-radius: var(--r-pill);
-  color: var(--ink-soft); background: var(--surface-hover); border: 1px solid var(--line);
-  font-size: 11.5px; font-weight: 550; line-height: 1; white-space: nowrap;
+  padding: 0 8px; border-radius: var(--r-xs);
+  color: var(--ink-soft); background: var(--surface-sunken); border: 1px solid var(--line);
+  font-size: 11.5px; font-weight: 500; line-height: 1; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
 }
 .chip .icon { width: 12px; height: 12px; }
 
-.platform-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-soft); white-space: nowrap; }
+.platform-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-soft); white-space: nowrap; }
 .platform-pill .glyph {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; flex: 0 0 auto; border-radius: var(--r-xs);
-  color: var(--on-fill); background: var(--accent-fill);
-  font-size: 10px; font-weight: 700;
-  box-shadow: inset 0 0 0 1px rgba(var(--shadow-rgb), .08);
+  width: 22px; height: 22px; flex: 0 0 auto; border-radius: var(--r-xs);
+  color: var(--ink); background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  font-size: 10px; font-weight: 600;
+  transition: background .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
 }
 /* Real brand marks are filled, not stroked like the rest of the icon set.
-   In the monochrome UI, every platform tile shares a unified ink-on-surface or
-   surface-on-ink badge so the roster stays effortlessly editorial. */
+   Calm monochrome badge at rest; inverts to crisp ink-on-fill on row hover. */
 .brandmark { width: 12px; height: 12px; display: block; fill: currentColor; stroke: none; }
 .platform-pill .glyph.pm-x,
 .platform-pill .glyph.pm-telegram,
@@ -355,8 +354,9 @@ button:disabled { cursor: default; }
 .platform-pill .glyph.pm-gmail,
 .platform-pill .glyph.pm-amazon,
 .platform-pill .glyph.pm-ebay,
-.platform-pill .glyph.pm-etsy { background: var(--accent-fill); color: var(--on-fill); }
-.platform-pill .glyph.pm-other { background: var(--surface-active); color: var(--ink-soft); }
+.platform-pill .glyph.pm-etsy { background: var(--surface-sunken); color: var(--ink); }
+.platform-pill .glyph.pm-other { background: var(--surface-sunken); color: var(--muted); }
+.profile-table tbody tr:hover .platform-pill .glyph { background: var(--accent-fill); color: var(--on-fill); border-color: var(--accent-fill); }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); }
 .dot.on { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
@@ -681,10 +681,12 @@ button.newgroup:disabled { color: var(--faint); border-color: var(--line); backg
 
 .pagehead {
   display: flex; align-items: center; gap: 10px;
-  padding: 0 22px; height: 60px; flex: 0 0 auto;
-  background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: 0 24px; height: 60px; flex: 0 0 auto;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
 }
-.pagehead h1 { margin: 0; font-size: var(--t-lg); font-weight: 700; letter-spacing: -0.035em; }
+.pagehead h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.03em; }
 .pagehead .pagesub {
   display: inline-flex; align-items: center; height: 22px; padding: 0 9px;
   border-radius: var(--r-pill); background: var(--surface-sunken); border: 1px solid var(--line);
@@ -763,30 +765,28 @@ button.newgroup:disabled { color: var(--faint); border-color: var(--line); backg
 /* Underlined tabs, not pills: they label sections of one page rather than
    offering actions, so they sit on the card's top edge like a page header. */
 .tabs {
-  display: flex; align-items: stretch; gap: 2px; flex: 0 0 auto;
-  padding: 0 14px; border-bottom: 1px solid var(--line-soft);
+  display: flex; align-items: stretch; gap: 6px; flex: 0 0 auto;
+  padding: 0 28px; background: var(--surface-sunken); border-bottom: 1px solid var(--line);
 }
 .tab {
   position: relative; padding: 14px 12px 12px;
   color: var(--muted); background: none; border: 0;
-  font-size: var(--t-base); font-weight: 550; white-space: nowrap;
-  transition: color .13s var(--ease);
+  font-size: 13px; font-weight: 500; white-space: nowrap;
+  transition: color .15s var(--ease);
 }
 .tab::after {
   content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px;
   border-radius: 2px 2px 0 0; background: transparent;
-  transition: background .13s var(--ease);
+  transition: background .15s var(--ease);
 }
 .tab:hover { color: var(--ink-soft); }
-.tab.active { color: var(--ink); font-weight: 650; }
+.tab.active { color: var(--ink); font-weight: 600; }
 .tab.active::after { background: var(--accent); }
 
 .settingspage {
   flex: 1; min-height: 0; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 14px;
-  padding: 18px 20px;
-  /* Settings read as prose, not as a data table — keep the measure short enough
-     to scan without the eye travelling the full width of a wide window. */
+  display: flex; flex-direction: column; gap: 16px;
+  padding: 28px 32px; margin: 0 auto;
   max-width: 860px; width: 100%;
 }
 .settingspage > * { flex: 0 0 auto; }
@@ -1701,26 +1701,27 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .hint-note { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line-soft); color: var(--muted); }
 
 /* Local scripts -------------------------------------------------------------- */
-.scripts-page { padding: 24px; overflow: auto; }
+.scripts-page { max-width: 1320px; width: 100%; margin: 0 auto; padding: 28px 32px; overflow: auto; }
 .scripts-head, .script-actions { display: flex; align-items: center; gap: 10px; }
-.scripts-head { justify-content: space-between; margin-bottom: 14px; }
+.scripts-head { justify-content: space-between; margin-bottom: 16px; }
 .scripts-head .sect-title { margin-bottom: 3px; }
-.scripts-tabs { margin: 0 0 14px; }
+.scripts-tabs { margin: 0 0 16px; }
 .scripts-library { display: grid; gap: 14px; }
 .scripts-library-search { display: flex; gap: 8px; }
 .scripts-library-search .input { flex: 1; }
 .script-publication { display: grid; gap: 10px; padding-top: 2px; }
-.script-publication-preview { display: grid; gap: 2px; padding: 10px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--r-sm); font-size: var(--t-sm); }
+.script-publication-preview { display: grid; gap: 2px; padding: 12px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--r-md); font-size: var(--t-sm); }
 .script-publication-preview b { color: var(--ink); }
 .script-library-pager { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0 0; }
-.scripts-run-note { display: block; width: 100%; margin-bottom: 12px; padding: 8px 10px; color: var(--accent-ink); text-align: left; background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: var(--r-sm); cursor: pointer; font: inherit; font-size: var(--t-sm); }
+.scripts-run-note { display: block; width: 100%; margin-bottom: 12px; padding: 10px 12px; color: var(--accent-ink); text-align: left; background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: var(--r-md); cursor: pointer; font: inherit; font-size: var(--t-sm); }
 .scripts-run-note:hover { background: var(--accent-soft-hover); }
-.scripts-layout { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); gap: 14px; align-items: start; }
-.scripts-list { display: flex; flex-direction: column; gap: 5px; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); }
-.script-row { display: grid; gap: 2px; width: 100%; padding: 9px 10px; color: var(--ink-soft); text-align: left; background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; transition: background .12s ease, color .12s ease; }
+.scripts-layout { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.scripts-list { display: flex; flex-direction: column; gap: 4px; padding: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-xs); }
+.script-row { display: grid; gap: 3px; width: 100%; padding: 10px 12px; color: var(--ink-soft); text-align: left; background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; transition: background .14s var(--ease), color .14s var(--ease); }
 .script-row:hover:not(:disabled) { background: var(--surface-hover); color: var(--ink); }
-.script-row.active { background: var(--accent-soft); color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.script-row.active { background: var(--accent-fill); color: var(--on-fill); font-weight: 550; box-shadow: var(--sh-xs); }
 .script-row span, .script-row small { color: var(--muted); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.script-row.active span, .script-row.active small { color: var(--on-fill); opacity: .72; }
 .script-detail { min-width: 0; }
 .script-detail header { justify-content: space-between; }
 .script-detail header h2 { margin: 0; font-size: var(--t-md); }
