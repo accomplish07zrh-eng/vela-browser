@@ -3728,8 +3728,8 @@ function App() {
           >
             <span className="avatar"><Icon name="user" /></span>
             <span className="who">
-              <b>{isCloudMode ? cloudAuth?.user?.email ?? "Cloud account" : "Local workspace"}</b>
-              <span>{isCloudMode ? cloudAuth?.workspace?.role ?? "member" : "No account"}</span>
+              <b>{isCloudMode ? cloudAuth?.user?.email ?? t("Cloud account") : t("Local workspace")}</b>
+              <span>{isCloudMode ? t(cloudAuth?.workspace?.role ?? "member") : t("Local · no account")}</span>
             </span>
             <Icon name="chevronRight" className="sm" />
           </button>
@@ -3829,7 +3829,7 @@ function App() {
             value={group}
             onChange={(e) => selectFolder(e.target.value)}
           >
-            <option value="all">All {isCloudMode ? "folders" : "groups"}</option>
+            <option value="all">{isCloudMode ? t("All folders") : t("All profiles")}</option>
             {existingGroups.map((g) => <option key={g} value={g}>{g}</option>)}
           </select>
           <div className="searchfield">
@@ -4001,7 +4001,7 @@ function App() {
                           <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>
                             {browserLabel(p.engine, p.chromiumRuntime)}
                           </span>
-                          {p.running && <span className="live"><StatusDot running />running</span>}
+                          {p.running && <span className="live"><StatusDot running />{t("running")}</span>}
                           {p.lockedBy && (
                             <span className="lockedby" title={`in use by ${p.lockedBy}`}>
                               <Icon name="lock" className="sm" />{p.lockedBy}
