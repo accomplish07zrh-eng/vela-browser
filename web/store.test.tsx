@@ -172,7 +172,7 @@ function liveCloud(override: (method: string, path: string, body: any) => Respon
   });
 }
 
-test("an older Cloud without the wallet answers 404, so the store stays hidden and offers stay NobleProxy links", async () => {
+test("an older Cloud without the wallet answers 404, so the store stays hidden and offers stay inert", async () => {
   fakeCloud(() => new Response("404 Not Found", { status: 404, headers: { "content-type": "text/plain" } }));
   expect(await loadStoreState()).toEqual({ available: false });
   fakeCloud(noRoute);
@@ -182,12 +182,11 @@ test("an older Cloud without the wallet answers 404, so the store stays hidden a
   expect(await loadStoreState()).toEqual({ available: false });
 
   const link = render(<ProxyProviderOffer placement="proxies-check" />);
-  expect(link).toContain('href="https://github.com/accomplish07zrh-eng/vela-browser?src=proxies-check"');
+  expect(link).toBe("");
   const opened: number[] = [];
   const inApp = render(<ProxyStoreContext.Provider value={(quantity) => opened.push(quantity)}><ProxyProviderOffer placement="proxies-no-proxy" missing={3} /></ProxyStoreContext.Provider>);
   expect(inApp).not.toContain("nobleproxy.com");
-  expect(inApp).toContain("<button");
-  expect(inApp).toContain("3 profiles have no proxy");
+  expect(inApp).toBe("");
 });
 
 test("the live Cloud bodies reach the page unchanged: balance, owned proxies and catalog", async () => {
@@ -757,7 +756,7 @@ test("every wallet and store string has Russian and Chinese text", async () => {
     ...[...source.matchAll(/\bt\("((?:[^"\\]|\\.)*)"/g)].map((match) => match[1]!),
     ...[...source.matchAll(/StoreError\("([^"]+)"/g)].map((match) => match[1]!),
     ...[...source.slice(source.indexOf("const ENTRY_LABELS"), source.indexOf("};", source.indexOf("const ENTRY_LABELS"))).matchAll(/: "([^"]+)"/g)].map((match) => match[1]!),
-    "Proxy tools", "Buy proxies", "Buy static residential proxies in the app and give each profile its own IP.",
+    "Proxy tools", "Buy proxies",
   ]);
   expect(keys.size).toBeGreaterThan(60);
   for (const catalog of [ruRU, zhCN] as Array<Record<string, string>>) {
@@ -888,19 +887,15 @@ test("My proxies without any order shows one calm empty state; owners get a Buy 
   expect(member).not.toContain('class="btn primary">Buy proxies</button>');
 });
 
-test("Local mode keeps the Proxies page as before: the tools and the NobleProxy link", () => {
+test("Local mode keeps the Proxies page tools without external proxy referral banners", () => {
   const local = render(<ProxiesPage active groups={["", "Team"]} onChanged={noop} profilesWithoutProxy={3} />);
   expect(local).toContain("PROXY TOOLS");
   expect(local).toContain("Keep your profiles connected.");
-  expect(local).toContain('href="https://github.com/accomplish07zrh-eng/vela-browser?src=proxies-no-proxy&amp;qty=3"');
-  expect(local).toContain("3 profiles have no proxy");
   expect(local).not.toContain("store-page");
   expect(local).not.toContain("Proxy tools<");
-  // One NobleProxy card, also with no profile missing a proxy.
-  expect(local.match(/class="proxy-referral"/g)).toHaveLength(1);
+  expect(local).not.toContain("proxy-referral");
   const allSet = render(<ProxiesPage active groups={[""]} onChanged={noop} profilesWithoutProxy={0} />);
-  expect(allSet.match(/class="proxy-referral"/g)).toHaveLength(1);
-  expect(allSet).toContain("src=proxies-check");
+  expect(allSet).not.toContain("proxy-referral");
 });
 
 test("the sidebar has one Proxies item and no Wallet or Logs item; logs open from Settings", async () => {
@@ -943,18 +938,11 @@ async function until(check: () => boolean) {
 const sentEvents = (requests: Array<{ path: string; body: any }>) =>
   requests.filter((request) => request.path === "/store/events").flatMap((request) => request.body.events.map(({ type, src }: any) => `${type}:${src}`));
 
-test("every in-app offer opens the store with the same src slug as its NobleProxy link", () => {
+test("every in-app offer placement slug is registered and ProxyProviderOffer renders nothing in clean build", () => {
   const placements = ["profile-dialog", "profile-dialog-check-failed", "import-no-proxy", "proxies-no-proxy", "proxies-check", "proxies-check-failed"] as const;
   for (const placement of placements) {
     expect(PROXY_SRC).toContain(placement);
-    // Local mode: the link is unchanged.
-    expect(render(<ProxyProviderOffer placement={placement} missing={2} />)).toContain(`href="https://github.com/accomplish07zrh-eng/vela-browser?src=${placement}&amp;qty=2"`);
-    // Cloud mode: the button opens the store with that slug.
-    const opened: Array<[number, string]> = [];
-    const offer = capture(() => ProxyProviderOffer({ placement, missing: 2 }), (child) =>
-      <ProxyStoreContext.Provider value={(quantity, src) => opened.push([quantity, src])}>{child}</ProxyStoreContext.Provider>);
-    findAll(offer, (element) => element.type === "button")[0]!.props.onClick();
-    expect(opened).toEqual([[2, placement]]);
+    expect(render(<ProxyProviderOffer placement={placement} missing={2} />)).toBe("");
   }
 });
 
@@ -983,9 +971,9 @@ test("the Buy tab view and the app's entry points record their src (wiring in th
   expect(app).toContain('onClick={() => openStore(0, "sidebar-cart")}><CartIcon /></button>');
   expect(app).toContain('if (storeSnapshot) { enterStore("proxies-tab"); void cloudStore.reload(); }');
   expect(app).toContain('active={view === "proxies"} src={storeEntry.src} entryKey={storeEntry.key}\n            onEnter={enterStore}');
-  // Events go to Cloud only while the Cloud store is available; Local mode keeps the NobleProxy link.
+  // Events go to Cloud only while the Cloud store is available; Local mode omits external proxy links.
   expect(app).toContain("useStoreEvents(!!storeSnapshot);");
-  expect(app).toContain('href={proxyOfferUrl("sidebar-cart", language)}');
+  expect(app).not.toContain('href={proxyOfferUrl("sidebar-cart", language)}');
 });
 
 test("Buy records pay_click with the opening src, and the purchase sends that src to Cloud", async () => {

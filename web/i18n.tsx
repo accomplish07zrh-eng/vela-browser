@@ -13,6 +13,7 @@ import { catalogs } from "./locales/registry.ts";
 export type Language = string;
 
 const LANGUAGE_KEY = "aliasmode.shell.language";
+export const DEFAULT_LANGUAGE = "zh-CN";
 const FALLBACK_LANGUAGE = "en-US";
 
 function isKnownLanguage(value: unknown): value is string {
@@ -39,6 +40,7 @@ export function readLanguage(): string {
     const saved = localStorage.getItem(LANGUAGE_KEY);
     if (isKnownLanguage(saved)) return saved;
   } catch {}
+  if (typeof document !== "undefined" && isKnownLanguage(DEFAULT_LANGUAGE)) return DEFAULT_LANGUAGE;
   try {
     const detected = detectLanguage(navigator.languages ?? [navigator.language], Object.keys(catalogs));
     if (detected) return detected;

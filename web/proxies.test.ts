@@ -151,25 +151,11 @@ test("the proxy page remains mounted but hidden when navigation changes", () => 
   expect(html).not.toContain('type="file"');
 });
 
-test("the desktop shell accepts every proxy offer link the dashboard can build", async () => {
-  // The shell opens an outside link only when proxy_offer_url() in src-tauri/src/lib.rs accepts it.
-  const shell = await Bun.file(new URL("../src-tauri/src/lib.rs", import.meta.url)).text();
-  expect(shell).toContain('url.strip_prefix("https://github.com/accomplish07zrh-eng/vela-browser?")');
-  expect(shell).toContain('matches!(key, "src" | "qty" | "lang")');
-  const accepted = /^https:\/\/nobleproxy\.com\/t\/aliasmode\?(?:src|qty|lang)=[A-Za-z0-9-]{1,32}(?:&(?:src|qty|lang)=[A-Za-z0-9-]{1,32})*$/;
-
-  const sources = await Promise.all(
-    ["app.tsx", "proxies.tsx", "proxy-offer.tsx"].map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
-  );
-  const placements = new Set<ProxySrc>();
-  for (const match of sources.join("\n").matchAll(/placement=("[^"]+"|\{[^}]+\})|proxyOfferUrl\(("[^"]+")/g)) {
-    for (const literal of (match[1] ?? match[2])!.matchAll(/"([^"]+)"/g)) placements.add(literal[1] as ProxySrc);
-  }
-  expect(placements.size).toBeGreaterThan(4);
-  for (const placement of placements) {
-    expect(PROXY_SRC).toContain(placement);
+test("proxy offer shims remain inert in the clean Vela Browser build", () => {
+  expect(PROXY_SRC.length).toBeGreaterThan(4);
+  for (const placement of PROXY_SRC) {
     for (const language of Object.keys(catalogs)) {
-      for (const quantity of [0, 1, 1000]) expect(proxyOfferUrl(placement, language, quantity)).toMatch(accepted);
+      for (const quantity of [0, 1, 1000]) expect(proxyOfferUrl(placement, language, quantity)).toBe("#");
     }
   }
 });

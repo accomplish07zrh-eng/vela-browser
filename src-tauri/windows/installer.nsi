@@ -9,7 +9,7 @@ ManifestDPIAwareness PerMonitorV2
 !if "{{compression}}" == "none"
   SetCompress off
 !else
-  ; AliasMode: Tauri 2.11.4's template, compressing file by file instead of /SOLID.
+  ; Tauri 2.11.4 template, compressing file by file instead of /SOLID.
   ; makensis maps a solid block uncompressed and fails near 2 GB ("error mmapping
   ; datablock"); the bundled browsers passed that. Refresh this file with Tauri.
   SetCompressor "{{compression}}"
@@ -128,6 +128,9 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
   !define MULTIUSER_EXECUTIONLEVEL Highest
   !include MultiUser.nsh
 !endif
+
+; silk-wallet pure white (#FFFFFF) surface for Welcome/Finish and Header
+!define MUI_BGCOLOR FFFFFF
 
 ; Installer icon
 !if "${INSTALLERICON}" != ""

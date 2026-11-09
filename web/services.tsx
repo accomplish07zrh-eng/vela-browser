@@ -71,7 +71,7 @@ export function ServicesPage({ active }: { active: boolean }) {
             ? <img className="service-logo" src={service.logo} alt="" />
             : <span className="service-logo service-monogram" aria-hidden="true">{service.name.slice(0, 1)}</span>}
           <div className="service-title"><h3>{service.name}</h3><span>{label(service.category)}</span></div>
-          {service.badge && <span className={`service-badge ${service.badge}`}>{service.badge === "pick" ? t("Our pick") : t("Sponsored")}</span>}
+          {service.badge === "pick" && <span className={`service-badge ${service.badge}`}>{t("Our pick")}</span>}
         </div>
         <p className="service-description">{service.description}</p>
         {(service.deal || service.code) && <div className="service-deal">
@@ -84,6 +84,5 @@ export function ServicesPage({ active }: { active: boolean }) {
           aria-label={t("Visit {name} (opens externally)", { name: service.name })}>{t("Visit")} ↗</a>
       </article>)}
     </div>
-    <p className="tools-footnote">{t("Some links are affiliate links: Vela Browser may earn a commission at no extra cost to you. Listings marked Sponsored are paid placements from Verified Sellers. Links open through aliasmode.com, which counts the click.")}</p>
   </div>;
 }

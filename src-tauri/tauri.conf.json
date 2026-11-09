@@ -15,7 +15,7 @@
   "bundle": {
     "active": true,
     "publisher": "Vela Browser",
-    "copyright": "Copyright © 2026 Vela Browser contributors. Based on AliasMode, copyright © Xreacher.",
+    "copyright": "Copyright © 2026 Vela Browser",
     "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
@@ -31,7 +31,7 @@
       },
       "nsis": {
         "compression": "zlib",
-        "languages": ["English", "SimpChinese"],
+        "languages": ["SimpChinese", "English"],
         "template": "windows/installer.nsi",
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico",

@@ -414,10 +414,6 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
   return <div className="workspace proxy-page" hidden={!active}>
     {store ? store(tools) : <>
       <div className="tools-intro"><div><span className="tools-eyebrow">{t("PROXY TOOLS")}</span><h2>{t("Keep your profiles connected.")}</h2><p>{t("Check saved connections or replace proxies across entire folders.")}</p></div></div>
-      {/* Local mode: one NobleProxy card, worded for what the page shows right now. */}
-      {profilesWithoutProxy > 0
-        ? <ProxyProviderOffer placement="proxies-no-proxy" missing={profilesWithoutProxy} />
-        : <ProxyProviderOffer placement={hasFailedChecks ? "proxies-check-failed" : "proxies-check"} replacement={hasFailedChecks} />}
       {tools}
     </>}
   </div>;

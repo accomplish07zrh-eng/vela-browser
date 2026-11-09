@@ -51,9 +51,9 @@ describe("services list", () => {
     expect(calls).toHaveLength(2);
   });
 
-  test("falls back to the bundled copy when aliasmode.com fails", async () => {
-    const bundledSlugs = bundled.services.map((service) => service.slug);
-    expect(bundledSlugs).toEqual(["nobleproxy", "xreacher"]);
+  test("falls back to the empty bundled copy when remote fetch fails", async () => {
+    const bundledSlugs = bundled.services.map((service: { slug: string }) => service.slug);
+    expect(bundledSlugs).toEqual([]);
     for (const fetchFn of [
       (async () => { throw new Error("offline"); }) as unknown as typeof fetch,
       (async () => new Response("down", { status: 502 })) as unknown as typeof fetch,
@@ -63,6 +63,5 @@ describe("services list", () => {
       expect(result.source).toBe("bundled");
       expect(result.services.map((service) => service.slug)).toEqual(bundledSlugs);
     }
-    for (const service of bundled.services) expect(service.logo.startsWith("data:image/svg+xml;base64,")).toBe(true);
   });
 });

@@ -210,36 +210,21 @@ test("dashboard lists the supported profile platforms", () => {
   }
 });
 
-test("New and Edit profile dialogs check proxies and show only relevant provider offers", () => {
+test("New and Edit profile dialogs check proxies and suppress provider offers", () => {
   const createModal = app.slice(app.indexOf("{showCreate && ("), app.indexOf("{editId && ("));
   const editModal = app.slice(app.indexOf("{editId && ("), app.indexOf("{showBulk && ("));
 
-  expect(proxyOffer).toContain('const PROXY_PROVIDER_URL = "https://github.com/accomplish07zrh-eng/vela-browser";');
-  // Every link names its placement, so NobleProxy can report which one sells.
-  expect(proxyOffer).toContain('url.searchParams.set("src", placement);');
-  expect(app).not.toContain("<ProxyProviderOffer />");
-  expect(app).not.toContain("<ProxyProviderOffer replacement />");
-  expect(proxyOffer).toContain("replacement ?");
+  expect(proxyOffer).toContain("export function ProxyProviderOffer(");
+  expect(proxyOffer).toContain("return null;");
+  expect(app).not.toContain("<ProxyProviderOffer");
   expect(app).not.toContain("outreachproxy.com");
   expect(app).not.toContain("OutreachProxy");
   for (const modal of [createModal, editModal]) {
     expect(modal).toContain("Check proxy");
     expect(modal).toContain("<ProxyCheckFeedback");
   }
-  expect(proxyOffer).toContain('target="_blank"');
-  expect(proxyOffer).toContain('rel="noreferrer"');
-  // A profile that already has a proxy keeps the offer, so Edit profile shows it too.
-  expect(app).toContain('if (!result) return <ProxyProviderOffer placement="profile-dialog" />;');
-  // In the desktop app the shell plugin cancels outside-link clicks that reach <body>.
-  // The root stops them first, so the shell's allowlist opens the link.
+  expect(app).toContain("if (!result) return null;");
   expect(app).toContain(`if (event.target instanceof Element && event.target.closest('a[target="_blank"]')) event.stopPropagation();`);
-  expect(proxyOffer).toContain('aria-label={t("Buy static residential proxies from NobleProxy at the Vela Browser user price (opens externally)")}');
-  expect(proxyOffer).toContain('replacement ? t("Buy Replacement Proxy") : t("Buy Static Residential Proxy")');
-  // The offer is an Vela Browser-only price, not a sale banner.
-  expect(proxyOffer).toContain("Vela Browser price");
-  expect(proxyOffer).toContain("Only Vela Browser users pay 40% less");
-  expect(proxyOffer).not.toContain("40% OFF");
-  expect(proxyOffer).not.toContain("Need a proxy?");
   expect(app).toContain('if (k === "proxyType" || k === "host" || k === "port" || k === "user" || k === "pass")');
   expect(app).toContain('if (k === "proxy" || k === "proxyType") {\n      resetEditProxyCheck();');
   expect(app).toContain("generation === createProxyCheckGeneration.current");
@@ -251,18 +236,9 @@ test("New and Edit profile dialogs check proxies and show only relevant provider
   for (const tone of ["working", "unstable", "failed", "unavailable"]) {
     expect(styles).toContain(`.proxy-check-result.${tone}`);
   }
-  expect(styles).toContain(".proxy-referral {");
-  expect(styles).toContain(".proxy-referral:focus-visible");
-  // Local mode shows one offer above both Proxies tools: it names how many
-  // profiles have no proxy, or offers proxies (replacements after failed checks).
   const proxiesPage = readFileSync(join(import.meta.dir, "web", "proxies.tsx"), "utf8");
-  expect(proxiesPage.match(/<ProxyProviderOffer /g)).toHaveLength(2);
-  expect(proxiesPage).toContain('<ProxyProviderOffer placement="proxies-no-proxy" missing={profilesWithoutProxy} />');
-  expect(app).toContain("const profilesWithoutProxy = isCloudMode ? 0 : profiles.filter((p) => !p.proxy?.trim()).length;");
-  expect(app).toContain('<ProxyProviderOffer placement="import-no-proxy" missing={profilesWithoutProxy} />');
-  // Sidebar cart beside Proxies opens the same offer; the icon rail hides it.
-  expect(app).toContain('className="navbuy"');
-  expect(app).toContain('href={proxyOfferUrl("sidebar-cart", language)}');
+  expect(proxiesPage).not.toContain("<ProxyProviderOffer");
+  expect(app).not.toContain("import-no-proxy");
   expect(styles).toContain(".sidebar.collapsed .navbuy { display: none; }");
 });
 
@@ -901,27 +877,19 @@ test("the second accent marks identity, and the credit matches the website", () 
   expect(styles).not.toContain("#6d4aff");
   expect(styles).not.toContain("#8b6dff");
 
-  // aliasmode.com credits "Developed by Vela Browser" — not "Powered by" — and the
-  // name links to its owner, not back to the product it credits.
-  expect(app).toContain("Developed by");
-  expect(app).toContain('<a href="https://github.com/accomplish07zrh-eng/vela-browser/" target="_blank" rel="noreferrer" title="xreacher.com">Xreacher</a>');
-  expect(app).not.toContain('className="watermark" href="https://github.com/accomplish07zrh-eng/vela-browser/"');
-  expect(styles).toContain(".watermark");
-  // The site paints its footer wordmark as a clipped gradient, not flat text.
+  // The footer wordmark is Vela Browser without upstream Xreacher credits.
+  expect(app).not.toContain("Xreacher");
   expect(app).toContain('<p className="footer-mark" aria-hidden="true">Vela Browser</p>');
   expect(styles).toContain("-webkit-background-clip: text; background-clip: text; color: transparent;");
   // It is a credit, not a control: it must not survive into the icon rail.
   expect(styles).toContain(".sidebar.collapsed .sidecredit { display: none; }");
 });
 
-test("the project links match the site footer and this repository", () => {
-  // The GitHub URL is this repo's own origin — the two cannot drift apart.
-  expect(app).toContain('href: "https://github.com/aliasmode/aliasmode"');
+test("the project links match this repository", () => {
+  expect(app).not.toContain('href: "https://github.com/aliasmode/aliasmode"');
   expect(app).toContain('href: "https://github.com/accomplish07zrh-eng/vela-browser"');
-  // Outbound links from a desktop shell must not hand the opener over.
   const links = app.slice(app.indexOf("const PROJECT_LINKS"), app.indexOf("] as const;", app.indexOf("const PROJECT_LINKS")));
-  expect(links).toContain("github.com");
-  expect(links).toContain("t.me");
+  expect(links).toContain("github.com/accomplish07zrh-eng/vela-browser");
   expect(app).toContain('aria-label={t("Vela Browser on {name}", { name: link.label })}');
   expect(styles).toContain(".projectlink");
 });
@@ -1059,19 +1027,15 @@ test("Firefox shows its screen, editable at creation and when editing", () => {
   expect(app).toContain('t("Leave a field blank to keep it automatic. A timezone you type stays when the proxy changes.")');
 });
 
-test("Services page sits in the sidebar, can be hidden, and links only through aliasmode.com/go/", () => {
+test("Services page is hidden in clean Vela Browser build and omits sponsored disclosures", () => {
   const services = readFileSync(join(import.meta.dir, "web", "services.tsx"), "utf8");
   const shell = readFileSync(join(import.meta.dir, "src-tauri", "src", "lib.rs"), "utf8");
-  expect(app).toContain('{!appMode?.servicesHidden && <button type="button" className={`navitem${view === "services" ? " active" : ""}`}');
-  expect(app).toContain('<ServicesPage active={view === "services"} />');
-  expect(app).toContain('checked={!appMode.servicesHidden} onChange={(event) => void showServices(event.target.checked)}');
-  // The page loads its list only when it is open.
+  expect(app).toContain('{false && !appMode?.servicesHidden && <button type="button" className={`navitem${view === "services" ? " active" : ""}`}');
   expect(services).toContain("if (!active) return;\n    let current = true;\n    fetchServices()");
-  // Visit buttons open the counted redirect; the desktop shell allows exactly that address form.
   expect(services).toContain("export const serviceVisitUrl = (slug: string) => `https://github.com/accomplish07zrh-eng/vela-browser/go/${slug}`;");
   expect(services).toContain('href={serviceVisitUrl(service.slug)} target="_blank" rel="noreferrer"');
   expect(shell).toContain('url.strip_prefix("https://github.com/accomplish07zrh-eng/vela-browser/go/")');
   expect(services).toContain('t("Our pick")');
-  expect(services).toContain('t("Sponsored")');
-  expect(services).toContain('className="tools-footnote"');
+  expect(services).not.toContain('t("Sponsored")');
+  expect(services).not.toContain("affiliate links");
 });

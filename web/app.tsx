@@ -385,19 +385,13 @@ const ICONS = {
 type IconName = keyof typeof ICONS;
 
 /**
- * Official project links, mirroring the footer on aliasmode.com. The GitHub URL
- * is this repository's own origin, so the two can never drift apart.
+ * Official project links for Vela Browser.
  */
 const PROJECT_LINKS = [
   {
-    href: "https://github.com/aliasmode/aliasmode",
+    href: "https://github.com/accomplish07zrh-eng/vela-browser",
     label: "GitHub",
     path: "M12 .3a12 12 0 00-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.2 1.9 1.2 1.1 1.9 2.9 1.3 3.6 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 016 0C17.4 5.4 18.4 5.7 18.4 5.7c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0012 .3z",
-  },
-  {
-    href: "https://github.com/accomplish07zrh-eng/vela-browser",
-    label: "Telegram",
-    path: "M23.91 3.79 20.3 20.84c-.25 1.21-.98 1.5-1.99.93l-5.49-4.05-2.65 2.55c-.3.3-.55.55-1.12.55l.4-5.63 10.24-9.25c.45-.4-.1-.62-.69-.22L6.44 13.09.2 11.14c-1.36-.42-1.38-1.36.28-2.01L22.17 1.8c1.13-.42 2.12.26 1.74 1.99Z",
   },
 ] as const;
 
@@ -1154,69 +1148,51 @@ function proxyFailureMessage(t: (s: string) => string, reason: ProxyCheckResult[
 
 function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: ProxyCheckUiState }) {
   const { t } = useTranslation();
-  if (!hasProxy) return <ProxyProviderOffer placement="profile-dialog" />;
+  if (!hasProxy) return null;
   if (state.error) {
     const invalid = state.error === "invalid";
     return (
-      <>
-        <div className={`proxy-check-result ${invalid ? "failed" : "unavailable"}`} role="status">
-          <Icon name={invalid ? "alert" : "activity"} className="sm" />
-          <span>{invalid
-            ? t("Proxy details are invalid. Check them and try again.")
-            : t("Proxy check is unavailable. Try again later.")}</span>
-        </div>
-        {invalid
-          ? <ProxyProviderOffer placement="profile-dialog-check-failed" replacement />
-          : <ProxyProviderOffer placement="profile-dialog" />}
-      </>
+      <div className={`proxy-check-result ${invalid ? "failed" : "unavailable"}`} role="status">
+        <Icon name={invalid ? "alert" : "activity"} className="sm" />
+        <span>{invalid
+          ? t("Proxy details are invalid. Check them and try again.")
+          : t("Proxy check is unavailable. Try again later.")}</span>
+      </div>
     );
   }
   const result = state.result;
-  // A profile that already has a proxy keeps the offer, so it also shows in Edit profile.
-  if (!result) return <ProxyProviderOffer placement="profile-dialog" />;
+  if (!result) return null;
   const location = [result.city, result.region, result.country].filter(Boolean).join(", ");
   const exit = [result.ip ? `Exit IP: ${result.ip}` : "", location].filter(Boolean).join(" · ");
   if (result.status === "working") {
     return (
-      <>
-        <div className="proxy-check-result working" role="status">
-          <Icon name="check" className="sm" />
-          <span><strong>{t("Proxy is working.")}</strong>{exit && <> {exit}.</>}{result.rotating && <> Rotating exit IPs detected.</>}</span>
-        </div>
-        <ProxyProviderOffer placement="profile-dialog" />
-      </>
+      <div className="proxy-check-result working" role="status">
+        <Icon name="check" className="sm" />
+        <span><strong>{t("Proxy is working.")}</strong>{exit && <> {exit}.</>}{result.rotating && <> Rotating exit IPs detected.</>}</span>
+      </div>
     );
   }
   if (result.status === "unstable") {
     return (
-      <>
-        <div className="proxy-check-result unstable" role="status">
-          <Icon name="warning" className="sm" />
-          <span><strong>{t("Proxy checks were mixed.")}</strong> {result.successes} of {result.attempts} succeeded.</span>
-        </div>
-        <ProxyProviderOffer placement="profile-dialog-check-failed" replacement />
-      </>
+      <div className="proxy-check-result unstable" role="status">
+        <Icon name="warning" className="sm" />
+        <span><strong>{t("Proxy checks were mixed.")}</strong> {result.successes} of {result.attempts} succeeded.</span>
+      </div>
     );
   }
   if (result.status === "failed") {
     return (
-      <>
-        <div className="proxy-check-result failed" role="status">
-          <Icon name="alert" className="sm" />
-          <span>{proxyFailureMessage(t, result.reason)}</span>
-        </div>
-        <ProxyProviderOffer placement="profile-dialog-check-failed" replacement />
-      </>
+      <div className="proxy-check-result failed" role="status">
+        <Icon name="alert" className="sm" />
+        <span>{proxyFailureMessage(t, result.reason)}</span>
+      </div>
     );
   }
   return (
-    <>
-      <div className="proxy-check-result unavailable" role="status">
-        <Icon name="activity" className="sm" />
-        <span>{t("Proxy check is unavailable. Try again later.")}</span>
-      </div>
-      <ProxyProviderOffer placement="profile-dialog" />
-    </>
+    <div className="proxy-check-result unavailable" role="status">
+      <Icon name="activity" className="sm" />
+      <span>{t("Proxy check is unavailable. Try again later.")}</span>
+    </div>
   );
 }
 
@@ -1357,9 +1333,6 @@ function App() {
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [editInitialFingerprint, setEditInitialFingerprint] = useState<Record<string, string>>({});
   const [editInitialProxy, setEditInitialProxy] = useState({ proxy: "", proxyType: "http" });
-  const [outreachOfferDismissed, setOutreachOfferDismissed] = useState(() => {
-    try { return localStorage.getItem("aliasmode.offers.xreacherDismissed") === "1"; } catch { return false; }
-  });
   const [editProxyCheck, setEditProxyCheck] = useState<ProxyCheckUiState>(EMPTY_PROXY_CHECK);
   const editProxyCheckGeneration = useRef(0);
   const [editErr, setEditErr] = useState<string | null>(null);
@@ -3538,17 +3511,8 @@ function App() {
               <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip={t("Proxies")} title={t("Proxies")} onClick={() => { setView("proxies"); if (storeSnapshot) { enterStore("proxies-tab"); void cloudStore.reload(); } }}>
                 <Icon name="activity" /><span className="navlabel">{t("Proxies")}</span>
               </button>
-              {storeSnapshot ? (
+              {storeSnapshot && (
                 <button type="button" className="navbuy" title={t("Buy proxies")} aria-label={t("Buy proxies")} onClick={() => openStore(0, "sidebar-cart")}><CartIcon /></button>
-              ) : (
-                <a
-                  className="navbuy"
-                  href={proxyOfferUrl("sidebar-cart", language)}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={t("Buy proxies at the Vela Browser price")}
-                  aria-label={t("Buy proxies from NobleProxy at the Vela Browser user price (opens externally)")}
-                ><CartIcon /></a>
               )}
             </div>
             <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip={t("Trash")} title={t("Trash")} onClick={() => setView("trash")}>
@@ -3673,13 +3637,6 @@ function App() {
             <Icon name="settings" /><span className="navlabel">{t("Settings")}</span>
           </button>
           <div className="sidecredit">
-            {/* Only the name is a link, and it points at its owner: "Developed by
-                Xreacher" goes to Xreacher, not to Vela Browser. The project's own
-                links are the GitHub and Telegram marks beside it. */}
-            <span className="watermark">
-              {t("Developed by")}
-              <a href="https://github.com/accomplish07zrh-eng/vela-browser/" target="_blank" rel="noreferrer" title="xreacher.com">Xreacher</a>
-            </span>
             <div className="projectlinks">
               {PROJECT_LINKS.map((link) => (
                 <a
@@ -3888,13 +3845,6 @@ function App() {
           </div>
           {runtimeDownloads.length > 0 && <RuntimeDownloadProgressView downloads={runtimeDownloads} />}
         </div>
-
-        {showImportOffer && profilesWithoutProxy > 0 && (
-          <div className="import-offer">
-            <ProxyProviderOffer placement="import-no-proxy" missing={profilesWithoutProxy} />
-            <button type="button" className="iconbtn" aria-label={t("Dismiss")} onClick={() => setShowImportOffer(false)}><Icon name="close" className="sm" /></button>
-          </div>
-        )}
 
         {filtered.length > 0 && (
           <div className="toolbar" role="status">
@@ -5073,16 +5023,6 @@ function App() {
                       <PlatformPicker value={editForm.platform ?? ""} onChange={(v) => setEF("platform", v)} />
                     </label>
                   </div>
-                  {!outreachOfferDismissed && ["x.com", "linkedin.com", "telegram.org"].includes(editForm.platform ?? "") && (
-                    <div className="outreach-offer hint">
-                      <span>{t("Need outreach campaigns?")}</span>
-                      <a href="https://github.com/accomplish07zrh-eng/vela-browser/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor" target="_blank" rel="noreferrer">{t("Run outreach with Xreacher ↗")}</a>
-                      <button type="button" className="btn xs ghost" aria-label={t("Dismiss Xreacher offer")} onClick={() => {
-                        setOutreachOfferDismissed(true);
-                        writeSetting("aliasmode.offers.xreacherDismissed", "1");
-                      }}><Icon name="close" className="sm" /></button>
-                    </div>
-                  )}
                   <label className="fld">
                     <span>{t("Browser")}</span>
                     <input value={editEngine ? browserLabel(editEngine, editChromiumRuntime) : ""} readOnly className="ro" />
@@ -5320,10 +5260,10 @@ function App() {
               </p>
             </div>
             <div className="modal-foot">
-              <button className="tlink" onClick={() => downloadText("aliasmode-template.csv", CSV_TEMPLATE, "text/csv")}>
+              <button className="tlink" onClick={() => downloadText("vela-template.csv", CSV_TEMPLATE, "text/csv")}>
                 <Icon name="export" className="sm" />{t("CSV template")}
               </button>
-              <button className="tlink" onClick={() => downloadText("aliasmode-example.txt", TXT_EXAMPLE, "text/plain")}>
+              <button className="tlink" onClick={() => downloadText("vela-example.txt", TXT_EXAMPLE, "text/plain")}>
                 <Icon name="export" className="sm" />{t(".txt example")}
               </button>
               <span className="spacer" />
@@ -5366,7 +5306,7 @@ function App() {
                   <span className="hint">{t("Tip: select profiles first, then export here to get an editable file.")}</span>
                 )}
                 <span className="grow" />
-                <button className="tlink" onClick={() => downloadText("aliasmode-update-template.csv", UPDATE_TEMPLATE_CSV, "text/csv")}><Icon name="export" className="sm" />{t("example sheet")}</button>
+                <button className="tlink" onClick={() => downloadText("vela-update-template.csv", UPDATE_TEMPLATE_CSV, "text/csv")}><Icon name="export" className="sm" />{t("example sheet")}</button>
               </div>
               <div
                 className={`bulkdrop${updateOver ? " over" : ""}`}
