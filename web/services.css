@@ -5,7 +5,8 @@
 .service-filters button.selected { color: var(--on-fill); background: var(--accent-fill); border-color: var(--accent-fill); }
 .service-filters button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .service-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.service-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.service-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-xl); box-shadow: var(--sh-sm); transition: box-shadow .16s var(--ease), transform .16s var(--ease); }
+.service-card:hover { box-shadow: var(--sh-md); transform: translateY(-1px); }
 .service-head { display: flex; align-items: center; gap: 12px; }
 .service-logo { flex-shrink: 0; width: 40px; height: 40px; border: 1px solid var(--line-soft); border-radius: var(--r-md); background: var(--surface-sunken); object-fit: contain; padding: 4px; }
 .service-monogram { display: inline-flex; align-items: center; justify-content: center; color: var(--accent-ink); background: var(--accent-soft); font-size: 17px; font-weight: 700; }

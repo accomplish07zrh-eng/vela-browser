@@ -106,25 +106,35 @@ function renderProfileCard(store: ProfileStore, id: string): Response {
   const title = `${p.name || "profile"} · #${no}`;
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
-  body{font-family:'Segoe UI',system-ui,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
-  .hero{background:linear-gradient(135deg,#1d4ed8,#2563eb);padding:26px;text-align:center}
-  .browser{font-size:22px;font-weight:700;letter-spacing:.5px} .capabilities{opacity:.9;margin-top:4px}
-  .card{max-width:640px;margin:22px auto;background:#1e293b;border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.3)}
-  h2{padding:16px 20px 6px;margin:0;font-size:15px;letter-spacing:.5px;opacity:.6;text-transform:uppercase}
-  .row{display:flex;justify-content:space-between;gap:16px;padding:13px 20px;border-top:1px solid #334155}
-  .k{opacity:.65} .v{font-weight:600;text-align:right;word-break:break-all}
+  :root{color-scheme:light dark;--bg:#ffffff;--card:#ffffff;--sunken:#f5f5f7;--ink:#111114;--muted:#6b6d77;--line:rgba(0,0,0,.055);--sh:0 12px 34px -6px rgba(0,0,0,.065),0 2px 8px rgba(0,0,0,.035)}
+  @media(prefers-color-scheme:dark){:root{--bg:#09090c;--card:#16161b;--sunken:#1b1b21;--ink:#f2f2f5;--muted:#9c9ea8;--line:rgba(255,255,255,.065);--sh:0 18px 44px -8px rgba(0,0,0,.62),0 4px 12px rgba(0,0,0,.38)}}
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',system-ui,sans-serif;margin:0;padding:48px 24px;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  .wrap{max-width:620px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+  .hero{background:var(--card);border:1px solid var(--line);border-radius:24px;padding:28px 32px;box-shadow:var(--sh);display:flex;flex-direction:column;gap:6px}
+  .brand{font-family:'Playfair Display',Didot,'Bodoni MT',Georgia,serif;font-style:italic;font-weight:700;font-size:18px;letter-spacing:.01em;color:var(--muted)}
+  .browser{font-family:'Noto Serif SC','Songti SC',Georgia,serif;font-size:24px;font-weight:700;letter-spacing:.02em;margin-top:4px}
+  .capabilities{color:var(--muted);font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:24px;overflow:hidden;box-shadow:var(--sh)}
+  h2{padding:18px 24px 10px;margin:0;font-size:11.5px;font-weight:600;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;background:var(--sunken);border-bottom:1px solid var(--line)}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 24px;border-top:1px solid var(--line);font-size:13.5px}
+  .row:first-of-type{border-top:0}
+  .k{color:var(--muted);font-weight:500}
+  .v{font-weight:600;text-align:right;word-break:break-all;font-variant-numeric:tabular-nums}
 </style></head>
 <body>
-  <div class="hero"><div class="browser">${escapeHtml(browser)}</div><div class="capabilities">${escapeHtml(capabilities)}</div></div>
-  <div class="card">
-    <h2>Account</h2>
-    <div class="row"><span class="k">Name</span><span class="v">${escapeHtml(p.name)}</span></div>
-    <div class="row"><span class="k">Profile No / ID</span><span class="v">${escapeHtml(no)} / ${escapeHtml(id)}</span></div>
-    <div class="row"><span class="k">Group</span><span class="v">${escapeHtml(p.group) || "—"}</span></div>
-    <div class="row"><span class="k">Platform</span><span class="v">${escapeHtml(p.platform) || "—"}</span></div>
-    <div class="row"><span class="k">Browser</span><span class="v">${escapeHtml(browser)}</span></div>
-    <div class="row"><span class="k">Timezone</span><span class="v">${escapeHtml(p.timezone) || "—"}</span></div>
-    <div class="row"><span class="k">Proxy</span><span class="v">${escapeHtml(proxy)}</span></div>
+  <div class="wrap">
+    <div class="hero"><div class="brand">Vela</div><div class="browser">${escapeHtml(browser)}</div><div class="capabilities">${escapeHtml(capabilities)}</div></div>
+    <div class="card">
+      <h2>Account</h2>
+      <div class="row"><span class="k">Name</span><span class="v">${escapeHtml(p.name)}</span></div>
+      <div class="row"><span class="k">Profile No / ID</span><span class="v">${escapeHtml(no)} / ${escapeHtml(id)}</span></div>
+      <div class="row"><span class="k">Group</span><span class="v">${escapeHtml(p.group) || "—"}</span></div>
+      <div class="row"><span class="k">Platform</span><span class="v">${escapeHtml(p.platform) || "—"}</span></div>
+      <div class="row"><span class="k">Browser</span><span class="v">${escapeHtml(browser)}</span></div>
+      <div class="row"><span class="k">Timezone</span><span class="v">${escapeHtml(p.timezone) || "—"}</span></div>
+      <div class="row"><span class="k">Proxy</span><span class="v">${escapeHtml(proxy)}</span></div>
+    </div>
   </div>
 </body></html>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });

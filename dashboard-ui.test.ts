@@ -11,17 +11,17 @@ const notice = readFileSync(join(import.meta.dir, "NOTICE"), "utf8");
 
 test("dashboard renders the approved Alias Loop logo and it survives dark mode", () => {
   // The mark is inlined so the dark arm can ride currentColor: the packaged
-  // SVG's #111827 stroke is invisible on a dark surface.
+  // SVG's #09090b stroke is invisible on a dark surface.
   expect(app).toContain("function AliasLoop(");
   expect(app).toContain('stroke="currentColor"');
   expect(app).toContain('<div className="brand"><AliasLoop />Vela Browser</div>');
   expect(app).toContain('<div className="onboarding-brand"><AliasLoop />Vela Browser');
   expect(styles).toContain(".alias-loop .loop-accent { stroke: var(--accent); }");
   expect(styles).not.toContain(".brand::before");
-  // Both marks draw the same approved paths as the packaged asset.
+  // Both marks draw the same Vela Playfair Display Bold Italic glyph paths as the packaged asset.
   const paths = [
-    'd="M152 96H320C380 96 416 136 416 196V316C416 376 376 416 316 416H196C136 416 96 376 96 316V288"',
-    'd="M96 288C96 240 136 208 184 208H280"',
+    'd="M76 156C76 102 110 68 164 68H348"',
+    'd="M171.1 218.7Q177.5 209.1',
   ];
   for (const path of paths) {
     expect(app).toContain(path);

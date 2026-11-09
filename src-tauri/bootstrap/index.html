@@ -7,11 +7,12 @@
   <style>
     :root {
       color-scheme: light dark;
-      --bg: #f5f5f7;
+      --bg: #ffffff;
       --surface: #ffffff;
-      --ink: #09090b;
-      --muted: #686870;
-      --line: #e4e4e7;
+      --ink: #111114;
+      --muted: #6b6d77;
+      --line: rgba(0, 0, 0, 0.055);
+      --shadow: 0 18px 46px -8px rgba(0, 0, 0, 0.085), 0 4px 12px rgba(0, 0, 0, 0.045);
       font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
       background: var(--bg);
       color: var(--ink);
@@ -19,11 +20,12 @@
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #070708;
-        --surface: #101012;
-        --ink: #fafafa;
-        --muted: #8e8e96;
-        --line: #222226;
+        --bg: #09090c;
+        --surface: #16161b;
+        --ink: #f2f2f5;
+        --muted: #9c9ea8;
+        --line: rgba(255, 255, 255, 0.065);
+        --shadow: 0 24px 60px -10px rgba(0, 0, 0, 0.72), 0 6px 18px rgba(0, 0, 0, 0.42);
       }
     }
     * {
@@ -40,17 +42,18 @@
     }
     main {
       width: min(460px, 100%);
-      padding: 32px;
+      padding: 36px;
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: 0 24px 56px -12px rgba(9, 9, 11, 0.14);
+      border-radius: 30px;
+      box-shadow: var(--shadow);
     }
     h1 {
       margin: 0 0 10px;
-      font-size: 1.25rem;
-      font-weight: 600;
-      letter-spacing: -0.025em;
+      font-family: "Noto Serif SC", "Songti SC", "SimSun", Georgia, serif;
+      font-size: 1.3rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
     }
     p {
       margin: 0 0 10px;
