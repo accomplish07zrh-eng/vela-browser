@@ -6,8 +6,8 @@ import type {
   ScriptRecord,
   ScriptSummary,
 } from "../contracts/cloud-v1.ts";
-import type { ScriptRun } from "../scripts.ts";
-import type { PythonRuntimeStatus } from "../python-runtime.ts";
+import type { ScriptRun } from "../src/scripts.ts";
+import type { PythonRuntimeStatus } from "../src/python-runtime.ts";
 import type { UiProfile } from "./api.ts";
 import { useTranslation } from "./i18n.tsx";
 import {

@@ -2,12 +2,12 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildNewProfile } from "../create.ts";
-import { Launcher } from "../launcher.ts";
-import { ProfileStore } from "../store.ts";
-import { AppConfigStore } from "../app-config.ts";
-import { serveDashboard } from "../web.ts";
-import type { ProfileEngine } from "../types.ts";
+import { buildNewProfile } from "../src/create.ts";
+import { Launcher } from "../src/launcher.ts";
+import { ProfileStore } from "../src/store.ts";
+import { AppConfigStore } from "../src/app-config.ts";
+import { serveDashboard } from "../src/web.ts";
+import type { ProfileEngine } from "../src/types.ts";
 
 mkdirSync(resolve("reports"), { recursive: true });
 const root = mkdtempSync(resolve("reports/fingerprint-dashboard-"));

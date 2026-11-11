@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { ALIASMODE_VERSION } from "../version.ts";
+import { ALIASMODE_VERSION } from "../src/version.ts";
 
 export function buildAgentBootstrapManifest(options: {
   installer: string;

@@ -7,12 +7,12 @@ import type {
   ScriptRecord,
   ScriptSummary,
 } from "../contracts/cloud-v1.ts";
-import type { ScriptRun } from "../scripts.ts";
-import type { PythonRuntimeStatus } from "../python-runtime.ts";
-import type { RuntimeDownload } from "../runtime-download.ts";
-import type { FolderInfo } from "../folders.ts";
-import type { FingerprintAudit } from "../fingerprint-audit.ts";
-export type { RuntimeDownload } from "../runtime-download.ts";
+import type { ScriptRun } from "../src/scripts.ts";
+import type { PythonRuntimeStatus } from "../src/python-runtime.ts";
+import type { RuntimeDownload } from "../src/runtime-download.ts";
+import type { FolderInfo } from "../src/folders.ts";
+import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
+export type { RuntimeDownload } from "../src/runtime-download.ts";
 
 export type HealthStatus = "suspended" | "alive" | "no_data";
 

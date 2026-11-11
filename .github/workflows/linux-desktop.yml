@@ -276,8 +276,8 @@ jobs:
           # A CloakBrowser profile from Windows arrives without a Chromium runtime. The app must
           # download the Linux CloakBrowser build for it and must not use Chromium 155.
           bun -e '
-            import { buildNewProfile } from "./create.ts";
-            import { serializeAdsTxt } from "./parse.ts";
+            import { buildNewProfile } from "./src/create.ts";
+            import { serializeAdsTxt } from "./src/parse.ts";
             const profile = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows", chromiumRuntime: "cloakbrowser" }, () => false);
             // As made on Windows: a CloakBrowser profile with its stored processor cores.
             process.stdout.write(serializeAdsTxt([{ ...profile, hardware: { cores: 20 } }]));
@@ -319,7 +319,7 @@ jobs:
           HELPER="$helper" bun -e '
             import { WebSocketServer } from "ws";
             import { MCP_TUNNEL_PROTOCOL } from "./contracts/cloud-v1.ts";
-            import { McpTunnelRuntime } from "./mcp-tunnel.ts";
+            import { McpTunnelRuntime } from "./src/mcp-tunnel.ts";
             const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
             await new Promise((resolve) => server.once("listening", resolve));
             const tools = new Promise((resolve, reject) => {
@@ -509,7 +509,7 @@ jobs:
           else
             successor="${current%.*}.$((${current##*.} + 1))-acceptance.1"
           fi
-          for file in package.json version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
+          for file in package.json src/version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
             test "$(grep -oF "$current" "$file" | wc -l | tr -d ' ')" = 1
             CURRENT="$current" SUCCESSOR="$successor" perl -pi -e 's/\Q$ENV{CURRENT}\E/$ENV{SUCCESSOR}/' "$file"
           done

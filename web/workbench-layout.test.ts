@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { workbenchLayout, workbenchPhase, workbenchPosition, workbenchLocate, workbenchSnap, workbenchSpring, workbenchFocusBox, workbenchRefreshTier, viewportPoint, workbenchFollowerInput, VIEWPORT_FOOTER, WORKBENCH_GAP } from "./workbench-layout.ts";
-import { workbenchFrameInterval } from "../workbench-protocol.ts";
+import { workbenchFrameInterval } from "../src/workbench-protocol.ts";
 const ids = (count: number) => Array.from({ length: count }, (_, i) => String(i));
 
 test("one environment has one placement; sparse or very wide canvases become grids", () => {

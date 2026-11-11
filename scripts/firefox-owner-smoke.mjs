@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { firefoxEndpoint, callFirefoxOwner, closeFirefoxOwner } from "../firefox-runtime.ts";
+import { firefoxEndpoint, callFirefoxOwner, closeFirefoxOwner } from "../src/firefox-runtime.ts";
 
 const browser = process.argv[2] && resolve(process.argv[2]);
 const root = process.argv[3] && resolve(process.argv[3]);

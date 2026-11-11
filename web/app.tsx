@@ -16,9 +16,9 @@ import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
-import { localeTimezoneMismatch } from "../profile-locale.ts";
-import type { FingerprintAudit } from "../fingerprint-audit.ts";
-import { folderTree, folderScope, type FolderInfo } from "../folders.ts";
+import { localeTimezoneMismatch } from "../src/profile-locale.ts";
+import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
+import { folderTree, folderScope, type FolderInfo } from "../src/folders.ts";
 import { THEME_KEY, readThemeChoice, themeCookie, type ThemeChoice } from "./theme.ts";
 import {
   describeDesktopUpdateResult,

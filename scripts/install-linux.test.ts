@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { LINUX_CHROMIUM_APPARMOR_PROFILE } from "../aliasmode-chromium.ts";
+import { LINUX_CHROMIUM_APPARMOR_PROFILE } from "../src/aliasmode-chromium.ts";
 
 const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
 

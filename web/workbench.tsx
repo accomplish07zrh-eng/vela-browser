@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { flushSync } from "react-dom";
-import { folderScope, folderTree, type FolderInfo } from "../folders.ts";
+import { folderScope, folderTree, type FolderInfo } from "../src/folders.ts";
 import { closeProfile, fetchScriptRun, moveProfiles, openProfile, raiseProfile, updateProfile, type UiProfile, type ScriptRun } from "./api.ts";
 import { parsePastedProxy } from "./proxy-input.ts";
-import type { WorkbenchInput, WorkbenchRefreshTier } from "../workbench-protocol.ts";
+import type { WorkbenchInput, WorkbenchRefreshTier } from "../src/workbench-protocol.ts";
 import { useTranslation } from "./i18n.tsx";
 import { ViewportClient, type ViewportState } from "./workbench-client.ts";
 import { workbenchLayout, workbenchPosition, workbenchLocate, workbenchSnap, workbenchSpring, workbenchFocusBox, workbenchRefreshTier, viewportPoint, workbenchFollowerInput, type ViewportBox } from "./workbench-layout.ts";

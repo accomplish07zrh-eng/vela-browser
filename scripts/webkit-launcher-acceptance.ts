@@ -4,15 +4,15 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 
 import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:http";
 import net from "node:net";
-import { buildNewProfile } from "../create.ts";
-import { Launcher, readHostProcessSnapshot } from "../launcher.ts";
-import { ProfileStore } from "../store.ts";
-import { ensureWebKit } from "../webkit-install.ts";
-import { callWebKitOwner, type WebKitOwner } from "../webkit-runtime.ts";
-import { WorkbenchHub } from "../workbench.ts";
-import { handleRequest } from "../server.ts";
-import { serveDashboard } from "../web.ts";
-import { AppConfigStore } from "../app-config.ts";
+import { buildNewProfile } from "../src/create.ts";
+import { Launcher, readHostProcessSnapshot } from "../src/launcher.ts";
+import { ProfileStore } from "../src/store.ts";
+import { ensureWebKit } from "../src/webkit-install.ts";
+import { callWebKitOwner, type WebKitOwner } from "../src/webkit-runtime.ts";
+import { WorkbenchHub } from "../src/workbench.ts";
+import { handleRequest } from "../src/server.ts";
+import { serveDashboard } from "../src/web.ts";
+import { AppConfigStore } from "../src/app-config.ts";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 

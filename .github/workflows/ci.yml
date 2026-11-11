@@ -960,7 +960,7 @@ jobs:
             exit 0
           }
           $runtimes = Join-Path $env:RUNNER_TEMP "aliasmode-live-runtimes"
-          $browserPath = (& bun -e "import { ensureCloakBrowser } from './aliasmode-chromium.ts'; console.log(await ensureCloakBrowser(process.argv[1]))" $runtimes | Select-Object -Last 1)
+          $browserPath = (& bun -e "import { ensureCloakBrowser } from './src/aliasmode-chromium.ts'; console.log(await ensureCloakBrowser(process.argv[1]))" $runtimes | Select-Object -Last 1)
           if ($LASTEXITCODE -ne 0) { throw "CloakBrowser download failed" }
           $env:ALIASMODE_PLAYWRIGHT_RUNTIME = (Resolve-Path ".\src-tauri\resources\playwright").Path
           $env:ALIASMODE_LIVE_BROWSER = $browserPath

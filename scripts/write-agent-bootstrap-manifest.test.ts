@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { ALIASMODE_VERSION } from "../version.ts";
+import { ALIASMODE_VERSION } from "../src/version.ts";
 import { buildAgentBootstrapManifest } from "./write-agent-bootstrap-manifest.ts";
 
 test("agent bootstrap manifest pins an exact installer URL and SHA-256", () => {

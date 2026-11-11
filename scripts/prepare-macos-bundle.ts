@@ -1,10 +1,10 @@
 /** Stages the macOS bundle inputs for this Mac's processor: sidecar, Vela Firefox and the agent runtime. */
 import { cpSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { sha256File } from "../browser-install.ts";
-import { FIREFOX_RUNTIME_VERSION, firefoxBuildForHost, installFirefox } from "../firefox-install.ts";
-import { installSourceNode } from "../source-runtime.ts";
-import { ALIASMODE_VERSION } from "../version.ts";
+import { sha256File } from "../src/browser-install.ts";
+import { FIREFOX_RUNTIME_VERSION, firefoxBuildForHost, installFirefox } from "../src/firefox-install.ts";
+import { installSourceNode } from "../src/source-runtime.ts";
+import { ALIASMODE_VERSION } from "../src/version.ts";
 import { compileSidecar, stageAgentRuntime } from "./prepare-windows-bundle.ts";
 
 async function run(command: string[]): Promise<void> {

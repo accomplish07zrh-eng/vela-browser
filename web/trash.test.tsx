@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import type { TrashProfileView } from "../proxy-tools-types.ts";
+import type { TrashProfileView } from "../src/proxy-tools-types.ts";
 import { I18nProvider } from "./i18n.tsx";
 import { filterTrash, TrashPage } from "./trash.tsx";
 import { proxyResultPage } from "./proxies.tsx";
-import { folderScope } from "../folders.ts";
+import { folderScope } from "../src/folders.ts";
 
 const profiles: TrashProfileView[] = Array.from({ length: 8000 }, (_, i) => ({
   id: `p${i}`, name: `Profile ${i}`, group: i % 9 ? `Folder ${i % 9}` : "",

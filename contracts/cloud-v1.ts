@@ -336,7 +336,7 @@ export interface PortableProfileV4 {
 
 export interface PortableProfileV5 {
   schemaVersion: 5;
-  profile: PortableProfileV1["profile"] & { engine: "webkit"; webkit: import("../types.ts").WebKitProfileConfig };
+  profile: PortableProfileV1["profile"] & { engine: "webkit"; webkit: import("../src/types.ts").WebKitProfileConfig };
   session: PortableSessionV1;
 }
 export type PortableProfile = PortableProfileV1 | PortableProfileV2 | PortableProfileV3 | PortableProfileV4 | PortableProfileV5;
