@@ -187,7 +187,7 @@ test("MCP profile creation forwards the selected browser engine", async () => {
       chromiumRuntime: { type: "string", enum: ["aliasmode", "cloakbrowser"] },
     },
   });
-  expect(tool?.description).toContain("Without engine, Windows creates an Vela Chromium profile, and macOS and Linux create an Vela Firefox profile.");
+  expect(tool?.description).toContain("Without engine, Windows creates a Vela Chromium profile, and macOS and Linux create a Vela Firefox profile.");
   const created = await client.callTool({ name: "aliasmode_profile_create", arguments: { name: "Firefox", engine: "firefox" } });
   expect(created.isError).not.toBe(true);
   expect(runtime.calls.at(-1)).toEqual({

@@ -49,6 +49,12 @@ export interface AgentControlDeps {
   log?: (message: string) => void;
 }
 
+function humanizeParam(value: unknown): { enabled: boolean; speed: number } {
+  const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const speed = typeof input.speed === "number" && Number.isFinite(input.speed) ? Math.min(2.5, Math.max(0.4, input.speed)) : 1;
+  return { enabled: input.enabled !== false, speed };
+}
+
 const FIREFOX_CAPABILITIES = ["firefox-native", "cookies", "navigation", "sessions", "mcp", "scripts"] as const;
 
 type FirefoxLaunch = { engine?: "chromium" | "firefox" | "webkit"; firefoxOwner?: FirefoxOwner };
@@ -175,6 +181,7 @@ export class AgentControlSession {
   private readonly attachedExisting = new Set<string>();
   private closed = false;
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly lanes = new Map<string, Promise<void>>();
   private cleanup?: Promise<void>;
 
   constructor(private readonly deps: AgentControlDeps, private readonly openSignal?: AbortSignal) {}
@@ -186,7 +193,7 @@ export class AgentControlSession {
     } catch (error) {
       return Promise.resolve(errorResponse(1, error));
     }
-    const run = this.queue.then(async () => {
+    const execute = async (): Promise<AgentControlResponse> => {
       if (this.closed) throw agentError("connection_closed", "agent connection is closing");
       try {
         return {
@@ -198,7 +205,20 @@ export class AgentControlSession {
       } catch (error) {
         return errorResponse(request.id, error);
       }
-    });
+    };
+    // Page actions of different browsers run side by side, so an AI can drive many windows at
+    // once, each with its own pointer and keyboard. One browser still takes one action at a time,
+    // and lifecycle requests wait for every action in flight.
+    const lane = request.method === "firefox.tools.call" && typeof request.params?.profileId === "string"
+      ? request.params.profileId : undefined;
+    if (lane) {
+      const run = Promise.all([this.queue, this.lanes.get(lane)]).then(execute);
+      const settled = run.then(() => undefined, () => undefined);
+      this.lanes.set(lane, settled);
+      void settled.then(() => { if (this.lanes.get(lane) === settled) this.lanes.delete(lane); });
+      return run;
+    }
+    const run = Promise.all([this.queue, ...this.lanes.values()]).then(execute);
     this.queue = run.then(() => undefined, () => undefined);
     return run;
   }
@@ -206,7 +226,7 @@ export class AgentControlSession {
   disconnect(): Promise<void> {
     if (this.cleanup) return this.cleanup;
     this.closed = true;
-    this.cleanup = this.queue.then(async () => {
+    this.cleanup = Promise.all([this.queue, ...this.lanes.values()]).then(async () => {
       for (const profileId of [...this.openedByConnection]) {
         await this.closeProfile(profileId).catch((error) => {
           this.deps.log?.(`agent cleanup for ${profileId} remains unconfirmed (${error instanceof Error ? error.message : "failed"})`);
@@ -238,6 +258,7 @@ export class AgentControlSession {
         return await this.firefoxCall(stringParam(params, "profileId"), "mcp-call", {
           name: stringParam(params, "name"),
           ...(params.arguments === undefined ? {} : { arguments: object(params.arguments) }),
+          ...(params.humanize === undefined ? {} : { humanize: humanizeParam(params.humanize) }),
         });
       case "browser.detach":
         return this.detachProfile(stringParam(params, "profileId"));

@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs";
+import { createHumanizer } from "./agent/humanize.mjs";
 import { MAX_BYTES, VERSION, operatePersistentContext } from "./playwright-worker.mjs";
 import { FirefoxWorkbench } from "./workbench-firefox.mjs";
 
@@ -269,6 +270,7 @@ async function run() {
   context.on?.("page", observePage);
   const hasPages = trackFirefoxPages(context);
   const workbench = new FirefoxWorkbench(context);
+  let humanizer;
   let official;
   let closed = false;
   let closing = false;
@@ -406,7 +408,14 @@ async function run() {
       if (typeof payload.name !== "string" || /pdf/i.test(payload.name)) throw typed("invalid_request");
       const bridge = await initializeOfficial();
       if (!bridge.tools.some((tool) => tool.name === payload.name && !/pdf/i.test(tool.name))) throw typed("invalid_request");
-      return bridge.client.callTool({ name: payload.name, arguments: payload.arguments ?? {} });
+      const callOfficial = (tool, args) => bridge.client.callTool({ name: tool, arguments: args ?? {} });
+      humanizer ??= createHumanizer({
+        context,
+        profileId: input.profileId,
+        callOfficial: (tool, args) => official ? official.client.callTool({ name: tool, arguments: args ?? {} }) : callOfficial(tool, args),
+      });
+      humanizer.configure(payload.humanize ?? { enabled: true, speed: 1 });
+      return humanizer.call(payload.name, payload.arguments ?? {});
     }
     if (name === "detach") {
       await closeOfficial();
@@ -428,10 +437,14 @@ async function run() {
         const requestValue = await readRequest(request);
         // status only reads memory. Behind a capture (up to minutes) it timed out, and a running
         // browser read as gone. Every other operation runs one at a time.
-        const runOperation = requestValue.operation === "status"
+        // Workbench frame reads must not wait behind a slow, human-paced AI gesture, or the
+        // viewport would freeze while the AI types.
+        const concurrent = requestValue.operation === "status"
+          || (requestValue.operation === "workbench" && ["tabs", "viewport", "frame"].includes(requestValue.payload?.action));
+        const runOperation = concurrent
           ? operation(requestValue.operation, requestValue.payload)
           : queue.then(() => operation(requestValue.operation, requestValue.payload));
-        if (requestValue.operation !== "status") queue = runOperation.catch(() => {});
+        if (!concurrent) queue = runOperation.catch(() => {});
         const result = await runOperation;
         if (requestValue.operation === "close") {
           await stopContext();
