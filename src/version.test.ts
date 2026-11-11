@@ -171,9 +171,9 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(ciSuccessorJob).toContain('"$($env:WINDOWS_VERSION).acceptance.1"');
   expect(ciSuccessorJob).toContain('$($sourceSemantic.Patch + 1)-acceptance.1');
   expect(ciSuccessorJob).toContain(
-    '23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be',
+    '2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6',
   );
-  expect(ciSuccessorJob).toContain('$baselineVersion -cne "1.2.21"');
+  expect(ciSuccessorJob).toContain('$baselineVersion -cne "1.4.1"');
   expect(ciSuccessorJob).toContain("& $baselineBun scripts/prepare-windows-bundle.ts");
   expect(ciSuccessorJob).toContain("build-windows-installer.ps1 -Flavor slim");
   expect(ciSuccessorJob).toContain('"--role", "unsigned-synthetic-successor"');
@@ -304,9 +304,9 @@ test("release version and updater trust stay aligned across the desktop bundle",
     baselineStep(windowsPrepareJob, "      - name: Archive prepared bundle inputs"),
   );
   expect(fullBaselineStep).toContain(
-    '$pinnedSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"',
+    '$pinnedSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"',
   );
-  expect(fullBaselineStep).toContain('$baselineVersion -ne "1.2.21"');
+  expect(fullBaselineStep).toContain('$baselineVersion -ne "1.4.1"');
   expect(fullBaselineStep).toContain("& $baselineBun scripts/prepare-windows-bundle.ts");
   const fullArtifactDownloads = [...windowsFullJob.matchAll(/uses: actions\/download-artifact@v4\s+with:\s+name: ([^\r\n]+)/g)]
     .map((match) => match[1]!.trim());

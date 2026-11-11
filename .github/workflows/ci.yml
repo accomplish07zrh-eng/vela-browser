@@ -176,8 +176,8 @@ jobs:
           FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_firefox.outputs.executable_sha256 }}
         run: |
           $ErrorActionPreference = "Stop"
-          $baselineUrl = "https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip"
-          $expectedBaselineSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"
+          $baselineUrl = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.1/bun-windows-x64-baseline.zip"
+          $expectedBaselineSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"
           $baselineZip = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline.zip"
           Invoke-WebRequest $baselineUrl -OutFile $baselineZip
           $baselineSha = (Get-FileHash -LiteralPath $baselineZip -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -218,7 +218,7 @@ jobs:
 
           $toolchainIdentity = @(
             "setup-bun=1.4.1:$setupBunSha"
-            "baseline-bun=1.2.21:$baselineSha"
+            "baseline-bun=1.4.1:$baselineSha"
             "rustc=$rustcIdentity"
             "rust-toolchain=$activeToolchain"
             "runner=$env:RUNNER_OS/$env:RUNNER_ARCH/$env:ImageOS/$env:ImageVersion"
@@ -457,8 +457,8 @@ jobs:
 
             $bunZip = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline.zip"
             $bunRoot = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline"
-            Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip" -OutFile $bunZip
-            $expectedBunSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"
+            Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.4.1/bun-windows-x64-baseline.zip" -OutFile $bunZip
+            $expectedBunSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"
             if ((Get-FileHash -LiteralPath $bunZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedBunSha) {
               throw "official baseline Bun archive SHA-256 mismatch"
             }
@@ -467,7 +467,7 @@ jobs:
             if ($bunCandidates.Count -ne 1) { throw "official baseline Bun archive must contain exactly one bun.exe" }
             $baselineBun = $bunCandidates[0].FullName
             $baselineVersion = (& $baselineBun --version).Trim()
-            if ($LASTEXITCODE -ne 0 -or $baselineVersion -cne "1.2.21") {
+            if ($LASTEXITCODE -ne 0 -or $baselineVersion -cne "1.4.1") {
               throw "official baseline Bun version is incorrect"
             }
 
@@ -566,11 +566,11 @@ jobs:
           ALIASMODE_FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_cache.outputs.firefox_executable_sha256 }}
         run: |
           $ErrorActionPreference = "Stop"
-          $pinnedSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"
+          $pinnedSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"
           if ($env:EXPECTED_BASELINE_SHA -ne $pinnedSha) { throw "baseline Bun provenance is inconsistent" }
           $zip = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline.zip"
           $root = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline"
-          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip" -OutFile $zip
+          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.4.1/bun-windows-x64-baseline.zip" -OutFile $zip
           $actualSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualSha -ne $env:EXPECTED_BASELINE_SHA) { throw "official baseline Bun archive SHA-256 mismatch" }
           Expand-Archive $zip $root -Force
@@ -578,7 +578,7 @@ jobs:
           if ($baselineCandidates.Count -ne 1) { throw "official baseline Bun archive must contain exactly one bun.exe" }
           $baselineBun = $baselineCandidates[0].FullName
           $baselineVersion = (& $baselineBun --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $baselineVersion -ne "1.2.21") { throw "official baseline Bun version is incorrect" }
+          if ($LASTEXITCODE -ne 0 -or $baselineVersion -ne "1.4.1") { throw "official baseline Bun version is incorrect" }
           & $baselineBun scripts/prepare-windows-bundle.ts
           if ($LASTEXITCODE -ne 0) { throw "baseline bundle preparation failed" }
       - name: Archive prepared bundle inputs
@@ -661,11 +661,11 @@ jobs:
           ALIASMODE_FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_cache.outputs.firefox_executable_sha256 }}
         run: |
           $ErrorActionPreference = "Stop"
-          $pinnedSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"
+          $pinnedSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"
           if ($env:EXPECTED_BASELINE_SHA -ne $pinnedSha) { throw "baseline Bun provenance is inconsistent" }
           $zip = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline.zip"
           $root = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline"
-          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip" -OutFile $zip
+          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.4.1/bun-windows-x64-baseline.zip" -OutFile $zip
           $actualSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualSha -ne $env:EXPECTED_BASELINE_SHA) { throw "official baseline Bun archive SHA-256 mismatch" }
           Expand-Archive $zip $root -Force
@@ -673,7 +673,7 @@ jobs:
           if ($baselineCandidates.Count -ne 1) { throw "official baseline Bun archive must contain exactly one bun.exe" }
           $baselineBun = $baselineCandidates[0].FullName
           $baselineVersion = (& $baselineBun --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $baselineVersion -ne "1.2.21") { throw "official baseline Bun version is incorrect" }
+          if ($LASTEXITCODE -ne 0 -or $baselineVersion -ne "1.4.1") { throw "official baseline Bun version is incorrect" }
           & $baselineBun scripts/prepare-windows-bundle.ts
           if ($LASTEXITCODE -ne 0) { throw "baseline bundle preparation failed" }
       - name: Build full offline installer with zlib
