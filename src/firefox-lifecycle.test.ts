@@ -39,8 +39,8 @@ test("Darwin Firefox accepts only a verified primary browser's exact helper", ()
 test("Darwin headed Firefox accepts its exact GPU and media helper apps", () => {
   const helpers = [
     "/opt/aliasmode/plugin-container.app/Contents/MacOS/plugin-container",
-    "/opt/aliasmode/gpu-helper.app/Contents/MacOS/AliasMode",
-    "/opt/aliasmode/media-plugin-helper.app/Contents/MacOS/AliasMode",
+    "/opt/aliasmode/gpu-helper.app/Contents/MacOS/AliasMode GPU Helper",
+    "/opt/aliasmode/media-plugin-helper.app/Contents/MacOS/AliasMode Media Plugin Helper",
   ];
   const darwin = { ...identity, helperBinaryPaths: helpers };
   const primary = { pid: 60, executablePath: darwin.binaryPath, argv: [darwin.binaryPath, "-profile", darwin.userDataDir] };
