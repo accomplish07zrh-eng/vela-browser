@@ -431,13 +431,12 @@ jobs:
             echo "the app did not open $1 (it opened: $(tr '\n' ' ' < "$OPENED"))"
             return 1
           }
-          click "$(wait_element "css selector" 'a[href*="src=sidebar-cart"]')"
-          opened "https://github.com/accomplish07zrh-eng/vela-browser?src=sidebar-cart"
-          click "$(wait_element xpath "//button[normalize-space()='New Profile']")"
+          # Selectors here do not depend on the interface language.
+          click "$(wait_element "css selector" 'a.projectlink[href="https://github.com/accomplish07zrh-eng/vela-browser"]')"
+          opened "https://github.com/accomplish07zrh-eng/vela-browser"
+          click "$(wait_element "css selector" 'button.newbtn')"
           # A new Chrome profile on Linux starts on Chromium 155, and the help text must say so.
           wait_element "css selector" 'button[aria-label="Chrome: Vela Chromium"]' >/dev/null
-          click "$(wait_element "css selector" 'a[href*="src=profile-dialog"]')"
-          opened "https://github.com/accomplish07zrh-eng/vela-browser?src=profile-dialog"
           import -window root "$evidence/link-new-profile.png" || true
           cat "$OPENED"
           desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
@@ -598,7 +597,7 @@ jobs:
           done
           button=""
           for attempt in $(seq 1 60); do
-            button="$(jq -nc '{using: "xpath", value: "//button[normalize-space()=\"Update now\"]"}' \
+            button="$(jq -nc '{using: "xpath", value: "//button[normalize-space()=\"立即更新\" or normalize-space()=\"Update now\"]"}' \
               | curl -sf -m 60 -X POST "$wd/session/$session/element" -H 'content-type: application/json' -d @- \
               | jq -er '.value | to_entries[0].value' 2>/dev/null || true)"
             [[ -n "$button" ]] && break
