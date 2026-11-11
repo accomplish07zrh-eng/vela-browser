@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { personaFor, planPath, seededRandom, targetPoint, typingDelays } from "./humanize.mjs";
+import { createHumanizer, personaFor, planPath, seededRandom, shouldPaste, targetPoint, typingDelays } from "./humanize.mjs";
 
 test("each profile keeps stable habits, and different profiles differ", () => {
   expect(personaFor("profile-a")).toEqual(personaFor("profile-a"));
@@ -64,4 +64,20 @@ test("typing rhythm is uneven, slower after punctuation, and paced by the profil
   expect(afterComma!).toBeGreaterThan(median!);
   const fast = typingDelays(text, { persona, random: seededRandom(5), speed: 2 });
   expect(fast.reduce((a, b) => a + b, 0)).toBeLessThan(delays.reduce((a, b) => a + b, 0));
+});
+
+test("long text goes in at once past each profile's own threshold, which can be changed or turned off", () => {
+  const thresholds = Array.from({ length: 50 }, (_, index) => personaFor(`paste-${index}`).pasteOver);
+  expect(Math.min(...thresholds)).toBeGreaterThanOrEqual(28);
+  expect(Math.max(...thresholds)).toBeLessThanOrEqual(51);
+  expect(new Set(thresholds).size).toBeGreaterThan(5);
+  expect(shouldPaste("x".repeat(40), 30)).toBe(true);
+  expect(shouldPaste("x".repeat(30), 30)).toBe(false);
+  expect(shouldPaste("你好".repeat(20), 30)).toBe(true);
+  expect(shouldPaste("x".repeat(500), 0)).toBe(false);
+  const humanizer = createHumanizer({ context: { pages: () => [] } as never, profileId: "paste", callOfficial: async () => ({}) });
+  expect(humanizer.settings.pasteOver).toBe(personaFor("paste").pasteOver);
+  expect(humanizer.configure({ pasteOver: 0 }).pasteOver).toBe(0);
+  expect(humanizer.configure({ pasteOver: 80.4 }).pasteOver).toBe(80);
+  expect(humanizer.configure({ pasteOver: null }).pasteOver).toBe(personaFor("paste").pasteOver);
 });

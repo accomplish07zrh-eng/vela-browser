@@ -54,7 +54,14 @@ export function personaFor(profileId) {
     dwell: Math.round(70 + random() * 110),
     hold: Math.round(55 + random() * 50),
     hue: Math.floor(random() * 360),
+    // Longer than this, a person pastes the text instead of typing it.
+    pasteOver: 28 + Math.floor(random() * 24),
   };
+}
+
+/** Whether text this long goes in at once, like a paste. A threshold of 0 always types. */
+export function shouldPaste(text, threshold) {
+  return threshold > 0 && [...text].length > threshold;
 }
 
 /** Minimum-jerk position profile: slow start, fast middle, gentle landing. */
@@ -171,7 +178,7 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
   const persona = personaFor(profileId);
   const random = Math.random;
   const positions = new WeakMap();
-  const settings = { enabled: true, speed: 1 };
+  const settings = { enabled: true, speed: 1, pasteOver: persona.pasteOver };
   const commandKey = platform === "darwin" ? "Meta" : "Control";
 
   const viewportOf = async (page) => page.viewportSize?.() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
@@ -276,9 +283,19 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
   };
 
   const typeText = async (page, text, field) => {
+    if (shouldPaste(text, settings.pasteOver)) {
+      // The whole text arrives in one trusted input, the way a paste, an input method or autofill
+      // commits it. The system clipboard is never used: it is shared by every window and by the
+      // person at the computer, so a real Ctrl+V would let parallel windows overwrite each other
+      // and would replace whatever the person had copied.
+      await sleep((300 + random() * 500) / settings.speed);
+      await page.keyboard.insertText(text);
+      await sleep(150 + random() * 250);
+      return;
+    }
     const delays = typingDelays(text, { persona, random, speed: settings.speed });
     const allowTypos = persona.typo > 0 && ["text", "search", "textarea"].includes(field);
-    try {
+    {
       const chars = [...text];
       for (let index = 0; index < chars.length; index++) {
         await sleep(delays[index]);
@@ -293,7 +310,6 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
         if (char === "\n") await page.keyboard.press("Enter");
         else await page.keyboard.type(char);
       }
-    } finally {
     }
   };
 
@@ -432,6 +448,9 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
     configure(next = {}) {
       if (typeof next.enabled === "boolean") settings.enabled = next.enabled;
       if (typeof next.speed === "number" && Number.isFinite(next.speed)) settings.speed = clamp(next.speed, 0.4, 2.5);
+      // A number sets the paste threshold (0 always types); null returns to the profile's own habit.
+      if (next.pasteOver === null) settings.pasteOver = persona.pasteOver;
+      else if (typeof next.pasteOver === "number" && Number.isFinite(next.pasteOver)) settings.pasteOver = Math.round(clamp(next.pasteOver, 0, 100_000));
       return { ...settings };
     },
     handles(name) { return settings.enabled && HUMANIZED_TOOLS.has(name); },

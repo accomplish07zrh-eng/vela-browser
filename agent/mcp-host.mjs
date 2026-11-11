@@ -206,6 +206,11 @@ const ALIAS_TOOLS = [
       properties: {
         enabled: { type: "boolean" },
         speed: { type: "number", minimum: 0.4, maximum: 2.5, description: "1 is the profile's natural pace; 2 is twice as fast." },
+        pasteOver: {
+          type: ["integer", "null"],
+          minimum: 0,
+          description: "Text longer than this many characters goes in at once, like a paste, instead of key by key. 0 always types; null restores each profile's own threshold (28 to 51 characters). The system clipboard is never used.",
+        },
       },
       additionalProperties: false,
     },
@@ -305,7 +310,7 @@ export async function createVelaBrowserMcp(options = {}) {
       profileId,
       callOfficial: (tool, toolArgs) => proxy.callTool(tool, toolArgs),
     }) : undefined;
-    humanizer?.configure(humanize);
+    humanizer?.configure({ ...humanize, pasteOver: humanize.pasteOver ?? null });
     const session = { engine, ws: status.ws, proxy, humanizer, lane: Promise.resolve() };
     sessions.set(profileId, session);
     return session;
@@ -420,7 +425,9 @@ export async function createVelaBrowserMcp(options = {}) {
       if (name === "aliasmode_humanize") {
         if (typeof args.enabled === "boolean") humanize.enabled = args.enabled;
         if (typeof args.speed === "number") humanize.speed = Math.min(2.5, Math.max(0.4, args.speed));
-        for (const session of sessions.values()) session.humanizer?.configure(humanize);
+        if (args.pasteOver === null) delete humanize.pasteOver;
+        else if (Number.isInteger(args.pasteOver) && args.pasteOver >= 0) humanize.pasteOver = args.pasteOver;
+        for (const session of sessions.values()) session.humanizer?.configure({ ...humanize, pasteOver: humanize.pasteOver ?? null });
         return toolResult({ ...humanize });
       }
       if (name === "aliasmode_browser_close" || name === "browser_close") {

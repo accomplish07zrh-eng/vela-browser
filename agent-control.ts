@@ -49,10 +49,11 @@ export interface AgentControlDeps {
   log?: (message: string) => void;
 }
 
-function humanizeParam(value: unknown): { enabled: boolean; speed: number } {
+function humanizeParam(value: unknown): { enabled: boolean; speed: number; pasteOver: number | null } {
   const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   const speed = typeof input.speed === "number" && Number.isFinite(input.speed) ? Math.min(2.5, Math.max(0.4, input.speed)) : 1;
-  return { enabled: input.enabled !== false, speed };
+  const pasteOver = typeof input.pasteOver === "number" && Number.isInteger(input.pasteOver) && input.pasteOver >= 0 ? Math.min(input.pasteOver, 100_000) : null;
+  return { enabled: input.enabled !== false, speed, pasteOver };
 }
 
 const FIREFOX_CAPABILITIES = ["firefox-native", "cookies", "navigation", "sessions", "mcp", "scripts"] as const;
