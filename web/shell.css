@@ -65,6 +65,9 @@
 .app[data-view="workbench"] .main .pagehead { height: 64px; min-height: 64px; padding: 0 20px 0 0; }
 .app[data-view="workbench"] .main .pagehead h1, .app[data-view="workbench"] .main .pagehead .pagesub { display: none; }
 .app[data-view="workbench"] .main .headactions { pointer-events: auto; }
+/* Update offers, errors and notices still reach the wall, floating under the top bar. */
+.app[data-view="workbench"] .main > :is(.update-banner, .error, .notice) { display: flex; pointer-events: auto; }
+.app[data-view="workbench"] .main > :is(.update-banner, .error) { width: min(720px, 100% - 32px); margin: 6px auto 0; box-shadow: var(--sh-pop); }
 
 /* ── Dock: the old sidebar, laid along the bottom edge ── */
 .app .sidebar.dock {
