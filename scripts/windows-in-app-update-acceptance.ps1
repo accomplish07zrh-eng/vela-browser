@@ -56,9 +56,9 @@ function Start-RunnerUserProcess(
 }
 
 $publicVersion = $SourceVersion
-$publicInstallerName = "Vela Browser_${publicVersion}_x64-offline-setup.exe"
+$publicInstallerName = "Vela-Browser_${publicVersion}_x64-offline-setup.exe"
 $candidateTag = "v$CandidateVersion"
-$candidateInstallerName = "Vela Browser_${CandidateVersion}_x64-setup.exe"
+$candidateInstallerName = "Vela-Browser_${CandidateVersion}_x64-setup.exe"
 $candidateReleaseBase = "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/$candidateTag"
 $candidateManifestUrl = "$candidateReleaseBase/latest-v2.json"
 $candidateInstallerUrl = "$candidateReleaseBase/$candidateInstallerName"

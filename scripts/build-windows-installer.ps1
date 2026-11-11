@@ -59,9 +59,9 @@ try {
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $outputRoot = (Resolve-Path $OutputDirectory).Path
 $outputName = if ($flavorName -eq "full") {
-  "Vela Browser_$($version)_x64-offline-setup.exe"
+  "Vela-Browser_$($version)_x64-offline-setup.exe"
 } else {
-  "Vela Browser_$($version)_x64-setup.exe"
+  "Vela-Browser_$($version)_x64-setup.exe"
 }
 $outputPath = Join-Path $outputRoot $outputName
 if (-not [StringComparer]::OrdinalIgnoreCase.Equals($source.FullName, [IO.Path]::GetFullPath($outputPath))) {

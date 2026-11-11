@@ -161,7 +161,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(ciSuccessorVersionFiles).toBe([
     "            $versionFiles = @(",
     '              ".\\package.json",',
-    '              ".\\version.ts",',
+    '              ".\\src\\version.ts",',
     '              ".\\src-tauri\\tauri.conf.json",',
     '              ".\\src-tauri\\Cargo.toml",',
     '              ".\\src-tauri\\Cargo.lock"',
@@ -200,7 +200,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(provenanceJob).toContain("run-id: ${{ inputs.run_id }}");
   expect(provenanceJob).toContain('"$($env:WINDOWS_VERSION).acceptance.1"');
   expect(provenanceJob).toContain('$($sourceSemantic.Patch + 1)-acceptance.1');
-  expect(provenanceJob).toContain('$name = "Vela Browser_${successorVersion}_x64-setup.exe"');
+  expect(provenanceJob).toContain('$name = "Vela-Browser_${successorVersion}_x64-setup.exe"');
   expect(provenanceJob).toContain('$requiredNames = @($name, "artifact-manifest.json")');
   expect(provenanceJob).toContain("$entries.Count -ne 2");
   expect(provenanceJob).toContain('$manifest.role -cne "unsigned-synthetic-successor"');
@@ -236,7 +236,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   );
   expect(previousUpgradeJob).toContain("name: aliasmode-release-provenance");
   expect(previousUpgradeJob).toContain('"--role", "candidate"');
-  expect(previousUpgradeJob).toContain('-FullInstallerPath ".\\candidate\\Vela Browser_');
+  expect(previousUpgradeJob).toContain('-FullInstallerPath ".\\candidate\\Vela-Browser_');
   expect(previousUpgradeJob).not.toContain("sign_current");
   expect(previousUpgradeJob).not.toContain("aliasmode-signed-current");
   expect(releaseWorkflow).toContain(
@@ -245,7 +245,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(exactUpdaterJob).toContain("bun install --frozen-lockfile");
   expect(exactUpdaterJob).toContain("name: aliasmode-release-provenance");
   expect(exactUpdaterJob).toContain("name: aliasmode-synthetic-successor");
-  expect(exactUpdaterJob).toContain('-SourceInstallerPath ".\\candidate\\Vela Browser_');
+  expect(exactUpdaterJob).toContain('-SourceInstallerPath ".\\candidate\\Vela-Browser_');
   expect(exactUpdaterJob).not.toContain("dtolnay/rust-toolchain");
   expect(exactUpdaterJob).not.toContain("Swatinem/rust-cache");
   expect(exactUpdaterJob).not.toContain("cargo run");

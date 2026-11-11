@@ -75,8 +75,8 @@ jobs:
           echo
           files="$RUNNER_TEMP/release/v$version"
           mkdir -p "$files"
-          tar --hard-dereference -czf "$files/Vela Browser_${version}_x86_64-linux.tar.gz" -C "$RUNNER_TEMP" Vela Browser
-          (cd "$files" && sha256sum "Vela Browser_${version}_x86_64-linux.tar.gz" > SHA256SUMS-linux.txt)
+          tar --hard-dereference -czf "$files/Vela-Browser_${version}_x86_64-linux.tar.gz" -C "$RUNNER_TEMP" "Vela Browser"
+          (cd "$files" && sha256sum "Vela-Browser_${version}_x86_64-linux.tar.gz" > SHA256SUMS-linux.txt)
           ls -l "$files"
           cat "$files/SHA256SUMS-linux.txt"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -134,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           root="$HOME/.local/share/aliasmode"
-          archive="Vela Browser_${VERSION}_x86_64-linux.tar.gz"
+          archive="Vela-Browser_${VERSION}_x86_64-linux.tar.gz"
           # A damaged download must be refused before anything is installed.
           bad="$RUNNER_TEMP/bad-release/v$VERSION"
           mkdir -p "$bad"
@@ -509,15 +509,19 @@ jobs:
           else
             successor="${current%.*}.$((${current##*.} + 1))-acceptance.1"
           fi
-          for file in package.json src/version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
+          for file in package.json src/version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml; do
             test "$(grep -oF "$current" "$file" | wc -l | tr -d ' ')" = 1
             CURRENT="$current" SUCCESSOR="$successor" perl -pi -e 's/\Q$ENV{CURRENT}\E/$ENV{SUCCESSOR}/' "$file"
           done
+          # Cargo.lock also lists other crates that can share the version; only the app's own entry moves.
+          test "$(grep -A1 -xF 'name = "aliasmode-desktop"' src-tauri/Cargo.lock | grep -cxF "version = \"$current\"")" = 1
+          CURRENT="$current" SUCCESSOR="$successor" perl -0pi -e 's/(name = "aliasmode-desktop"\r?\nversion = ")\Q$ENV{CURRENT}\E"/$1$ENV{SUCCESSOR}"/' src-tauri/Cargo.lock
+          test "$(grep -A1 -xF 'name = "aliasmode-desktop"' src-tauri/Cargo.lock | grep -cxF "version = \"$successor\"")" = 1
           bun run desktop:prepare:linux
           bunx tauri build --bundles deb --config "$work/test-key.json"
           data="$(find src-tauri/target/release/bundle/deb -mindepth 2 -maxdepth 2 -type d -name data | head -n 1)"
           cp -a "$data/usr" "$work/Vela Browser"
-          archive="Vela Browser_${successor}_x86_64-linux.tar.gz"
+          archive="Vela-Browser_${successor}_x86_64-linux.tar.gz"
           tar --hard-dereference -czf "$work/$archive" -C "$work" "Vela Browser"
           rm -rf "$work/Vela Browser" src-tauri/target/release/bundle/deb
           TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null

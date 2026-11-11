@@ -16,7 +16,6 @@ export function buildAgentBootstrapManifest(options: {
   return {
     schema: 1,
     version: ALIASMODE_VERSION,
-    wingetId: "Vela Browser.Vela Browser",
     installer: {
       name: basename(installer),
       url: `${releaseBase}/${encodeURIComponent(basename(installer))}`,

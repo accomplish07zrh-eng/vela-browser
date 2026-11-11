@@ -110,8 +110,8 @@ jobs:
           $version = [string](Get-Content ".\src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json).version
           $semantic = [Management.Automation.SemanticVersion]::Parse($version)
           if ($semantic.ToString() -cne $version) { throw "candidate version is not canonical" }
-          $fullName = "Vela Browser_${version}_x64-offline-setup.exe"
-          $slimName = "Vela Browser_${version}_x64-setup.exe"
+          $fullName = "Vela-Browser_${version}_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_${version}_x64-setup.exe"
           $payloadNames = @($fullName, $slimName, "browser.json", "SHA256SUMS.txt", "size-report.json")
           $requiredNames = @($payloadNames + "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath ".\candidate" -Force)
@@ -224,7 +224,7 @@ jobs:
             throw "synthetic successor version is not canonical and newer"
           }
 
-          $name = "Vela Browser_${successorVersion}_x64-setup.exe"
+          $name = "Vela-Browser_${successorVersion}_x64-setup.exe"
           $requiredNames = @($name, "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath ".\unsigned-successor" -Force)
           $actualNames = @($entries | ForEach-Object Name | Sort-Object)
@@ -318,8 +318,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $arguments = @(
             ".\candidate",
             "--role", "candidate",
@@ -352,8 +352,8 @@ jobs:
           }
 
           $tag = "v$($env:WINDOWS_VERSION)"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $signatureName = "$slimName.sig"
           $artifact = ".\artifacts\signed-current"
           New-Item -ItemType Directory -Force $artifact | Out-Null
@@ -543,7 +543,7 @@ jobs:
           WINDOWS_SOURCE: ${{ needs.provenance.outputs.source }}
         run: |
           $ErrorActionPreference = "Stop"
-          $name = "Vela Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
+          $name = "Vela-Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
           $requiredNames = @($name, "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath ".\unsigned-successor" -Force)
           $actualNames = @($entries | ForEach-Object Name | Sort-Object)
@@ -622,7 +622,7 @@ jobs:
             throw "protected Tauri updater signing secrets are unavailable"
           }
           $artifact = ".\artifacts\synthetic-successor"
-          $name = "Vela Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
+          $name = "Vela-Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
           $installer = Join-Path $artifact $name
           try {
             bunx tauri signer sign $installer
@@ -721,8 +721,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $arguments = @(
             ".\candidate",
             "--role", "candidate",
@@ -748,7 +748,7 @@ jobs:
           $diagnostics = ".\diagnostics\previous-upgrade.json"
           & .\scripts\windows-previous-upgrade-acceptance.ps1 `
             -CandidateVersion $env:WINDOWS_VERSION `
-            -FullInstallerPath ".\candidate\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -FullInstallerPath ".\candidate\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\candidate\SHA256SUMS.txt" `
             -Repository $env:GITHUB_REPOSITORY `
             -GitHubToken $env:GITHUB_TOKEN `
@@ -793,8 +793,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $currentArguments = @(
             ".\candidate",
             "--role", "candidate",
@@ -810,7 +810,7 @@ jobs:
           & bun scripts/windows-artifact-manifest.ts verify @currentArguments
           if ($LASTEXITCODE -ne 0) { throw "candidate producer verification failed" }
 
-          $successorName = "Vela Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
+          $successorName = "Vela-Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
           $successorArguments = @(
             ".\synthetic-successor",
             "--role", "synthetic-successor",
@@ -831,10 +831,10 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $successorName = "Vela Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
+          $successorName = "Vela-Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
           & .\scripts\windows-in-app-update-acceptance.ps1 `
             -SourceVersion $env:WINDOWS_VERSION `
-            -SourceInstallerPath ".\candidate\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -SourceInstallerPath ".\candidate\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -SourceChecksumsPath ".\candidate\SHA256SUMS.txt" `
             -CandidateVersion $env:SUCCESSOR_VERSION `
             -CandidateInstallerPath ".\synthetic-successor\$successorName" `
@@ -878,8 +878,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           set -euo pipefail
-          full_name="Vela Browser_${WINDOWS_VERSION}_x64-offline-setup.exe"
-          slim_name="Vela Browser_${WINDOWS_VERSION}_x64-setup.exe"
+          full_name="Vela-Browser_${WINDOWS_VERSION}_x64-offline-setup.exe"
+          slim_name="Vela-Browser_${WINDOWS_VERSION}_x64-setup.exe"
           bun scripts/windows-artifact-manifest.ts verify ./signed-current \
             --role signed-current \
             --source "$WINDOWS_SOURCE" \
@@ -903,8 +903,8 @@ jobs:
           tag="v${RELEASE_VERSION}"
           release_name="Vela Browser ${RELEASE_VERSION}"
           marker="<!-- aliasmode-release-run:${GITHUB_RUN_ID};source:${RELEASE_SOURCE} -->"
-          full_name="Vela Browser_${RELEASE_VERSION}_x64-offline-setup.exe"
-          slim_name="Vela Browser_${RELEASE_VERSION}_x64-setup.exe"
+          full_name="Vela-Browser_${RELEASE_VERSION}_x64-offline-setup.exe"
+          slim_name="Vela-Browser_${RELEASE_VERSION}_x64-setup.exe"
           required=(
             "$full_name"
             "$slim_name"

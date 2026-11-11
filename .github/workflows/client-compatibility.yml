@@ -89,8 +89,8 @@ jobs:
           $artifact = Join-Path $env:GITHUB_WORKSPACE "artifact"
           $version = [string](Get-Content ".\src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json).version
           if ([string]::IsNullOrWhiteSpace($version)) { throw "candidate source version is missing" }
-          $fullName = "Vela Browser_${version}_x64-offline-setup.exe"
-          $slimName = "Vela Browser_${version}_x64-setup.exe"
+          $fullName = "Vela-Browser_${version}_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_${version}_x64-setup.exe"
           $payloadNames = @($fullName, $slimName, "browser.json", "SHA256SUMS.txt", "size-report.json")
           $requiredNames = @($payloadNames + "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath $artifact -Force)
@@ -150,7 +150,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:ALIASMODE_CANDIDATE_VERSION)) {
             throw "verified Vela Browser candidate version is missing"
           }
-          $installerName = "Vela Browser_$($env:ALIASMODE_CANDIDATE_VERSION)_x64-offline-setup.exe"
+          $installerName = "Vela-Browser_$($env:ALIASMODE_CANDIDATE_VERSION)_x64-offline-setup.exe"
           $installer = Get-Item (Join-Path $env:GITHUB_WORKSPACE "artifact\$installerName")
           $checksumFile = Join-Path $env:GITHUB_WORKSPACE "artifact\SHA256SUMS.txt"
           $checksumPattern = '^([a-f0-9]{64})  ' + [regex]::Escape($installerName) + '$'

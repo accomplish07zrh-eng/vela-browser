@@ -80,7 +80,7 @@ function Install-AcceptanceArtifact(
   $installerName = Split-Path $ResolvedInstallerPath -Leaf
   $nameMatch = [Text.RegularExpressions.Regex]::Match(
     $installerName,
-    '^Vela Browser_(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)_x64(?:-offline)?-setup\.exe$'
+    '^Vela-Browser_(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)_x64(?:-offline)?-setup\.exe$'
   )
   if (-not $nameMatch.Success) { throw "installer name is invalid" }
   $version = $nameMatch.Groups["version"].Value

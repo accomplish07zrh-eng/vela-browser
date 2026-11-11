@@ -214,7 +214,7 @@ try {
   }
   $candidateInstaller = Resolve-InputFile $FullInstallerPath "candidate full installer"
   $candidateChecksums = Resolve-InputFile $ChecksumsPath "candidate checksum manifest"
-  $candidateInstallerName = "Vela Browser_${CandidateVersion}_x64-offline-setup.exe"
+  $candidateInstallerName = "Vela-Browser_${CandidateVersion}_x64-offline-setup.exe"
   if ((Split-Path $candidateInstaller -Leaf) -ne $candidateInstallerName) {
     throw "candidate full installer name does not match candidate version"
   }
@@ -251,8 +251,8 @@ try {
   $checks.previousReleaseSelected = $true
 
   Set-AcceptanceStage "verifying-previous-installer"
-  $offlineInstallerName = "Vela Browser_$($previous.Version)_x64-offline-setup.exe"
-  $legacyInstallerName = "Vela Browser_$($previous.Version)_x64-setup.exe"
+  $offlineInstallerName = "Vela-Browser_$($previous.Version)_x64-offline-setup.exe"
+  $legacyInstallerName = "Vela-Browser_$($previous.Version)_x64-setup.exe"
   $oldInstallerAsset = @()
   foreach ($installerName in @($offlineInstallerName, $legacyInstallerName)) {
     $matches = @($previous.Release.assets | Where-Object { $_.name -eq $installerName })

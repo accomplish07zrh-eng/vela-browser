@@ -280,13 +280,13 @@ async fn fetch_releases(url: &str, timeout: Duration) -> Result<Vec<GithubReleas
 
 fn update_artifact_name(version: &Version) -> String {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        format!("Vela Browser_{version}_aarch64.app.tar.gz")
+        format!("Vela-Browser_{version}_aarch64.app.tar.gz")
     } else if cfg!(target_os = "macos") {
-        format!("Vela Browser_{version}_x64.app.tar.gz")
+        format!("Vela-Browser_{version}_x64.app.tar.gz")
     } else if cfg!(target_os = "linux") {
-        format!("Vela Browser_{version}_x86_64-linux.tar.gz")
+        format!("Vela-Browser_{version}_x86_64-linux.tar.gz")
     } else {
-        format!("Vela Browser_{version}_x64-setup.exe")
+        format!("Vela-Browser_{version}_x64-setup.exe")
     }
 }
 

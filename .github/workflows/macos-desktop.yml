@@ -64,7 +64,7 @@ jobs:
           set -euo pipefail
           version="$(jq -er .version src-tauri/tauri.conf.json)"
           mkdir -p "$BUNDLE/dmg"
-          dmg="$BUNDLE/dmg/Vela Browser_${version}_${ARCH}.dmg"
+          dmg="$BUNDLE/dmg/Vela-Browser_${version}_${ARCH}.dmg"
           venv="$RUNNER_TEMP/dmgbuild"
           if python3 -m venv "$venv" &&
             "$venv/bin/pip" install --quiet --require-hashes --only-binary :all: -r src-tauri/macos/dmg-requirements.txt &&
@@ -110,9 +110,9 @@ jobs:
           version="$(jq -er .version src-tauri/tauri.conf.json)"
           files="$RUNNER_TEMP/release/v$version"
           mkdir -p "$files"
-          cp "$BUNDLE/dmg/Vela Browser_${version}_${ARCH}.dmg" "$files/"
-          tar -czf "$files/Vela Browser_${version}_${ARCH}.app.tar.gz" -C "$BUNDLE/macos" "Vela Browser.app"
-          (cd "$files" && shasum -a 256 "Vela Browser_${version}_${ARCH}.app.tar.gz" "Vela Browser_${version}_${ARCH}.dmg" > SHA256SUMS-macos.txt)
+          cp "$BUNDLE/dmg/Vela-Browser_${version}_${ARCH}.dmg" "$files/"
+          tar -czf "$files/Vela-Browser_${version}_${ARCH}.app.tar.gz" -C "$BUNDLE/macos" "Vela Browser.app"
+          (cd "$files" && shasum -a 256 "Vela-Browser_${version}_${ARCH}.app.tar.gz" "Vela-Browser_${version}_${ARCH}.dmg" > SHA256SUMS-macos.txt)
           cat "$files/SHA256SUMS-macos.txt"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install with the terminal installer
@@ -124,7 +124,7 @@ jobs:
           bad="$RUNNER_TEMP/bad-release/v$version"
           mkdir -p "$bad"
           cp "$RUNNER_TEMP/release/v$version/SHA256SUMS-macos.txt" "$bad/"
-          head -c 1000000 "$RUNNER_TEMP/release/v$version/Vela Browser_${version}_${ARCH}.app.tar.gz" > "$bad/Vela Browser_${version}_${ARCH}.app.tar.gz"
+          head -c 1000000 "$RUNNER_TEMP/release/v$version/Vela-Browser_${version}_${ARCH}.app.tar.gz" > "$bad/Vela-Browser_${version}_${ARCH}.app.tar.gz"
           if ALIASMODE_RELEASE_BASE="file://$RUNNER_TEMP/bad-release" bash scripts/install-macos.sh --version "$version"; then
             echo "the installer accepted a damaged download"
             exit 1
@@ -462,13 +462,17 @@ jobs:
           else
             successor="${current%.*}.$((${current##*.} + 1))-acceptance.1"
           fi
-          for file in package.json src/version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
+          for file in package.json src/version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml; do
             test "$(grep -oF "$current" "$file" | wc -l | tr -d ' ')" = 1
             CURRENT="$current" SUCCESSOR="$successor" perl -pi -e 's/\Q$ENV{CURRENT}\E/$ENV{SUCCESSOR}/' "$file"
           done
+          # Cargo.lock also lists other crates that can share the version; only the app's own entry moves.
+          test "$(grep -A1 -xF 'name = "aliasmode-desktop"' src-tauri/Cargo.lock | grep -cxF "version = \"$current\"")" = 1
+          CURRENT="$current" SUCCESSOR="$successor" perl -0pi -e 's/(name = "aliasmode-desktop"\r?\nversion = ")\Q$ENV{CURRENT}\E"/$1$ENV{SUCCESSOR}"/' src-tauri/Cargo.lock
+          test "$(grep -A1 -xF 'name = "aliasmode-desktop"' src-tauri/Cargo.lock | grep -cxF "version = \"$successor\"")" = 1
           bun run desktop:prepare:macos
           bunx tauri build --bundles app --config "$work/test-key.json"
-          archive="Vela Browser_${successor}_${ARCH}.app.tar.gz"
+          archive="Vela-Browser_${successor}_${ARCH}.app.tar.gz"
           tar -czf "$work/$archive" -C "$BUNDLE/macos" "Vela Browser.app"
           TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null
           url="https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v$successor/$archive"

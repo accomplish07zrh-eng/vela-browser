@@ -281,8 +281,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $candidate = ".\artifacts\windows-candidate"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $payloadNames = @($fullName, $slimName, "browser.json", "SHA256SUMS.txt", "size-report.json")
           $requiredNames = @($payloadNames + "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath $candidate -Force)
@@ -433,19 +433,24 @@ jobs:
 
             $versionFiles = @(
               ".\package.json",
-              ".\version.ts",
+              ".\src\version.ts",
               ".\src-tauri\tauri.conf.json",
               ".\src-tauri\Cargo.toml",
               ".\src-tauri\Cargo.lock"
             )
             foreach ($path in $versionFiles) {
               $text = [IO.File]::ReadAllText($path)
-              if ([regex]::Matches($text, [regex]::Escape($env:WINDOWS_VERSION)).Count -ne 1) {
+              # Cargo.lock also lists other crates that can share the version; only the app's own entry moves.
+              $pattern = [regex]::Escape($env:WINDOWS_VERSION)
+              if ($path.EndsWith("Cargo.lock")) {
+                $pattern = '(?<=name = "aliasmode-desktop"\r?\nversion = ")' + $pattern + '(?=")'
+              }
+              if ([regex]::Matches($text, $pattern).Count -ne 1) {
                 throw "synthetic successor version replacement is ambiguous: $path"
               }
               [IO.File]::WriteAllText(
                 $path,
-                $text.Replace($env:WINDOWS_VERSION, $successorVersion),
+                [regex]::Replace($text, $pattern, $successorVersion),
                 [Text.UTF8Encoding]::new($false)
               )
             }
@@ -472,7 +477,7 @@ jobs:
             & .\scripts\build-windows-installer.ps1 -Flavor slim -OutputDirectory $artifact
             if ($LASTEXITCODE -ne 0) { throw "synthetic successor build failed" }
 
-            $name = "Vela Browser_${successorVersion}_x64-setup.exe"
+            $name = "Vela-Browser_${successorVersion}_x64-setup.exe"
             $installer = Join-Path $artifact $name
             if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
               throw "synthetic successor installer is missing"
@@ -685,7 +690,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $directory = ".\artifacts\windows-full"
-          $installerName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $installerName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
           $installer = Join-Path $directory $installerName
           Copy-Item ".\src-tauri\generated\browser.json" (Join-Path $directory "browser.json")
           "$((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant())  $installerName" |
@@ -766,7 +771,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $directory = ".\artifacts\windows-slim"
-          $installerName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $installerName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $arguments = @(
             $directory,
             "--role", "slim",
@@ -1003,8 +1008,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.windows_cache.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           & bun scripts/windows-artifact-manifest.ts verify ".\artifacts\windows-full" `
             --role full `
             --source $env:WINDOWS_SOURCE `
@@ -1126,7 +1131,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           & .\scripts\windows-installed-acceptance.ps1 `
             -Shard ${{ matrix.shard }} `
-            -InstallerPath ".\package\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -InstallerPath ".\package\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\package\SHA256SUMS.txt" `
             -BrowserMetadataPath ".\package\browser.json" `
             -DiagnosticsPath ".\diagnostics\${{ matrix.shard }}.json"
@@ -1179,7 +1184,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           & .\scripts\windows-installed-acceptance.ps1 `
             -Shard browser `
-            -InstallerPath ".\package\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -InstallerPath ".\package\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\package\SHA256SUMS.txt" `
             -BrowserMetadataPath ".\package\browser.json" `
             -DiagnosticsPath ".\diagnostics\browser.json"
@@ -1227,7 +1232,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           & .\scripts\windows-installed-acceptance.ps1 `
             -Shard local-upgrade `
-            -InstallerPath ".\package\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -InstallerPath ".\package\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\package\SHA256SUMS.txt" `
             -BrowserMetadataPath ".\package\browser.json" `
             -DiagnosticsPath ".\diagnostics\local-upgrade.json"
@@ -1282,8 +1287,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.windows_cache.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $arguments = @(
             ".\artifacts\windows-candidate",
             "--role", "candidate",
