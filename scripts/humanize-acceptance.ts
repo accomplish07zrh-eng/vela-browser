@@ -21,13 +21,14 @@ if (!executable) throw new Error("No Edge or Chrome found");
 
 const page = `<!doctype html><meta charset="utf-8"><title>Humanize proof</title>
 <style>body{font:16px system-ui;margin:0;height:2200px}form{position:absolute;top:1500px;left:180px;display:grid;gap:14px;width:340px}input,textarea,button{font:inherit;padding:8px}</style>
-<form onsubmit="event.preventDefault()"><label>Name <input id="name" value="old value"></label><label>Note <textarea id="note"></textarea></label><label><input type="checkbox" id="agree"> Agree</label><button id="send" type="button">Send</button></form>
+<form onsubmit="event.preventDefault()"><label>Name <input id="name" value="old value"></label><label>Note <textarea id="note"></textarea></label><label>Bio <textarea id="bio"></textarea></label><label><input type="checkbox" id="agree"> Agree</label><button id="send" type="button">Send</button></form>
 <script>
-const log = window.__log = { moves: 0, trusted: 0, untrusted: 0, wheel: 0, keys: [], downs: [], clicks: [], movesBeforeClick: 0 };
+const log = window.__log = { moves: 0, trusted: 0, untrusted: 0, wheel: 0, keys: [], keysByField: {}, inputs: {}, downs: [], clicks: [], movesBeforeClick: 0 };
+addEventListener("input", (e) => { const id = e.target.id; (log.inputs[id] ??= []).push(e.inputType); e.isTrusted ? log.trusted++ : log.untrusted++; }, true);
 const mark = (e) => { e.isTrusted ? log.trusted++ : log.untrusted++; };
 addEventListener("mousemove", (e) => { log.moves++; mark(e); }, true);
 addEventListener("wheel", (e) => { log.wheel++; mark(e); }, true);
-addEventListener("keydown", (e) => { log.keys.push(performance.now()); mark(e); }, true);
+addEventListener("keydown", (e) => { log.keys.push(performance.now()); const id = e.target.id; log.keysByField[id] = (log.keysByField[id] ?? 0) + 1; mark(e); }, true);
 addEventListener("mousedown", (e) => { log.downs.push(performance.now()); mark(e); }, true);
 addEventListener("click", (e) => { mark(e); if (e.target.id === "send") { const r = e.target.getBoundingClientRect(); log.clicks.push({ dx: +(e.clientX - r.left - r.width / 2).toFixed(1), dy: +(e.clientY - r.top - r.height / 2).toFixed(1), at: performance.now() }); log.movesBeforeClick = log.moves; } }, true);
 </script>`;
@@ -66,12 +67,15 @@ async function drive(index: number, browser: Awaited<ReturnType<typeof launch>>)
   const noteRef = refOf(snapshot, /textbox "Note[^"]*"[^\n]*\[ref=(\w+)\]/);
   const agreeRef = refOf(snapshot, /checkbox "Agree"[^\n]*\[ref=(\w+)\]/);
   const sendRef = refOf(snapshot, /button "Send"[^\n]*\[ref=(\w+)\]/);
-  if (!nameRef || !noteRef || !agreeRef || !sendRef) throw new Error(`refs missing in snapshot:\n${snapshot.slice(0, 800)}`);
+  const bioRef = refOf(snapshot, /textbox "Bio[^"]*"[^\n]*\[ref=(\w+)\]/);
+  if (!nameRef || !noteRef || !agreeRef || !sendRef || !bioRef) throw new Error(`refs missing in snapshot:\n${snapshot.slice(0, 800)}`);
   const typed = `Vela ${index} 你好`;
   const note = `Second field, browser ${index}.`;
+  const bio = `Browser ${index} writes a longer paragraph here, long enough that a person would paste it rather than type every key.`;
   const results = [
     await humanizer.call("browser_type", { element: "Name", ref: nameRef, text: typed }),
     await humanizer.call("browser_fill_form", { fields: [{ name: "Note", type: "textbox", ref: noteRef, value: note }, { name: "Agree", type: "checkbox", ref: agreeRef, value: "true" }] }),
+    await humanizer.call("browser_type", { element: "Bio", ref: bioRef, text: bio }),
     await humanizer.call("browser_click", { element: "Send", ref: sendRef }),
   ];
   const finished = performance.now();
@@ -85,6 +89,8 @@ async function drive(index: number, browser: Awaited<ReturnType<typeof launch>>)
     return {
       name: (document.getElementById("name") as HTMLInputElement).value,
       note: (document.getElementById("note") as HTMLTextAreaElement).value,
+      bio: (document.getElementById("bio") as HTMLTextAreaElement).value,
+      keysByField: log.keysByField, inputs: Object.fromEntries(Object.entries(log.inputs).map(([id, list]: [string, any]) => [id, { count: list.length, types: [...new Set(list)] }])),
       agree: (document.getElementById("agree") as HTMLInputElement).checked,
       moves: log.moves, wheel: log.wheel, trusted: log.trusted, untrusted: log.untrusted,
       keyGapMeanMs: Math.round(mean), keyGapSdMs: Math.round(sd), clicks: log.clicks, webdriver: navigator.webdriver,
@@ -93,9 +99,9 @@ async function drive(index: number, browser: Awaited<ReturnType<typeof launch>>)
   await proxy.detach();
   return {
     profileId, persona: personaFor(profileId), started: Math.round(started), finished: Math.round(finished),
-    ok: evidence.name === typed && evidence.note === note && evidence.agree && evidence.clicks.length === 1
+    ok: evidence.name === typed && evidence.note === note && evidence.bio === bio && (evidence.inputs.bio?.count ?? 0) <= 2 && (evidence.keysByField.note ?? 0) >= note.length && evidence.agree && evidence.clicks.length === 1
       && evidence.moves > 20 && evidence.wheel > 0 && evidence.untrusted === 0 && !results.some((result: any) => result?.isError),
-    expected: { name: typed, note }, evidence,
+    expected: { name: typed, note, bio }, evidence,
   };
 }
 

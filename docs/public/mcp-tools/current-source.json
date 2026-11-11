@@ -272,6 +272,14 @@
             "minimum": 0.4,
             "maximum": 2.5,
             "description": "1 is the profile's natural pace; 2 is twice as fast."
+          },
+          "pasteOver": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Text longer than this many characters goes in at once, like a paste, instead of key by key. 0 always types; null restores each profile's own threshold (28 to 51 characters). The system clipboard is never used."
           }
         },
         "additionalProperties": false

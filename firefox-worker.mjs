@@ -414,7 +414,7 @@ async function run() {
         profileId: input.profileId,
         callOfficial: (tool, args) => official ? official.client.callTool({ name: tool, arguments: args ?? {} }) : callOfficial(tool, args),
       });
-      humanizer.configure(payload.humanize ?? { enabled: true, speed: 1 });
+      humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });
       return humanizer.call(payload.name, payload.arguments ?? {});
     }
     if (name === "detach") {
