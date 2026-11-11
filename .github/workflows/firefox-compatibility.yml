@@ -168,7 +168,7 @@ jobs:
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
           }
           $proof = Join-Path $env:RUNNER_TEMP "cloud-launcher-smoke-$([guid]::NewGuid().ToString('N'))"
-          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" setup --state-root $proof
+          bun --no-env-file "$env:GITHUB_WORKSPACE\src\cli.ts" setup --state-root $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun --no-env-file -e '
             import { existsSync, realpathSync, readFileSync } from "node:fs";
@@ -187,9 +187,9 @@ jobs:
             }
           ' $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" __browser-lifecycle-smoke --headless --state-root $proof
+          bun --no-env-file "$env:GITHUB_WORKSPACE\src\cli.ts" __browser-lifecycle-smoke --headless --state-root $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" __browser-lifecycle-smoke --engine firefox --headless --state-root $proof
+          bun --no-env-file "$env:GITHUB_WORKSPACE\src\cli.ts" __browser-lifecycle-smoke --engine firefox --headless --state-root $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "ALIASMODE_SOURCE_RUNTIME_ROOT=$proof" | Add-Content $env:GITHUB_ENV
       - name: Diagnose Windows source setup failure
