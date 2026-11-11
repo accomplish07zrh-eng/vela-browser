@@ -56,6 +56,8 @@ export interface ManagedDesktopRuntimeOptions {
   stopInbox?: () => void | Promise<void>;
   wait?: (ms: number) => Promise<void>;
   shutdownTimeoutMs?: number;
+  /** How long listeners may wait for open connections before those are closed. */
+  connectionGraceMs?: number;
 }
 
 export function agentControlNonce(
@@ -198,10 +200,24 @@ async function beforeDeadline<T>(pending: Promise<T>, deadline: number): Promise
   }
 }
 
-async function stopServers(servers: ManagedServer[]): Promise<void> {
-  const results = await Promise.allSettled(
-    servers.map((server) => Promise.resolve().then(() => server.stop(false))),
-  );
+/** How long a graceful listener stop may wait for open connections before they are closed. */
+export const CONNECTION_GRACE_MS = 3_000;
+
+// A graceful stop waits for every open connection, and the hidden window's live views keep
+// theirs open, so connections that outlast the grace period are closed.
+async function stopServer(server: ManagedServer, graceMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const graceful = Promise.resolve().then(() => server.stop(false)).then(() => "stopped" as const);
+  const expired = new Promise<"expired">((resolve) => { timer = setTimeout(() => resolve("expired"), graceMs); });
+  try {
+    if (await Promise.race([graceful, expired]) === "expired") await server.stop(true);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function stopServers(servers: ManagedServer[], graceMs = CONNECTION_GRACE_MS): Promise<void> {
+  const results = await Promise.allSettled(servers.map((server) => stopServer(server, graceMs)));
   const failure = results.find((result) => result.status === "rejected");
   if (failure?.status === "rejected") throw failure.reason;
 }
@@ -227,6 +243,7 @@ export class ManagedDesktopRuntime {
       stopInbox = () => {},
       wait = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
       shutdownTimeoutMs = 7 * 60_000,
+      connectionGraceMs = CONNECTION_GRACE_MS,
     } = this.options;
 
     const deadline = Date.now() + shutdownTimeoutMs;
@@ -235,7 +252,7 @@ export class ManagedDesktopRuntime {
       await beforeDeadline(stopServers([
         server,
         ...(automationServer ? [automationServer] : []),
-      ]), deadline);
+      ], connectionGraceMs), deadline);
       await beforeDeadline(server.stopScripts?.() ?? Promise.resolve(), deadline);
       try {
         await beforeDeadline(Promise.resolve(stopInbox()), deadline);

@@ -455,7 +455,7 @@ jobs:
           if [[ "$current" == *-* ]]; then
             successor="$current.acceptance.1"
           else
-            successor="${current%.*}.$((${current##*.} + 1))-acceptance.1"
+            successor="${current%.*}.$((${current##*.} + 1))"
           fi
           for file in package.json src/version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml; do
             test "$(grep -oF "$current" "$file" | wc -l | tr -d ' ')" = 1

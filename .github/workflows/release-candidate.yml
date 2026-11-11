@@ -217,7 +217,7 @@ jobs:
           $successorVersion = if ($env:WINDOWS_VERSION.Contains("-")) {
             "$($env:WINDOWS_VERSION).acceptance.1"
           } else {
-            "$($sourceSemantic.Major).$($sourceSemantic.Minor).$($sourceSemantic.Patch + 1)-acceptance.1"
+            "$($sourceSemantic.Major).$($sourceSemantic.Minor).$($sourceSemantic.Patch + 1)"
           }
           $successorSemantic = [Management.Automation.SemanticVersion]::Parse($successorVersion)
           if ($successorSemantic -le $sourceSemantic -or $successorSemantic.ToString() -cne $successorVersion) {
@@ -866,7 +866,7 @@ jobs:
           compression-level: 0
 
   publish_release:
-    name: Publish verified prerelease
+    name: Publish verified release
     needs: [provenance, sign_current, previous_upgrade_acceptance, exact_updater_acceptance]
     runs-on: ubuntu-latest
     environment: windows-release
@@ -916,6 +916,8 @@ jobs:
           root="$GITHUB_WORKSPACE/signed-current"
           tag="v${RELEASE_VERSION}"
           release_name="Vela Browser ${RELEASE_VERSION}"
+          # Installed stable apps update only to releases that GitHub does not mark as prereleases.
+          if [[ "$RELEASE_VERSION" == *-* ]]; then prerelease=true; else prerelease=false; fi
           marker="<!-- aliasmode-release-run:${GITHUB_RUN_ID};source:${RELEASE_SOURCE} -->"
           full_name="Vela-Browser_${RELEASE_VERSION}_x64-offline-setup.exe"
           slim_name="Vela-Browser_${RELEASE_VERSION}_x64-setup.exe"
@@ -962,7 +964,7 @@ jobs:
           fi
           if [[ "$match_count" -eq 1 ]]; then
             release="$(jq '.[0]' <<<"$matches")"
-            if [[ "$(jq -r '.prerelease' <<<"$release")" != true ||
+            if [[ "$(jq -r '.prerelease' <<<"$release")" != "$prerelease" ||
                   "$(jq -r '.target_commitish' <<<"$release")" != "$RELEASE_SOURCE" ||
                   "$(jq -r '.name' <<<"$release")" != "$release_name" ||
                   "$(jq -r '.body' <<<"$release")" != "$marker" ]]; then
@@ -983,7 +985,8 @@ jobs:
                 --arg source "$RELEASE_SOURCE" \
                 --arg name "$release_name" \
                 --arg body "$marker" \
-                '{tag_name:$tag,target_commitish:$source,name:$name,body:$body,draft:true,prerelease:true}' |
+                --argjson prerelease "$prerelease" \
+                '{tag_name:$tag,target_commitish:$source,name:$name,body:$body,draft:true,prerelease:$prerelease}' |
                 gh api --method POST "repos/$GITHUB_REPOSITORY/releases" --input -
             )"
           fi
@@ -1069,10 +1072,10 @@ jobs:
           if [[ "$already_published" == true ]]; then
             published="$release"
           else
-            published="$(jq -n '{draft:false,prerelease:true}' | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input -)"
+            published="$(jq -n --argjson prerelease "$prerelease" '{draft:false,prerelease:$prerelease}' | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input -)"
           fi
           if [[ "$(jq -r '.draft' <<<"$published")" != false ||
-                "$(jq -r '.prerelease' <<<"$published")" != true ||
+                "$(jq -r '.prerelease' <<<"$published")" != "$prerelease" ||
                 "$(jq -r '.tag_name' <<<"$published")" != "$tag" ||
                 "$(jq -r '.target_commitish' <<<"$published")" != "$RELEASE_SOURCE" ]]; then
             printf 'published prerelease identity is inconsistent\n' >&2

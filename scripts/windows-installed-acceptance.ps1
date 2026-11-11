@@ -1597,7 +1597,8 @@ try {
     "local-upgrade" {
       Set-AcceptanceStage "local-upgrade-preparing"
       $playwrightRuntime = Join-Path $installRoot "playwright"
-      $upgradeRoot = Join-Path $runRoot "local-upgrade"
+      # A release build always keeps its data in AppData; the override below only reaches debug builds.
+      $upgradeRoot = $appDataRoot
       New-Item -ItemType Directory -Force $upgradeRoot | Out-Null
       $configPath = Join-Path $upgradeRoot "config.json"
       $legacyConfig = @{ version = 1; mode = "cloud"; cloudUrl = "http://127.0.0.1:1"; localAnalytics = $false; servicesHidden = $true }

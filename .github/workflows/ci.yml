@@ -424,7 +424,7 @@ jobs:
             $successorVersion = if ($env:WINDOWS_VERSION.Contains("-")) {
               "$($env:WINDOWS_VERSION).acceptance.1"
             } else {
-              "$($sourceSemantic.Major).$($sourceSemantic.Minor).$($sourceSemantic.Patch + 1)-acceptance.1"
+              "$($sourceSemantic.Major).$($sourceSemantic.Minor).$($sourceSemantic.Patch + 1)"
             }
             $successorSemantic = [Management.Automation.SemanticVersion]::Parse($successorVersion)
             if ($successorSemantic -le $sourceSemantic -or $successorSemantic.ToString() -cne $successorVersion) {

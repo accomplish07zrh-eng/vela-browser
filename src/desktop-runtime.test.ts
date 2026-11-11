@@ -153,6 +153,28 @@ test("desktop shutdown coalesces and closes both listeners before authoritative 
   expect(events.slice(2)).toEqual(["inbox", "stop:one", "stop:two", "store"]);
 });
 
+test("desktop shutdown closes connections that outlast the grace period, then stops browsers", async () => {
+  const events: string[] = [];
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const runtime = new ManagedDesktopRuntime({
+    server: {
+      // A graceful stop waits on a live view that never disconnects by itself.
+      stop: (force) => {
+        events.push(force ? "force" : "graceful");
+        if (force) release();
+        return force ? undefined : held;
+      },
+    },
+    admission: admission(),
+    store: { listLaunches: () => [{ profileId: "one" }], close: () => { events.push("store"); } },
+    launcher: { stop: async () => { events.push("browser"); return true; } },
+    connectionGraceMs: 20,
+  });
+  await runtime.shutdown();
+  expect(events).toEqual(["graceful", "force", "browser", "store"]);
+});
+
 test("desktop shutdown stops script workers before browser capture and store close", async () => {
   const events: string[] = [];
   const runtime = new ManagedDesktopRuntime({

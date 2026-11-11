@@ -169,7 +169,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
     "",
   ].join("\n"));
   expect(ciSuccessorJob).toContain('"$($env:WINDOWS_VERSION).acceptance.1"');
-  expect(ciSuccessorJob).toContain('$($sourceSemantic.Patch + 1)-acceptance.1');
+  expect(ciSuccessorJob).toContain('$($sourceSemantic.Patch + 1)"');
   expect(ciSuccessorJob).toContain(
     '2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6',
   );
@@ -199,7 +199,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(provenanceJob).toContain("name: aliasmode-windows-unsigned-synthetic-successor");
   expect(provenanceJob).toContain("run-id: ${{ inputs.run_id }}");
   expect(provenanceJob).toContain('"$($env:WINDOWS_VERSION).acceptance.1"');
-  expect(provenanceJob).toContain('$($sourceSemantic.Patch + 1)-acceptance.1');
+  expect(provenanceJob).toContain('$($sourceSemantic.Patch + 1)"');
   expect(provenanceJob).toContain('$name = "Vela-Browser_${successorVersion}_x64-setup.exe"');
   expect(provenanceJob).toContain('$requiredNames = @($name, "artifact-manifest.json")');
   expect(provenanceJob).toContain("$entries.Count -ne 2");
@@ -251,7 +251,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(exactUpdaterJob).not.toContain("cargo run");
   expect(exactUpdaterJob).not.toContain("aliasmode-signed-current");
   expect(releaseWorkflow).toContain(
-    "publish_release:\n    name: Publish verified prerelease\n    needs: [provenance, sign_current, previous_upgrade_acceptance, exact_updater_acceptance]",
+    "publish_release:\n    name: Publish verified release\n    needs: [provenance, sign_current, previous_upgrade_acceptance, exact_updater_acceptance]",
   );
   expect(releaseWorkflow.match(/contents: write/g)).toHaveLength(1);
   expect(publishJob).toContain("contents: write");
