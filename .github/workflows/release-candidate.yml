@@ -745,6 +745,20 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
+          # The first Vela Browser release has nothing to upgrade from; every later one must pass.
+          $candidate = [Management.Automation.SemanticVersion]::Parse($env:WINDOWS_VERSION)
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+          $earlier = @(
+            @(Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases?per_page=100" -Headers $headers | Write-Output) |
+              Where-Object { -not $_.draft -and $_.tag_name.StartsWith("v") } |
+              Where-Object {
+                try { [Management.Automation.SemanticVersion]::Parse($_.tag_name.Substring(1)) -lt $candidate } catch { $false }
+              }
+          )
+          if ($earlier.Count -eq 0) {
+            Write-Host "::notice::No earlier public release exists, so there is no previous version to upgrade from."
+            exit 0
+          }
           $diagnostics = ".\diagnostics\previous-upgrade.json"
           & .\scripts\windows-previous-upgrade-acceptance.ps1 `
             -CandidateVersion $env:WINDOWS_VERSION `

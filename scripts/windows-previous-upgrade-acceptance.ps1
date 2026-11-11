@@ -63,7 +63,7 @@ function Test-PathWithin([string]$Path, [string]$Root) {
     $fullPath.StartsWith("$fullRoot\", [StringComparison]::OrdinalIgnoreCase)
 }
 
-function Wait-Vela BrowserReady([string]$AppPath, [string]$ExpectedVersion) {
+function Wait-VelaBrowserReady([string]$AppPath, [string]$ExpectedVersion) {
   $app = Get-Process -Name "Vela Browser" -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -eq $AppPath } |
     Select-Object -First 1
@@ -97,7 +97,7 @@ function Wait-Vela BrowserReady([string]$AppPath, [string]$ExpectedVersion) {
   throw "Vela Browser $ExpectedVersion did not become ready"
 }
 
-function Stop-Vela Browser($Record) {
+function Stop-VelaBrowser($Record) {
   if (-not $Record.App.CloseMainWindow()) { throw "Vela Browser rejected its close request" }
   if (-not $Record.App.WaitForExit(180000)) { throw "Vela Browser did not exit after cleanup" }
   for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -301,7 +301,7 @@ try {
   }
   if ($install.ExitCode -ne 0) { throw "previous installer exited with code $($install.ExitCode)" }
   $appPath = Join-Path $installRoot "Vela Browser.exe"
-  $activeRecord = Wait-Vela BrowserReady $appPath $previousVersion
+  $activeRecord = Wait-VelaBrowserReady $appPath $previousVersion
   $checks.previousVersionReady = $true
   $mode = Invoke-RestMethod "$($activeRecord.Origin)/ui/api/app-mode"
   if ($mode.mode -ne "local") {
@@ -309,8 +309,8 @@ try {
       -Method Post `
       -ContentType "application/json" `
       -Body '{"mode":"local"}' | Out-Null
-    Stop-Vela Browser $activeRecord
-    $activeRecord = Wait-Vela BrowserReady $appPath $previousVersion
+    Stop-VelaBrowser $activeRecord
+    $activeRecord = Wait-VelaBrowserReady $appPath $previousVersion
   }
 
   Set-AcceptanceStage "creating-preservation-sentinels"
@@ -330,7 +330,7 @@ try {
   if ([string]::IsNullOrWhiteSpace($oldInstance)) {
     throw "previous version health response omitted its instance ID"
   }
-  Stop-Vela Browser $activeRecord
+  Stop-VelaBrowser $activeRecord
   $activeRecord = $null
 
   Set-AcceptanceStage "applying-passive-update"
@@ -346,7 +346,7 @@ try {
   $checks.passiveUpdateCompleted = $true
 
   Set-AcceptanceStage "verifying-preserved-state"
-  $activeRecord = Wait-Vela BrowserReady $appPath $CandidateVersion
+  $activeRecord = Wait-VelaBrowserReady $appPath $CandidateVersion
   $checks.versionTransition = $true
   if ($activeRecord.Health.root -ne $oldDataRoot) { throw "update changed the app-data root" }
   $checks.appDataRootPreserved = $true
@@ -364,7 +364,7 @@ try {
     throw "update did not preserve the sentinel profile"
   }
   $checks.sentinelProfilePreserved = $true
-  Stop-Vela Browser $activeRecord
+  Stop-VelaBrowser $activeRecord
   $activeRecord = $null
 
   Set-AcceptanceStage "verified"
@@ -376,7 +376,7 @@ try {
   Set-AcceptanceStage "cleanup"
 
   if ($activeRecord -and -not (Test-ProcessExited $activeRecord.App)) {
-    try { Stop-Vela Browser $activeRecord } catch {
+    try { Stop-VelaBrowser $activeRecord } catch {
       try { Stop-ProcessTree $activeRecord.App } catch {}
       $cleanupFailures.Add("active Vela Browser cleanup failed")
     }
