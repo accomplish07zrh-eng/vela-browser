@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.0-beta.74",
+  "aliasModeVersion": "0.1.2",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -20,7 +20,7 @@
   "aliasModeTools": [
     {
       "name": "aliasmode_profiles_list",
-      "description": "List Vela Browser profiles and their current browser state. Cloud profiles include expectedVersion and permission for editing.",
+      "description": "List local Vela Browser profiles and their current browser state.",
       "annotations": {
         "title": "List Vela Browser profiles",
         "readOnlyHint": false,
@@ -30,133 +30,6 @@
       "inputSchema": {
         "type": "object",
         "properties": {},
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "aliasmode_profiles_replace_proxies",
-      "description": "Dry-run or apply bulk proxy replacements to closed Vela Cloud profiles. Apply always preflights first.",
-      "annotations": {
-        "title": "Replace Vela Browser profile proxies",
-        "readOnlyHint": false,
-        "destructiveHint": true,
-        "openWorldHint": false
-      },
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "dryRun": {
-            "type": "boolean",
-            "default": true
-          },
-          "replacements": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "object",
-              "properties": {
-                "profileId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "username": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 255
-                },
-                "expectedVersion": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "proxy": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string",
-                      "enum": [
-                        "http",
-                        "https",
-                        "socks5"
-                      ]
-                    },
-                    "host": {
-                      "type": "string"
-                    },
-                    "port": {
-                      "type": "string"
-                    },
-                    "user": {
-                      "type": "string"
-                    },
-                    "pass": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "host",
-                    "port",
-                    "user",
-                    "pass"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "required": [
-                "proxy"
-              ],
-              "oneOf": [
-                {
-                  "required": [
-                    "profileId"
-                  ],
-                  "not": {
-                    "required": [
-                      "username"
-                    ]
-                  }
-                },
-                {
-                  "required": [
-                    "username"
-                  ],
-                  "not": {
-                    "required": [
-                      "profileId"
-                    ]
-                  }
-                }
-              ],
-              "additionalProperties": false
-            }
-          },
-          "csv": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "oneOf": [
-          {
-            "required": [
-              "replacements"
-            ],
-            "not": {
-              "required": [
-                "csv"
-              ]
-            }
-          },
-          {
-            "required": [
-              "csv"
-            ],
-            "not": {
-              "required": [
-                "replacements"
-              ]
-            }
-          }
-        ],
         "additionalProperties": false
       }
     },
@@ -237,96 +110,6 @@
             "default": false
           }
         },
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "aliasmode_profile_update",
-      "description": "Edit a closed Vela Cloud profile by ID using expectedVersion from aliasmode_profiles_list. Only supplied fields change; empty strings clear fields. Sessions and cookies are preserved. Returns confirmation, not credentials.",
-      "annotations": {
-        "title": "Edit an Vela Cloud profile",
-        "readOnlyHint": false,
-        "destructiveHint": true,
-        "openWorldHint": false
-      },
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "profileId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expectedVersion": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "set": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "group": {
-                "type": "string"
-              },
-              "platform": {
-                "type": "string"
-              },
-              "username": {
-                "type": "string"
-              },
-              "password": {
-                "type": "string"
-              },
-              "email": {
-                "type": "string"
-              },
-              "emailPassword": {
-                "type": "string"
-              },
-              "twofa": {
-                "type": "string"
-              },
-              "proxy": {
-                "type": "string",
-                "description": "host:port:user:pass, or an empty string to remove the proxy"
-              },
-              "proxyType": {
-                "type": "string"
-              },
-              "resolution": {
-                "type": "string",
-                "description": "WIDTH*HEIGHT"
-              },
-              "extensions": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "tags": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "minProperties": 1,
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "profileId",
-          "expectedVersion",
-          "set"
-        ],
         "additionalProperties": false
       }
     },

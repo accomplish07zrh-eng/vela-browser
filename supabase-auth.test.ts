@@ -73,7 +73,7 @@ test("Supabase signup uses the production confirmation redirect", async () => {
     user: { id: "account1", email: "user@example.com", email_confirmed_at: null },
     verificationRequired: true,
   });
-  expect(url).toBe("https://auth.aliasmode.test/auth/v1/signup?redirect_to=https%3A%2F%2Faliasmode.com%2Fauth%2Femail-confirmation");
+  expect(url).toBe("https://auth.aliasmode.test/auth/v1/signup?redirect_to=https%3A%2F%2Fgithub.com%2Faccomplish07zrh-eng%2Fvela-browser%2Fauth%2Femail-confirmation");
 });
 
 test("Supabase signup marks app sign-ups so their email shows a code", async () => {
@@ -114,7 +114,7 @@ test("Supabase auth resends signup confirmation with the production redirect", a
     return Response.json({});
   });
   await auth.resendSignUpConfirmation("user@example.com");
-  expect(url).toBe("https://auth.aliasmode.test/auth/v1/resend?redirect_to=https%3A%2F%2Faliasmode.com%2Fauth%2Femail-confirmation");
+  expect(url).toBe("https://auth.aliasmode.test/auth/v1/resend?redirect_to=https%3A%2F%2Fgithub.com%2Faccomplish07zrh-eng%2Fvela-browser%2Fauth%2Femail-confirmation");
   expect(body).toEqual({ type: "signup", email: "user@example.com" });
 });
 
@@ -127,7 +127,7 @@ test("Supabase auth password reset uses the production redirect", async () => {
     return Response.json({});
   });
   await auth.requestPasswordReset("user@example.com");
-  expect(url).toBe("https://auth.aliasmode.test/auth/v1/recover?redirect_to=https%3A%2F%2Faliasmode.com%2Fauth%2Fpassword-reset");
+  expect(url).toBe("https://auth.aliasmode.test/auth/v1/recover?redirect_to=https%3A%2F%2Fgithub.com%2Faccomplish07zrh-eng%2Fvela-browser%2Fauth%2Fpassword-reset");
   expect(body).toEqual({ email: "user@example.com" });
 });
 

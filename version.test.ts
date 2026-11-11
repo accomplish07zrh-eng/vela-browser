@@ -342,7 +342,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
     "windows_candidate",
     "windows_accept_runtime",
     "windows_accept_browser",
-    "windows_accept_cloud",
+    "windows_accept_local_upgrade",
   ]);
   expect(ciWorkflow).toContain("name: aliasmode-windows-candidate");
   expect(ciWorkflow).toContain('"--role", "candidate"');
@@ -356,7 +356,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(ciWorkflow).toContain("scripts\\windows-installed-acceptance.ps1");
   expect(ciWorkflow).toContain("- windows_accept_runtime");
   expect(ciWorkflow).toContain("- windows_accept_browser");
-  expect(ciWorkflow).toContain("- windows_accept_cloud");
+  expect(ciWorkflow).toContain("- windows_accept_local_upgrade");
   expect(ciWorkflow).toContain("name: aliasmode-windows-unsigned-synthetic-successor");
   expect(ciWorkflow).not.toContain("macos-latest");
   expect(ciWorkflow).not.toContain("nsis-updater");
@@ -380,12 +380,12 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(releaseWorkflow).not.toContain("-cjoin");
   expect(compatibilityWorkflow).not.toContain("-cjoin");
   expect(installedAcceptance).toContain(
-    `[ValidateSet("runtime-protocol", "runtime-ownership", "runtime-desktop", "browser", "cloud")]`,
+    `[ValidateSet("runtime-protocol", "runtime-ownership", "runtime-desktop", "browser", "local-upgrade")]`,
   );
   for (const shard of ["runtime-protocol", "runtime-ownership", "runtime-desktop"]) {
     expect(installedAcceptance).toContain(`    "${shard}" {`);
   }
-  for (const shard of ["browser", "cloud"]) {
+  for (const shard of ["browser", "local-upgrade"]) {
     expect(ciWorkflow).toContain(`-Shard ${shard}`);
   }
   for (const contract of [

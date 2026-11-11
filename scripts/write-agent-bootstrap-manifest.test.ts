@@ -22,7 +22,7 @@ test("agent bootstrap manifest pins an exact installer URL and SHA-256", () => {
       wingetId: "Vela Browser.Vela Browser",
       installer: {
         name,
-        url: `${releaseBase}/${name}`,
+        url: `${releaseBase}/${encodeURIComponent(name)}`,
         sha256: createHash("sha256").update("installer").digest("hex"),
         size: 9,
       },

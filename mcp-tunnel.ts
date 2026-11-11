@@ -151,7 +151,7 @@ export class McpTunnelRuntime implements McpTunnelLifecycle {
   private async connectOnce(accessToken: string, deviceCredential: string): Promise<void> {
     const socket = (this.options.connect ?? ((url, headers) => new WebSocket(url, { headers })))(this.url, {
       Authorization: `Bearer ${accessToken}`,
-      "X-Vela Browser-Device": deviceCredential,
+      "X-AliasMode-Device": deviceCredential,
     });
     this.socket = socket;
     await new Promise<void>((resolve) => {

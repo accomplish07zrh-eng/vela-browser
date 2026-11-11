@@ -153,7 +153,7 @@ export class HubClient {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-Vela Browser-owner": this.owner,
+        "x-aliasmode-owner": this.owner,
       },
       body: JSON.stringify({ profiles }),
     });
