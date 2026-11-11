@@ -93,6 +93,7 @@ function workspace(): string {
   for (const file of [
     "mcp-host.mjs",
     "playwright-proxy.mjs",
+    "humanize.mjs",
     "playwright-runner.mjs",
     "script-runner.mjs",
     "script-runner.py",
