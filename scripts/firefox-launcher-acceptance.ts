@@ -637,7 +637,21 @@ export default async ({ context, inputs }) => {
         while ((await status()).pageTargets.length !== tabs.length && Date.now() < deadline) await Bun.sleep(50);
         assert.deepEqual((await status()).pageTargets.map(page => page.url), tabs, "closing one tab keeps only the remaining tabs");
       }
-      await localLauncher.verifyRunningIdentity(nativeCloseId);
+      try {
+        await localLauncher.verifyRunningIdentity(nativeCloseId);
+      } catch (error) {
+        // Records what the owner reports next to the launch record, so a mismatch or a slow owner is visible.
+        const launch = localStore.getLaunch(nativeCloseId);
+        const started = performance.now();
+        const reported = await callFirefoxOwner<Record<string, unknown>>(owner, "status", {}, { timeoutMs: 10_000 })
+          .then((value) => ({ ...value, pageTargets: undefined }), (failure) => ({ failure: String(failure) }));
+        console.error("native-close identity diagnostics", JSON.stringify({
+          statusMs: Math.round(performance.now() - started), reported,
+          launch: launch && { pid: launch.pid, binaryPath: launch.binaryPath, userDataDir: launch.userDataDir, owner: launch.firefoxOwner },
+          diagnosis: await localLauncher.diagnoseCdp(nativeCloseId),
+        }));
+        throw error;
+      }
       if (close === "managed") {
         assert.equal(await localLauncher.captureLocalSession(nativeCloseId), true);
         assert.equal(await localLauncher.stop(nativeCloseId), true);
