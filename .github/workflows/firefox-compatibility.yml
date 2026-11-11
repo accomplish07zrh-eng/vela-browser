@@ -117,7 +117,7 @@ jobs:
           }
       - uses: actions/download-artifact@v4
         with:
-          name: Vela BrowserBuilds-windows-x86_64
+          name: AliasModeBuilds-windows-x86_64
           path: artifacts/firefox
           github-token: ${{ github.token }}
           repository: aliasmode/aliasmode-firefox
@@ -399,7 +399,7 @@ jobs:
           curl --fail --location --silent --show-error 'https://github.com/aliasmode/aliasmode-firefox/releases/download/aliasmode-runtime-152.0.4-beta.30-r4/aliasmode-152.0.4-beta.30-mac.arm64.zip' --output "$archive"
           printf '%s  %s\n' a9847893bbe0472114cfc35b9f67ecb741f9a59002ac7d9e867634594792d320 "$archive" | shasum -a 256 --check
           ditto -x -k "$archive" "$destination"
-          browser="$destination/Vela Browser.app/Contents/MacOS/aliasmode"
+          browser="$destination/AliasMode.app/Contents/MacOS/aliasmode"
           printf '%s  %s\n' 20e2f8c93457eaf5cbd73a2580d1abdf436fbe54894e14fa7dc69469c1925ee9 "$browser" | shasum -a 256 --check
           printf 'ALIASMODE_PREVIOUS_FIREFOX_BINARY_PATH=%s\n' "$browser" >> "$GITHUB_ENV"
       - name: Prove persistent contexts, MCP, scripts, and storage

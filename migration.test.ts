@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AppConfigStore } from "./app-config.ts";
 import { migrateLegacyState, type MigrationOptions } from "./migration.ts";
 import { statePaths } from "./paths.ts";
 import { ProfileStore } from "./store.ts";
@@ -110,7 +111,7 @@ test("migration preserves all database values and session-bearing Chromium bytes
   expect(migrated.query("SELECT * FROM extensions").get()).toEqual({ id: "ext1", name: "Extension", load_dir: join(destination.extensions, "ext1"), future_extension_value: "unknown-extension-value" });
   migrated.close();
   expect(readFileSync(destination.operatorId, "utf8")).toBe("legacy-device\n");
-  expect(JSON.parse(readFileSync(destination.config, "utf8")).mode).toBe("local");
+  expect(new AppConfigStore(destination.config).read().mode).toBe("local");
   await expect(migrateLegacyState(source, destination, stopped)).rejects.toThrow("already contains imported local profile data");
 });
 
@@ -183,7 +184,7 @@ test("initialized-empty local destination is accepted and harmless files are pre
   expect(readFileSync(join(destination.root, "logs", "keep.log"), "utf8")).toBe("keep");
   expect(readFileSync(destination.pendingSyncKey, "utf8").trim()).toBe(pendingSyncKey);
   expect(existsSync(stalePendingSyncKey)).toBe(false);
-  expect(readFileSync(destination.config, "utf8")).toContain('"mode":"local"');
+  expect(new AppConfigStore(destination.config).read().mode).toBe("local");
 });
 
 test("a Cloud-mode destination without Cloud state imports as Local", async () => {
@@ -194,7 +195,7 @@ test("a Cloud-mode destination without Cloud state imports as Local", async () =
   writeFileSync(destination.config, '{"version":1,"mode":"cloud","cloudUrl":"https://cloud.aliasmode.com","localAnalytics":false}');
 
   expect(await migrateLegacyState(source, destination, stopped)).toEqual({ status: "migrated", profileCount: 1 });
-  expect(JSON.parse(readFileSync(destination.config, "utf8"))).toEqual({ version: 1, mode: "local", localAnalytics: false });
+  expect(new AppConfigStore(destination.config).read()).toMatchObject({ mode: "local", localAnalytics: false });
 });
 
 test("nonempty, Cloud cache, pending-sync, launch, remote, live, and inconclusive states reject", async () => {

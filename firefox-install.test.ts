@@ -36,7 +36,7 @@ function fixture(platform: "linux" | "darwin" = "linux", writeEnv = true) {
   }
   const build: FirefoxRuntimeBuild = {
     platform, arch: platform === "darwin" ? "arm64" : "x64",
-    executablePath: platform === "darwin" ? "Vela Browser.app/Contents/MacOS/aliasmode" : "aliasmode",
+    executablePath: platform === "darwin" ? "AliasMode.app/Contents/MacOS/aliasmode" : "aliasmode",
     archiveSha256: hash("approved archive"), executableSha256: hash("approved executable"),
   };
   const extract = async (_archive: string, destination: string) => {

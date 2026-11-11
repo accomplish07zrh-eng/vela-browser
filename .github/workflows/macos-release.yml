@@ -73,7 +73,7 @@ jobs:
           done
           # One checksum file lists both Macs' files; the installer picks its own line.
           mkdir assets
-          mv aarch64/Vela Browser_* x64/Vela Browser_* assets/
+          mv "aarch64/Vela Browser_"* "x64/Vela Browser_"* assets/
           cat aarch64/SHA256SUMS-macos.txt x64/SHA256SUMS-macos.txt > assets/SHA256SUMS-macos.txt
           (cd assets && sha256sum --check --strict SHA256SUMS-macos.txt)
       - name: Sign the update archives and write the macOS update feeds

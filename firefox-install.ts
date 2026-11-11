@@ -22,12 +22,12 @@ export const FIREFOX_RUNTIME_BUILDS: readonly FirefoxRuntimeBuild[] = [
     executableSha256: "fba911c6baa1e73d19187bf5242faf42d33c22d5204ec761cb913f8818816bb7",
   },
   {
-    platform: "darwin", arch: "arm64", executablePath: "Vela Browser.app/Contents/MacOS/aliasmode",
+    platform: "darwin", arch: "arm64", executablePath: "AliasMode.app/Contents/MacOS/aliasmode",
     archiveSha256: "64b56f0c6a8aa0a9e4ec2ffe058060131dfd385692747a717fabea6c4d2424bc",
     executableSha256: "2ae46440c758f1dfc74c2be6f5fd95f9bc85f60cab6ae8afbc2e4c4762ff3c05",
   },
   {
-    platform: "darwin", arch: "x64", executablePath: "Vela Browser.app/Contents/MacOS/aliasmode",
+    platform: "darwin", arch: "x64", executablePath: "AliasMode.app/Contents/MacOS/aliasmode",
     archiveSha256: "ce4cca8228ab48fb711166be8933b6cb118dfa5660f87eed16a3334d64a9c42f",
     executableSha256: "6dddcdbb8c93f1b9bc3f57276c1846f11df5b3cd7a63869489db393e6a402edf",
   },

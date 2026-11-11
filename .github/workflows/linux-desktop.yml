@@ -356,7 +356,7 @@ jobs:
           # Closing the window with a browser still open asks first, then closes that browser
           # and stops the sidecar.
           pgrep -f "profiles/$profile" >/dev/null
-          wmctrl -c Vela Browser
+          wmctrl -c "Vela Browser"
           dialog=""
           for attempt in $(seq 1 30); do
             dialog="$(xdotool search --name "Close Vela Browser" 2>/dev/null | head -n 1 || true)"
@@ -441,7 +441,7 @@ jobs:
           import -window root "$evidence/link-new-profile.png" || true
           cat "$OPENED"
           desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
-          wmctrl -c Vela Browser
+          wmctrl -c "Vela Browser"
           for attempt in $(seq 1 60); do kill -0 "$desktop" 2>/dev/null || break; sleep 1; done
           ! kill -0 "$desktop" 2>/dev/null
           curl -sf -m 60 -X DELETE "$wd/session/$session" >/dev/null || true
@@ -518,7 +518,7 @@ jobs:
           data="$(find src-tauri/target/release/bundle/deb -mindepth 2 -maxdepth 2 -type d -name data | head -n 1)"
           cp -a "$data/usr" "$work/Vela Browser"
           archive="Vela Browser_${successor}_x86_64-linux.tar.gz"
-          tar --hard-dereference -czf "$work/$archive" -C "$work" Vela Browser
+          tar --hard-dereference -czf "$work/$archive" -C "$work" "Vela Browser"
           rm -rf "$work/Vela Browser" src-tauri/target/release/bundle/deb
           TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null
           url="https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v$successor/$archive"

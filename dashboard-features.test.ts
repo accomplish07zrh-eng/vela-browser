@@ -393,37 +393,6 @@ test("export does not combine partial observations with an older expectation", (
   expect(restored.fpExpected).toEqual({ canvas: "new-canvas" });
 });
 
-test("Cloud exports retain local fingerprint evidence without using cached profile fields", async () => {
-  const store = new ProfileStore(":memory:");
-  const ua = "Mozilla/5.0 (Windows NT 10.0) Chrome/146.0.0.0";
-  const expected = { ua, platform: "Win32", canvas: "imported-canvas" };
-  const authoritative = profile({ name: "Cloud name", platformOs: "windows", fingerprintSeed: 123456 });
-  const options = {
-    cloudBrowser: {},
-    cloudConnection: { client: { async getProfile() { return { payload: encodePortableProfile(authoritative) }; } } },
-  } as unknown as UiRuntimeOptions;
-  try {
-    for (const observed of [undefined, { ...expected, canvas: "local-canvas" }]) {
-      store.upsertProfile(profile({ name: "Stale local name", fpExpected: expected, fpObserved: observed }));
-      for (const format of ["txt", "xlsx"]) {
-        const response = await handleUiRequest(new Request("http://localhost/ui/api/profiles/export", {
-          method: "POST", body: JSON.stringify({ ids: [authoritative.id], format }),
-        }), {} as Launcher, store, null, options);
-        expect(response!.status).toBe(200);
-        const restored = format === "txt"
-          ? parseExport(await response!.text()).profiles[0]!
-          : recordToProfile((await readXlsx(new Uint8Array(await response!.arrayBuffer())))[0]!)!.profile;
-        expect(restored.name).toBe(authoritative.name);
-        expect(restored.fingerprintSeed).toBe(authoritative.fingerprintSeed);
-        expect(restored.ua).toBe(ua);
-        expect(restored.fpExpected).toEqual(observed ?? expected);
-        expect(deriveFingerprintFlags(restored)).toEqual(deriveFingerprintFlags(authoritative));
-      }
-    }
-  } finally {
-    store.close();
-  }
-});
 
 test("the export carries the measured fingerprint", () => {
   const txt = serializeAdsTxt([

@@ -70,7 +70,7 @@ jobs:
             "$venv/bin/pip" install --quiet --require-hashes --only-binary :all: -r src-tauri/macos/dmg-requirements.txt &&
             "$venv/bin/dmgbuild" -s src-tauri/macos/dmg-settings.py \
               -D app="$BUNDLE/macos/Vela Browser.app" -D background=src-tauri/macos/dmg-background.png \
-              Vela Browser "$dmg"; then
+              "Vela Browser" "$dmg"; then
             echo "dmgbuild made the styled disk image"
           else
             echo "::warning::dmgbuild failed; making a plain disk image"
@@ -79,7 +79,7 @@ jobs:
             ditto "$BUNDLE/macos/Vela Browser.app" "$stage/Vela Browser.app"
             ln -s /Applications "$stage/Applications"
             for attempt in 1 2 3; do
-              hdiutil create -volname Vela Browser -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" && break
+              hdiutil create -volname "Vela Browser" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" && break
               [[ "$attempt" == 3 ]] && exit 1
               sleep 30
             done
@@ -98,7 +98,7 @@ jobs:
           # Python scripts download their runtime on first use; the app carries no Python.
           test ! -e "$app/Contents/Resources/playwright/python"
           codesign --verify --deep --strict --verbose=2 "$app"
-          codesign --verify --deep --strict --verbose=2 "$app/Contents/Resources/firefox/Vela Browser.app"
+          codesign --verify --deep --strict --verbose=2 "$app/Contents/Resources/firefox/AliasMode.app"
           codesign --display --verbose=2 "$app" 2>&1 | grep -E "Signature|flags|Identifier"
           # An ad-hoc signature has no notarization, so Gatekeeper is expected to reject it.
           spctl --assess --type execute -vv "$app" || true
@@ -111,7 +111,7 @@ jobs:
           files="$RUNNER_TEMP/release/v$version"
           mkdir -p "$files"
           cp "$BUNDLE/dmg/Vela Browser_${version}_${ARCH}.dmg" "$files/"
-          tar -czf "$files/Vela Browser_${version}_${ARCH}.app.tar.gz" -C "$BUNDLE/macos" Vela Browser.app
+          tar -czf "$files/Vela Browser_${version}_${ARCH}.app.tar.gz" -C "$BUNDLE/macos" "Vela Browser.app"
           (cd "$files" && shasum -a 256 "Vela Browser_${version}_${ARCH}.app.tar.gz" "Vela Browser_${version}_${ARCH}.dmg" > SHA256SUMS-macos.txt)
           cat "$files/SHA256SUMS-macos.txt"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -129,14 +129,14 @@ jobs:
             echo "the installer accepted a damaged download"
             exit 1
           fi
-          test ! -e /Applications/Vela Browser.app
+          test ! -e "/Applications/Vela Browser.app"
           export ALIASMODE_RELEASE_BASE="file://$RUNNER_TEMP/release"
           bash scripts/install-macos.sh --version "$version"
           # A second run must find the installed version and change nothing.
-          before="$(stat -f %m /Applications/Vela Browser.app)"
+          before="$(stat -f %m "/Applications/Vela Browser.app")"
           bash scripts/install-macos.sh --version "$version"
-          test "$before" = "$(stat -f %m /Applications/Vela Browser.app)"
-          codesign --verify --deep --strict /Applications/Vela Browser.app
+          test "$before" = "$(stat -f %m "/Applications/Vela Browser.app")"
+          codesign --verify --deep --strict "/Applications/Vela Browser.app"
           test -z "$(xattr -p com.apple.quarantine /Applications/Vela Browser.app 2>/dev/null)"
       - name: Start the app, open both engines and quit
         shell: bash
@@ -450,7 +450,7 @@ jobs:
           jq -n --arg pubkey "$(cat "$work/update.key.pub")" '{plugins: {updater: {pubkey: $pubkey}}}' > "$work/test-key.json"
           bun run desktop:prepare:macos
           bunx tauri build --bundles app --config "$work/test-key.json"
-          ditto "$BUNDLE/macos/Vela Browser.app" /Applications/Vela Browser.app
+          ditto "$BUNDLE/macos/Vela Browser.app" "/Applications/Vela Browser.app"
       - name: Build and sign the successor version
         shell: bash
         run: |
@@ -469,7 +469,7 @@ jobs:
           bun run desktop:prepare:macos
           bunx tauri build --bundles app --config "$work/test-key.json"
           archive="Vela Browser_${successor}_${ARCH}.app.tar.gz"
-          tar -czf "$work/$archive" -C "$BUNDLE/macos" Vela Browser.app
+          tar -czf "$work/$archive" -C "$BUNDLE/macos" "Vela Browser.app"
           TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null
           url="https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v$successor/$archive"
           jq -n --arg version "$successor" --arg url "$url" --arg signature "$(cat "$work/$archive.sig")" --arg target "$UPDATE_TARGET" \

@@ -36,7 +36,7 @@ export async function prepareMacosBundle(cwd = process.cwd()): Promise<void> {
   renameSync(resolve(firefox.path, ...build.executablePath.split("/").map(() => "..")), firefoxRoot);
   // The published engine bundle has no resource seal, so macOS reports its signature as broken.
   // Seal it after the pinned hashes passed; the packaged hash below is the sealed executable.
-  await run(["codesign", "--force", "--deep", "--sign", "-", join(firefoxRoot, "Vela Browser.app")]);
+  await run(["codesign", "--force", "--deep", "--sign", "-", join(firefoxRoot, "AliasMode.app")]);
   const firefoxSha256 = await sha256File(join(firefoxRoot, build.executablePath));
 
   cpSync(await installSourceNode(staging), join(playwrightRoot, "node", "node"));
