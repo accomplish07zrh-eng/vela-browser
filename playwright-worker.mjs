@@ -1201,6 +1201,20 @@ async function searchProvider(chromium, payload) {
   });
 }
 
+/** Only used in a locally fulfilled, network-blocked diagnostic document. */
+export function fingerprintDocument(expression) {
+  const source = JSON.stringify(expression).replace(/</g, "\\u003c");
+  return `<!doctype html><meta charset=utf-8><title>Fingerprint</title><pre hidden id=__aliasmode_fingerprint_result__></pre><script>
+    Promise.resolve().then(() => (0, eval)(${source})).then(
+      value => ({ value }), error => ({ error: String(error) })
+    ).then(result => {
+      const output = document.getElementById('__aliasmode_fingerprint_result__');
+      output.textContent = JSON.stringify(result);
+      output.dataset.ready = 'true';
+    });
+  </script>`;
+}
+
 export async function operatePersistentContext(browser, context, operation, payload, options = {}) {
   const timeout = Math.max(1, Math.min(Number(payload.connectTimeoutMs) || 30_000, 120_000));
   if (operation === "session-capture") {
@@ -1244,7 +1258,10 @@ export async function operatePersistentContext(browser, context, operation, payl
     const page = await context.newPage();
     try {
       await page.goto("https://example.com", { waitUntil: "domcontentloaded", timeout: payload.timeoutMs }).catch(() => {});
-      const fingerprint = await page.evaluate(payload.fingerprintScript).catch(() => ({ errors: { probe: "diagnostic probe failed" } }));
+      const fingerprint = await operatePersistentContext(browser, context, "page", {
+        kind: "fingerprint", fingerprintScript: payload.fingerprintScript,
+        connectTimeoutMs: payload.timeoutMs,
+      }, options).catch(() => ({ errors: { probe: "diagnostic probe failed" } }));
       const webrtcIps = await page.evaluate(payload.webrtcScript).catch(() => []);
       let egress = null;
       for (const url of payload.egressUrls) {
@@ -1273,14 +1290,19 @@ export async function operatePersistentContext(browser, context, operation, payl
     const handler = async (route) => {
       if (route.request().url() !== url) return route.abort();
       intercepted = true;
-      return route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Fingerprint</title>" });
+      return route.fulfill({ status: 200, contentType: "text/html", body: fingerprintDocument(payload.fingerprintScript) });
     };
     try {
       await page.route("**/*", handler);
       if (empty) await replaceDocument(page, url, timeout);
       else await page.goto(url, { waitUntil: "domcontentloaded", timeout });
       if (!intercepted || page.url() !== url) throw new Error("fingerprint document was not fulfilled locally");
-      return await page.evaluate(payload.fingerprintScript);
+      // Juggler evaluates in a privileged sandbox whose Xray wrappers forbid
+      // reading page TypedArrays. Run the probe in the owned document's realm;
+      // automation reads only its JSON string. No site API is replaced.
+      const result = JSON.parse(await page.locator("#__aliasmode_fingerprint_result__[data-ready=true]").textContent({ timeout }));
+      if (result.error) throw new Error(result.error);
+      return result.value;
     } finally {
       if (empty) await replaceDocument(page, "about:blank", 5_000).catch(() => {});
       await page.unroute("**/*", handler).catch(() => {});

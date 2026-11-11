@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -164,7 +164,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -393,7 +393,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -546,7 +546,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-firefox-windows-x64
@@ -634,7 +634,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -722,7 +722,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -796,7 +796,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
@@ -880,20 +880,20 @@ jobs:
           foreach ($name in @("CLOAKBROWSER_BINARY_PATH", "CLOAKBROWSER_BINARY_SHA256")) {
             [Environment]::SetEnvironmentVariable($name, $null, "Process")
           }
-          # No CloakBrowser is bundled: the first Cloud profile downloads the pinned build on first use.
+          # No CloakBrowser is bundled: the first local profile downloads the pinned build on first use.
           Push-Location $smoke
           try {
-            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --headless --state-root "$smoke\cloud-state"
-            if ($LASTEXITCODE -ne 0) { throw "Cloud launcher smoke exited with code $LASTEXITCODE" }
+            & ".\aliasmode-sidecar.exe" __browser-lifecycle-smoke --headless --state-root "$smoke\browser-state"
+            if ($LASTEXITCODE -ne 0) { throw "Local browser lifecycle smoke exited with code $LASTEXITCODE" }
           } finally {
             Pop-Location
           }
-          $browserPath = Get-Item -LiteralPath "$smoke\cloud-state\runtimes\cloakbrowser-146.0.7680.177.5\chrome.exe"
+          $browserPath = Get-Item -LiteralPath "$smoke\browser-state\runtimes\cloakbrowser-146.0.7680.177.5\chrome.exe"
           $browserSha256 = (Get-FileHash -LiteralPath $browserPath.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($browserSha256 -cne "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80") {
             throw "downloaded CloakBrowser does not match its pin"
           }
-          if (@(Get-ChildItem -LiteralPath "$smoke\cloud-state\runtimes" -Force | Where-Object Name -Like ".*").Count -ne 0) {
+          if (@(Get-ChildItem -LiteralPath "$smoke\browser-state\runtimes" -Force | Where-Object Name -Like ".*").Count -ne 0) {
             throw "CloakBrowser download left a partial or temporary file"
           }
           $browser = Start-Process -PassThru $browserPath.FullName -ArgumentList @(
@@ -933,13 +933,13 @@ jobs:
           $env:CLOAKBROWSER_BINARY_SHA256 = $browserSha256
           Push-Location $smoke
           try {
-            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --proxy-mismatch --headless --state-root "$smoke\proxy-mismatch-state"
+            & ".\aliasmode-sidecar.exe" __browser-lifecycle-smoke --proxy-mismatch --headless --state-root "$smoke\proxy-mismatch-state"
             if ($LASTEXITCODE -ne 0) { throw "deterministic proxy mismatch smoke exited with code $LASTEXITCODE" }
-            # A Cloud V3 payload must download and open the Chromium 155 beta, not CloakBrowser.
-            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --chromium-runtime aliasmode --headless --state-root "$smoke\cloud-beta-state"
-            if ($LASTEXITCODE -ne 0) { throw "Cloud Chromium 155 beta smoke exited with code $LASTEXITCODE" }
-            if (-not (Test-Path -LiteralPath "$smoke\cloud-beta-state\runtimes\chromium-155.0.8059.85-aliasmode.5\155.0.8059.85.manifest" -PathType Leaf)) {
-              throw "Cloud Chromium 155 beta smoke did not install the beta runtime"
+            # A Chromium 155 profile must download and open the Chromium 155 beta, not CloakBrowser.
+            & ".\aliasmode-sidecar.exe" __browser-lifecycle-smoke --chromium-runtime aliasmode --headless --state-root "$smoke\browser-beta-state"
+            if ($LASTEXITCODE -ne 0) { throw "Chromium 155 beta smoke exited with code $LASTEXITCODE" }
+            if (-not (Test-Path -LiteralPath "$smoke\browser-beta-state\runtimes\chromium-155.0.8059.85-aliasmode.5\155.0.8059.85.manifest" -PathType Leaf)) {
+              throw "Chromium 155 beta smoke did not install the beta runtime"
             }
           } finally {
             Pop-Location
@@ -986,7 +986,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-windows-full
@@ -1193,8 +1193,8 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  windows_accept_cloud:
-    name: Windows installed Cloud acceptance
+  windows_accept_local_upgrade:
+    name: Windows installed local upgrade acceptance
     needs: [windows_cache, windows_full]
     if: >-
       ${{
@@ -1219,23 +1219,23 @@ jobs:
         with:
           name: aliasmode-windows-full
           path: package
-      - name: Run installed Cloud acceptance
+      - name: Run installed local upgrade acceptance
         shell: pwsh
         env:
           WINDOWS_VERSION: ${{ needs.windows_cache.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
           & .\scripts\windows-installed-acceptance.ps1 `
-            -Shard cloud `
+            -Shard local-upgrade `
             -InstallerPath ".\package\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\package\SHA256SUMS.txt" `
             -BrowserMetadataPath ".\package\browser.json" `
-            -DiagnosticsPath ".\diagnostics\cloud.json"
-      - name: Upload Cloud acceptance diagnostics
+            -DiagnosticsPath ".\diagnostics\local-upgrade.json"
+      - name: Upload local upgrade acceptance diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aliasmode-windows-cloud-diagnostics-${{ github.run_attempt }}
+          name: aliasmode-windows-local-upgrade-diagnostics-${{ github.run_attempt }}
           path: diagnostics
           if-no-files-found: warn
           retention-days: 7
@@ -1249,7 +1249,7 @@ jobs:
       - windows_candidate
       - windows_accept_runtime
       - windows_accept_browser
-      - windows_accept_cloud
+      - windows_accept_local_upgrade
     if: >-
       ${{
         always() &&
@@ -1261,7 +1261,7 @@ jobs:
         needs.windows_candidate.result == 'success' &&
         needs.windows_accept_runtime.result == 'success' &&
         needs.windows_accept_browser.result == 'success' &&
-        needs.windows_accept_cloud.result == 'success'
+        needs.windows_accept_local_upgrade.result == 'success'
       }}
     runs-on: windows-latest
     steps:
@@ -1269,7 +1269,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-windows-candidate
@@ -1317,7 +1317,7 @@ jobs:
       - windows_candidate
       - windows_accept_runtime
       - windows_accept_browser
-      - windows_accept_cloud
+      - windows_accept_local_upgrade
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1335,7 +1335,7 @@ jobs:
           CANDIDATE_RESULT: ${{ needs.windows_candidate.result }}
           RUNTIME_RESULT: ${{ needs.windows_accept_runtime.result }}
           BROWSER_RESULT: ${{ needs.windows_accept_browser.result }}
-          CLOUD_RESULT: ${{ needs.windows_accept_cloud.result }}
+          LOCAL_UPGRADE_RESULT: ${{ needs.windows_accept_local_upgrade.result }}
         run: |
           set -euo pipefail
           require_result() {
@@ -1350,7 +1350,7 @@ jobs:
 
           if [[ "$WINDOWS_PIPELINE" != "true" ]]; then
             # A push or pull request: no Windows job may have run.
-            for result in "$FIREFOX_RESULT" "$CACHE_RESULT" "$SUCCESSOR_RESULT" "$PREPARE_RESULT" "$FULL_RESULT" "$SLIM_RESULT" "$SOURCE_RESULT" "$CANDIDATE_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$CLOUD_RESULT"; do
+            for result in "$FIREFOX_RESULT" "$CACHE_RESULT" "$SUCCESSOR_RESULT" "$PREPARE_RESULT" "$FULL_RESULT" "$SLIM_RESULT" "$SOURCE_RESULT" "$CANDIDATE_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$LOCAL_UPGRADE_RESULT"; do
               require_result "Windows pipeline job" "$result" skipped
             done
             echo "The Windows pipeline runs only on a manual dispatch. Run Client CI on main before a release."
@@ -1364,7 +1364,7 @@ jobs:
           require_result windows_source "$SOURCE_RESULT" success
           require_result windows_accept_runtime "$RUNTIME_RESULT" success
           require_result windows_accept_browser "$BROWSER_RESULT" success
-          require_result windows_accept_cloud "$CLOUD_RESULT" success
+          require_result windows_accept_local_upgrade "$LOCAL_UPGRADE_RESULT" success
 
           case "$CACHE_HIT" in
             true)

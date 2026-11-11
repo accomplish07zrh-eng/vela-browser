@@ -70,6 +70,17 @@ test("expectationFromRecord round-trips attestationFields", () => {
   expect(back).toEqual(OBSERVED);
 });
 
+test("extended readbacks survive exports and participate in restart attestation", () => {
+  const extended = { ...OBSERVED, canvasPixels: "pixels", webglImage: "gl", fonts: "font-set", textMetrics: "metrics", audioSamples: "samples", consistency: '{"canvas":true,"audio":true}' };
+  expect(expectationFromRecord(attestationFields(extended))).toEqual(extended);
+  for (const field of ["canvasPixels", "webglImage", "fonts", "textMetrics", "audioSamples"] as const) {
+    const result = compareAttestation(extended, { ...extended, [field]: "changed" });
+    expect(result.verdict).toBe("mismatch");
+    expect(result.differences[0]?.field).toBe(field);
+  }
+  expect(compareAttestation(extended, { ...extended, consistency: '{"canvas":false}' }).verdict).toBe("match");
+});
+
 test("expectationFromRecord returns null when a record carries no fp_ keys", () => {
   expect(expectationFromRecord({ id: "abc", ua: "x" })).toBeNull();
 });

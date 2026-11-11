@@ -62,7 +62,12 @@ export function isDisplayScale(value: unknown): value is number {
 export function assertValidProfile(value: unknown): asserts value is Profile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("profile must be an object");
   const profile = value as Record<string, unknown>;
-  normalizeProfileEngine(profile.engine, profile.firefox);
+  normalizeProfileEngine(profile.engine, profile.firefox, profile.webkit);
+  if (profile.engine === "webkit") {
+    if (profile.hardware !== undefined) throw new Error("WebKit does not support hardware fingerprint overrides");
+    if (Array.isArray(profile.extensions) && profile.extensions.length) throw new Error("WebKit does not support Chrome extensions");
+    if (profile.chromiumRuntime || profile.displayScale !== undefined) throw new Error("WebKit cannot use Chromium settings");
+  }
   normalizeProfileHardware(profile.hardware);
   if (profile.timezoneManual !== undefined && profile.timezoneManual !== true) throw new Error("profile timezoneManual must be true when present");
   if (profile.displayScale !== undefined && !isDisplayScale(profile.displayScale)) throw new Error("profile displayScale must be a number from 1 to 5");

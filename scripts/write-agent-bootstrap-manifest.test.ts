@@ -9,7 +9,7 @@ import { buildAgentBootstrapManifest } from "./write-agent-bootstrap-manifest.ts
 test("agent bootstrap manifest pins an exact installer URL and SHA-256", () => {
   const dir = mkdtempSync(join(tmpdir(), "aliasmode-agent-manifest-"));
   const name = `Vela Browser_${ALIASMODE_VERSION}_x64-offline-setup.exe`;
-  const releaseBase = `https://github.com/aliasmode/aliasmode/releases/download/v${ALIASMODE_VERSION}`;
+  const releaseBase = `https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v${ALIASMODE_VERSION}`;
   try {
     const installer = join(dir, name);
     writeFileSync(installer, "installer");
@@ -29,7 +29,7 @@ test("agent bootstrap manifest pins an exact installer URL and SHA-256", () => {
     });
     expect(() => buildAgentBootstrapManifest({
       installer,
-      releaseBase: "https://github.com/aliasmode/aliasmode/releases/latest",
+      releaseBase: "https://github.com/accomplish07zrh-eng/vela-browser/releases/latest",
     })).toThrow("exact Vela Browser GitHub Release URL");
   } finally {
     rmSync(dir, { recursive: true, force: true });

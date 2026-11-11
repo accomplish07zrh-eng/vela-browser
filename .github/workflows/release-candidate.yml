@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - name: Validate candidate source run
         id: source_run
         shell: pwsh
@@ -297,7 +297,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -519,7 +519,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -708,7 +708,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-release-provenance
@@ -774,7 +774,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
@@ -865,7 +865,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-signed-current

@@ -78,7 +78,7 @@ export interface CloudParkedSession {
 
 export interface CloudBrowserProfile {
   id: string;
-  engine?: "chromium" | "firefox";
+  engine?: "chromium" | "firefox" | "webkit";
   name: string;
   group: string;
   platform: string;
@@ -542,7 +542,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           );
           return {
             id: profile.id,
-            ...(cached?.engine === "firefox" ? { engine: "firefox" as const } : {}),
+            ...(cached?.engine === "firefox" || cached?.engine === "webkit" ? { engine: cached.engine } : {}),
             ...(cached?.chromiumRuntime ? { chromiumRuntime: cached.chromiumRuntime } : {}),
             name: profile.name,
             group: profile.group,
@@ -556,7 +556,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
             screen: "",
             has2fa: false,
             running: !!launch,
-            ...(launch?.engine === "firefox" ? {} : { debugPort: launch?.debugPort }),
+            ...(launch?.engine === "firefox" || launch?.engine === "webkit" ? {} : { debugPort: launch?.debugPort }),
             startedAt: launch?.startedAt,
             ...(stored && launchIdentityChanged(stored, launch) ? { restartPending: true } : {}),
             lockedBy: otherActiveOpens.length > 0

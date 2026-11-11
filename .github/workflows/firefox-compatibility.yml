@@ -86,7 +86,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
@@ -187,9 +187,9 @@ jobs:
             }
           ' $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" __cloud-launcher-smoke --headless --state-root $proof
+          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" __browser-lifecycle-smoke --headless --state-root $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" __cloud-launcher-smoke --engine firefox --headless --state-root $proof
+          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" __browser-lifecycle-smoke --engine firefox --headless --state-root $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "ALIASMODE_SOURCE_RUNTIME_ROOT=$proof" | Add-Content $env:GITHUB_ENV
       - name: Diagnose Windows source setup failure
@@ -272,7 +272,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
@@ -377,16 +377,16 @@ jobs:
           ' "$proof"
           # GitHub's Ubuntu runner blocks Chromium's user namespaces.
           if [[ "${{ matrix.platform }}" == "linux" ]]; then
-            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __cloud-launcher-smoke --headless --no-sandbox --state-root "$proof"
+            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __browser-lifecycle-smoke --headless --no-sandbox --state-root "$proof"
           else
-            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __cloud-launcher-smoke --headless --state-root "$proof"
+            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __browser-lifecycle-smoke --headless --state-root "$proof"
           fi
-          # A Cloud V3 payload on Apple Silicon must download and open Vela Browser's own Mac Chromium 155 build.
+          # A Chromium 155 profile on Apple Silicon must download and open Vela Browser's own Mac Chromium 155 build.
           if [[ "${{ matrix.platform }}" == "darwin" && "${{ matrix.architecture }}" == "arm64" ]]; then
-            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __cloud-launcher-smoke --chromium-runtime aliasmode --headless --state-root "$proof/cloud-beta-state"
-            test -x "$proof/cloud-beta-state/runtimes/chromium-155.0.8059.85-aliasmode.5/Chromium.app/Contents/MacOS/Chromium"
+            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __browser-lifecycle-smoke --chromium-runtime aliasmode --headless --state-root "$proof/browser-beta-state"
+            test -x "$proof/browser-beta-state/runtimes/chromium-155.0.8059.85-aliasmode.5/Chromium.app/Contents/MacOS/Chromium"
           fi
-          bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __cloud-launcher-smoke --engine firefox --headless --state-root "$proof"
+          bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __browser-lifecycle-smoke --engine firefox --headless --state-root "$proof"
           printf 'ALIASMODE_SOURCE_RUNTIME_ROOT=%s\n' "$proof" >> "$GITHUB_ENV"
       # The previous runtime has no Intel package.
       - name: Install previous macOS runtime for profile upgrade proof

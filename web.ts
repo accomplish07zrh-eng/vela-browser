@@ -12,16 +12,10 @@ import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { RemoteCoordinator } from "./remote.ts";
 import type { AppConfigStore } from "./app-config.ts";
-import type { CloudAuthRuntime } from "./cloud-auth.ts";
-import type { CloudConnectionRuntime } from "./cloud-connection.ts";
-import type { CloudBrowserLifecycle } from "./cloud-browser.ts";
-import type { McpTunnelLifecycle } from "./mcp-tunnel.ts";
-import type { PendingSyncRuntime } from "./pending-sync.ts";
 import type { StatePaths } from "./paths.ts";
 import {
   handleRequest,
   handleRemoteBrowserControl,
-  handleCloudBrowserControl,
   handleAutomationHealthSnapshot,
   isAdsPowerBrowserControl,
   isLoopbackAddress,
@@ -31,10 +25,11 @@ import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
+import { WorkbenchHub, WORKBENCH_PATH, WORKBENCH_PROTOCOL, validWorkbenchAuthorization, type WorkbenchConnection } from "./workbench.ts";
 
-import { exitTimezoneForEdit, handleUserApi, profileWithEdits, type ProfileRoster } from "./adspower-users.ts";
-import { proxyUrl } from "./proxy.ts";
-import { CloudProfileEditor } from "./cloud-profile-editor.ts";
+import {
+  handleUserApi,
+} from "./adspower-users.ts";
 import {
   AGENT_CONTROL_MAX_MESSAGE_BYTES,
   AGENT_CONTROL_PATH,
@@ -50,18 +45,22 @@ import {
 } from "./lifecycle-admission.ts";
 
 export interface DashboardServerOptions {
+  /** @deprecated Account runtimes are retired; production entry points ignore these fields. */
+  cloudAuth?: import("./cloud-auth.ts").CloudAuthRuntime;
+  cloudConnection?: import("./cloud-connection.ts").CloudConnectionRuntime;
+  cloudBrowser?: import("./cloud-browser.ts").CloudBrowserLifecycle;
+  pendingSync?: import("./pending-sync.ts").PendingSyncRuntime;
+  mcpTunnel?: import("./mcp-tunnel.ts").McpTunnelLifecycle;
+  defaultCloudUrl?: string;
+
   launcher: Launcher;
   store: ProfileStore;
   /** When set, the dashboard routes profiles/open/close/import/move via the hub. */
   remote?: RemoteCoordinator | null;
   appConfig?: AppConfigStore;
   paths?: StatePaths;
-  defaultCloudUrl?: string;
-  cloudAuth?: CloudAuthRuntime;
-  cloudConnection?: CloudConnectionRuntime;
-  pendingSync?: PendingSyncRuntime;
-  cloudBrowser?: CloudBrowserLifecycle;
-  mcpTunnel?: McpTunnelLifecycle;
+
+
   port?: number;
   /**
    * Bind address. Loopback only by default — the dashboard and API are
@@ -79,7 +78,7 @@ export interface DashboardServerOptions {
 
 type AgentSocketData = {
   session: AgentControlSession;
-};
+} | { workbench: WorkbenchConnection };
 
 function escapeHtml(s: unknown): string {
   return String(s ?? "").replace(/[&<>"]/g, (c) => (({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }) as Record<string, string>)[c]!);
@@ -93,10 +92,10 @@ function escapeHtml(s: unknown): string {
 function renderProfileCard(store: ProfileStore, id: string): Response {
   const p = store.getProfile(id);
   if (!p) return new Response("unknown profile", { status: 404, headers: { "content-type": "text/plain" } });
-  const engine = typeof p === "object" && "engine" in p && p.engine === "firefox" ? "firefox" : "chromium";
+  const engine = p.engine ?? "chromium";
   // Named as in the dashboard.
-  const browser = engine === "firefox" ? "Vela Firefox" : p.chromiumRuntime ? "Vela Chromium" : "CloakBrowser";
-  const capabilities = engine === "firefox"
+  const browser = engine === "webkit" ? "WebKit · Experimental" : engine === "firefox" ? "Vela Firefox" : p.chromiumRuntime ? "Vela Chromium" : "CloakBrowser";
+  const capabilities = engine === "webkit" ? "Independent process and storage · native WebKit · limited fingerprint controls" : engine === "firefox"
     ? "Native Firefox profile · no CDP, PDF, or Chrome extensions"
     : "CDP, PDF, and Chrome extensions";
   // Same number the browser window title and identity bookmark show: the
@@ -140,22 +139,6 @@ function renderProfileCard(store: ProfileStore, id: string): Response {
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
-function cloudAutomationError(req: Request, opts: DashboardServerOptions): Response | null {
-  if (opts.appConfig?.read().mode !== "cloud" || opts.remote) return null;
-  const pathname = new URL(req.url).pathname;
-  if (
-    opts.cloudBrowser &&
-    (pathname === "/api/v1/status" || pathname === "/status" || isAdsPowerBrowserControl(pathname) ||
-      isCloudProfileRoute(req))
-  ) {
-    return null;
-  }
-  return Response.json(
-    { ok: false, error: "Vela Cloud does not expose this local API route" },
-    { status: 503 },
-  );
-}
-
 function automationHealthResponse(
   req: Request,
   clientAddress: string | undefined,
@@ -171,70 +154,20 @@ function automationHealthResponse(
   return handleAutomationHealthSnapshot(req, remote);
 }
 
-/** AdsPower list/create/update routes backed by Cloud folders and profiles. */
-function isCloudProfileRoute(req: Request): boolean {
-  const pathname = new URL(req.url).pathname;
-  return (req.method === "GET" && (pathname === "/api/v1/group/list" || pathname === "/api/v1/user/list")) ||
-    (req.method === "POST" && (pathname === "/api/v1/group/create" || pathname === "/api/v1/user/create" ||
-      pathname === "/api/v1/user/update"));
-}
-
 async function handleAutomationRequest(
   req: Request,
   opts: DashboardServerOptions,
   lifecycle: BrowserLifecycleContext,
 ): Promise<Response> {
   const { launcher, store } = opts;
-  if (!opts.remote && opts.cloudBrowser && isCloudProfileRoute(req)) {
-    const cloudBrowser = opts.cloudBrowser;
-    try {
-      const listGroups = async () => {
-        if (!opts.cloudConnection) throw new Error("Cloud connection is unavailable");
-        const { folders } = await opts.cloudConnection.client.listFolders();
-        return folders.filter((folder) => folder.archivedAt === null).map((folder) => folder.name);
-      };
-      const roster: ProfileRoster = {
-        listProfiles: async () => (await cloudBrowser.listRoster()).profiles,
-        listGroups,
-        createGroup: async (name) => {
-          if (!(await listGroups()).includes(name)) await opts.cloudConnection!.client.createFolder(name);
-        },
-        createProfile: (profile) => cloudBrowser.create(profile),
-        // Same paths as the Edit dialog: a profile open on this device is edited
-        // live and its session sync carries the change; a closed one is saved to Cloud.
-        updateProfile: async (id, edits) => {
-          if (cloudBrowser.canEditLive?.(id) === true) {
-            const live = store.getProfile(id);
-            if (!live) throw new Error(`no such profile: ${id}`);
-            const timezone = await exitTimezoneForEdit(live, edits);
-            if (!(await cloudBrowser.commitLiveEdit?.(profileWithEdits(live, edits, timezone)))) {
-              throw new Error("the browser just closed; retry the update");
-            }
-            return;
-          }
-          if (!opts.cloudConnection) throw new Error("Cloud connection is unavailable");
-          const editor = new CloudProfileEditor(opts.cloudConnection.client, store);
-          const { expectedVersion } = await editor.get(id);
-          // The Cloud editor takes the Edit dialog's proxy text and looks up the new proxy's timezone.
-          const { proxy, ...set } = edits;
-          await editor.save(id, expectedVersion, "proxy" in edits ? { ...set, proxy: proxy ? proxyUrl(proxy) : "" } : set);
-        },
-      };
-      const users = await handleUserApi(req, launcher, store, null, undefined, roster);
-      if (users) return users;
-    } catch (error) {
-      return Response.json({ code: -1, msg: error instanceof Error ? error.message : String(error), data: {} });
-    }
-  }
+
   const users = await handleUserApi(req, launcher, store, opts.remote);
   if (users) return users;
   const pathname = new URL(req.url).pathname;
   if (opts.remote && isAdsPowerBrowserControl(pathname)) {
     return handleRemoteBrowserControl(req, opts.remote, launcher, store, lifecycle);
   }
-  if (opts.cloudBrowser && isAdsPowerBrowserControl(pathname)) {
-    return handleCloudBrowserControl(req, opts.cloudBrowser, launcher, store, lifecycle);
-  }
+
   return handleRequest(req, launcher, store, lifecycle);
 }
 
@@ -253,8 +186,6 @@ export function serveAutomationApi(opts: Omit<DashboardServerOptions, "hostname"
         const health = automationHealthResponse(req, server.requestIP(req)?.address, opts.remote);
         if (health) return health;
         return dispatchWithLifecycleAdmission(req, admission, async () => {
-          const cloudError = cloudAutomationError(req, opts);
-          if (cloudError) return cloudError;
           return handleAutomationRequest(req, opts, lifecycle);
         });
       },
@@ -279,23 +210,34 @@ export function serveDesktopAutomationApi(opts: Omit<DashboardServerOptions, "ho
 
 export function serveDashboard(opts: DashboardServerOptions) {
   const { launcher, store, port = 50400, hostname = "127.0.0.1" } = opts;
-  const runtimeMode = opts.appConfig?.read().mode;
+  const runtimeMode = "local" as const;
   const log = opts.log ?? ((m) => console.log(`[aliasmode] ${m}`));
   const admission = opts.lifecycleAdmission ?? new LifecycleAdmissionController(opts.lifecycleAdmissionOptions);
   const lifecycle = { admission };
   const agentNonce = opts.agentNonce;
+  const workbenchHub = agentNonce ? new WorkbenchHub({
+    launcher, store,
+    canControl: async (id) => {
+
+      if (opts.remote) {
+        const profile = (await opts.remote.listRoster()).profiles.find((item) => item.id === id);
+        return !!profile && !profile.lockedBy;
+      }
+      return true;
+    },
+  }) : undefined;
   const agentHub = agentNonce
     ? new AgentControlHub({
         launcher,
         store,
         admission,
         remote: opts.remote,
-        cloudBrowser: opts.cloudBrowser,
-        cloudConnection: opts.cloudConnection,
+
+
         log,
       })
     : undefined;
-  const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, runtimeMode === "cloud", opts.cloudConnection, opts.defaultCloudUrl) : undefined;
+  const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, false) : undefined;
   // The desktop app downloads Python for Python scripts; a source checkout uses python3.
   const python = library && resolvePlaywrightRuntime().kind === "packaged"
     ? new PythonRuntime(join(opts.paths!.root, "runtimes"), { log })
@@ -304,7 +246,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
     library, nonce: agentNonce, python,
     runner: new ScriptSupervisor({
       root: opts.paths!.root, library, launcher, store, admission, python,
-      remote: opts.remote, cloudBrowser: opts.cloudBrowser, cloudConnection: opts.cloudConnection, log,
+      remote: opts.remote,   log,
     }),
   } : undefined;
   if (library && python) {
@@ -324,18 +266,46 @@ export function serveDashboard(opts: DashboardServerOptions) {
     routes: { "/": index },
     websocket: {
       maxPayloadLength: AGENT_CONTROL_MAX_MESSAGE_BYTES,
+      open(socket) {
+        if ("workbench" in socket.data) {
+          void socket.data.workbench.start((value) => {
+            if ((value as { type?: string }).type === "frame" && socket.getBufferedAmount() > 2 * 1024 * 1024) return;
+            socket.send(JSON.stringify(value));
+          });
+        }
+      },
       message(socket, message) {
+        if ("workbench" in socket.data) {
+          if (typeof message !== "string" || message.length > 300_000) { socket.close(1009); return; }
+          try { void socket.data.workbench.enqueue(JSON.parse(message)); } catch { socket.close(1007); }
+          return;
+        }
         const raw = typeof message === "string" ? message : new Uint8Array(message);
         void socket.data.session.enqueue(raw).then((response) => {
           socket.send(JSON.stringify(response));
         });
       },
       close(socket) {
+        if ("workbench" in socket.data) { void socket.data.workbench.dispose(); return; }
         void socket.data.session.disconnect();
       },
     },
     fetch: async (req, server) => {
       const reqUrl = new URL(req.url);
+      if (reqUrl.pathname === WORKBENCH_PATH) {
+        if (!isLoopbackAddress(server.requestIP(req)?.address) || !agentNonce || !validWorkbenchAuthorization(req, agentNonce)) {
+          return Response.json({ ok: false, error: "Workbench authorization failed" }, { status: 403 });
+        }
+        if (!workbenchHub) return Response.json({ ok: false, error: "Workbench is unavailable" }, { status: 503 });
+        try {
+          const workbench = await workbenchHub.connect(reqUrl.searchParams.get("profileId") ?? "");
+          if (!server.upgrade(req, { data: { workbench }, headers: { "Sec-WebSocket-Protocol": WORKBENCH_PROTOCOL } })) {
+            await workbench.dispose();
+            return Response.json({ ok: false, error: "Workbench connection failed" }, { status: 400 });
+          }
+          return undefined;
+        } catch { return Response.json({ ok: false, error: "Environment is unavailable" }, { status: 409 }); }
+      }
       if ((reqUrl.pathname === "/ui/api/scripts" || reqUrl.pathname.startsWith("/ui/api/scripts/"))
         && !isLoopbackAddress(server.requestIP(req)?.address)) {
         return Response.json({ ok: false, error: "loopback access only" }, { status: 403 });
@@ -368,28 +338,19 @@ export function serveDashboard(opts: DashboardServerOptions) {
       // bound beyond loopback, this ingestion route remains local-only.
       const health = automationHealthResponse(req, server.requestIP(req)?.address, opts.remote);
       if (health) return health;
-      if (opts.cloudBrowser && req.method === "POST" && reqUrl.pathname === "/ui/api/profiles/update-file") {
-        // A large batch must retain its result connection until all Cloud writes finish.
-        server.timeout(req, 0);
-      }
+
 
       return dispatchWithLifecycleAdmission(req, admission, async () => {
         const ui = await handleUiRequest(req, launcher, store, opts.remote, {
           appConfig: opts.appConfig,
           paths: opts.paths,
-          defaultCloudUrl: opts.defaultCloudUrl,
-          cloudAuth: opts.cloudAuth,
-          cloudConnection: opts.cloudConnection,
-          pendingSync: opts.pendingSync,
-          cloudBrowser: opts.cloudBrowser,
-          mcpTunnel: opts.mcpTunnel,
+
+
           health: opts.health,
           scripts,
           runtimeMode,
         });
         if (ui) return ui;
-        const cloudError = cloudAutomationError(req, opts);
-        if (cloudError) return cloudError;
         // Per-profile identity "card" (AdsPower-style landing page). Opened as a tab and
         // pointed to by the bookmark, so an operator can always see which account a window is.
         if (reqUrl.pathname === "/card") return renderProfileCard(store, reqUrl.searchParams.get("id") ?? "");

@@ -127,6 +127,7 @@ export class ProfileStore {
       "root_start_time TEXT",
       "engine TEXT",
       "firefox_owner_json TEXT",
+      "webkit_owner_json TEXT",
       "owner_binary_path TEXT",
       "persona_json TEXT",
     ]) {
@@ -178,6 +179,7 @@ export class ProfileStore {
     for (const col of [
       "engine TEXT NOT NULL DEFAULT 'chromium'",
       "firefox_config_json TEXT NOT NULL DEFAULT ''",
+      "webkit_config_json TEXT NOT NULL DEFAULT ''",
       "chromium_runtime TEXT NOT NULL DEFAULT ''",
       "hardware_json TEXT NOT NULL DEFAULT ''",
       "timezone_manual INTEGER NOT NULL DEFAULT 0",
@@ -332,7 +334,7 @@ export class ProfileStore {
     const storedHardware = existing?.hardware_json || "";
     if (!p.hardware && storedHardware) p = { ...p, hardware: JSON.parse(storedHardware) };
     if (!this.getLaunch(p.id)) p = completeProfileFingerprint(p);
-    const browser = normalizeProfileEngine(p.engine, p.firefox);
+    const browser = normalizeProfileEngine(p.engine, p.firefox, p.webkit);
     if (p.proxy && p.proxyError) throw new Error("profile cannot contain both a valid proxy and a proxy quarantine error");
     const proxy = p.proxyError ? null : normalizeProxySpec(p.proxy);
     const proxyError = p.proxyError?.trim() ?? "";
@@ -350,15 +352,15 @@ export class ProfileStore {
     this.db
       .query(
         `INSERT INTO profiles
-           (id, engine, chromium_runtime, hardware_json, firefox_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, timezone_manual, locale,
+           (id, engine, chromium_runtime, hardware_json, firefox_config_json, webkit_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, timezone_manual, locale,
             screen_width, screen_height, fingerprint_seed, platform_os, fp_observed_json, fp_expected_json, fp_verdict_json, cookies_json, seeded, created_at)
          -- fp_verdict_json is literal '': a verdict is a COMPUTED fact, written
          -- only by saveObservedFingerprint from a real measurement. If a caller
          -- could supply one, an import could hand itself a "verified" badge and
          -- the badge would mean nothing.
-         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$tzManual,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
+         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$webkit,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$tzManual,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
          ON CONFLICT(id) DO UPDATE SET
-           engine=$engine, firefox_config_json=$firefox, hardware_json=$hardware, timezone_manual=$tzManual,
+           engine=$engine, firefox_config_json=$firefox, webkit_config_json=$webkit, hardware_json=$hardware, timezone_manual=$tzManual,
            acc_id=$acc, name=$name, "group"=$group, platform=$platform, username=$user, password=$pass,
            email=$email, email_password=$emailPass, twofa=$twofa,
            -- An unrelated edit to a quarantined profile must preserve the raw
@@ -405,6 +407,7 @@ export class ProfileStore {
         $chromiumRuntime: chromiumRuntime ?? "",
         $hardware: hardwareJson,
         $firefox: browser.firefox ? JSON.stringify(browser.firefox) : "",
+        $webkit: browser.webkit ? JSON.stringify(browser.webkit) : "",
         $acc: p.accId,
         $name: p.name,
         $group: p.group,
@@ -449,6 +452,7 @@ export class ProfileStore {
 
   /** Explicit edits and authoritative restores may clear stored hardware; the engine then chooses. */
   setHardware(id: string, hardware: Profile["hardware"]): void {
+    if (hardware && this.getProfile(id)?.engine === "webkit") throw new Error("WebKit does not support hardware fingerprint overrides");
     this.db.query("UPDATE profiles SET hardware_json = ? WHERE id = ?").run(hardware ? JSON.stringify(hardware) : "", id);
   }
 
@@ -763,7 +767,7 @@ export class ProfileStore {
       let changed = 0;
       for (const profile of this.listProfiles()) {
         if (profile.group !== group) continue;
-        const extensions = profile.engine === "firefox" ? [] : defaultExtensions;
+        const extensions = profile.engine === "firefox" || profile.engine === "webkit" ? [] : defaultExtensions;
         if (sameStrings(profile.extensions ?? [], extensions)) continue;
         profile.extensions = [...extensions];
         this.upsertProfile(profile);
@@ -776,7 +780,7 @@ export class ProfileStore {
 
   /** Apply a named destination's default unless assignments were explicitly supplied. */
   applyGroupExtensionDefaults(profile: Profile, previousGroup: string | null, extensionsExplicit: boolean): void {
-    if (profile.engine === "firefox") {
+    if (profile.engine === "firefox" || profile.engine === "webkit") {
       profile.extensions = [];
       return;
     }
@@ -981,7 +985,7 @@ export class ProfileStore {
 
   recordLaunch(info: LaunchInfo): void {
     const firefox = info as LaunchInfo & {
-      engine?: "chromium" | "firefox";
+      engine?: ProfileEngine;
       firefoxOwner?: unknown;
       ownerBinaryPath?: string;
     };
@@ -991,16 +995,16 @@ export class ProfileStore {
            (profile_id, pid, debug_port, ws, started_at, relay_port, session_base_version,
             binary_path, user_data_dir, binary_sha256, persona_digest, headless,
             search_bootstrap_revision, process_group_id, root_start_time,
-            engine, firefox_owner_json, owner_binary_path, persona_json)
+            engine, firefox_owner_json, webkit_owner_json, owner_binary_path, persona_json)
          VALUES ($id,$pid,$port,$ws,$at,$relay,$base,$binary,$data,$binary_sha,$persona,$headless,$search_bootstrap,$pgid,$root_start,
-                 $engine,$firefox_owner,$owner_binary,$persona_json)
+                 $engine,$firefox_owner,$webkit_owner,$owner_binary,$persona_json)
          ON CONFLICT(profile_id) DO UPDATE SET
            pid=$pid, debug_port=$port, ws=$ws, started_at=$at, relay_port=$relay,
            session_base_version=$base, binary_path=$binary, user_data_dir=$data,
            binary_sha256=$binary_sha, persona_digest=$persona, headless=$headless,
            search_bootstrap_revision=$search_bootstrap,
            process_group_id=$pgid, root_start_time=$root_start,
-           engine=$engine, firefox_owner_json=$firefox_owner, owner_binary_path=$owner_binary,
+           engine=$engine, firefox_owner_json=$firefox_owner, webkit_owner_json=$webkit_owner, owner_binary_path=$owner_binary,
            persona_json=$persona_json`,
       )
       .run({
@@ -1021,6 +1025,7 @@ export class ProfileStore {
         $root_start: info.rootStartTime ?? null,
         $engine: firefox.engine ?? null,
         $firefox_owner: firefox.firefoxOwner === undefined ? null : JSON.stringify(firefox.firefoxOwner),
+        $webkit_owner: info.webkitOwner === undefined ? null : JSON.stringify(info.webkitOwner),
         $owner_binary: firefox.ownerBinaryPath ?? null,
         $persona_json: info.persona ? JSON.stringify(info.persona) : null,
       });
@@ -1091,7 +1096,7 @@ function optionalJson<T>(key: string, raw: unknown): Record<string, T> {
 }
 
 function rowToProfile(row: any): Profile {
-  const browser = normalizeProfileEngine(row.engine, readStoredFirefoxConfig(row.firefox_config_json));
+  const browser = normalizeProfileEngine(row.engine, readStoredFirefoxConfig(row.firefox_config_json), row.webkit_config_json ? JSON.parse(row.webkit_config_json) : undefined);
   const stored = readStoredProxy(row.proxy_json, row.proxy_error);
   return {
     id: row.id,
@@ -1099,6 +1104,7 @@ function rowToProfile(row: any): Profile {
     ...(row.chromium_runtime ? { chromiumRuntime: normalizeChromiumRuntime(row.chromium_runtime, browser.engine) } : {}),
     ...(row.hardware_json ? { hardware: normalizeProfileHardware(JSON.parse(row.hardware_json)) } : {}),
     ...(browser.firefox ? { firefox: browser.firefox } : {}),
+    ...(browser.webkit ? { webkit: browser.webkit } : {}),
     accId: row.acc_id ?? "",
     name: row.name ?? "",
     group: row.group ?? "",
@@ -1142,7 +1148,7 @@ function readStoredFirefoxConfig(raw: unknown): unknown {
 
 function storedProfileEngine(value: unknown): ProfileEngine {
   if (value == null || value === "") return "chromium";
-  if (value === "chromium" || value === "firefox") return value;
+  if (value === "chromium" || value === "firefox" || value === "webkit") return value;
   throw new Error("unsupported stored profile engine");
 }
 
@@ -1185,14 +1191,15 @@ function rowToLaunch(row: any): LaunchInfo {
     rootStartTime: row.root_start_time ?? undefined,
     ...(engine ? { engine } : {}),
     ...(firefoxOwner === undefined ? {} : { firefoxOwner }),
+    ...(row.webkit_owner_json ? { webkitOwner: JSON.parse(row.webkit_owner_json) } : {}),
     ...(row.owner_binary_path ? { ownerBinaryPath: row.owner_binary_path } : {}),
     ...(row.persona_json ? { persona: JSON.parse(row.persona_json) } : {}),
   } as LaunchInfo;
 }
 
-function readStoredLaunchEngine(value: unknown): "chromium" | "firefox" | undefined {
+function readStoredLaunchEngine(value: unknown): ProfileEngine | undefined {
   if (value == null || value === "") return undefined;
-  if (value === "chromium" || value === "firefox") return value;
+  if (value === "chromium" || value === "firefox" || value === "webkit") return value;
   throw new Error("unsupported stored launch engine");
 }
 

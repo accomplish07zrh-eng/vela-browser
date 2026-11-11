@@ -1,21 +1,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import {
-  acceptCloudLegal,
   addProfileCookies,
-  CloudSessionRestoreError,
-  cloudSessionContextReady,
-  createCloudConnector,
-  fetchCloudConnector,
-  revokeCloudConnector,
-  cloudWorkspaceReady,
   fetchAppMode,
-  fetchCloudAuth,
-  fetchCloudEvents,
   fetchRuntimeDownloads,
-  fetchCloudTeam,
   fetchGroupExtensionDefaults,
   setGroupExtensionDefaults,
-  cloudWorkspaceAction,
   checkProxy,
   exportProfiles,
   fetchProfiles,
@@ -25,15 +14,9 @@ import {
   fetchScripts,
   importPublishedScript,
   openProfile,
-  publishScript,
   scriptsDesktopAvailable,
   startScriptRun,
-  unpublishScript,
-  restoreCloudSession,
-  selectAppMode,
   serialLoader,
-  signInCloud,
-  signOutCloud,
   updateProfile,
 } from "./api.ts";
 
@@ -109,7 +92,7 @@ test("profile export reads split progress records and downloads the exact file b
     expect(request).toEqual({ ids: ["p1", "p2"], format: "xlsx", stream: true });
     expect(progress).toEqual([{ completed: 0, total: 2 }, { completed: 2, total: 2 }]);
     expect(new Uint8Array(await downloaded!.arrayBuffer())).toEqual(bytes);
-    expect(anchor.download).toBe("aliasmode-export.xlsx");
+    expect(anchor.download).toBe("vela-export.xlsx");
     expect(clicks).toBe(1);
   } finally {
     create.mockRestore();
@@ -246,38 +229,13 @@ test("proxy check client rejects errors and malformed results without exposing c
     .rejects.toThrow("Proxy check returned invalid data");
 });
 
-test("app mode client reads first-launch state", async () => {
+test("app configuration client reads the local workspace", async () => {
   globalThis.fetch = (async () => Response.json({
     version: 1,
-    mode: "unconfigured",
+    mode: "local",
     localAnalytics: false,
   })) as unknown as typeof fetch;
-  expect(await fetchAppMode()).toEqual({ version: 1, mode: "unconfigured", localAnalytics: false });
-});
-
-test("Cloud diagnostics client accepts only the fixed event schema", async () => {
-  let requested: RequestInfo | URL | undefined;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    requested = input;
-    return Response.json({
-      events: [{ timestamp: 123, type: "session_restore_context_timeout" }],
-    });
-  }) as unknown as typeof fetch;
-
-  expect(await fetchCloudEvents()).toEqual([
-    { timestamp: 123, type: "session_restore_context_timeout" },
-  ]);
-  expect(requested).toBe("/ui/api/cloud-events");
-
-  globalThis.fetch = (async () => Response.json({
-    events: [{ timestamp: 123, type: "open_failed", message: "raw server secret" }],
-  })) as unknown as typeof fetch;
-  await expect(fetchCloudEvents()).rejects.toThrow("invalid data");
-
-  globalThis.fetch = (async () => Response.json({
-    events: [{ timestamp: 123, type: "unknown" }],
-  })) as unknown as typeof fetch;
-  await expect(fetchCloudEvents()).rejects.toThrow("invalid data");
+  expect(await fetchAppMode()).toEqual({ version: 1, mode: "local", localAnalytics: false });
 });
 
 test("runtime downloads client reads the downloads in progress", async () => {
@@ -292,169 +250,6 @@ test("runtime downloads client reads the downloads in progress", async () => {
 
   globalThis.fetch = (async () => Response.json({ ok: false, error: "not found" }, { status: 404 })) as unknown as typeof fetch;
   await expect(fetchRuntimeDownloads()).rejects.toThrow("invalid data");
-});
-
-test("Cloud auth client reads status and sends credentials as JSON", async () => {
-  const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    requests.push({ input, init });
-    if (!init) return Response.json({ ok: true, authenticated: false });
-    return Response.json({
-      ok: true,
-      authenticated: true,
-      refreshToken: "refresh-token",
-      user: { id: "account1", email: "user@example.com" },
-    });
-  }) as unknown as typeof fetch;
-
-  expect(await fetchCloudAuth()).toEqual({
-    authenticated: false,
-    expiresAt: undefined,
-    user: undefined,
-    workspace: undefined,
-    legal: undefined,
-  });
-  expect(await signInCloud("user@example.com", "password", "queue-key")).toMatchObject({ authenticated: true });
-  expect(requests[1]?.input).toBe("/ui/api/cloud-auth/signin");
-  expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
-    email: "user@example.com",
-    password: "password",
-    queueKey: "queue-key",
-  });
-  await restoreCloudSession("refresh-token", "device-credential", "queue-key");
-  expect(requests[2]?.input).toBe("/ui/api/cloud-auth/restore");
-  expect(JSON.parse(String(requests[2]?.init?.body))).toEqual({
-    refreshToken: "refresh-token",
-    deviceCredential: "device-credential",
-    queueKey: "queue-key",
-  });
-  await acceptCloudLegal();
-  expect(requests[3]?.input).toBe("/ui/api/cloud-auth/accept-legal");
-  await signOutCloud();
-  expect(requests[4]?.input).toBe("/ui/api/cloud-auth/signout");
-  expect(JSON.parse(String(requests[4]?.init?.body))).toEqual({});
-});
-
-test("Remote MCP settings client sends only explicit connector actions", async () => {
-  const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    requests.push({ input, init });
-    const request = JSON.parse(String(init?.body));
-    return Response.json(request.action === "create"
-      ? {
-          ok: true,
-          state: "active",
-          connectorId: "connector-1",
-          deviceId: "device-1",
-          url: "https://cloud.aliasmode.com/v1/mcp/devices/device-1",
-          token: "one-time-token",
-        }
-      : { ok: true, state: request.action === "status" ? "active" : "disabled" });
-  }) as unknown as typeof fetch;
-
-  expect(await createCloudConnector()).toMatchObject({ connectorId: "connector-1", token: "one-time-token" });
-  expect(await fetchCloudConnector("connector-1")).toMatchObject({ state: "active" });
-  expect(await revokeCloudConnector("connector-1")).toMatchObject({ state: "disabled" });
-  expect(requests.map((request) => request.input)).toEqual([
-    "/ui/api/cloud-connector",
-    "/ui/api/cloud-connector",
-    "/ui/api/cloud-connector",
-  ]);
-  expect(requests.map((request) => JSON.parse(String(request.init?.body)))).toEqual([
-    { action: "create" },
-    { action: "status", connectorId: "connector-1" },
-    { action: "revoke", connectorId: "connector-1" },
-  ]);
-});
-
-test("Cloud restore can request startup lifecycle recovery", async () => {
-  let body: unknown;
-  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-    body = JSON.parse(String(init?.body));
-    return Response.json({ ok: true, authenticated: true, refreshToken: "rotated" });
-  }) as unknown as typeof fetch;
-
-  await restoreCloudSession("refresh", "device", "queue", true);
-  expect(body).toEqual({
-    refreshToken: "refresh",
-    deviceCredential: "device",
-    queueKey: "queue",
-    resumeLifecycle: true,
-  });
-});
-
-test("Cloud restore client preserves safe retry metadata", async () => {
-  globalThis.fetch = (async () => Response.json({
-    ok: false,
-    error: "Saved Cloud session could not be restored. Try again when the connection is available.",
-    stage: "cloud_status",
-    retryable: true,
-    category: "network",
-    code: "network_unavailable",
-  }, { status: 503 })) as unknown as typeof fetch;
-
-  try {
-    await restoreCloudSession("secret-refresh", "secret-device", "secret-queue-key");
-    throw new Error("expected restore to fail");
-  } catch (error) {
-    expect(error).toBeInstanceOf(CloudSessionRestoreError);
-    expect(error).toMatchObject({
-      stage: "cloud_status",
-      retryable: true,
-      category: "network",
-      code: "network_unavailable",
-    });
-    expect(JSON.stringify(error)).not.toContain("secret-refresh");
-    expect(JSON.stringify(error)).not.toContain("secret-device");
-    expect(JSON.stringify(error)).not.toContain("secret-queue-key");
-  }
-});
-
-test("Cloud team client uses the compact workspace endpoint", async () => {
-  const requests: RequestInit[] = [];
-  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-    if (init) requests.push(init);
-    return Response.json({ ok: true, folders: [], members: [], invitations: [] });
-  }) as unknown as typeof fetch;
-  expect(await fetchCloudTeam()).toEqual({ folders: [], members: [], invitations: [] });
-  await cloudWorkspaceAction("grant", { folderName: "Sales", accountId: "a1", permission: "view" });
-  expect(JSON.parse(String(requests[0]?.body))).toEqual({
-    action: "grant", folderName: "Sales", accountId: "a1", permission: "view",
-  });
-});
-
-
-test("Cloud startup requires complete saved-session context", () => {
-  const legal = {
-    current: { terms: "v2", privacy: "v2", acceptableUse: "v2" },
-    accepted: null,
-  };
-  const workspace = {
-    id: "workspace1",
-    name: "Workspace",
-    ownerAccountId: "account1",
-    role: "member" as const,
-  };
-  expect(cloudSessionContextReady({ authenticated: true })).toBe(false);
-  expect(cloudSessionContextReady({ authenticated: true, workspace })).toBe(false);
-  expect(cloudSessionContextReady({ authenticated: true, legal })).toBe(false);
-  expect(cloudSessionContextReady({ authenticated: true, workspace, legal })).toBe(true);
-});
-
-test("Cloud workspace becomes ready only after current legal acceptance", () => {
-  const current = { terms: "v2", privacy: "v2", acceptableUse: "v2" };
-  expect(cloudWorkspaceReady({ authenticated: true, legal: { current, accepted: null } })).toBe(false);
-  expect(cloudWorkspaceReady({
-    authenticated: true,
-    legal: {
-      current,
-      accepted: { terms: "v1", privacy: "v2", acceptableUse: "v2", acceptedAt: 1 },
-    },
-  })).toBe(false);
-  expect(cloudWorkspaceReady({
-    authenticated: true,
-    legal: { current, accepted: { ...current, acceptedAt: 1 } },
-  })).toBe(true);
 });
 
 test("profile update forwards Cloud expectedVersion and response status", async () => {
@@ -491,21 +286,6 @@ test("group extension defaults client reads and replaces exact selections", asyn
   ]);
   expect(requests[1]?.init?.method).toBe("POST");
   expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({ group: "Sales", extensions: ["ext-2"] });
-});
-
-test("app mode client sends Cloud selection with JSON", async () => {
-  let input: RequestInfo | URL | undefined;
-  let init: RequestInit | undefined;
-  globalThis.fetch = (async (nextInput: RequestInfo | URL, nextInit?: RequestInit) => {
-    input = nextInput;
-    init = nextInit;
-    return Response.json({ ok: true, restartRequired: true });
-  }) as unknown as typeof fetch;
-
-  await selectAppMode("cloud");
-  expect(input).toBe("/ui/api/app-mode");
-  expect(init?.method).toBe("POST");
-  expect(JSON.parse(String(init?.body))).toEqual({ mode: "cloud" });
 });
 
 test("scripts require the desktop capability and send it on every request", async () => {
@@ -563,24 +343,17 @@ test("public script library calls use the desktop capability and exact contracts
     await expect(fetchPublishedScripts({ q: "hello world", language: "python", offset: 50 })).resolves.toMatchObject({ scripts: [publication], nextOffset: null });
     await expect(fetchPublishedScript("public/id")).resolves.toMatchObject({ ...publication, source: "print('source')" });
     await expect(importPublishedScript("public/id")).resolves.toMatchObject({ id: "public-1", source: "print('copy')" });
-    await expect(publishScript("private/id", { expectedRevision: 2, authorName: "Author", showEmail: false })).resolves.toMatchObject(publication);
-    await expect(unpublishScript("private/id")).resolves.toBeUndefined();
     expect(requests.map((request) => request.path)).toEqual([
       "/ui/api/scripts",
       "/ui/api/scripts",
       "/ui/api/scripts/library?q=hello+world&language=python&offset=50",
       "/ui/api/scripts/library/public%2Fid",
       "/ui/api/scripts/library/public%2Fid/import",
-      "/ui/api/scripts/private%2Fid/publication",
-      "/ui/api/scripts/private%2Fid/publication",
     ]);
     expect(requests.map((request) => new Headers(request.init?.headers).get("Authorization"))).toEqual([
-      "Bearer test-capability", "Bearer test-capability", "Bearer test-capability", "Bearer test-capability", "Bearer test-capability", "Bearer test-capability", "Bearer test-capability",
+      "Bearer test-capability", "Bearer test-capability", "Bearer test-capability", "Bearer test-capability", "Bearer test-capability",
     ]);
-    expect(requests.map((request) => request.init?.method)).toEqual([undefined, undefined, undefined, undefined, "POST", "PUT", "DELETE"]);
-    expect(JSON.parse(String(requests[5]?.init?.body))).toEqual({ expectedRevision: 2, authorName: "Author", showEmail: false });
-    expect(new Headers(requests[6]?.init?.headers).get("Content-Type")).toBe("application/json");
-    expect(requests[6]?.init?.body).toBe("{}");
+    expect(requests.map((request) => request.init?.method)).toEqual([undefined, undefined, undefined, undefined, "POST"]);
   } finally {
     if (originalWindow === undefined) Reflect.deleteProperty(globalThis, "window");
     else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });

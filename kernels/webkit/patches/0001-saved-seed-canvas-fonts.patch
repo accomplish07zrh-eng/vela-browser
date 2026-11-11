@@ -1,0 +1,158 @@
+Subject: [PATCH] Opt in to a saved per-process Canvas salt and native font scale
+
+Requires browser acceptance before distribution. Does not implement WebAudio or GPU identity.
+
+diff --git a/Source/WebCore/html/CanvasBase.cpp b/Source/WebCore/html/CanvasBase.cpp
+--- a/Source/WebCore/html/CanvasBase.cpp
++++ b/Source/WebCore/html/CanvasBase.cpp
+@@ -38,6 +38,7 @@
+ #include "InspectorInstrumentation.h"
+ #include "IntRect.h"
+ #include "NoiseInjectionPolicy.h"
++#include "VelaFingerprint.h"
+ #include "RenderElementInlines.h"
+ #include "ScriptTrackingPrivacyCategory.h"
+ #include "StyleCanvasImage.h"
+@@ -59,6 +60,8 @@
+ 
+ static std::optional<uint64_t> canvasNoiseHashSaltIfNeeded(ScriptExecutionContext& context)
+ {
++    if (VelaFingerprint::seed())
++        return VelaFingerprint::bits("canvas/v1") & 0x7ffffffffffffffeULL;
+     auto policies = context.noiseInjectionPolicies();
+     if (policies.contains(NoiseInjectionPolicy::Minimal)
+         || (policies.contains(NoiseInjectionPolicy::Enhanced) && context.requiresScriptTrackingPrivacyProtection(ScriptTrackingPrivacyCategory::Canvas)))
+diff --git a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+--- a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+@@ -30,6 +30,7 @@
+ #include "FontCustomPlatformData.h"
+ #include "FontDescription.h"
+ #include "StyleFontSizeFunctions.h"
++#include "VelaFingerprint.h"
+ #include <wtf/Assertions.h>
+ #include <wtf/text/CString.h>
+ #include <wtf/text/CharacterProperties.h>
+@@ -40,6 +41,7 @@
+ #endif
+ 
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
++#include <skia/core/SkString.h>
+ #include <skia/ports/SkFontScanner_FreeType.h>
+ 
+ #if OS(ANDROID)
+@@ -53,6 +55,13 @@
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+ 
+ namespace WebCore {
++
++static float profileFontScale(const SkTypeface& typeface)
++{
++    SkString family;
++    typeface.getFamilyName(&family);
++    return VelaFingerprint::fontScale({ family.c_str(), family.size() });
++}
+ 
+ void FontCache::platformInit()
+ {
+@@ -151,7 +160,7 @@
+ 
+     // @font-face size-adjust does not affect fallback font sizes, but font-size-adjust does.
+     // We initialize FontPlatformData with the computed size, then apply font-size-adjust if required.
+-    auto size = description.computedSize();
++    auto size = description.computedSize() * profileFontScale(*typeface);
+     FontPlatformData alternateFontData(WTF::move(typeface), size, syntheticBold, syntheticOblique, description.orientation(), description.widthVariant(), description.textRenderingMode(), WTF::move(features));
+     alternateFontData.updateSizeWithFontSizeAdjust(description.fontSizeAdjust(), size);
+ 
+@@ -195,7 +204,8 @@
+     }
+ 
+     auto [syntheticBold, syntheticOblique] = computeSynthesisProperties(*typeface, fontDescription, { });
+-    FontPlatformData platformData(WTF::move(typeface), fontDescription.computedSize(), syntheticBold, syntheticOblique,
++    const auto size = fontDescription.computedSize() * profileFontScale(*typeface);
++    FontPlatformData platformData(WTF::move(typeface), size, syntheticBold, syntheticOblique,
+         fontDescription.orientation(), fontDescription.widthVariant(), fontDescription.textRenderingMode(), computeFeatures(fontDescription, { }));
+     return fontForPlatformData(platformData);
+ }
+@@ -421,12 +431,13 @@
+     if (!typeface)
+         return nullptr;
+ 
+-    auto size = fontDescription.adjustedSizeForFontFace(fontCreationContext.sizeAdjust());
++    const auto scale = profileFontScale(*typeface);
++    auto size = fontDescription.adjustedSizeForFontFace(fontCreationContext.sizeAdjust()) * scale;
+     auto features = computeFeatures(fontDescription, fontCreationContext);
+     auto [syntheticBold, syntheticOblique] = computeSynthesisProperties(*typeface, fontDescription, options);
+     FontPlatformData platformData(WTF::move(typeface), size, syntheticBold, syntheticOblique, fontDescription.orientation(), fontDescription.widthVariant(), fontDescription.textRenderingMode(), WTF::move(features), fontCreationContext.metricsOverrides());
+ 
+-    platformData.updateSizeWithFontSizeAdjust(fontDescription.fontSizeAdjust(), fontDescription.computedSize());
++    platformData.updateSizeWithFontSizeAdjust(fontDescription.fontSizeAdjust(), fontDescription.computedSize() * scale);
+     auto platformDataUniquePtr = makeUnique<FontPlatformData>(platformData);
+ 
+     return platformDataUniquePtr;
+diff --git a/Source/WebCore/platform/VelaFingerprint.h b/Source/WebCore/platform/VelaFingerprint.h
+new file mode 100644
+--- /dev/null
++++ b/Source/WebCore/platform/VelaFingerprint.h
+@@ -0,0 +1,61 @@
++// Copyright 2026 Vela Browser contributors. SPDX-License-Identifier: BSD-2-Clause
++#pragma once
++
++#include <charconv>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <string_view>
++
++// Disabled in stock WebKit. A custom runtime inherits exactly one saved seed
++// in every child process; no clock, origin, process id or device enters it.
++namespace WebCore::VelaFingerprint {
++
++inline uint32_t seed()
++{
++    static const uint32_t value = [] {
++#if defined(_WIN32)
++        char storage[11] { };
++        size_t size = 0;
++        if (getenv_s(&size, storage, sizeof(storage), "VELA_WEBKIT_FINGERPRINT_SEED") || !size)
++            return uint32_t { 0 };
++        const char* text = storage;
++#else
++        const char* text = std::getenv("VELA_WEBKIT_FINGERPRINT_SEED");
++#endif
++        if (!text)
++            return uint32_t { 0 };
++        uint32_t parsed = 0;
++        const auto length = std::strlen(text);
++        const auto result = std::from_chars(text, text + length, parsed);
++        if (result.ec != std::errc { } || result.ptr != text + length || !parsed)
++            return uint32_t { 0 };
++        return parsed;
++    }();
++    return value;
++}
++
++inline uint64_t bits(std::string_view domain)
++{
++    uint64_t value = uint64_t { seed() } ^ 0x56454c412d574b31ULL;
++    for (unsigned char byte : domain) {
++        // Font family aliases must resolve to the same native face and salt.
++        if (byte >= 'A' && byte <= 'Z')
++            byte += 'a' - 'A';
++        value = (value ^ byte) * 0x100000001b3ULL;
++    }
++    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
++    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
++    return value ^ (value >> 31);
++}
++
++inline float fontScale(std::string_view nativeFamily)
++{
++    if (!seed())
++        return 1.0f;
++    const auto value = bits(nativeFamily);
++    const float delta = 0.001f + float(value % 3001) * 0.000001f;
++    return (value >> 63) ? 1.0f + delta : 1.0f - delta;
++}
++
++} // namespace WebCore::VelaFingerprint

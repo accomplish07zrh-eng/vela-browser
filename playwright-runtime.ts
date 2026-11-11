@@ -239,6 +239,16 @@ export async function runPlaywrightWorker<T>(
       throw error;
     }
   }
+  if (typeof endpoint === "string" && endpoint.startsWith("webkit://")) {
+    const { callWebKitOwner, webkitOwnerForEndpoint, WebKitOwnerError } = await import("./webkit-runtime.ts");
+    const owner = webkitOwnerForEndpoint(endpoint);
+    if (!owner) throw new PlaywrightWorkerError("runtime_unavailable", "WebKit owner is unavailable");
+    try { return await callWebKitOwner<T>(owner, operation, payload, { timeoutMs: options.timeoutMs }); }
+    catch (error) {
+      if (error instanceof WebKitOwnerError) throw new PlaywrightWorkerError(error.code, error.message, error.details);
+      throw error;
+    }
+  }
   await acquireWorker(options.background === true);
   try {
     return await runAcquiredWorker<T>(operation, request, options);

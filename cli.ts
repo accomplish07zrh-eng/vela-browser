@@ -32,17 +32,15 @@ import {
 } from "./playwright-runtime.ts";
 import { serveDashboard, serveDesktopAutomationApi } from "./web.ts";
 import { LifecycleAdmissionController, type LifecycleAdmissionOptions } from "./lifecycle-admission.ts";
-import { HubClient } from "./hub-client.ts";
 import { RemoteCoordinator } from "./remote.ts";
 import {
   playwrightTransportAttribution,
   parseCapturedSessionBundle,
   readSession,
+  writeSession,
   readSessionInSubprocess,
   READ_SESSION_WORKER_ARG,
   runReadSessionWorker,
-  writeSession,
-  applySessionToEndpoint,
   canonicalUserPageUrl,
 } from "./session.ts";
 import { importBuffers, importInbox, watchInbox } from "./inbox.ts";
@@ -50,38 +48,31 @@ import { ensureStateDirectories, profileDataPaths, resolveStateRoot, statePaths,
 import { migrateLegacyState, type LegacyMigrationResult, type MigrationOptions } from "./migration.ts";
 import {
   AppConfigStore,
-  legacyHubUrl,
-  normalizeSecureServiceUrl,
   type AppConfig,
 } from "./app-config.ts";
-import { CloudAuthRuntime } from "./cloud-auth.ts";
-import { CloudConnectionRuntime } from "./cloud-connection.ts";
-import {
-  CloudBrowserCoordinator,
-  type CloudBrowserCloseResult,
-  type CloudBrowserOptions,
-} from "./cloud-browser.ts";
-import { McpTunnelRuntime } from "./mcp-tunnel.ts";
-import { PendingSyncQueue, PendingSyncRuntime } from "./pending-sync.ts";
-import { encodePortableProfile } from "./portable-profile.ts";
 import { createFirefoxProfileConfig } from "./firefox-config.ts";
 import type { Profile, ProfileEngine } from "./types.ts";
-import { SupabaseAuthClient } from "./supabase-auth.ts";
 import { runDiagnostics } from "./diagnose.ts";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
-import { hostname } from "node:os";
 import net from "node:net";
-import { defaultOperatorName } from "./operator.ts";
 import { ensureDuckDuckGoDefault, type SearchProviderSetupResult } from "./search-provider.ts";
 import { installCloakBrowser } from "./browser-install.ts";
+import { ensureWebKit } from "./webkit-install.ts";
 import { installFirefox } from "./firefox-install.ts";
 import { applySourceRuntime, setupSourceRuntime } from "./source-runtime.ts";
 import { resolveEgressEndpoints } from "./egress.ts";
 import { ALIASMODE_VERSION } from "./version.ts";
 import {
   DESKTOP_PROTOCOL,
-  DesktopCredentialBridge,
   ManagedDesktopRuntime,
   agentControlNonce,
   desktopHealthMetadata,
@@ -124,54 +115,19 @@ export async function runCloakpitImportCommand(
   }
 }
 
-export const OFFICIAL_CLOUD_URL = "https://cloud.aliasmode.com";
-export const OFFICIAL_CLOUD_ANON_KEY = "aliasmode-direct-gotrue";
-
-export interface CloudRuntimeConfiguration {
-  apiUrl: string;
-  authUrl: string;
-  anonKey: string;
-}
-
-function nonblank(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
-
-export function selectedCloudUrl(
-  config: AppConfig,
-  env: Record<string, string | undefined> = process.env,
-): string {
-  return nonblank(env.ALIASMODE_CLOUD_URL) ?? config.cloudUrl ?? OFFICIAL_CLOUD_URL;
-}
-
-/** A person opening the desktop app starts on Cloud sign-in, so signing in
- *  needs no restart. Background (agent) launches stay Local. */
+/** Every launch opens the local workspace without an account. */
 export function desktopFirstRunMode(
   desktop: boolean,
   env: Record<string, string | undefined> = process.env,
-): "local" | "cloud" | null {
-  if (!desktop) return null;
-  return env.ALIASMODE_BACKGROUND === "1" ? "local" : "cloud";
+): "local" | null {
+  return desktop ? "local" : null;
 }
 
 export function cloudRuntimeConfiguration(
   config: AppConfig,
   env: Record<string, string | undefined> = process.env,
-): CloudRuntimeConfiguration | null {
-  if (config.mode !== "cloud") return null;
-  const cloudUrl = normalizeSecureServiceUrl(
-    selectedCloudUrl(config, env),
-    "Vela Cloud",
-  );
-  return {
-    apiUrl: cloudUrl,
-    authUrl: normalizeSecureServiceUrl(
-      nonblank(env.ALIASMODE_SUPABASE_URL) ?? cloudUrl,
-      "Vela Browser Auth",
-    ),
-    anonKey: nonblank(env.ALIASMODE_SUPABASE_ANON_KEY) ?? OFFICIAL_CLOUD_ANON_KEY,
-  };
+): null {
+  return null;
 }
 
 export function lifecycleAdmissionOptionsFromEnv(
@@ -337,7 +293,6 @@ function attachDesktopControl(
   runtime: ManagedDesktopRuntime,
   health: DesktopHealthMetadata,
   port: number,
-  credentials: DesktopCredentialBridge,
 ): void {
   let input = "";
   let exiting = false;
@@ -368,7 +323,6 @@ function attachDesktopControl(
       if (newline < 0) break;
       const line = input.slice(0, newline).trim();
       input = input.slice(newline + 1);
-      if (credentials.handleLine(line)) continue;
       if (isDesktopShutdownCommand(line, health.instance)) shutdown();
     }
   });
@@ -387,7 +341,7 @@ function makeLauncher(
   remoteMode = false,
   defaultDataRoot = "profiles",
   ensureSearchProvider = ensureDuckDuckGoDefault,
-  // Local and Cloud profiles share one downloaded Chromium 155 runtime.
+  // Local and browser environments share one downloaded Chromium 155 runtime.
   chromiumRuntimeRoot?: string,
 ): Launcher {
   const unsafeCanary = has(rest, "unsafe-disable-identity-gates");
@@ -427,55 +381,6 @@ function makeLauncher(
 function prefetchBrowserRuntimes(launcher: Launcher, store: ProfileStore): void {
   store.onProfileSaved = (profile) => launcher.prefetchBrowserRuntimes([profile]);
   launcher.prefetchBrowserRuntimes(store.listProfiles());
-}
-
-function makeCloudBrowser(
-  launcher: Launcher,
-  store: ProfileStore,
-  connection: CloudConnectionRuntime | undefined,
-  pendingSync: PendingSyncRuntime | undefined,
-): CloudBrowserCoordinator | undefined {
-  if (!connection || !pendingSync) return undefined;
-  return new CloudBrowserCoordinator({
-    cloud: connection.client,
-    launcher,
-    store,
-    queue: () => pendingSync.queue(),
-    accountId: () => connection.accountId(),
-    deviceId: () => connection.deviceId(),
-    readSession: (endpoint, captureSeed, options) => readSessionInSubprocess(endpoint, { ...options, captureSeed }),
-    applySession: (endpoint, bundle, urls) =>
-      applySessionToEndpoint(endpoint, bundle, urls, { log: (m) => console.log(`[aliasmode] ${m}`) }),
-    log: (m) => console.log(`[aliasmode] ${m}`),
-  });
-}
-
-function installCloudShutdown(
-  cloudBrowser: CloudBrowserCoordinator,
-  mcpTunnel?: McpTunnelRuntime,
-): void {
-  let shutdownInFlight: Promise<void> | null = null;
-  const shutdown = (signal: NodeJS.Signals) => {
-    if (shutdownInFlight) {
-      process.exit(signal === "SIGINT" ? 130 : 143);
-      return;
-    }
-    console.error(`received ${signal}; capturing and closing Cloud browsers`);
-    shutdownInFlight = drainRemoteShutdown(
-      async () => {
-        await mcpTunnel?.stop();
-        return cloudBrowser.releaseAll(true);
-      },
-      { maxDrainMs: DEFAULT_REMOTE_SHUTDOWN_TIMEOUT_MS },
-    )
-      .then(() => process.exit(0))
-      .catch((error) => {
-        console.error(`Cloud shutdown cleanup unconfirmed: ${error instanceof Error ? error.message : String(error)}`);
-        process.exit(1);
-      });
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
 }
 
 async function importPath(store: ProfileStore, target: string | undefined, defaultInbox: string): Promise<void> {
@@ -599,460 +504,6 @@ export async function runCompiledSidecarSmoke(
     throw new Error("compiled sidecar capture lost the restored cookie");
   }
   await deps.assertAlive(endpoint);
-}
-
-export type CloudRestoreFixtureMode = "healthy" | "offline" | "membership-revoked" | "cross-device";
-
-export function parseCloudRestoreFixtureOptions(args: string[]): {
-  port: number;
-  mode: CloudRestoreFixtureMode;
-  initialRefresh: "seeded" | "rotated";
-} {
-  const port = Number(flag(args, "port"));
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("Cloud restore fixture requires a valid loopback port");
-  }
-  const mode = flag(args, "mode");
-  if (mode !== "healthy" && mode !== "offline" && mode !== "membership-revoked" && mode !== "cross-device") {
-    throw new Error("Cloud restore fixture mode must be healthy, offline, membership-revoked, or cross-device");
-  }
-  const initialRefresh = flag(args, "initial-refresh") ?? "seeded";
-  if (initialRefresh !== "seeded" && initialRefresh !== "rotated") {
-    throw new Error("Cloud restore fixture initial refresh must be seeded or rotated");
-  }
-  return { port, mode, initialRefresh };
-}
-
-const CLOUD_RESTORE_FIXTURE_ACCESS_TOKEN = "aliasmode-fixture-access";
-const CLOUD_RESTORE_FIXTURE_SEEDED_REFRESH_TOKEN = "aliasmode-acceptance-refresh-seeded";
-const CLOUD_RESTORE_FIXTURE_REFRESH_TOKEN = "aliasmode-fixture-refresh-rotated";
-const CLOUD_RESTORE_FIXTURE_DEVICE_CREDENTIAL = "aliasmode-acceptance-device";
-const CLOUD_RESTORE_FIXTURE_LEGAL = {
-  terms: "fixture-terms",
-  privacy: "fixture-privacy",
-  acceptableUse: "fixture-acceptable-use",
-};
-
-function cloudRestoreFixtureStatus() {
-  return {
-    ok: true as const,
-    account: {
-      id: "fixture-account",
-      email: "user@fixture.invalid",
-      emailVerified: true,
-    },
-    workspace: {
-      id: "fixture-workspace",
-      ownerAccountId: "fixture-owner",
-      name: "Fixture workspace",
-      role: "member" as const,
-    },
-    device: {
-      id: "fixture-device",
-      label: "Fixture Windows device",
-      platform: "windows" as const,
-      appVersion: ALIASMODE_VERSION,
-      createdAt: 1,
-      lastSeenAt: 1,
-      revokedAt: null,
-      current: true,
-    },
-    legal: {
-      current: CLOUD_RESTORE_FIXTURE_LEGAL,
-      accepted: { ...CLOUD_RESTORE_FIXTURE_LEGAL, acceptedAt: 1 },
-    },
-  };
-}
-
-function fixtureJson(body: unknown, status = 200): Response {
-  return Response.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store" },
-  });
-}
-
-function fixtureAuthorized(request: Request): boolean {
-  return request.headers.get("authorization") === `Bearer ${CLOUD_RESTORE_FIXTURE_ACCESS_TOKEN}`
-    && request.headers.get("x-aliasmode-device") === CLOUD_RESTORE_FIXTURE_DEVICE_CREDENTIAL;
-}
-
-const CLOUD_CROSS_DEVICE_PROFILE_ID = "aliasmode-cross-device-profile";
-const CLOUD_CROSS_DEVICE_ACCOUNT_ID = "fixture-cross-device-account";
-const CLOUD_CROSS_DEVICE_INITIAL_SENTINEL = "fixture-session-n37";
-const CLOUD_CROSS_DEVICE_A_SENTINEL = "device-a-session-n38";
-const CLOUD_CROSS_DEVICE_CONFLICT_SENTINEL = "device-a-stale-conflict";
-const CLOUD_CROSS_DEVICE_LATEST_SENTINEL = "fixture-authoritative-n40";
-const CLOUD_CROSS_DEVICE_AMBIGUOUS_SENTINEL = "device-a-ambiguous-n42";
-const CLOUD_CROSS_DEVICE_DEVICES = {
-  a: {
-    id: "fixture-cross-device-a",
-    accessToken: "aliasmode-cross-device-access-a",
-    credential: "aliasmode-cross-device-credential-a",
-  },
-  b: {
-    id: "fixture-cross-device-b",
-    accessToken: "aliasmode-cross-device-access-b",
-    credential: "aliasmode-cross-device-credential-b",
-  },
-} as const;
-
-type CloudCrossDeviceFixtureDevice = keyof typeof CLOUD_CROSS_DEVICE_DEVICES;
-type CloudCrossDevicePayload = ReturnType<typeof encodePortableProfile>;
-
-export interface CloudCrossDeviceFixtureState {
-  ok: true;
-  version: number;
-  activeDevice: CloudCrossDeviceFixtureDevice | null;
-  counters: {
-    open: Record<CloudCrossDeviceFixtureDevice, number>;
-    close: Record<CloudCrossDeviceFixtureDevice, number>;
-    heartbeat: Record<CloudCrossDeviceFixtureDevice, number>;
-    abandon: Record<CloudCrossDeviceFixtureDevice, number>;
-    acceptedCloses: number;
-    conflicts: number;
-    profileOpen: number;
-    droppedResponses: number;
-  };
-}
-
-function cloudCrossDeviceSession(sentinel: string): string {
-  return JSON.stringify({
-    cookies: [{
-      name: "aliasmode_cross_device",
-      value: sentinel,
-      domain: ".x.com",
-      path: "/",
-      expires: -1,
-      httpOnly: false,
-      secure: true,
-      sameSite: "Lax",
-    }],
-    origins: [],
-  });
-}
-
-function cloudCrossDevicePayload(sentinel: string): CloudCrossDevicePayload {
-  return encodePortableProfile(
-    smokeProfile(CLOUD_CROSS_DEVICE_PROFILE_ID, "Cross-device fixture", 38),
-    cloudCrossDeviceSession(sentinel),
-  );
-}
-
-function cloudCrossDeviceRequestDevice(request: Request): CloudCrossDeviceFixtureDevice | null {
-  for (const device of ["a", "b"] as const) {
-    const expected = CLOUD_CROSS_DEVICE_DEVICES[device];
-    if (
-      request.headers.get("authorization") === `Bearer ${expected.accessToken}`
-      && request.headers.get("x-aliasmode-device") === expected.credential
-    ) return device;
-  }
-  return null;
-}
-
-export function createCloudCrossDeviceFixtureHandler(): (request: Request) => Promise<Response> {
-  let version = 37;
-  let payload = cloudCrossDevicePayload(CLOUD_CROSS_DEVICE_INITIAL_SENTINEL);
-  let registrationSequence = 0;
-  let dropNextCloseResponse = false;
-  let active: { registrationId: string; device: CloudCrossDeviceFixtureDevice } | null = null;
-  const registrations = new Map<string, {
-    device: CloudCrossDeviceFixtureDevice;
-    closed: boolean;
-    dropResponses: boolean;
-  }>();
-  const counters: CloudCrossDeviceFixtureState["counters"] = {
-    open: { a: 0, b: 0 },
-    close: { a: 0, b: 0 },
-    heartbeat: { a: 0, b: 0 },
-    abandon: { a: 0, b: 0 },
-    acceptedCloses: 0,
-    conflicts: 0,
-    profileOpen: 0,
-    droppedResponses: 0,
-  };
-  const state = (): CloudCrossDeviceFixtureState => ({
-    ok: true,
-    version,
-    activeDevice: active?.device ?? null,
-    counters: {
-      open: { ...counters.open },
-      close: { ...counters.close },
-      heartbeat: { ...counters.heartbeat },
-      abandon: { ...counters.abandon },
-      acceptedCloses: counters.acceptedCloses,
-      conflicts: counters.conflicts,
-      profileOpen: counters.profileOpen,
-      droppedResponses: counters.droppedResponses,
-    },
-  });
-
-  return async (request) => {
-    const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") {
-      return fixtureJson({ ok: true, mode: "cross-device" });
-    }
-    if (request.method === "GET" && url.pathname === "/control/state") {
-      return fixtureJson(state());
-    }
-    if (request.method === "POST" && url.pathname === "/control/advance") {
-      if (active?.device !== "a") {
-        return fixtureJson({ ok: false, error: "fixture device A must be open" }, 409);
-      }
-      version++;
-      payload = cloudCrossDevicePayload(CLOUD_CROSS_DEVICE_LATEST_SENTINEL);
-      return fixtureJson({ ok: true, version });
-    }
-    if (request.method === "POST" && url.pathname === "/control/drop-close-response") {
-      if (active?.device !== "a" || dropNextCloseResponse) {
-        return fixtureJson({ ok: false, error: "fixture device A close cannot be armed" }, 409);
-      }
-      dropNextCloseResponse = true;
-      return fixtureJson({ ok: true });
-    }
-
-    const device = cloudCrossDeviceRequestDevice(request);
-    if (!device) {
-      return fixtureJson({
-        ok: false,
-        error: { code: "authentication_required", message: "fixture authentication is required" },
-      }, 401);
-    }
-
-    if (
-      request.method === "POST"
-      && url.pathname === `/v1/profiles/${CLOUD_CROSS_DEVICE_PROFILE_ID}/open`
-    ) {
-      const body = await request.json().catch(() => null) as { deviceId?: unknown } | null;
-      if (body?.deviceId !== CLOUD_CROSS_DEVICE_DEVICES[device].id) {
-        return fixtureJson({
-          ok: false,
-          error: { code: "validation_failed", message: "fixture device identity is invalid" },
-        }, 400);
-      }
-      counters.open[device]++;
-      if (active) {
-        counters.profileOpen++;
-        return fixtureJson({
-          ok: false,
-          error: { code: "profile_open", message: "fixture profile is already open" },
-        }, 409);
-      }
-      const registrationId = `fixture-${device}-${++registrationSequence}`;
-      registrations.set(registrationId, { device, closed: false, dropResponses: false });
-      active = { registrationId, device };
-      return fixtureJson({
-        ok: true,
-        registrationId,
-        baseVersion: version,
-        payload,
-        activeOpens: [],
-      });
-    }
-
-    const route = url.pathname.match(/^\/v1\/open-sessions\/([^/]+)\/(heartbeat|close|abandon)$/);
-    if (!route) {
-      return fixtureJson({
-        ok: false,
-        error: { code: "internal_error", message: "unknown fixture route" },
-      }, 404);
-    }
-    const registrationId = decodeURIComponent(route[1]!);
-    const action = route[2]!;
-    const registration = registrations.get(registrationId);
-    if (!registration || registration.device !== device) {
-      return fixtureJson({
-        ok: false,
-        error: { code: "profile_not_found", message: "fixture registration was not found" },
-      }, 404);
-    }
-
-    if (request.method === "POST" && action === "heartbeat") {
-      counters.heartbeat[device]++;
-      if (registration.closed || active?.registrationId !== registrationId) {
-        return fixtureJson({
-          ok: false,
-          error: { code: "profile_not_found", message: "fixture registration was closed" },
-        }, 404);
-      }
-      return fixtureJson({ ok: true, revoked: false, activeOpens: [] });
-    }
-    if (request.method === "POST" && action === "abandon") {
-      counters.abandon[device]++;
-      registration.closed = true;
-      if (active?.registrationId === registrationId) active = null;
-      return fixtureJson({ ok: true, status: "abandoned" });
-    }
-    if (request.method !== "PUT" || action !== "close") {
-      return fixtureJson({
-        ok: false,
-        error: { code: "internal_error", message: "unknown fixture route" },
-      }, 404);
-    }
-
-    counters.close[device]++;
-    if (registration.dropResponses) {
-      counters.droppedResponses++;
-      return Response.error();
-    }
-    if (registration.closed || active?.registrationId !== registrationId) {
-      return fixtureJson({
-        ok: false,
-        error: { code: "profile_not_found", message: "fixture registration was closed" },
-      }, 404);
-    }
-    const body = await request.json().catch(() => null) as {
-      expectedVersion?: unknown;
-      payload?: unknown;
-    } | null;
-    if (!Number.isSafeInteger(body?.expectedVersion) || !body?.payload || typeof body.payload !== "object") {
-      return fixtureJson({
-        ok: false,
-        error: { code: "validation_failed", message: "fixture close payload is invalid" },
-      }, 400);
-    }
-
-    registration.closed = true;
-    active = null;
-    if (body.expectedVersion !== version) {
-      counters.conflicts++;
-      return fixtureJson({
-        ok: false,
-        error: {
-          code: "version_conflict",
-          message: "fixture close used a stale version",
-          currentVersion: version,
-        },
-      }, 409);
-    }
-
-    payload = body.payload as CloudCrossDevicePayload;
-    version++;
-    counters.acceptedCloses++;
-    if (dropNextCloseResponse && device === "a") {
-      dropNextCloseResponse = false;
-      registration.dropResponses = true;
-      counters.droppedResponses++;
-      return Response.error();
-    }
-    return fixtureJson({ ok: true, status: "accepted", version });
-  };
-}
-
-export function createCloudRestoreFixtureHandler(
-  mode: CloudRestoreFixtureMode,
-  initialRefresh: "seeded" | "rotated" = "seeded",
-): (request: Request) => Promise<Response> {
-  if (mode === "cross-device") return createCloudCrossDeviceFixtureHandler();
-  let expectedRefreshToken = initialRefresh === "seeded"
-    ? CLOUD_RESTORE_FIXTURE_SEEDED_REFRESH_TOKEN
-    : CLOUD_RESTORE_FIXTURE_REFRESH_TOKEN;
-  const waiting: Array<() => void> = [];
-  const waitForRelease = () => new Promise<void>((resolve) => {
-    waiting.push(resolve);
-  });
-  const release = (count: number): boolean => {
-    if (waiting.length < count) return false;
-    for (let index = 0; index < count; index++) waiting.shift()!();
-    return true;
-  };
-
-  return async (request) => {
-    const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") {
-      return fixtureJson({ ok: true, mode });
-    }
-    if (request.method === "POST" && url.pathname === "/control/release") {
-      const count = Number(url.searchParams.get("count") ?? "1");
-      if (!Number.isInteger(count) || count < 1 || count > 2) {
-        return fixtureJson({ ok: false, error: "fixture release count must be one or two" }, 400);
-      }
-      if (!release(count)) {
-        return fixtureJson({ ok: false, error: "fixture has no waiting refresh request" }, 409);
-      }
-      return fixtureJson({ ok: true, released: count });
-    }
-    if (
-      request.method === "POST"
-      && url.pathname === "/auth/v1/token"
-      && url.searchParams.get("grant_type") === "refresh_token"
-    ) {
-      const body = await request.json().catch(() => null) as { refresh_token?: unknown } | null;
-      if (body?.refresh_token !== expectedRefreshToken) {
-        return fixtureJson({ message: "fixture refresh token is invalid" }, 401);
-      }
-      expectedRefreshToken = CLOUD_RESTORE_FIXTURE_REFRESH_TOKEN;
-      // Hold the response until installed automation has observed the restoring UI.
-      await waitForRelease();
-      if (mode === "offline") return Response.error();
-      return fixtureJson({
-        access_token: CLOUD_RESTORE_FIXTURE_ACCESS_TOKEN,
-        refresh_token: CLOUD_RESTORE_FIXTURE_REFRESH_TOKEN,
-        expires_in: 3_600,
-        user: {
-          id: "fixture-account",
-          email: "user@fixture.invalid",
-          email_confirmed_at: "fixture",
-        },
-      });
-    }
-    if (!url.pathname.startsWith("/v1/") || !fixtureAuthorized(request)) {
-      return fixtureJson({
-        ok: false,
-        error: { code: "authentication_required", message: "fixture authentication is required" },
-      }, 401);
-    }
-    if (mode === "offline") return Response.error();
-    if (mode === "membership-revoked") {
-      return fixtureJson({
-        ok: false,
-        error: { code: "membership_revoked", message: "fixture membership was revoked" },
-      }, 403);
-    }
-    if (request.method === "GET" && url.pathname === "/v1/status") {
-      return fixtureJson(cloudRestoreFixtureStatus());
-    }
-    if (request.method === "GET" && url.pathname === "/v1/profiles") {
-      return fixtureJson({ ok: true, profiles: [] });
-    }
-    if (request.method === "GET" && url.pathname === "/v1/workspace/folders") {
-      return fixtureJson({ ok: true, folders: [] });
-    }
-    if (request.method === "GET" && url.pathname === "/v1/workspace/members") {
-      return fixtureJson({
-        ok: true,
-        members: [{
-          accountId: "fixture-account",
-          email: "user@fixture.invalid",
-          role: "member",
-          joinedAt: 1,
-          grants: [],
-        }],
-      });
-    }
-    return fixtureJson({
-      ok: false,
-      error: { code: "internal_error", message: "unknown fixture route" },
-    }, 404);
-  };
-}
-
-async function runCloudRestoreFixture(args: string[]): Promise<void> {
-  const { port, mode, initialRefresh } = parseCloudRestoreFixtureOptions(args);
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port,
-    fetch: createCloudRestoreFixtureHandler(mode, initialRefresh),
-  });
-  if (server.port !== port) {
-    server.stop(true);
-    throw new Error("Cloud restore fixture did not bind the requested loopback port");
-  }
-  console.log(`Cloud restore fixture ready on loopback port ${port} in ${mode} mode`);
-  await new Promise<void>((resolve) => {
-    process.once("SIGINT", resolve);
-    process.once("SIGTERM", resolve);
-  });
-  await server.stop(true);
 }
 
 export interface WindowsNativeWindowCandidate {
@@ -1311,48 +762,7 @@ export async function exerciseWindowsWindowAcceptance(
   if (cleanupFailure !== undefined) throw cleanupFailure;
 }
 
-function cloudCloseHasSync(
-  result: CloudBrowserCloseResult,
-  sync: "complete" | "pending" | "conflict",
-): boolean {
-  // A smoke close must save its fresh session, not only the last checkpoint.
-  return result.closed && result.sync === sync && !result.captureFailed;
-}
-
-export interface CloudLauncherSmokeRuntime {
-  coordinator: Pick<CloudBrowserCoordinator, "open" | "close" | "releaseAll">;
-  launcher: Pick<Launcher, "active" | "stop">;
-  store: Pick<ProfileStore, "getLaunch">;
-}
-
-export async function exerciseCloudLauncherSmoke(
-  runtime: CloudLauncherSmokeRuntime,
-  profileId = "aliasmode-cloud-smoke",
-  launchArgs: string[] = [],
-): Promise<void> {
-  for (let cycle = 0; cycle < 3; cycle++) {
-    const opened = await runtime.coordinator.open(profileId, launchArgs);
-    if (!opened.ok) throw new Error(opened.error ?? "Cloud launcher smoke could not open the profile");
-    if (!await runtime.launcher.active(profileId)) {
-      throw new Error("Cloud launcher smoke browser was not alive after restore");
-    }
-    if (!runtime.store.getLaunch(profileId)) {
-      throw new Error("Cloud launcher smoke lost durable launch ownership");
-    }
-    const closed = await runtime.coordinator.close(profileId);
-    if (!cloudCloseHasSync(closed, "complete")) {
-      throw new Error("Cloud launcher smoke could not close the profile safely");
-    }
-    if (await runtime.launcher.active(profileId)) {
-      throw new Error("Cloud launcher smoke browser survived confirmed close");
-    }
-    if (runtime.store.getLaunch(profileId)) {
-      throw new Error("Cloud launcher smoke retained a launch after confirmed close");
-    }
-  }
-}
-
-type CloudLauncherSmokeProxy = {
+type BrowserLifecycleSmokeProxy = {
   profileProxy: NonNullable<Profile["proxy"]>;
   startupUrl?: string;
   assertComplete?(): void;
@@ -1366,7 +776,7 @@ const PROXY_MISMATCH_URL = "http://cloud-open.invalid/ok";
  * It rejects every HTTPS tunnel, so the old Node TLS precheck fails, while the
  * real Chromium HTTP request succeeds through Vela Browser's credential relay.
  */
-async function startProxyMismatchFixture(): Promise<CloudLauncherSmokeProxy> {
+async function startProxyMismatchFixture(): Promise<BrowserLifecycleSmokeProxy> {
   const expectedAuth = `Basic ${Buffer.from("aliasmode-smoke:aliasmode-smoke").toString("base64")}`;
   let targetRequests = 0;
   const sockets = new Set<net.Socket>();
@@ -1429,21 +839,21 @@ async function startProxyMismatchFixture(): Promise<CloudLauncherSmokeProxy> {
   };
 }
 
-function cloudLauncherSmokeProxy(
+function browserLifecycleSmokeProxy(
   rest: string[],
   env: NodeJS.ProcessEnv = process.env,
-): CloudLauncherSmokeProxy | null {
+): BrowserLifecycleSmokeProxy | null {
   const type = flag(rest, "proxy-type");
   if (!type) return null;
   if (type !== "http" && type !== "socks5") {
-    throw new Error("Cloud launcher smoke proxy type must be http or socks5");
+    throw new Error("Browser lifecycle smoke proxy type must be http or socks5");
   }
   const host = env.ALIASMODE_LIVE_PROXY_HOST?.trim() ?? "";
   const port = env.ALIASMODE_LIVE_PROXY_PORT?.trim() ?? "";
   const user = env.ALIASMODE_LIVE_PROXY_USER ?? "";
   const pass = env.ALIASMODE_LIVE_PROXY_PASS ?? "";
   if (!host || !port || !user || !pass) {
-    throw new Error("Cloud launcher smoke proxy environment is incomplete");
+    throw new Error("Browser lifecycle smoke proxy environment is incomplete");
   }
   return {
     profileProxy: { type, host, port, user, pass },
@@ -1790,13 +1200,13 @@ async function runWindowsWindowAcceptance(paths: StatePaths, rest: string[]): Pr
   if (process.platform !== "win32") {
     throw new Error("Windows window acceptance requires Windows");
   }
-  const store = new ProfileStore(paths.cloudDatabase);
+  const store = new ProfileStore(paths.database);
   const searchProviderResults = new Map<string, SearchProviderSetupResult>();
   const launcher = makeLauncher(
     store,
     rest,
-    true,
-    paths.cloudProfiles,
+    false,
+    paths.profiles,
     async (options) => {
       const result = await ensureDuckDuckGoDefault(options);
       searchProviderResults.set(options.userDataDir, result);
@@ -1986,505 +1396,52 @@ async function runWindowsWindowAcceptance(paths: StatePaths, rest: string[]): Pr
   }
 }
 
-interface CloudCrossDeviceSyntheticRuntime {
-  coordinator: CloudBrowserCoordinator;
-  store: ProfileStore;
-  queue: PendingSyncQueue;
-  calls: { start: number; stop: number; applySession: number; readSession: number };
-  appliedSessions: string[];
-  setSession(bundle: string): void;
-  close(): void;
-}
-
-function requireCloudCrossDevice(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(`Cloud cross-device acceptance failed: ${message}`);
-}
-
-function cloudCrossDeviceSentinel(bundle: string): string {
-  const parsed = JSON.parse(bundle) as { cookies?: Array<{ name?: unknown; value?: unknown }> };
-  const cookies = parsed.cookies?.filter((cookie) => cookie?.name === "aliasmode_cross_device") ?? [];
-  if (cookies.length !== 1 || typeof cookies[0]?.value !== "string") {
-    throw new Error("Cloud cross-device acceptance received an invalid sentinel session");
-  }
-  return cookies[0].value;
-}
-
-function cloudCrossDeviceFixtureOrigin(value: string): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("Cloud cross-device acceptance requires a loopback fixture URL");
-  }
-  if (
-    url.protocol !== "http:"
-    || url.hostname !== "127.0.0.1"
-    || !url.port
-    || url.username
-    || url.password
-    || url.pathname !== "/"
-    || url.search
-    || url.hash
-  ) {
-    throw new Error("Cloud cross-device acceptance requires a loopback fixture URL");
-  }
-  return url.origin;
-}
-
-async function cloudCrossDeviceControl<T>(
-  fixtureOrigin: string,
-  path: string,
-  method: "GET" | "POST" = "GET",
-): Promise<T> {
-  const response = await fetch(`${fixtureOrigin}${path}`, {
-    method,
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!response.ok) throw new Error(`Cloud cross-device fixture control failed at ${path}`);
-  return await response.json() as T;
-}
-
-function createCloudCrossDeviceSyntheticRuntime(
-  paths: StatePaths,
-  fixtureOrigin: string,
-  device: CloudCrossDeviceFixtureDevice,
-): CloudCrossDeviceSyntheticRuntime {
-  ensureStateDirectories(paths);
-  const store = new ProfileStore(paths.cloudDatabase);
-  const queue = new PendingSyncQueue(
-    paths.pendingSync,
-    new Uint8Array(32).fill(device === "a" ? 0xa1 : 0xb2),
-  );
-  const credential = CLOUD_CROSS_DEVICE_DEVICES[device];
-  const connection = new CloudConnectionRuntime({
-    baseUrl: fixtureOrigin,
-    accessToken: () => credential.accessToken,
-    installation: {
-      installationId: `fixture-installation-${device}`,
-      label: `Fixture device ${device.toUpperCase()}`,
-      platform: "windows",
-      appVersion: ALIASMODE_VERSION,
-    },
-  });
-  connection.restoreAccount(CLOUD_CROSS_DEVICE_ACCOUNT_ID);
-  connection.restoreDevice(credential.id, credential.credential);
-
-  const calls = { start: 0, stop: 0, applySession: 0, readSession: 0 };
-  const appliedSessions: string[] = [];
-  let sessionBundle = cloudCrossDeviceSession(CLOUD_CROSS_DEVICE_INITIAL_SENTINEL);
-  let generation = 0;
-  const launcher: CloudBrowserOptions["launcher"] = {
-    failedStartGeneration() { return undefined; },
-    matchesCloudSession() { return false; },
-    recordCloudSession() {},
-    async start(profileId, _launchArgs, options) {
-      calls.start++;
-      generation++;
-      const port = (device === "a" ? 31_000 : 32_000) + generation;
-      const startedAt = (device === "a" ? 100_000 : 200_000) + generation;
-      const ws = `ws://127.0.0.1:${port}/fixture-${device}-${generation}`;
-      store.recordLaunch({
-        profileId,
-        pid: port,
-        debugPort: port,
-        ws,
-        startedAt,
-        sessionBaseVersion: options?.sessionBaseVersion,
-        userDataDir: join(paths.cloudProfiles, profileId),
-      });
-      return { ws, port };
-    },
-    async stop(profileId) {
-      calls.stop++;
-      store.clearLaunch(profileId);
-      return true;
-    },
-    async active(profileId) {
-      return !!store.getLaunch(profileId);
-    },
-    async hasPageTargets(profileId) {
-      return !!store.getLaunch(profileId);
-    },
-    async verifyRunningIdentity(profileId) {
-      if (!store.getLaunch(profileId)) throw new Error("synthetic browser generation is missing");
-    },
-    async reconcileOrphan(profileId, expected) {
-      const launch = store.getLaunch(profileId);
-      if (!launch) return "dead";
-      return launch.debugPort === expected.debugPort && launch.startedAt === expected.startedAt
-        ? "alive"
-        : "generation_changed";
-    },
-    browserStorageWatchPaths() {
-      return [];
-    },
-    async navigate() {},
-  };
-  const coordinator = new CloudBrowserCoordinator({
-    cloud: connection.client,
-    launcher,
-    store,
-    queue: () => queue,
-    accountId: () => connection.accountId(),
-    deviceId: () => connection.deviceId(),
-    async readSession() {
-      calls.readSession++;
-      return sessionBundle;
-    },
-    async applySession(_endpoint, bundle) {
-      calls.applySession++;
-      sessionBundle = bundle;
-      appliedSessions.push(bundle);
-    },
-    heartbeatMs: 0,
-    storageCheckpoints: false,
-  });
-
-  return {
-    coordinator,
-    store,
-    queue,
-    calls,
-    appliedSessions,
-    setSession(bundle) { sessionBundle = bundle; },
-    close() {
-      store.clearLaunch(CLOUD_CROSS_DEVICE_PROFILE_ID);
-      queue.close();
-      store.close();
-    },
-  };
-}
-
-async function assertCloudCrossDeviceQueueEncryption(
-  path: string,
-  sentinels: readonly string[],
-): Promise<void> {
-  requireCloudCrossDevice(existsSync(path), "pending queue artifact is missing");
-  for (const candidate of [path, `${path}-wal`, `${path}-shm`]) {
-    if (!existsSync(candidate)) continue;
-    const bytes = readFileSync(candidate);
-    for (const sentinel of sentinels) {
-      requireCloudCrossDevice(
-        !bytes.includes(Buffer.from(sentinel, "utf8")),
-        `pending queue artifact exposed ${sentinel}`,
-      );
-    }
-  }
-}
-
-export async function runCloudCrossDeviceAcceptance(
-  paths: StatePaths,
-  fixtureUrl: string,
-): Promise<CloudCrossDeviceFixtureState> {
-  const fixtureOrigin = cloudCrossDeviceFixtureOrigin(fixtureUrl);
-  const deviceARoot = join(paths.root, "device-a");
-  const deviceBRoot = join(paths.root, "device-b");
-  requireCloudCrossDevice(
-    !existsSync(deviceARoot) && !existsSync(deviceBRoot),
-    "isolated device roots must be clean",
-  );
-  const deviceAPaths = statePaths(deviceARoot);
-  const deviceBPaths = statePaths(deviceBRoot);
-  const deviceA = createCloudCrossDeviceSyntheticRuntime(deviceAPaths, fixtureOrigin, "a");
-  const deviceB = createCloudCrossDeviceSyntheticRuntime(deviceBPaths, fixtureOrigin, "b");
-  let finalState: CloudCrossDeviceFixtureState | undefined;
-
-  try {
-    const openedA = await deviceA.coordinator.open(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(openedA.ok, openedA.error ?? "device A did not open version 37");
-    requireCloudCrossDevice(
-      deviceA.store.getLaunch(CLOUD_CROSS_DEVICE_PROFILE_ID)?.sessionBaseVersion === 37,
-      "device A did not commit version 37",
-    );
-
-    const rejectedB = await deviceB.coordinator.open(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(
-      !rejectedB.ok,
-      "device B did not receive profile_open",
-    );
-    requireCloudCrossDevice(
-      JSON.stringify(deviceB.calls) === JSON.stringify({ start: 0, stop: 0, applySession: 0, readSession: 0 }),
-      "device B launched local lifecycle work after profile_open",
-    );
-    requireCloudCrossDevice(
-      !deviceB.store.getProfile(CLOUD_CROSS_DEVICE_PROFILE_ID)
-        && !deviceB.store.getLaunch(CLOUD_CROSS_DEVICE_PROFILE_ID)
-        && deviceB.queue.list(CLOUD_CROSS_DEVICE_ACCOUNT_ID).length === 0
-        && deviceB.queue.listOpens(CLOUD_CROSS_DEVICE_ACCOUNT_ID).length === 0,
-      "device B retained local state after profile_open",
-    );
-
-    deviceA.setSession(cloudCrossDeviceSession(CLOUD_CROSS_DEVICE_A_SENTINEL));
-    const closedA = await deviceA.coordinator.close(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(
-      cloudCloseHasSync(closedA, "complete"),
-      "device A version 37 close was not accepted",
-    );
-    let state = await cloudCrossDeviceControl<CloudCrossDeviceFixtureState>(fixtureOrigin, "/control/state");
-    requireCloudCrossDevice(state.version === 38 && state.activeDevice === null, "device A did not publish version 38");
-
-    const openedB = await deviceB.coordinator.open(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(openedB.ok, openedB.error ?? "device B did not open version 38");
-    requireCloudCrossDevice(
-      deviceB.store.getLaunch(CLOUD_CROSS_DEVICE_PROFILE_ID)?.sessionBaseVersion === 38
-        && cloudCrossDeviceSentinel(deviceB.appliedSessions.at(-1)!) === CLOUD_CROSS_DEVICE_A_SENTINEL,
-      "device B did not restore device A's exact sentinel at version 38",
-    );
-    const closedB = await deviceB.coordinator.close(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(
-      cloudCloseHasSync(closedB, "complete"),
-      "device B version 38 close was not accepted",
-    );
-
-    const staleA = await deviceA.coordinator.open(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(staleA.ok, staleA.error ?? "device A did not reopen before the conflict");
-    deviceA.setSession(cloudCrossDeviceSession(CLOUD_CROSS_DEVICE_CONFLICT_SENTINEL));
-    await cloudCrossDeviceControl(fixtureOrigin, "/control/advance", "POST");
-    const conflictedA = await deviceA.coordinator.close(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(
-      cloudCloseHasSync(conflictedA, "conflict"),
-      "device A stale close did not remain a terminal conflict",
-    );
-    const conflictSummary = deviceA.queue.list(CLOUD_CROSS_DEVICE_ACCOUNT_ID)
-      .find((pending) => pending.status === "conflict");
-    const conflict = conflictSummary
-      ? deviceA.queue.get(conflictSummary.id, CLOUD_CROSS_DEVICE_ACCOUNT_ID)
-      : null;
-    requireCloudCrossDevice(
-      !!conflict
-        && cloudCrossDeviceSentinel(JSON.stringify(conflict.payload.session)) === CLOUD_CROSS_DEVICE_CONFLICT_SENTINEL,
-      "device A conflict snapshot was not preserved and decryptable",
-    );
-
-    const latestB = await deviceB.coordinator.open(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(latestB.ok, latestB.error ?? "device B did not open the authoritative version");
-    requireCloudCrossDevice(
-      deviceB.store.getLaunch(CLOUD_CROSS_DEVICE_PROFILE_ID)?.sessionBaseVersion === 40
-        && cloudCrossDeviceSentinel(deviceB.appliedSessions.at(-1)!) === CLOUD_CROSS_DEVICE_LATEST_SENTINEL,
-      "device B did not restore the authoritative version beside device A's conflict",
-    );
-    const closedLatestB = await deviceB.coordinator.close(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(
-      cloudCloseHasSync(closedLatestB, "complete"),
-      "device B authoritative close was not accepted",
-    );
-
-    const ambiguousA = await deviceA.coordinator.open(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(
-      ambiguousA.ok,
-      ambiguousA.error ?? "device A terminal conflict blocked reopen",
-    );
-    requireCloudCrossDevice(
-      deviceA.store.getLaunch(CLOUD_CROSS_DEVICE_PROFILE_ID)?.sessionBaseVersion === 41,
-      "device A did not open version 41",
-    );
-    deviceA.setSession(cloudCrossDeviceSession(CLOUD_CROSS_DEVICE_AMBIGUOUS_SENTINEL));
-    await cloudCrossDeviceControl(fixtureOrigin, "/control/drop-close-response", "POST");
-    const pendingA = await deviceA.coordinator.close(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(
-      cloudCloseHasSync(pendingA, "pending"),
-      "device A dropped close response was not retained as ambiguous",
-    );
-    const ambiguousSummary = deviceA.queue.list(CLOUD_CROSS_DEVICE_ACCOUNT_ID)
-      .find((pending) => pending.status === "retrying");
-    const ambiguous = ambiguousSummary
-      ? deviceA.queue.get(ambiguousSummary.id, CLOUD_CROSS_DEVICE_ACCOUNT_ID)
-      : null;
-    requireCloudCrossDevice(
-      !!ambiguous
-        && cloudCrossDeviceSentinel(JSON.stringify(ambiguous.payload.session)) === CLOUD_CROSS_DEVICE_AMBIGUOUS_SENTINEL,
-      "device A ambiguous snapshot was not preserved and decryptable",
-    );
-
-    const startsBeforeBlockedReopen = deviceA.calls.start;
-    state = await cloudCrossDeviceControl<CloudCrossDeviceFixtureState>(fixtureOrigin, "/control/state");
-    const opensBeforeBlockedReopen = state.counters.open.a;
-    const blockedA = await deviceA.coordinator.open(CLOUD_CROSS_DEVICE_PROFILE_ID);
-    requireCloudCrossDevice(
-      !blockedA.ok,
-      "device A ambiguous close did not block local reopen",
-    );
-    finalState = await cloudCrossDeviceControl<CloudCrossDeviceFixtureState>(fixtureOrigin, "/control/state");
-    requireCloudCrossDevice(
-      deviceA.calls.start === startsBeforeBlockedReopen
-        && finalState.counters.open.a === opensBeforeBlockedReopen,
-      "device A blocked reopen sent a new open request or launched a browser",
-    );
-    const retainedConflict = conflictSummary
-      ? deviceA.queue.get(conflictSummary.id, CLOUD_CROSS_DEVICE_ACCOUNT_ID)
-      : null;
-    const retainedAmbiguous = ambiguousSummary
-      ? deviceA.queue.get(ambiguousSummary.id, CLOUD_CROSS_DEVICE_ACCOUNT_ID)
-      : null;
-    requireCloudCrossDevice(
-      retainedConflict?.status === "conflict"
-        && cloudCrossDeviceSentinel(JSON.stringify(retainedConflict.payload.session)) === CLOUD_CROSS_DEVICE_CONFLICT_SENTINEL,
-      "device A conflict snapshot did not remain preserved",
-    );
-    requireCloudCrossDevice(
-      retainedAmbiguous?.status === "retrying"
-        && cloudCrossDeviceSentinel(JSON.stringify(retainedAmbiguous.payload.session)) === CLOUD_CROSS_DEVICE_AMBIGUOUS_SENTINEL,
-      "device A ambiguous snapshot did not remain preserved",
-    );
-    const expectedState: CloudCrossDeviceFixtureState = {
-      ok: true,
-      version: 42,
-      activeDevice: null,
-      counters: {
-        open: { a: 3, b: 3 },
-        close: { a: 4, b: 2 },
-        heartbeat: { a: 0, b: 0 },
-        abandon: { a: 0, b: 0 },
-        acceptedCloses: 4,
-        conflicts: 1,
-        profileOpen: 1,
-        droppedResponses: 2,
-      },
-    };
-    requireCloudCrossDevice(
-      JSON.stringify(finalState) === JSON.stringify(expectedState),
-      "fixture request counters were not exact",
-    );
-  } finally {
-    deviceB.close();
-    deviceA.close();
-  }
-
-  await assertCloudCrossDeviceQueueEncryption(deviceAPaths.pendingSync, [
-    CLOUD_CROSS_DEVICE_CONFLICT_SENTINEL,
-    CLOUD_CROSS_DEVICE_AMBIGUOUS_SENTINEL,
-  ]);
-  requireCloudCrossDevice(finalState, "fixture state was not recorded");
-  return finalState;
-}
-
-export function cloudLauncherSmokeEngine(rest: string[]): ProfileEngine {
+export function browserLifecycleSmokeEngine(rest: string[]): ProfileEngine {
   const engine = flag(rest, "engine") ?? (has(rest, "engine") ? "" : "chromium");
   if (engine !== "chromium" && engine !== "firefox") {
-    throw new Error("Cloud launcher smoke engine must be chromium or firefox");
+    throw new Error("Browser lifecycle smoke engine must be chromium or firefox");
   }
   return engine;
 }
 
-async function runCloudLauncherSmoke(paths: StatePaths, rest: string[]): Promise<void> {
+async function runBrowserLifecycleSmoke(paths: StatePaths, rest: string[]): Promise<void> {
   if (has(rest, "windows-window-acceptance")) {
     await runWindowsWindowAcceptance(paths, rest);
     return;
   }
-  const engine = cloudLauncherSmokeEngine(rest);
-  const profileId = engine === "firefox" ? "aliasmode-firefox-cloud-smoke" : "aliasmode-cloud-smoke";
-  const canaryWorkerTimeoutMs = has(rest, "unsafe-disable-identity-gates")
-    ? UNSAFE_CANARY_TIMEOUT_MS
-    : undefined;
-  const store = new ProfileStore(paths.cloudDatabase);
-  const queue = new PendingSyncQueue(paths.pendingSync, new Uint8Array(32).fill(1));
-  const smokeProxy = has(rest, "proxy-mismatch")
-    ? await startProxyMismatchFixture()
-    : cloudLauncherSmokeProxy(rest);
-  // Exercise the persisted proxy-only preparation path that clean CI profiles previously missed.
-  if (smokeProxy) {
-    const defaultProfileDir = resolve(paths.cloudProfiles, profileId, "Default");
-    mkdirSync(defaultProfileDir, { recursive: true });
-    writeFileSync(resolve(defaultProfileDir, "Preferences"), "[]");
-  }
-  const launcher = makeLauncher(
-    store,
-    rest,
-    true,
-    paths.cloudProfiles,
-    undefined,
-    join(paths.root, "runtimes"),
-  );
-  const profile = smokeProfile(
-    profileId,
-    "Cloud launcher smoke",
-    1,
-    smokeProxy?.profileProxy ?? null,
-  );
+  const engine = browserLifecycleSmokeEngine(rest);
+  const profileId = engine === "firefox" ? "vela-firefox-lifecycle-smoke" : "vela-chromium-lifecycle-smoke";
+  const store = new ProfileStore(paths.database);
+  const smokeProxy = has(rest, "proxy-mismatch") ? await startProxyMismatchFixture() : browserLifecycleSmokeProxy(rest);
+  const launcher = makeLauncher(store, rest, false, paths.profiles, undefined, join(paths.root, "runtimes"));
+  const profile = smokeProfile(profileId, "Browser lifecycle smoke", 1, smokeProxy?.profileProxy ?? null);
   if (engine === "firefox") {
     profile.engine = engine;
     profile.firefox = createFirefoxProfileConfig(profile.screenWidth, profile.screenHeight);
   }
   if (flag(rest, "chromium-runtime") === "aliasmode") profile.chromiumRuntime = "aliasmode";
-  let payload = encodePortableProfile(profile, JSON.stringify({
-    cookies: [{
-      name: "auth_token",
-      value: "aliasmode-smoke",
-      domain: ".x.com",
-      path: "/",
-      expires: -1,
-      httpOnly: false,
-      secure: true,
-      sameSite: "Lax",
-    }],
-    origins: [],
-  }));
-  let version = 1;
-  let registration = 0;
-  const cloud = {
-    async listProfiles() { throw new Error("Cloud launcher smoke must not list remote profiles"); },
-    async createProfile() { throw new Error("Cloud launcher smoke must not create remote profiles"); },
-    async openProfile() {
-      registration++;
-      return {
-        ok: true as const,
-        registrationId: `smoke-registration-${registration}`,
-        baseVersion: version,
-        payload,
-        activeOpens: [],
-      };
-    },
-    async heartbeat() {
-      return { ok: true as const, revoked: false as const, activeOpens: [] };
-    },
-    async closeOpen(_registrationId: string, request: { expectedVersion: number; payload: typeof payload }) {
-      if (request.expectedVersion !== version) throw new Error("Cloud launcher smoke received a stale close");
-      if (request.payload.schemaVersion !== payload.schemaVersion) {
-        throw new Error("Cloud launcher smoke close changed the profile's browser runtime");
-      }
-      if (!request.payload.session.cookies.some((cookie) =>
-        cookie.name === "auth_token" && cookie.value === "aliasmode-smoke"
-      )) {
-        throw new Error("Cloud launcher smoke did not capture the restored session");
-      }
-      payload = request.payload;
-      version++;
-      return { ok: true as const, status: "accepted" as const, version };
-    },
-    async abandon() { return { ok: true as const, status: "abandoned" as const }; },
-  };
-  const coordinator = new CloudBrowserCoordinator({
-    cloud: cloud as any,
-    launcher,
-    store,
-    queue: () => queue,
-    accountId: () => "smoke-account",
-    deviceId: () => "smoke-device",
-    readSession: (endpoint, captureSeed) => readSessionInSubprocess(endpoint, {
-      captureSeed,
-      ...(canaryWorkerTimeoutMs ? { timeoutMs: canaryWorkerTimeoutMs } : {}),
-    }),
-    applySession: (endpoint, bundle, urls) =>
-      applySessionToEndpoint(endpoint, bundle, urls, {
-        log: (m) => console.log(`[aliasmode] ${m}`),
-        ...(canaryWorkerTimeoutMs ? { writeTimeoutMs: canaryWorkerTimeoutMs } : {}),
-      }),
-    heartbeatMs: 0,
-  });
-
+  profile.cookies = [{ name: "session", value: "vela-local-smoke", domain: ".example.test", path: "/", expires: -1, httpOnly: false, secure: true, sameSite: "Lax" }];
+  store.upsertProfile(profile);
+  const before = store.getProfile(profileId)!;
   try {
-    await exerciseCloudLauncherSmoke(
-      { coordinator, launcher, store },
-      profileId,
-      smokeProxy?.startupUrl ? [smokeProxy.startupUrl] : [],
-    );
+    await launcher.reconcileOrphans();
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await launcher.start(profileId, smokeProxy?.startupUrl ? [smokeProxy.startupUrl] : []);
+      if (!await launcher.active(profileId) || !store.getLaunch(profileId)) throw new Error("Browser smoke lost durable launch ownership");
+      if (!await launcher.stop(profileId)) throw new Error("Browser smoke close was not confirmed");
+      await launcher.cacheCleanupSettled(profileId);
+      if (await launcher.active(profileId) || store.getLaunch(profileId)) throw new Error("Browser smoke retained a closed launch");
+      const saved = store.getProfile(profileId)!;
+      if (saved.fingerprintSeed !== before.fingerprintSeed || saved.engine !== before.engine || JSON.stringify(saved.firefox) !== JSON.stringify(before.firefox)) {
+        throw new Error("Browser smoke changed the persisted browser identity");
+      }
+    }
     smokeProxy?.assertComplete?.();
+    console.log("Local browser lifecycle verified: three open/close cycles, durable ownership and stable identity");
   } finally {
-    await coordinator.releaseAll(true).catch(() => false);
     await launcher.stop(profileId).catch(() => false);
     await launcher.cacheCleanupSettled(profileId);
     smokeProxy?.close?.();
-    queue.close();
     store.close();
   }
 }
@@ -2523,8 +1480,9 @@ async function main() {
     if (!result.ok) process.exitCode = 1;
     return;
   }
-  if (argv[0] === "__cloud-restore-fixture") {
-    await runCloudRestoreFixture(argv.slice(1));
+  if (argv[0]?.startsWith("__cloud-")) {
+    console.error("Accounts and Cloud mode have been removed from Vela Browser");
+    process.exitCode = 1;
     return;
   }
 
@@ -2589,78 +1547,14 @@ async function main() {
     : null;
   const agentNonce = desktop ? agentControlNonce(process.env) : null;
   if (desktop && !agentNonce) throw new Error("ALIASMODE_AGENT_NONCE is required in desktop mode");
-  const desktopCredentials = desktopHealth
-    ? new DesktopCredentialBridge(desktopHealth.instance)
-    : null;
   ensureStateDirectories(paths);
-  if (cmd === "__cloud-cross-device-acceptance") {
-    const fixtureUrl = flag(rest, "fixture-url");
-    if (!fixtureUrl) throw new Error("Cloud cross-device acceptance requires --fixture-url");
-    await runCloudCrossDeviceAcceptance(paths, fixtureUrl);
-    console.log("installed sidecar cross-device Cloud acceptance passed");
-    return;
-  }
-  if (cmd === "__cloud-launcher-smoke") {
-    await runCloudLauncherSmoke(paths, rest);
-    console.log(has(rest, "windows-window-acceptance")
-      ? "installed CloakBrowser search provider, native minimize, background page, session capture, target, HWND, and foreground acceptance passed"
-      : "compiled sidecar opened, restored, captured, and closed a fresh and repeated cached Cloud profile");
-    return;
-  }
   const appConfig = new AppConfigStore(paths.config);
-  let savedMode = appConfig.read();
-  const firstRunMode = savedMode.mode === "unconfigured" ? desktopFirstRunMode(desktop) : null;
-  if (firstRunMode) {
-    savedMode = appConfig.setMode(firstRunMode, firstRunMode === "cloud" ? selectedCloudUrl(savedMode) : undefined);
-  }
-  const defaultCloudUrl = selectedCloudUrl(savedMode);
-  const cloudConfig = cloudRuntimeConfiguration(savedMode);
-  const cloudAuth = cloudConfig
-    ? new CloudAuthRuntime(
-        new SupabaseAuthClient({
-          baseUrl: cloudConfig.authUrl,
-          anonKey: cloudConfig.anonKey,
-        }),
-        undefined,
-        desktopCredentials
-          ? (refreshToken) => desktopCredentials.persistRefreshToken(refreshToken)
-          : undefined,
-        desktopCredentials
-          ? () => desktopCredentials.clearCloudSessionCredentials()
-          : undefined,
-      )
-    : undefined;
+  const savedMode = appConfig.write(appConfig.read());
   const configuredDbPath = flag(rest, "db");
   const configuredDataRoot = flag(rest, "data-root");
-  const identityDbPath = configuredDbPath ?? paths.database;
-  const cloudProfileCache = savedMode.mode === "cloud" && (cmd === "start" || cmd === "serve");
-  const activeProfilePaths = profileDataPaths(paths, cloudProfileCache, configuredDbPath, configuredDataRoot);
+  const activeProfilePaths = profileDataPaths(paths, false, configuredDbPath, configuredDataRoot);
   const dbPath = activeProfilePaths.database;
   const profileDataRoot = activeProfilePaths.profiles;
-  const cloudConnection = cloudAuth && cloudConfig
-    ? new CloudConnectionRuntime({
-        baseUrl: cloudConfig.apiUrl,
-        accessToken: () => cloudAuth.accessTokenOrRefresh(),
-        installation: {
-          installationId: defaultOperatorName(identityDbPath),
-          label: hostname(),
-          platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux",
-          appVersion: process.env.ALIASMODE_APP_VERSION ?? ALIASMODE_VERSION,
-        },
-      })
-    : undefined;
-  const mcpTunnel = agentNonce && cloudAuth && cloudConfig && cloudConnection
-    ? new McpTunnelRuntime({
-        baseUrl: cloudConfig.apiUrl,
-        accessToken: () => cloudAuth.accessTokenOrRefresh(),
-        deviceId: () => cloudConnection.deviceId(),
-        deviceCredential: () => cloudConnection.deviceCredential(),
-        log: (message) => console.log(`[aliasmode] ${message}`),
-      })
-    : undefined;
-  const pendingSync = cloudAuth
-    ? new PendingSyncRuntime(paths.pendingSync, compiled ? undefined : paths.pendingSyncKey)
-    : undefined;
   const lifecycleAdmissionOptions = cmd === "start" || cmd === "serve"
     ? lifecycleAdmissionOptionsFromEnv()
     : undefined;
@@ -2669,6 +1563,10 @@ async function main() {
     : undefined;
 
   switch (cmd) {
+    case "__browser-lifecycle-smoke": {
+      await runBrowserLifecycleSmoke(paths, rest);
+      break;
+    }
     case "__sidecar-smoke": {
       const endpoint = flag(rest, "cdp-endpoint");
       if (!endpoint) throw new Error("compiled sidecar smoke requires --cdp-endpoint");
@@ -2678,6 +1576,11 @@ async function main() {
     }
     case "install-browser": {
       const engine = flag(rest, "engine") ?? (has(rest, "engine") ? "" : "chromium");
+      if (engine === "webkit") {
+        const installed = await ensureWebKit(join(paths.root, "runtimes"));
+        console.log(`WebKit installed and verified: ${installed}`);
+        break;
+      }
       if (engine === "firefox") {
         const archive = flag(rest, "archive");
         if (!archive || archive.startsWith("--")) {
@@ -2696,7 +1599,7 @@ async function main() {
         break;
       }
       if (engine !== "chromium") {
-        console.error("Browser engine must be chromium or firefox");
+        console.error("Browser engine must be chromium, firefox or webkit");
         process.exitCode = 1;
         break;
       }
@@ -2717,186 +1620,20 @@ async function main() {
       const store = new ProfileStore(dbPath);
       const port = Number(flag(rest, "port") ?? 50400);
 
-      // Persisted mode is authoritative. The legacy HUB_URL fallback exists only
-      // for existing installations that have not completed first-run selection.
       const configuredMode = savedMode;
-      const hubUrl = legacyHubUrl(configuredMode);
-      if (hubUrl) {
-        const password = process.env.HUB_PASSWORD ?? "";
-        if (!password) {
-          console.error("Remote mode needs HUB_PASSWORD set — the shared hub secret, or a per-operator token from `bun cli.ts user add <name>`.");
-          process.exit(1);
-        }
-        // Each box has a stable, unique operator id (OPERATOR_NAME or an
-        // auto-generated persisted id). With the shared hub secret the hub
-        // attributes locks to this id; a per-operator token overrides it.
-        const owner = defaultOperatorName(identityDbPath);
-        console.log(`local instance "${owner}" (hub lock attribution: this box's operator id)`);
-        const launcher = makeLauncher(store, rest, true, profileDataRoot, undefined, join(paths.root, "runtimes"));
-        await launcher.reconcileOrphans();
-        prefetchBrowserRuntimes(launcher, store);
-        const coord = new RemoteCoordinator({
-          hub: new HubClient(hubUrl, password, owner),
-          launcher,
-          store,
-          readSession: (endpoint, captureSeed) => readSessionInSubprocess(endpoint, { captureSeed }),
-          writeSession,
-        });
-        // Re-claim the lock + resume heartbeats for browsers that survived a
-        // restart (reconcileOrphans kept their rows), so their lease can't lapse
-        // and let another operator open the same account.
-        await coord.reclaimSurvivors();
-        startMemoryAttributionLog(coord);
-        const configuredShutdownTimeout = Number(process.env.ALIASMODE_SHUTDOWN_TIMEOUT_MS);
-        const shutdownTimeoutMs = Number.isFinite(configuredShutdownTimeout) && configuredShutdownTimeout > 0
-          ? Math.max(1_000, Math.floor(configuredShutdownTimeout))
-          : DEFAULT_REMOTE_SHUTDOWN_TIMEOUT_MS;
-        console.log(`remote mode: hub ${hubUrl} (authenticated operator identity is token-derived)`);
-        const automationServer = desktopHealth
-          ? serveDesktopAutomationApi({
-              launcher,
-              store,
-              remote: coord,
-              lifecycleAdmission: lifecycleAdmission!,
-              appConfig,
-            })
-          : undefined;
-        const server = serveDashboard({
-          launcher,
-          store,
-          remote: coord,
-          port,
-          lifecycleAdmission,
-          appConfig,
-          paths,
-          defaultCloudUrl,
-          cloudAuth,
-          cloudConnection,
-          pendingSync,
-          health: desktopHealth,
-          agentNonce: agentNonce ?? undefined,
-        });
-
-        if (desktopHealth) {
-          const assignedPort = server.port;
-          if (!assignedPort) throw new Error("desktop sidecar did not receive a loopback port");
-          attachDesktopControl(new ManagedDesktopRuntime({
-            server,
-            automationServer,
-            admission: lifecycleAdmission!,
-            store,
-            launcher,
-            remoteShutdown: (remainingMs) => drainRemoteShutdown(
-              () => coord.releaseAll(),
-              { maxDrainMs: Math.min(shutdownTimeoutMs, remainingMs) },
-            ),
-          }), desktopHealth, assignedPort, desktopCredentials!);
-          break;
-        }
-
-        let shutdownInFlight: Promise<void> | null = null;
-        let firstShutdownSignal: NodeJS.Signals | null = null;
-        const shutdown = (signal: NodeJS.Signals) => {
-          if (shutdownInFlight) {
-            const exitCode = signal === "SIGINT" ? 130 : 143;
-            console.error(
-              `received ${signal} while ${firstShutdownSignal ?? "shutdown"} cleanup is still unconfirmed; ` +
-              "forcing a non-zero exit with launch records and locks retained for next-start recovery",
-            );
-            process.exit(exitCode);
-            return;
-          }
-          firstShutdownSignal = signal;
-          console.error(
-            `received ${signal}; waiting up to ${shutdownTimeoutMs}ms for browser teardown and hub unlock ` +
-            "(send the signal again to force a non-zero exit)",
-          );
-          shutdownInFlight = drainRemoteShutdown(
-            () => coord.releaseAll(),
-            { maxDrainMs: shutdownTimeoutMs },
-          )
-            .then(() => process.exit(0))
-            .catch((error) => {
-              // Never claim clean shutdown or delete durable ownership after a
-              // timeout. A same-operator restart can reclaim locks immediately,
-              // reconcile launch rows, and retry exact browser cleanup.
-              console.error(`shutdown cleanup unconfirmed: ${error instanceof Error ? error.message : String(error)}; exiting non-zero`);
-              process.exit(1);
-            });
-        };
-        process.on("SIGINT", shutdown);
-        process.on("SIGTERM", shutdown);
-        break;
-      }
 
       // Reconcile/certify durable launch ownership before imports. Otherwise a
       // stale crash row rejects startup before it can be proven dead.
       console.log(`${configuredMode.mode} mode: preparing browser recovery`);
       console.log("startup: initializing autofill bridge");
-      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, join(paths.root, "runtimes"));
+      const launcher = makeLauncher(store, rest, false, profileDataRoot, undefined, join(paths.root, "runtimes"));
       console.log(`startup: checking ${store.listLaunches().length} saved browser process(es)`);
       await launcher.reconcileOrphans();
-      if (savedMode.mode !== "cloud") {
-        console.log("startup: verifying surviving local browsers");
-        await launcher.certifySurvivors();
-      }
+      console.log("startup: verifying surviving local browsers");
+      await launcher.certifySurvivors();
       console.log("startup: browser recovery checks complete");
-      const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);
       startMemoryAttributionLog();
       prefetchBrowserRuntimes(launcher, store);
-      if (configuredMode.mode === "cloud") {
-        console.log("cloud mode: waiting for verified authentication before loading profiles");
-        if (cloudBrowser && !desktopHealth) installCloudShutdown(cloudBrowser, mcpTunnel);
-        const automationServer = desktopHealth
-          ? serveDesktopAutomationApi({
-              launcher,
-              store,
-              cloudBrowser,
-              lifecycleAdmission: lifecycleAdmission!,
-              appConfig,
-            })
-          : undefined;
-        const server = serveDashboard({
-          launcher,
-          store,
-          port,
-          lifecycleAdmission,
-          appConfig,
-          paths,
-          defaultCloudUrl,
-          cloudAuth,
-          cloudConnection,
-          pendingSync,
-          cloudBrowser,
-          mcpTunnel,
-          health: desktopHealth,
-          agentNonce: agentNonce ?? undefined,
-        });
-        mcpTunnel?.start();
-        if (desktopHealth) {
-          const assignedPort = server.port;
-          if (!assignedPort) throw new Error("desktop sidecar did not receive a loopback port");
-          attachDesktopControl(new ManagedDesktopRuntime({
-            server,
-            automationServer,
-            admission: lifecycleAdmission!,
-            store,
-            launcher,
-            ...(cloudBrowser ? {
-              remoteShutdown: (remainingMs: number) => drainRemoteShutdown(
-                async () => {
-                  await mcpTunnel?.stop();
-                  return cloudBrowser.releaseAll(true);
-                },
-                // Cloud closes capture and upload every open browser in turn, so
-                // many open profiles need the whole desktop shutdown budget.
-                { maxDrainMs: remainingMs },
-              ),
-            } : {}),
-          }), desktopHealth, assignedPort, desktopCredentials!);
-        }
-        break;
-      }
       const r = await importInbox(store, paths.inbox).catch((error) => {
         // A live certified survivor can legitimately block a queued identity
         // replacement. Keep serving the safe stored profile and let the inbox
@@ -2921,10 +1658,6 @@ async function main() {
         lifecycleAdmission,
         appConfig,
         paths,
-        defaultCloudUrl,
-        cloudAuth,
-        cloudConnection,
-        pendingSync,
         health: desktopHealth,
         agentNonce: agentNonce ?? undefined,
       });
@@ -2938,19 +1671,17 @@ async function main() {
           store,
           launcher,
           stopInbox,
-        }), desktopHealth, assignedPort, desktopCredentials!);
+        }), desktopHealth, assignedPort);
       }
       break;
     }
     case "serve": {
       const store = new ProfileStore(dbPath);
-      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, join(paths.root, "runtimes"));
+      const launcher = makeLauncher(store, rest, false, profileDataRoot, undefined, join(paths.root, "runtimes"));
       await launcher.reconcileOrphans();
-      if (savedMode.mode !== "cloud") await launcher.certifySurvivors();
-      const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);
+      await launcher.certifySurvivors();
       startMemoryAttributionLog();
       prefetchBrowserRuntimes(launcher, store);
-      if (cloudBrowser) installCloudShutdown(cloudBrowser);
       serveDashboard({
         launcher,
         store,
@@ -2958,11 +1689,6 @@ async function main() {
         lifecycleAdmission,
         appConfig,
         paths,
-        defaultCloudUrl,
-        cloudAuth,
-        cloudConnection,
-        pendingSync,
-        cloudBrowser,
       });
       break;
     }

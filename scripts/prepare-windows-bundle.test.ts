@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareWindowsBundle, WINDOWS_SIDECAR_TARGET } from "./prepare-windows-bundle.ts";
+import { prepareWindowsBundle, WINDOWS_SIDECAR_TARGET, assertWindowsSidecarBunVersion } from "./prepare-windows-bundle.ts";
 import { MCP_MODE } from "../sidecar-entry.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
 
@@ -55,6 +55,15 @@ test("Windows sidecar supports x64 CPUs without AVX2", () => {
   expect(WINDOWS_SIDECAR_TARGET).toBe("bun-windows-x64-baseline");
 });
 
+test("Windows builds require the socket inheritance fix for proxy recovery", () => {
+  for (const version of ["1.2.21", "1.3.14", "1.4.0", "1.4.1-canary"]) {
+    expect(() => assertWindowsSidecarBunVersion(version)).toThrow("isolated proxy recovery");
+  }
+  for (const version of ["1.4.1", "1.4.2", "1.5.0", "2.0.0"]) {
+    expect(() => assertWindowsSidecarBunVersion(version)).not.toThrow();
+  }
+});
+
 test("one sidecar program also runs the MCP helper behind the aliasmode-mcp launcher", () => {
   const repo = join(import.meta.dir, "..");
   const tauri = JSON.parse(readFileSync(join(repo, "src-tauri", "tauri.conf.json"), "utf8"));
@@ -77,7 +86,9 @@ function workspace(): string {
   const cwd = mkdtempSync(join(tmpdir(), "aliasmode-windows-bundle-"));
   mkdirSync(join(cwd, "src-tauri"), { recursive: true });
   writeFileSync(join(cwd, "playwright-worker.mjs"), "worker");
+  writeFileSync(join(cwd, "webkit-worker.mjs"), "webkit worker");
   writeFileSync(join(cwd, "firefox-worker.mjs"), "firefox worker");
+  writeFileSync(join(cwd, "workbench-firefox.mjs"), "firefox workbench");
   mkdirSync(join(cwd, "agent"), { recursive: true });
   for (const file of [
     "mcp-host.mjs",
@@ -91,6 +102,7 @@ function workspace(): string {
   }
   const dependencies: Record<string, { version: string; dependencies?: Record<string, string> }> = {
     "playwright-core": { version: "1.58.2" },
+    "playwright-webkit-core": { version: "1.65.0" },
     "ws": { version: "8.21.0" },
     "@modelcontextprotocol/sdk": { version: "1.30.0", dependencies: { zod: "1.0.0" } },
     "@playwright/mcp": {

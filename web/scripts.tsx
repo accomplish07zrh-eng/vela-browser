@@ -23,11 +23,9 @@ import {
   fetchScriptLog,
   fetchScriptRun,
   importPublishedScript,
-  publishScript,
   scriptsDesktopAvailable,
   startScriptRun,
   stopScriptRun,
-  unpublishScript,
   updateScript,
 } from "./api.ts";
 
@@ -52,9 +50,6 @@ function languageName(language: ScriptLanguage): string {
   return language === "python" ? "Python" : "JavaScript";
 }
 
-function publicationPending(script: ScriptRecord): boolean {
-  return script.publishedRevision !== null && script.publishedRevision !== undefined && script.publishedRevision !== script.revision;
-}
 
 /** The Python runtime status while `active`; polls while it downloads. */
 function usePythonRuntime(active: boolean): [PythonRuntimeStatus | null, () => void] {
@@ -96,16 +91,11 @@ function PythonRuntimeNote({ status, onDownload }: { status: PythonRuntimeStatus
   return <p className="formnote">{t("Python scripts need the Python runtime ({size}). It downloads once, before the first Python script runs.", { size })} <button className="btn" type="button" onClick={onDownload}>{t("Download now")}</button></p>;
 }
 
-export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
+export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => void; initialScriptId?: string }) {
   const { t } = useTranslation();
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [script, setScript] = useState<ScriptRecord | null>(null);
   const [tab, setTab] = useState<ScriptsTab>("mine");
-  const [canPublish, setCanPublish] = useState(false);
-  const [publicationDefaultName, setPublicationDefaultName] = useState("");
-  const [publicationOpen, setPublicationOpen] = useState(false);
-  const [authorName, setAuthorName] = useState("");
-  const [showEmail, setShowEmail] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [currentRun, setCurrentRun] = useState<ScriptRun | null>(null);
@@ -118,8 +108,6 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
   const reload = async () => {
     const [info, nextRun] = await Promise.all([fetchScriptLibraryInfo(), fetchScriptRun()]);
     setScripts(info.scripts);
-    setCanPublish(info.canPublish);
-    setPublicationDefaultName(info.publicationDefaults?.authorName ?? "");
     if (nextRun) setCurrentRun(nextRun);
   };
 
@@ -143,7 +131,6 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
     setBusy(true);
     setError(null);
     setScript(null);
-    setPublicationOpen(false);
     try {
       const nextScript = await fetchScript(id);
       if (request === selectionRequest.current) setScript(nextScript);
@@ -153,6 +140,8 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
       if (request === selectionRequest.current) setBusy(false);
     }
   };
+
+  useEffect(() => { if (desktop && initialScriptId) { setTab("mine"); void select(initialScriptId); } }, [desktop, initialScriptId]);
 
   const importFile = async (file: File) => {
     const language = languageFor(file);
@@ -195,47 +184,13 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
 
   const remove = async () => {
     if (!script) return;
-    const alsoUnpublishes = script.publishedRevision !== null && script.publishedRevision !== undefined;
-    if (!window.confirm(t("Delete {name}?", { name: script.name }) + (alsoUnpublishes ? t(" This also removes its public listing.") : ""))) return;
+    if (!window.confirm(t("Delete {name}?", { name: script.name }))) return;
     setBusy(true);
     setError(null);
     try {
       await deleteScript(script.id, script.revision);
       setScript(null);
-      setPublicationOpen(false);
       await reload();
-    } catch (nextError) { setError(errorText(nextError)); }
-    finally { setBusy(false); }
-  };
-
-  const openPublication = () => {
-    setAuthorName(publicationDefaultName);
-    setShowEmail(false);
-    setPublicationOpen(true);
-  };
-
-  const publish = async () => {
-    if (!script) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await publishScript(script.id, { expectedRevision: script.revision, authorName, showEmail });
-      setPublicationOpen(false);
-      await reload();
-      await select(script.id);
-    } catch (nextError) { setError(errorText(nextError)); }
-    finally { setBusy(false); }
-  };
-
-  const unpublish = async () => {
-    if (!script) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await unpublishScript(script.id);
-      setPublicationOpen(false);
-      await reload();
-      await select(script.id);
     } catch (nextError) { setError(errorText(nextError)); }
     finally { setBusy(false); }
   };
@@ -244,7 +199,6 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
     ++selectionRequest.current;
     setTab("mine");
     setScript(created);
-    setPublicationOpen(false);
     setError(null);
     try { await reload(); }
     catch (nextError) { setError(errorText(nextError)); }
@@ -254,13 +208,12 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
     return <div className="workspace scripts-page"><div className="emptystate"><b>{t("Scripts require the desktop app.")}</b><p>{t("Open Vela Browser in the desktop app to manage local scripts.")}</p></div></div>;
   }
 
-  const isPublished = script?.publishedRevision !== null && script?.publishedRevision !== undefined;
   const savedScript = scripts.find((item) => item.id === script?.id);
   const detailsChanged = !!script && (script.name !== savedScript?.name || script.description !== savedScript?.description);
   return (
     <div className="workspace scripts-page">
       <div className="scripts-head">
-        <div><h2 className="sect-title">{t("Scripts")}</h2><p className="formnote">{t("Private scripts sync with your account in Cloud mode. Runs and logs stay on this computer.")}</p></div>
+        <div><h2 className="sect-title">{t("Scripts")}</h2><p className="formnote">{t("Scripts, runs and logs stay on this computer.")}</p></div>
         {tab === "mine" && <button className="btn primary" type="button" disabled={busy} onClick={() => importRef.current?.click()}>{t("Import script")}</button>}
       </div>
       <div className="tabs scripts-tabs" role="tablist" aria-label={t("Script library")}>
@@ -282,7 +235,7 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
           </div>
           {script ? (
             <section className="settings-card script-detail">
-              <header><h2>{script.name}</h2><span className="chip">{languageName(script.language)}</span>{isPublished && <span className="chip">{publicationPending(script) ? t("Published, private changes pending") : t("Published")}</span>}</header>
+              <header><h2>{script.name}</h2><span className="chip">{languageName(script.language)}</span></header>
               <div className="card-body">
                 <label className="fld"><span>{t("Title")}</span><input className="input" value={script.name} onChange={(event) => setScript({ ...script, name: event.target.value })} /></label>
                 <label className="fld"><span>{t("Description")}</span><input className="input" value={script.description} onChange={(event) => setScript({ ...script, description: event.target.value })} /></label>
@@ -291,18 +244,6 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
                   <button className="btn" type="button" disabled={busy} onClick={() => replaceRef.current?.click()}>{t("Replace file")}</button>
                   <button className="btn danger" type="button" disabled={busy} onClick={() => void remove()}>{t("Delete")}</button>
                 </div>
-                <div className="script-actions">
-                  <button className="btn" type="button" disabled={busy || !canPublish || detailsChanged} onClick={openPublication}>{isPublished ? t("Update publication") : t("Publish")}</button>
-                  {isPublished && <button className="btn danger" type="button" disabled={busy || !canPublish} onClick={() => void unpublish()}>{t("Unpublish")}</button>}
-                </div>
-                {canPublish && detailsChanged && <p className="formnote">{t("Save details before publishing.")}</p>}
-                {!canPublish && <p className="formnote">{t("Publishing is available after you sign in to Cloud mode.")}</p>}
-                {publicationOpen && <form className="script-publication" onSubmit={(event) => { event.preventDefault(); void publish(); }}>
-                  <label className="fld"><span>{t("Author name")}</span><input className="input" value={authorName} onChange={(event) => setAuthorName(event.target.value)} disabled={busy} /></label>
-                  <label className="script-credentials"><input type="checkbox" checked={showEmail} onChange={(event) => setShowEmail(event.target.checked)} disabled={busy} />{t("Show my account email")}</label>
-                  <div className="script-publication-preview"><b>{script.name}</b><span>{script.description || t("No description")}</span><span>{languageName(script.language)}</span></div>
-                  <div className="script-actions"><button className="btn primary" type="submit" disabled={busy || detailsChanged}>{busy ? t("Publishing…") : isPublished ? t("Update publication") : t("Publish")}</button><button className="btn" type="button" disabled={busy} onClick={() => setPublicationOpen(false)}>{t("Cancel")}</button></div>
-                </form>}
                 <label className="fld"><span>{t("Source")}</span><pre className="script-source">{script.source}</pre></label>
               </div>
             </section>

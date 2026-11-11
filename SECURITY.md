@@ -4,7 +4,7 @@
 
 Do not open a public issue for a vulnerability.
 
-Email [security@aliasmode.com](mailto:security@aliasmode.com). Include the affected version, reproduction steps, and impact.
+Report it privately through [GitHub security advisories](https://github.com/accomplish07zrh-eng/vela-browser/security/advisories/new). Include the affected version, reproduction steps, and impact.
 
 Never send real cookies, passwords, proxy credentials, TOTP seeds, profile exports, private keys, or unredacted diagnostics.
 

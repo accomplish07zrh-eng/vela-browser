@@ -433,19 +433,25 @@ test("active returns the live ws endpoint while running (AdsPower parity)", asyn
   expect(body.data.ws.puppeteer.startsWith("ws://")).toBe(true);
 });
 
-test("Firefox active status is usable without exposing an owner locator", async () => {
+test.each(["firefox", "webkit"] as const)("%s active status is usable without exposing an owner locator", async (engine) => {
   const h = harness();
   await handleRequest(req("/api/v1/browser/start?user_id=k1d0cd11"), h.launcher, h.store);
   const launch = h.store.getLaunch("k1d0cd11")!;
   h.store.recordLaunch({
     ...launch,
-    engine: "firefox",
-    firefoxOwner: { endpoint: "http://127.0.0.1:9444/", token: "private-token", pid: 12, browserPid: 13, generation: "generation" },
+    engine,
+    [`${engine}Owner`]: { endpoint: "http://127.0.0.1:9444/", token: "private-token", pid: 12, browserPid: 13, generation: "generation" },
   } as any);
   h.launcher.certifiedActive = async () => true;
 
   const body = await (await handleRequest(req("/api/v1/browser/active?user_id=k1d0cd11"), h.launcher, h.store)).json();
-  expect(body.data).toMatchObject({ status: "Active", lifecycle: "running", engine: "firefox", capabilities: expect.any(Array) });
+  expect(body.data).toMatchObject({ status: "Active", lifecycle: "running", engine });
+  expect(Array.isArray(body.data.capabilities)).toBe(true);
+  if (engine === "webkit") {
+    expect(body.data.experimental).toBe(true);
+    expect(body.data.capabilities).toContain("workbench");
+    expect(body.data.capabilities).not.toContain("mcp");
+  }
   expect(JSON.stringify(body)).not.toContain("ws");
   expect(JSON.stringify(body)).not.toContain("9444");
   expect(JSON.stringify(body)).not.toContain("private-token");

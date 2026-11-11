@@ -9,7 +9,8 @@ import webglDataPath from "./node_modules/camoufox-js/dist/data-files/webgl_data
 import { Database } from "bun:sqlite";
 import { isIP } from "node:net";
 import { availableParallelism } from "node:os";
-import type { ChromiumRuntime, FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
+import { normalizeWebKitProfileConfig } from "./webkit-config.ts";
+import type { WebKitProfileConfig, ChromiumRuntime, FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
 import fonts from "camoufox-js/dist/mappings/fonts.config.js";
 import { deterministicSeed, launchWindowSize, platformFromUA, seedFraction } from "./fingerprint.ts";
 import { localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
@@ -716,12 +717,19 @@ export function normalizeFirefoxProfileConfig(value: unknown): FirefoxProfileCon
 }
 
 /** Treat a missing legacy engine as Chromium and reject malformed combinations. */
-export function normalizeProfileEngine(value: unknown, firefox: unknown): {
+export function normalizeProfileEngine(value: unknown, firefox: unknown, webkit?: unknown): {
   engine: ProfileEngine;
   firefox?: FirefoxProfileConfig;
+  webkit?: WebKitProfileConfig;
 } {
   const engine = value === undefined ? "chromium" : value;
-  if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
+  if (engine !== "chromium" && engine !== "firefox" && engine !== "webkit") throw new Error("unsupported profile engine");
+  if (engine !== "webkit" && webkit !== undefined) throw new Error("WebKit config requires engine=webkit");
+  if (engine === "webkit") {
+    if (firefox !== undefined) throw new Error("WebKit profiles cannot include a Firefox config");
+    if (webkit === undefined) throw new Error("WebKit profiles require a WebKit config");
+    return { engine, webkit: normalizeWebKitProfileConfig(webkit) };
+  }
   if (engine === "firefox") {
     if (firefox === undefined) throw new Error("Firefox profiles require a Firefox config");
     return { engine, firefox: normalizeFirefoxProfileConfig(firefox) };

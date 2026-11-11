@@ -13,10 +13,10 @@ const tables = {
 // source, or the translation is dead.
 test("every zh-CN key is an English string used in the web source", async () => {
   const sources = await Promise.all(
-    ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "proxy-offer.tsx", "store.tsx", "services.tsx", "desktop-update-result.ts"]
+    ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "../workbench.ts"]
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
-  const source = sources.join("\n");
+  const source = sources.join("\n").replaceAll("\r\n", "\n");
   const stale = Object.keys(tables["zh-CN"]).filter((key) => !key.startsWith("language.") && !source.includes(key));
   expect(stale).toEqual([]);
 });

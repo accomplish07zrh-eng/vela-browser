@@ -2,8 +2,10 @@ import { CloudApiError } from "./cloud-client.ts";
 import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { attachTimezones } from "./geoip.ts";
 import { buildProxyPreview, checkProfileProxies, replacementState, selectProxyProfiles, ProxyToolsError, type PlannedProxyReplacement, type ProxyInventoryProfile } from "./proxy-bulk.ts";
-import { normalizeProxySpec, proxyHostPort, proxyIdentityKey } from "./proxy.ts";
-import { runProxyReplacements } from "./proxy-replacements.ts";
+import {
+  proxyHostPort,
+  proxyIdentityKey,
+} from "./proxy.ts";
 import type { Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { UiRuntimeOptions } from "./ui.ts";
@@ -31,15 +33,10 @@ export async function handleProxyToolsRequest(
 ): Promise<Response> {
   const state = states.get(store) ?? { applying: false };
   states.set(store, state);
-  const cloud = options.cloudBrowser ? options.cloudConnection?.client : undefined;
-  const transition = cloud ? await options.cloudAuth?.acquireTransition() : undefined;
   let streaming = false;
   try {
-    const status = cloud ? await cloud.status() : undefined;
-    const owner = status ? JSON.stringify([status.account.id, status.workspace.id]) : "local";
-    const accountCurrent = () => (!transition || options.cloudAuth!.isTransitionCurrent(transition)) &&
-      (!status || options.cloudConnection?.accountId() === status.account.id);
-    const current = () => !req.signal.aborted && accountCurrent();
+    const owner = "local";
+    const current = () => !req.signal.aborted;
     const assertCurrent = () => { if (!current()) throw new ProxyToolsError("Operation cancelled or account changed", 409); };
     assertCurrent();
     if (state.preview?.owner !== owner) state.preview = undefined;
@@ -48,16 +45,7 @@ export async function handleProxyToolsRequest(
     const action = new URL(req.url).pathname.split("/").pop();
     const inventory = async (): Promise<ProxyInventoryProfile[]> => {
       assertCurrent();
-      if (cloud) {
-        const result = await cloud.listProfileProxies(req.signal);
-        await Promise.all(result.profiles.map((p) => launcher.cacheCleanupSettled(p.id)));
-        assertCurrent();
-        return result.profiles.map((p) => ({
-          id: p.id, name: p.name, group: p.group, version: p.version, permission: p.permission,
-          proxy: normalizeProxySpec(p.proxy), proxyError: p.proxyError,
-          running: p.activeOpens.length > 0 || launcher.profileDeletionBlocked(p.id),
-        }));
-      }
+
       const profiles = store.listProfiles();
       await Promise.all(profiles.map((p) => launcher.cacheCleanupSettled(p.id)));
       return profiles.map((p) => ({
@@ -124,7 +112,7 @@ export async function handleProxyToolsRequest(
             const byId = new Map(selectProxyProfiles(profiles, preview.scope).map((p) => [p.id, p]));
             let completed = 0;
             send({ type: "progress", phase: "applying", completed, total: rows.length });
-            // Match the existing Cloud export batch size; this is not a profile limit.
+            // Match the existing export batch size; this is not a profile limit.
             for (let offset = 0; offset < rows.length && !cancelled(); offset += 16) {
               const batch = rows.slice(offset, offset + 16);
               const ready: PlannedProxyReplacement[] = [];
@@ -138,16 +126,7 @@ export async function handleProxyToolsRequest(
                 } else if (status.status !== "ready") Object.assign(row.view, { code: undefined, ...status });
                 else ready.push(row);
               }
-              if (cloud && ready.length && !cancelled()) {
-                try {
-                  const result = await runProxyReplacements({
-                    replaceProfileProxies(request) { assertCurrent(); return cloud.replaceProfileProxies(request); },
-                  }, { dryRun: false, replacements: ready.map((row) => ({ profileId: row.view.profileId!, expectedVersion: row.expectedVersion!, proxy: row.next! })) });
-                  for (const item of result.results) Object.assign(ready[item.index]!.view, { status: item.status, code: item.code });
-                } catch {
-                  for (const row of ready) Object.assign(row.view, { status: "failed", code: "update_unconfirmed" });
-                }
-              } else if (!cloud) {
+              {
                 for (const row of ready) {
                   if (cancelled()) break;
                   const id = row.view.profileId!;
@@ -185,8 +164,6 @@ export async function handleProxyToolsRequest(
         } catch (error) { send({ type: "error", error: safeError(error) }); }
         finally {
           if (preview) state.applying = false;
-          if (!accountCurrent()) state.preview = undefined;
-          transition?.release();
           try { controller.close(); } catch {}
         }
       },
@@ -194,5 +171,5 @@ export async function handleProxyToolsRequest(
     }), { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store", "X-Accel-Buffering": "no" } });
   } catch (error) {
     return response({ ok: false, error: safeError(error) }, error instanceof ProxyToolsError ? error.status : error instanceof SyntaxError ? 400 : error instanceof CloudApiError ? error.status : 500);
-  } finally { if (!streaming) transition?.release(); }
+  }
 }

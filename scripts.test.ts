@@ -14,10 +14,12 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function root() { const dir = mkdtempSync(join(tmpdir(), "aliasmode-scripts-")); roots.push(dir); return dir; }
 const input = { name: "Visit", description: "Example", language: "javascript" as const, source: "export default async () => {};" };
 
-function harness(execute: ScriptExecution = async () => {}, options: { active?: string[]; profileIds?: string[]; admission?: LifecycleAdmissionController; close?: (id: string) => Promise<void>; cloud?: any; firefoxOwner?: any; realExecute?: boolean; python?: PythonRuntime } = {}) {
+function harness(execute: ScriptExecution = async () => {}, options: { active?: string[]; profileIds?: string[]; admission?: LifecycleAdmissionController; close?: (id: string) => Promise<void>; cloud?: any; firefoxOwner?: any; webkit?: boolean; realExecute?: boolean; python?: PythonRuntime } = {}) {
   const directory = root();
   const events: string[] = [];
-  const launch = (id: string) => options.firefoxOwner
+  const launch = (id: string) => options.webkit
+    ? { ws: `webkit://127.0.0.1:9000/private-generation`, debugPort: 9000, engine: "webkit" }
+    : options.firefoxOwner
     ? { ws: `firefox://127.0.0.1:9000/${options.firefoxOwner.generation}`, debugPort: 9000, engine: "firefox", firefoxOwner: options.firefoxOwner }
     : { ws: `ws://test/${id}`, debugPort: 9000 };
   const launches = new Map((options.active ?? []).map((id) => [id, launch(id)]));
@@ -201,7 +203,7 @@ test("the scripts API prefetches Python only for Python scripts and reports the 
   // Adding a Python script starts the download; opening the list again does not start a second one.
   await request("", "POST", pythonInput);
   await request("");
-  await Bun.sleep(10);
+  await until(() => python.status().state === "ready");
   expect(requests).toEqual(["https://python.test/python.zip"]);
   expect((await request("/python-runtime")).python).toMatchObject({ state: "ready" });
 
@@ -223,11 +225,11 @@ test("the user can retry a failed Python runtime download from the scripts page"
   }), {} as any, {} as any, null, { scripts: { library: h.library, runner: h.supervisor, nonce, python } }))!.json();
   await h.library.save(pythonInput);
   python.prefetch();
-  await Bun.sleep(10);
+  await until(() => python.status().state === "failed");
   expect((await call("GET")).python).toMatchObject({ state: "failed", error: "network is down" });
   down = false;
   expect((await call("POST")).python.state).toBe("downloading");
-  await Bun.sleep(10);
+  await until(() => python.status().state === "ready");
   expect((await call("GET")).python.state).toBe("ready");
 });
 
@@ -263,6 +265,21 @@ async function until(check: () => boolean) {
   while (!check() && Date.now() < deadline) await Bun.sleep(1);
   expect(check()).toBe(true);
 }
+
+test("WebKit script rejection keeps a user's environment open and cleans only a job-owned environment", async () => {
+  const executions: unknown[] = [];
+  const h = harness(async (data) => { executions.push(data); }, { active: ["a"], webkit: true });
+  const script = await h.library.save(input);
+  h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b"], inputs: {}, useCredentials: false, concurrency: 1 });
+  await h.supervisor.settled();
+  expect(executions).toEqual([]);
+  expect(h.events).toEqual(["open:b", "close:b"]);
+  expect(h.launches.has("a")).toBe(true);
+  for (const profile of h.supervisor.status()!.profiles) {
+    expect(profile.status).toBe("failed");
+    expect(profile.error).toContain("WebKit script automation is not available");
+  }
+});
 
 for (const concurrency of [undefined, 1, 30, 100]) {
   test(`parallel runs respect concurrency ${concurrency ?? "default 10"} and refill individual slots`, async () => {
@@ -548,7 +565,7 @@ test("all script API operations require the desktop nonce and trusted origin", a
   const h = harness();
   const nonce = "a".repeat(64);
   const options = { scripts: { library: h.library, runner: h.supervisor, nonce } };
-  for (const [method, path] of [["GET", ""], ["POST", ""], ["GET", "/run"], ["POST", "/run"], ["POST", "/stop"], ["GET", "/log"], ["GET", "/id"], ["PATCH", "/id"], ["DELETE", "/id"], ["GET", "/library"], ["GET", "/library/id"], ["POST", "/library/id/import"], ["PUT", "/id/publication"], ["DELETE", "/id/publication"], ["GET", "/python-runtime"], ["POST", "/python-runtime"]]) {
+  for (const [method, path] of [["GET", ""], ["POST", ""], ["GET", "/run"], ["POST", "/run"], ["POST", "/stop"], ["GET", "/log"], ["GET", "/id"], ["PATCH", "/id"], ["DELETE", "/id"], ["GET", "/library"], ["GET", "/library/id"], ["POST", "/library/id/import"], ["GET", "/python-runtime"], ["POST", "/python-runtime"]]) {
     const response = await handleUiRequest(new Request(`http://127.0.0.1/ui/api/scripts${path}`, { method }), {} as any, {} as any, null, options);
     expect(response?.status).toBe(401);
   }
@@ -674,46 +691,49 @@ test("script library info exposes publication metadata and last author only in i
   await expect(library.info()).rejects.toThrow("Sign in");
 });
 
-test("desktop library routes browse, import privately, publish, and unpublish without running", async () => {
-  let account: string | undefined = "importing-account";
+test("desktop library routes browse anonymously and import independent local copies without running", async () => {
   const calls: string[] = [];
-  const copied = { ...input, id: "independent-copy", revision: 1, createdAt: publication.publishedAt, updatedAt: publication.updatedAt };
-  const client = new CloudClient({
-    baseUrl: "https://cloud.example.test", accessToken: () => account ? "test-token" : undefined,
-    fetchFn: async (url, init) => {
-      const path = new URL(url).pathname;
-      const method = init?.method ?? "GET";
-      calls.push(`${method} ${path}`);
-      if (path.startsWith("/v1/library/")) {
-        expect(new Headers(init?.headers).has("authorization")).toBe(false);
-        return Response.json({ ok: true, script: publication, scripts: [publication], nextOffset: null });
-      }
-      if (method === "POST") expect(JSON.parse(String(init?.body))).toEqual(input);
-      return Response.json({ ok: true, script: path.endsWith("/publication") ? publication : copied, scripts: [], unpublished: true });
+  const catalog = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(request) {
+      expect(request.headers.has("authorization")).toBe(false);
+      expect(request.headers.has("x-aliasmode-device")).toBe(false);
+      const path = new URL(request.url).pathname;
+      calls.push(`${request.method} ${path}`);
+      return Response.json({ ok: true, script: publication, scripts: [publication], nextOffset: null });
     },
   });
-  const h = harness(undefined, { cloud: { accountId: () => account, client } });
-  const nonce = "b".repeat(64);
-  const request = async (path: string, method = "GET", body?: unknown) => {
-    const response = await handleUiRequest(new Request(`http://127.0.0.1/ui/api/scripts${path}`, {
-      method, headers: { authorization: `Bearer ${nonce}`, ...(method === "GET" ? {} : { "content-type": "application/json" }) },
-      ...(method === "GET" ? {} : { body: JSON.stringify(body ?? {}) }),
-    }), {} as any, {} as any, null, { scripts: { library: h.library, runner: h.supervisor, nonce } });
-    expect(response?.status).toBe(200);
-    expect(response?.headers.get("cache-control")).toBe("no-store");
-    return response!.json();
-  };
-  expect((await request("/library?q=example&language=javascript&offset=0")).scripts[0].id).toBe(publication.id);
-  expect((await request(`/library/${publication.id}`)).script.source).toBe(input.source);
-  expect((await request(`/library/${publication.id}/import`, "POST")).script).toEqual(copied);
-  expect((await request("/independent-copy/publication", "PUT", { expectedRevision: 1, authorName: "Author", showEmail: false })).script).toEqual(publication);
-  expect((await request("/independent-copy/publication", "DELETE")).unpublished).toBe(true);
-  expect((await request("")).canPublish).toBe(true);
-  expect(calls).toContain("POST /v1/account/scripts");
-  expect(h.events).toEqual([]);
-  expect(h.supervisor.status()).toBeNull();
-  account = undefined;
-  expect((await request("/library")).scripts[0].id).toBe(publication.id);
+  try {
+    const h = harness();
+    const library = new ScriptLibrary(h.directory, false, undefined, catalog.url.origin);
+    const nonce = "b".repeat(64);
+    const request = async (path: string, method = "GET") => {
+      const response = await handleUiRequest(new Request(`http://127.0.0.1/ui/api/scripts${path}`, {
+        method, headers: { authorization: `Bearer ${nonce}`, ...(method === "GET" ? {} : { "content-type": "application/json" }) },
+        ...(method === "GET" ? {} : { body: "{}" }),
+      }), {} as any, {} as any, null, { scripts: { library, runner: h.supervisor, nonce } });
+      expect(response?.status).toBe(200);
+      expect(response?.headers.get("cache-control")).toBe("no-store");
+      return response!.json();
+    };
+    expect((await request("/library?q=example&language=javascript&offset=0")).scripts[0].id).toBe(publication.id);
+    expect((await request(`/library/${publication.id}`)).script.source).toBe(input.source);
+    const first = (await request(`/library/${publication.id}/import`, "POST")).script;
+    const second = (await request(`/library/${publication.id}/import`, "POST")).script;
+    expect(first).toMatchObject({ ...input, revision: 1 });
+    expect(first.id).not.toBe(publication.id);
+    expect(second.id).not.toBe(first.id);
+    expect(first).not.toHaveProperty("authorName");
+    expect(first).not.toHaveProperty("sourceRevision");
+    expect((await h.library.get(first.id)).source).toBe(input.source);
+    expect(await request("")).toMatchObject({ canPublish: false, scripts: expect.arrayContaining([expect.objectContaining({ id: first.id })]) });
+    expect(calls.length).toBe(4);
+    expect(calls.every((call) => call.startsWith("GET /v1/library/scripts"))).toBe(true);
+    expect(h.events).toEqual([]);
+    expect(h.supervisor.status()).toBeNull();
+  } finally {
+    await catalog.stop(true);
+  }
 });
 
 test("Cloud run status and logs remain account-scoped after switching accounts", async () => {

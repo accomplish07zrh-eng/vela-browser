@@ -3,7 +3,7 @@ import { createServer } from "node:https";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const RELEASES_ROUTE = "/repos/aliasmode/aliasmode/releases?per_page=10";
+export const RELEASES_ROUTE = "/repos/accomplish07zrh-eng/vela-browser/releases?per_page=10";
 
 function requireString(value, name) {
   if (typeof value !== "string" || value.length === 0) {
@@ -18,7 +18,7 @@ export function normalizeFixtureConfig(input) {
   // The macOS update acceptance passes its own feed and archive names.
   const installerName = input?.installerName ?? `Vela Browser_${candidateVersion}_x64-setup.exe`;
   const manifestName = input?.manifestName ?? "latest-v2.json";
-  const releaseBase = `/aliasmode/aliasmode/releases/download/${candidateTag}`;
+  const releaseBase = `/accomplish07zrh-eng/vela-browser/releases/download/${candidateTag}`;
   const manifestRoute = `${releaseBase}/${manifestName}`;
   const installerRoute = `${releaseBase}/${installerName}`;
   const manifestUrl = `https://github.com${manifestRoute}`;

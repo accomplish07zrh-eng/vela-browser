@@ -135,6 +135,8 @@ function stalledUpstream(): Promise<{
   const accepted = new Promise<net.Socket>((resolve) => { accept = resolve; });
   const server = net.createServer((socket) => {
     socket.on("error", () => socket.destroy());
+    // Drain the proxy head so FIN/EOF is observable when the relay closes.
+    socket.resume();
     accept(socket);
   });
   return new Promise((resolve) => {

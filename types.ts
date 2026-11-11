@@ -25,7 +25,17 @@ export interface CookieRecord {
 export type ProxyType = "http" | "https" | "socks5";
 
 /** Browser engine that owns this profile's identity. Missing legacy values mean Chromium. */
-export type ProfileEngine = "chromium" | "firefox";
+export type ProfileEngine = "chromium" | "firefox" | "webkit";
+
+/** Fixed WebKit runtime and its supported native display settings. The seed does not spoof hardware. */
+export interface WebKitProfileConfig {
+  version: 1;
+  runtimeVersion: string;
+  revision: string;
+  playwrightVersion: string;
+  viewport: { width: number; height: number };
+  deviceScaleFactor: number;
+}
 
 /** Opt-in Chromium runtime. Missing means the default CloakBrowser runtime. */
 export type ChromiumRuntime = "aliasmode";
@@ -87,6 +97,7 @@ export interface Profile {
    * must accompany every Firefox profile; Chromium profiles must not carry it.
    */
   firefox?: FirefoxProfileConfig;
+  webkit?: WebKitProfileConfig;
   accId: string;
   name: string;
   group: string;
@@ -189,6 +200,15 @@ export interface ObservedFingerprint {
   webglRenderer?: string;
   canvas?: string;
   audio?: string;
+  canvasPixels?: string;
+  webglImage?: string;
+  fonts?: string;
+  textMetrics?: string;
+  audioSamples?: string;
+  /** JSON-encoded repeated-read checks; diagnostics, not an identity input. */
+  consistency?: string;
+  /** JSON diagnostics; transient permissions and viewport do not define an identity. */
+  details?: string;
   /** "1920*1080" — the spoofed screen, matching the export's resolution form. */
   screen?: string;
   /** WebRTC handling policy in force at capture. Informational only. */
@@ -221,15 +241,16 @@ export interface FingerprintVerdict {
 
 /** Profile fields a running browser took at launch (see LAUNCH_PERSONA_KEYS in launcher.ts). */
 export type LaunchPersona = Partial<Pick<Profile,
-  | "engine" | "chromiumRuntime" | "firefox" | "hardware" | "ua" | "platformOs" | "platform" | "proxy" | "proxyError"
+  | "engine" | "chromiumRuntime" | "firefox" | "webkit" | "hardware" | "ua" | "platformOs" | "platform" | "proxy" | "proxyError"
   | "timezone" | "locale" | "screenWidth" | "screenHeight" | "displayScale" | "fingerprintSeed" | "extensions">>;
 
 /** Internal launch ownership. Only Chromium's control address is public CDP. */
 export interface LaunchInfo {
   profileId: string;
-  engine?: "chromium" | "firefox";
+  engine?: ProfileEngine;
   /** Private Firefox owner authentication; never export this record to clients. */
   firefoxOwner?: import("./firefox-runtime.ts").FirefoxOwner;
+  webkitOwner?: import("./webkit-runtime.ts").WebKitOwner;
   ownerBinaryPath?: string;
   pid: number;
   /** CDP port for Chromium; private owner RPC port for Firefox. */

@@ -118,7 +118,7 @@ export const NATIVE_UPDATE_ERRORS = [
   "Vela Browser could not verify the downloaded update. Your browsers are still open. Try again.",
   "Vela Browser cannot safely update this installation. Close Vela Browser and run the full offline installer from the release page. Do not uninstall.",
   "Vela Browser cannot update this copy. Move Vela Browser to the Applications folder and open it again, or run the install command again.",
-  "Vela Browser cannot update this copy. Close Vela Browser and run the install command from aliasmode.com/download again.",
+  "Vela Browser cannot update this copy. Close Vela Browser and run the install command from the Vela Browser release page again.",
   "The update was not installed because Vela Browser could not safely close browser services. The current version remains installed.",
   "Vela Browser could not start the verified update. The current version will restart.",
   "Vela Browser updates are not available on this system.",

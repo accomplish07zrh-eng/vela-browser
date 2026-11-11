@@ -37,6 +37,8 @@ export const FP_BLOCK_KEYS = [
   "fp_captured_at",
   "fp_ua_ch_platform", "fp_ua_ch_platform_version", "fp_ua_ch_brands", "fp_ua_ch_full_version_list",
   "fp_language", "fp_timezone", "fp_screen_available", "fp_color_depth", "fp_dpr", "fp_errors",
+  "fp_canvas_pixels", "fp_webgl_image", "fp_fonts", "fp_text_metrics", "fp_audio_samples", "fp_consistency",
+  "fp_details",
 ] as const;
 
 export type FpBlockKey = (typeof FP_BLOCK_KEYS)[number];
@@ -66,6 +68,13 @@ const FIELD_BY_KEY: Record<FpBlockKey, keyof ObservedFingerprint> = {
   fp_color_depth: "colorDepth",
   fp_dpr: "devicePixelRatio",
   fp_errors: "errors",
+  fp_canvas_pixels: "canvasPixels",
+  fp_webgl_image: "webglImage",
+  fp_fonts: "fonts",
+  fp_text_metrics: "textMetrics",
+  fp_audio_samples: "audioSamples",
+  fp_consistency: "consistency",
+  fp_details: "details",
 };
 
 /** Properties parsed back as numbers rather than strings. */
@@ -90,6 +99,11 @@ export const VERDICT_FIELDS: ReadonlyArray<keyof ObservedFingerprint> = [
   "languages",
   "screen",
   "platform",
+  "canvasPixels",
+  "webglImage",
+  "fonts",
+  "textMetrics",
+  "audioSamples",
 ];
 
 /** Pull the Chrome version out of a UA, e.g. "146.0.0.0". */
@@ -120,6 +134,13 @@ export function observedFromSample(
     webglRenderer: sample.webglRenderer,
     canvas: sample.canvasHash,
     audio: sample.audioHash,
+    canvasPixels: sample.canvasPixelsHash,
+    webglImage: sample.webglHash,
+    fonts: sample.fontsHash,
+    textMetrics: sample.textMetricsHash,
+    audioSamples: sample.audioSampleHash,
+    consistency: sample.consistency && Object.keys(sample.consistency).length ? JSON.stringify(sample.consistency) : undefined,
+    details: sample.details && Object.keys(sample.details).length ? JSON.stringify(sample.details) : undefined,
     screen: sample.screen ? `${sample.screen.width}*${sample.screen.height}` : undefined,
     webrtc: extra.webrtc,
     capturedAt: extra.capturedAt,

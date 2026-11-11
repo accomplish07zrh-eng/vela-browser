@@ -10,6 +10,7 @@
  *   status -> data.code === 0 (health)
  */
 
+import { webkitPublicFields } from "./browser-capabilities.ts";
 import type { Launcher } from "./launcher.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import type { CloudBrowserLifecycle } from "./cloud-browser.ts";
@@ -96,6 +97,7 @@ async function activeResponse(
   if (afterState) return ok({ status: "Active", lifecycle: afterState });
 
   const launch = store.getLaunch(profileId);
+  if (alive && launch?.engine === "webkit") return ok({ status: "Active", lifecycle: "running", ...webkitPublicFields() });
   if (alive && isFirefoxEngine(launch)) {
     return ok({ status: "Active", lifecycle: "running", ...firefoxPublicFields() });
   }
@@ -220,6 +222,7 @@ export async function handleRequest(
     try {
       const launchArgs = parseLaunchArgs(searchParams.get("launch_args"));
       const { ws, port } = await launcher.start(userId, launchArgs);
+      if (store.getLaunch(userId)?.engine === "webkit" || ws.startsWith("webkit://")) return ok(webkitPublicFields());
       if (isFirefoxEngine(store.getLaunch(userId)) || ws.startsWith("firefox://")) return ok(firefoxPublicFields());
       return ok({
         ws: { puppeteer: ws, selenium: "" },

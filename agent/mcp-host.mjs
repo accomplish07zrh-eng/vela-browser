@@ -19,7 +19,7 @@ function firefoxTools(tools) {
 }
 
 function safeBrowserResult(value) {
-  if (value?.engine !== "firefox") return value;
+  if (value?.engine !== "firefox" && value?.engine !== "webkit") return value;
   const {
     profileId, running, state, engine, capabilities, headless, alreadyOpen,
     ownedByConnection, attachedExisting, selected, closed, sync, deleted, detached,
@@ -85,35 +85,13 @@ function toolAnnotations(title, { readOnly = false, destructive = false, openWor
 }
 
 const ALIAS_TOOLS = [
-  {
+{
     name: "aliasmode_profiles_list",
-    description: "List Vela Browser profiles and their current browser state. Cloud profiles include expectedVersion and permission for editing.",
+    description: "List local Vela Browser profiles and their current browser state.",
     annotations: toolAnnotations("List Vela Browser profiles"),
     inputSchema: EMPTY_SCHEMA,
   },
-  {
-    name: "aliasmode_profiles_replace_proxies",
-    description: "Dry-run or apply bulk proxy replacements to closed Vela Cloud profiles. Apply always preflights first.",
-    annotations: toolAnnotations("Replace Vela Browser profile proxies", { destructive: true }),
-    inputSchema: {
-      type: "object",
-      properties: {
-        dryRun: { type: "boolean", default: true },
-        replacements: {
-          type: "array",
-          minItems: 1,
-          items: PROXY_REPLACEMENT_ROW,
-        },
-        csv: { type: "string", minLength: 1 },
-      },
-      oneOf: [
-        { required: ["replacements"], not: { required: ["csv"] } },
-        { required: ["csv"], not: { required: ["replacements"] } },
-      ],
-      additionalProperties: false,
-    },
-  },
-  {
+{
     name: "aliasmode_profile_create",
     description: "Create a persistent Vela Browser profile, or an explicit temporary profile. Without engine, Windows creates an Vela Chromium profile, and macOS and Linux create an Vela Firefox profile.",
     annotations: toolAnnotations("Create an Vela Browser profile"),
@@ -151,41 +129,7 @@ const ALIAS_TOOLS = [
       additionalProperties: false,
     },
   },
-  {
-    name: "aliasmode_profile_update",
-    description: "Edit a closed Vela Cloud profile by ID using expectedVersion from aliasmode_profiles_list. Only supplied fields change; empty strings clear fields. Sessions and cookies are preserved. Returns confirmation, not credentials.",
-    annotations: toolAnnotations("Edit an Vela Cloud profile", { destructive: true }),
-    inputSchema: {
-      type: "object",
-      properties: {
-        profileId: PROFILE_ID,
-        expectedVersion: { type: "integer", minimum: 0 },
-        set: {
-          type: "object",
-          properties: {
-            name: { type: "string" },
-            group: { type: "string" },
-            platform: { type: "string" },
-            username: { type: "string" },
-            password: { type: "string" },
-            email: { type: "string" },
-            emailPassword: { type: "string" },
-            twofa: { type: "string" },
-            proxy: { type: "string", description: "host:port:user:pass, or an empty string to remove the proxy" },
-            proxyType: { type: "string" },
-            resolution: { type: "string", description: "WIDTH*HEIGHT" },
-            extensions: { type: "array", items: { type: "string" } },
-            tags: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] },
-          },
-          minProperties: 1,
-          additionalProperties: false,
-        },
-      },
-      required: ["profileId", "expectedVersion", "set"],
-      additionalProperties: false,
-    },
-  },
-  {
+{
     name: "aliasmode_profile_delete",
     description: "Delete a closed Vela Browser profile.",
     annotations: toolAnnotations("Delete an Vela Browser profile", { destructive: true }),
@@ -196,7 +140,7 @@ const ALIAS_TOOLS = [
       additionalProperties: false,
     },
   },
-  {
+{
     name: "aliasmode_browser_open",
     description: "Open an Vela Browser browser and select it for Playwright actions.",
     annotations: toolAnnotations("Open an Vela Browser browser", { destructive: true, openWorld: true }),
@@ -215,7 +159,7 @@ const ALIAS_TOOLS = [
       additionalProperties: false,
     },
   },
-  {
+{
     name: "aliasmode_browser_select",
     description: "Select an open Vela Browser browser for subsequent Playwright actions.",
     annotations: toolAnnotations("Select an Vela Browser browser", { destructive: true }),
@@ -226,7 +170,7 @@ const ALIAS_TOOLS = [
       additionalProperties: false,
     },
   },
-  {
+{
     name: "aliasmode_browser_status",
     description: "Get the selected browser state, or the state of one profile.",
     annotations: toolAnnotations("Get Vela Browser browser status", { destructive: true }),
@@ -236,7 +180,7 @@ const ALIAS_TOOLS = [
       additionalProperties: false,
     },
   },
-  {
+{
     name: "aliasmode_browser_close",
     description: "Safely capture and close one Vela Browser browser.",
     annotations: toolAnnotations("Close an Vela Browser browser", { destructive: true }),
@@ -246,12 +190,12 @@ const ALIAS_TOOLS = [
       additionalProperties: false,
     },
   },
-  {
+{
     name: "browser_close",
     description: "Safely capture and close the selected Vela Browser browser.",
     annotations: toolAnnotations("Close the selected Vela Browser browser", { destructive: true }),
     inputSchema: EMPTY_SCHEMA,
-  },
+  }
 ];
 
 function toolResult(value) {
@@ -303,6 +247,7 @@ export async function createVelaBrowserMcp(options = {}) {
     selectedEngine = undefined;
     selectedFirefoxTools = [];
     if (wasChromium) await playwright.detach();
+    if (status.engine === "webkit") throw new Error("WebKit MCP automation is not available in this experimental runtime");
     if (status.engine === "firefox") {
       const result = await runtime.call("firefox.tools.list", { profileId });
       selectedFirefoxTools = firefoxTools(result.tools ?? []);
@@ -361,14 +306,8 @@ export async function createVelaBrowserMcp(options = {}) {
       if (name === "aliasmode_profiles_list") {
         return toolResult(await runtime.call("profiles.list"));
       }
-      if (name === "aliasmode_profiles_replace_proxies") {
-        return toolResult(await runtime.call("profiles.replaceProxies", args));
-      }
       if (name === "aliasmode_profile_create") {
         return toolResult(await runtime.call("profiles.create", profileInput(args)));
-      }
-      if (name === "aliasmode_profile_update") {
-        return toolResult(await runtime.call("profiles.update", args));
       }
       if (name === "aliasmode_profile_delete") {
         return toolResult(await runtime.call("profiles.delete", { profileId: args.profileId }));
@@ -384,8 +323,8 @@ export async function createVelaBrowserMcp(options = {}) {
           try {
             await selectBrowser(args.profileId, {
               running: true,
-              ...(opened.engine === "firefox"
-                ? { engine: "firefox", capabilities: opened.capabilities, headless: opened.headless }
+              ...((opened.engine === "firefox" || opened.engine === "webkit")
+                ? { engine: opened.engine, capabilities: opened.capabilities, headless: opened.headless }
                 : { ws: opened.ws, port: opened.port, headless: opened.headless }),
             });
           } catch (error) {
@@ -399,8 +338,8 @@ export async function createVelaBrowserMcp(options = {}) {
         }
         return toolResult(safeBrowserResult({
           profileId: opened.profileId,
-          ...(opened.engine === "firefox"
-            ? { engine: "firefox", capabilities: opened.capabilities }
+          ...((opened.engine === "firefox" || opened.engine === "webkit")
+            ? { engine: opened.engine, capabilities: opened.capabilities }
             : { port: opened.port }),
           headless: opened.headless,
           alreadyOpen: opened.alreadyOpen,

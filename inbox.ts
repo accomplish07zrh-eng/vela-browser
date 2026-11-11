@@ -207,7 +207,7 @@ export async function prepareImportBuffers(
   // A new profile whose import names no browser gets this computer's default. Stored
   // hardware belongs to CloakBrowser. A saved profile never changes its browser.
   for (const entry of collected) {
-    if (saved(entry.profile.id) || entry.profile.engine === "firefox" || entry.profile.hardware) continue;
+    if (saved(entry.profile.id) || entry.profile.engine === "firefox" || entry.profile.engine === "webkit" || entry.profile.hardware) continue;
     if (entry.sourceFields.chromium_runtime?.trim()) continue;
     entry.profile = withDefaultBrowser(entry.profile);
   }
@@ -251,9 +251,11 @@ export async function importBuffers(
       continue;
     }
     const present = new Set(entry.presentFields);
-    if (present.has("engine") || present.has("firefox_config")) {
+    if (present.has("engine") || present.has("firefox_config") || present.has("webkit_config")) {
       if ((entry.profile.engine ?? "chromium") !== (existing.engine ?? "chromium")) {
         problems.push(`${entry.source}: profile ${entry.profile.id}: profile engine cannot change in place`);
+      } else if (existing.engine === "webkit" && JSON.stringify(existing.webkit) !== JSON.stringify(entry.profile.webkit)) {
+        problems.push(`${entry.source}: profile ${entry.profile.id}: WebKit config cannot change through import`);
       } else if (existing.engine === "firefox" && !sameFirefoxConfig(existing, entry.profile)) {
         problems.push(`${entry.source}: profile ${entry.profile.id}: Firefox config cannot change through import`);
       }

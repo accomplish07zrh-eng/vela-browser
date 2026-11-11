@@ -10,6 +10,7 @@
  * Firefox receives a complete persisted Camoufox config.
  */
 
+import { createWebKitProfileConfig, WEBKIT_DEFAULT_UA, webkitSupported } from "./webkit-config.ts";
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
 import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime, syncFirefoxTimezone } from "./firefox-config.ts";
 import { chromiumDeviceScale, defaultChromiumRuntime, hostDisplayScale, hostDisplaySize } from "./aliasmode-chromium.ts";
@@ -111,7 +112,9 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
 
   // A named Chromium runtime implies Chromium. A CloakBrowser profile stores no runtime.
   const engine = input.engine ?? (input.chromiumRuntime ? "chromium" : defaultProfileEngine());
-  if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
+  if (engine !== "chromium" && engine !== "firefox" && engine !== "webkit") throw new Error("unsupported profile engine");
+  if (engine === "webkit" && !webkitSupported()) throw new Error("WebKit currently requires Windows x64");
+  if (engine === "webkit" && input.platformOs && input.platformOs !== hostPlatformOs()) throw new Error("WebKit does not support OS fingerprint overrides");
   const chromiumRuntime = input.chromiumRuntime
     ? normalizeChromiumRuntime(input.chromiumRuntime, engine)
     : engine === "chromium" ? defaultChromiumRuntime() : undefined;
@@ -134,6 +137,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     ...(chromiumRuntime ? { chromiumRuntime } : {}),
     ...(engine === "chromium" && !chromiumRuntime ? { hardware: generateProfileHardware(deterministicSeed(id)) } : {}),
     ...(firefox ? { firefox } : {}),
+    ...(engine === "webkit" ? { webkit: createWebKitProfileConfig(selected.width, selected.height) } : {}),
     accId: "",
     name: (input.name || "").trim() || id, // AdsPower auto-names blank profiles after the id
     group: (input.group || "").trim(),
@@ -145,7 +149,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     twofa: (input.twofa || "").trim(),
     proxy,
     customNo: parseStrictCustomNo(input.customNo),
-    ua: typeof firefoxUa === "string" ? firefoxUa : "", // Firefox's UA is generated with its persisted Camoufox config
+    ua: typeof firefoxUa === "string" ? firefoxUa : engine === "webkit" ? WEBKIT_DEFAULT_UA : "", // Firefox's UA is generated with its persisted Camoufox config
     // ...but the platform must be pinned, or a blank UA means no
     // --fingerprint-platform flag and the browser inherits whatever host it
     // happens to run on — a silent identity change on a move between boxes.
@@ -166,6 +170,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
  * timezone. Chrome extensions need Chromium.
  */
 export function withDefaultBrowser(profile: Profile): Profile {
+  if (profile.engine === "webkit") return completeProfileFingerprint(profile);
   const engine = profile.engine ?? (profile.extensions?.length ? "chromium" : defaultProfileEngine());
   if (engine === "chromium") {
     const chromiumRuntime = defaultChromiumRuntime();

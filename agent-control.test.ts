@@ -19,6 +19,7 @@ function wire(method: string, params: Record<string, unknown> = {}, id = 1): str
 function harness(options: {
   active?: boolean;
   firefox?: boolean;
+  webkit?: boolean;
   stopResult?: boolean;
   temporary?: boolean;
 } = {}) {
@@ -34,6 +35,11 @@ function harness(options: {
         ...(options.firefox ? {
           engine: "firefox" as const,
           firefoxOwner: { endpoint: "http://127.0.0.1:9444/", token: "private-token", pid: 12, browserPid: 13, generation: "generation" },
+        } : {}),
+        ...(options.webkit ? {
+          engine: "webkit" as const,
+          ws: "webkit://127.0.0.1:9444/private-generation",
+          webkitOwner: { endpoint: "http://127.0.0.1:9444/", token: "private-token", pid: 12, browserPid: 13, generation: "private-generation" },
         } : {}),
       }
     : null;
@@ -121,6 +127,18 @@ test("agent protocol validates message shape, size, and authorization", () => {
   expect(validAgentAuthorization(`Bearer ${nonce}`, nonce)).toBe(true);
   expect(validAgentAuthorization(null, nonce)).toBe(false);
   expect(validAgentAuthorization(`Bearer ${"b".repeat(64)}`, nonce)).toBe(false);
+});
+
+test("retired account methods cannot access a Cloud connection", async () => {
+  const h = harness();
+  const session = new AgentControlSession({
+    ...h.deps,
+    ...({ cloudConnection: new Proxy({}, { get() { throw new Error("retired Cloud connection accessed"); } }) } as any),
+  });
+  for (const method of ["mcp.connectors.create", "mcp.connectors.list", "mcp.connectors.revoke", "profiles.update", "profiles.replaceProxies"]) {
+    expect(await session.enqueue(wire(method))).toMatchObject({ ok: false, error: { code: "accounts_removed" } });
+  }
+  expect(h.events).toEqual([]);
 });
 
 test("hub cleanup runs at startup but not for each connection", async () => {
@@ -246,6 +264,24 @@ test("Firefox MCP relays official schemas and calls through the authenticated ma
   ]);
 });
 
+test("WebKit agent status and open disclose capabilities and keep the native owner private", async () => {
+  const h = harness({ active: true, webkit: true });
+  for (const method of ["browser.status", "browser.open"]) {
+    const result = await h.session.enqueue(wire(method, { profileId: "profile1" }));
+    expect(result).toMatchObject({ ok: true, result: { engine: "webkit", experimental: true } });
+    expect((result.result as any).capabilities).toContain("workbench");
+    expect((result.result as any).capabilities).not.toContain("mcp");
+    const text = JSON.stringify(result);
+    for (const privateValue of ["private-token", "private-generation", "webkitOwner", "webkit://", "9444", '"ws"', '"port"', "debugPort"]) {
+      expect(text).not.toContain(privateValue);
+    }
+  }
+  const unsupported = await h.session.enqueue(wire("firefox.tools.list", { profileId: "profile1" }));
+  expect(unsupported.ok).toBe(false);
+  await h.session.disconnect();
+  expect(h.events).toEqual([]);
+});
+
 test("an existing browser rejects a launch-mode change", async () => {
   const h = harness({ active: true });
   const response = await h.session.enqueue(wire("browser.open", {
@@ -293,91 +329,6 @@ test("an unconfirmed close retains the temporary profile marker", async () => {
   expect(h.profileExists()).toBe(true);
 });
 
-test("Cloud close reports retained sync and preserves temporary profiles", async () => {
-  for (const sync of ["pending", "conflict"] as const) {
-    const h = harness({ active: true, temporary: true });
-    const session = new AgentControlSession({
-      ...h.deps,
-      cloudBrowser: {
-        async close() { return { closed: true as const, sync }; },
-      } as any,
-    });
-
-    const response = await session.enqueue(wire("browser.close", { profileId: "profile1" }));
-
-    expect(response).toEqual({
-      protocol: AGENT_CONTROL_PROTOCOL,
-      id: 1,
-      ok: true,
-      result: { profileId: "profile1", closed: true, sync, deleted: false },
-    });
-    expect(h.events).toEqual([]);
-    expect(h.temporary()).toBe(true);
-    expect(h.profileExists()).toBe(true);
-  }
-});
-
-test("Cloud teardown uncertainty retains agent ownership", async () => {
-  const h = harness({ active: true, temporary: true });
-  const session = new AgentControlSession({
-    ...h.deps,
-    cloudBrowser: {
-      async close() { return { closed: false as const, reason: "teardown_unconfirmed" as const }; },
-    } as any,
-  });
-
-  const response = await session.enqueue(wire("browser.close", { profileId: "profile1" }));
-
-  expect(response).toMatchObject({ ok: false, error: { code: "close_unconfirmed" } });
-  expect(h.temporary()).toBe(true);
-  expect(h.profileExists()).toBe(true);
-});
-
-test("MCP connector methods return the token once and use the current device URL", async () => {
-  const h = harness();
-  const calls: string[] = [];
-  const connector = {
-    id: "connector-id",
-    deviceId: "device-id",
-    label: "Linux Claude",
-    createdAt: 1,
-    lastUsedAt: null,
-    revokedAt: null,
-  };
-  const session = new AgentControlSession({
-    ...h.deps,
-    cloudConnection: {
-      deviceId: () => "device-id",
-      client: {
-        createMcpConnector: async (label: string) => {
-          calls.push(`create:${label}`);
-          return { ok: true, connector, token: "returned-once" };
-        },
-        listMcpConnectors: async () => ({ ok: true, connectors: [connector] }),
-        revokeMcpConnector: async (id: string) => { calls.push(`revoke:${id}`); return { ok: true }; },
-        remoteMcpUrl: (id: string) => `https://cloud.example.test/v1/mcp/devices/${id}`,
-      },
-    } as any,
-  });
-
-  const created = await session.enqueue(wire("mcp.connectors.create", { label: "Linux Claude" }));
-  expect(created).toMatchObject({
-    ok: true,
-    result: {
-      connectorId: "connector-id",
-      deviceId: "device-id",
-      url: "https://cloud.example.test/v1/mcp/devices/device-id",
-      token: "returned-once",
-    },
-  });
-  const listed = await session.enqueue(wire("mcp.connectors.list"));
-  expect(JSON.stringify(listed)).not.toContain("returned-once");
-  expect(listed).toMatchObject({ ok: true, result: { connectors: [connector] } });
-  const revoked = await session.enqueue(wire("mcp.connectors.revoke", { connectorId: "connector-id" }));
-  expect(revoked).toMatchObject({ ok: true, result: { connectorId: "connector-id", revoked: true } });
-  expect(calls).toEqual(["create:Linux Claude", "revoke:connector-id"]);
-});
-
 function cloudEditHarness() {
   const h = harness();
   const profile = buildNewProfile({ name: "Cloud account", group: "accounts" }, () => false);
@@ -403,131 +354,6 @@ function cloudEditHarness() {
   };
   return { ...h, deps, client, authoritative, updates, session: new AgentControlSession(deps) };
 }
-
-test("Cloud profile edits use roster versions and preserve unedited credentials and sessions", async () => {
-  const h = cloudEditHarness();
-  const listed = await h.session.enqueue(wire("profiles.list"));
-  expect(listed).toMatchObject({ ok: true, result: { profiles: [{ id: "profile1", expectedVersion: 7, permission: "edit" }] } });
-  expect(JSON.stringify(listed)).not.toContain("old-password");
-
-  const result = await h.session.enqueue(wire("profiles.update", {
-    profileId: "profile1", expectedVersion: 7,
-    set: { username: "matched-user", password: "new-password", twofa: "", tags: ["backfilled"] },
-  }));
-  expect(result).toMatchObject({ ok: true, result: { profileId: "profile1", updated: true } });
-  expect(h.updates).toHaveLength(1);
-  expect(h.updates[0].request.expectedVersion).toBe(7);
-  expect(h.updates[0].request.payload.profile).toMatchObject({ username: "matched-user", password: "new-password", email: "keep@example.test", twofa: "", tags: ["backfilled"], fingerprintSeed: h.authoritative.payload.profile.fingerprintSeed });
-  expect(h.updates[0].request.payload.session).toEqual(h.authoritative.payload.session);
-  expect(JSON.stringify(result)).not.toContain("new-password");
-  expect(JSON.stringify(result)).not.toContain("session-secret");
-});
-
-test("Cloud profile edits reject open, stale, unsupported and malformed updates before PATCH", async () => {
-  const h = cloudEditHarness();
-  for (const params of [
-    { expectedVersion: 6, set: { password: "new-password" } },
-    { expectedVersion: -1, set: { password: "new-password" } },
-    { expectedVersion: 7, set: {} },
-    { expectedVersion: 7, set: { cookies: [] } },
-    { expectedVersion: 7, set: { password: 123 } },
-    { expectedVersion: 7, set: { extensions: "not-an-array" } },
-  ]) {
-    expect((await h.session.enqueue(wire("profiles.update", { profileId: "profile1", ...params }))).ok).toBe(false);
-  }
-  h.authoritative.profile.activeOpens = [{}];
-  expect((await h.session.enqueue(wire("profiles.update", { profileId: "profile1", expectedVersion: 7, set: { password: "new-password" } }))).ok).toBe(false);
-  expect(h.updates).toEqual([]);
-  expect((await harness().session.enqueue(wire("profiles.update", { profileId: "profile1", expectedVersion: 7, set: { password: "new-password" } })))).toMatchObject({ ok: false, error: { code: "cloud_unavailable" } });
-});
-
-test("Cloud profile edits preserve Cloud error codes without retrying", async () => {
-  for (const [code, status] of [["version_conflict", 409], ["folder_access_denied", 403]] as const) {
-    const h = cloudEditHarness();
-    let calls = 0;
-    h.client.updateProfile = async () => { calls++; throw new CloudApiError("Cloud edit rejected", code, status); };
-    const result = await h.session.enqueue(wire("profiles.update", { profileId: "profile1", expectedVersion: 7, set: { password: "new-password" } }));
-    expect(result).toMatchObject({ ok: false, error: { code } });
-    expect(calls).toBe(1);
-    expect(JSON.stringify(result)).not.toContain("new-password");
-  }
-});
-
-test("proxy replacement Agent Control method is Cloud-only and returns safe results", async () => {
-  const h = harness();
-  const calls: ProxyReplacementsRequest[] = [];
-  const session = new AgentControlSession({
-    ...h.deps,
-    cloudBrowser: {} as any,
-    cloudConnection: {
-      deviceId: () => "device-id",
-      client: {
-        replaceProfileProxies: async (request: ProxyReplacementsRequest) => {
-          calls.push(structuredClone(request));
-          return {
-            ok: true as const,
-            dryRun: true,
-            counts: { received: 1, matched: 1, ready: 1, updated: 0, unchanged: 0, missing: 0, skipped: 0 },
-            results: [{ index: 0, status: "ready" as const, profileId: "profile-1", currentVersion: 4 }],
-            missingUsernames: [],
-          };
-        },
-      },
-    } as any,
-  });
-  const replacement = {
-    username: "exact-user",
-    proxy: { type: "socks5" as const, host: "proxy.test", port: "1080", user: "proxy-user", pass: "private-pass" },
-  };
-
-  const result = await session.enqueue(wire("profiles.replaceProxies", { replacements: [replacement] }));
-
-  expect(calls).toEqual([{ dryRun: true, replacements: [replacement] }]);
-  expect(result).toMatchObject({
-    ok: true,
-    result: {
-      dryRun: true,
-      counts: { ready: 1 },
-      results: [{ index: 0, status: "ready", profileId: "profile-1", currentVersion: 4 }],
-    },
-  });
-  expect(JSON.stringify(result)).not.toContain("private-pass");
-});
-
-test("proxy replacement Agent Control method rejects non-Cloud and malformed calls", async () => {
-  const h = harness();
-  let calls = 0;
-  const connection = {
-    deviceId: () => "device-id",
-    client: {
-      replaceProfileProxies: async () => {
-        calls++;
-        throw new Error("must not call Cloud");
-      },
-    },
-  } as any;
-  for (const deps of [
-    h.deps,
-    { ...h.deps, cloudConnection: connection },
-    { ...h.deps, cloudBrowser: {} as any },
-  ]) {
-    const result = await new AgentControlSession(deps).enqueue(wire("profiles.replaceProxies", {
-      replacements: [{ username: "user", proxy: {} }],
-    }));
-    expect(result).toMatchObject({ ok: false, error: { code: "cloud_unavailable" } });
-  }
-
-  const malformed = await new AgentControlSession({
-    ...h.deps,
-    cloudBrowser: {} as any,
-    cloudConnection: connection,
-  }).enqueue(wire("profiles.replaceProxies", {
-    dryRun: "false",
-    replacements: [{ username: "user", proxy: {} }],
-  }));
-  expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_request" } });
-  expect(calls).toBe(0);
-});
 
 test("Local profiles.create sets the timezone from the proxy", async () => {
   const realFetch = globalThis.fetch;

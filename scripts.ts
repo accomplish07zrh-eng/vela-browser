@@ -160,7 +160,7 @@ export interface ScriptRun {
 interface RunRequest { scriptId: string; profileIds: string[]; inputs: Record<string, unknown>; useCredentials: boolean; concurrency?: number }
 interface RunnerInput {
   endpoint: string;
-  engine?: "firefox";
+  engine?: "firefox" | "webkit";
   profile: { id: string; name: string; group: string; platform: string };
   inputs: Record<string, unknown>;
   credentials: Record<string, string> | null;
@@ -324,7 +324,7 @@ export class ScriptSupervisor {
   }
 
   start(request: RunRequest): ScriptRun {
-    if (this.closing || this.pauses) throw new ScriptError("Script execution is paused while Vela Browser changes accounts or shuts down", 409);
+    if (this.closing || this.pauses) throw new ScriptError("Script execution is paused during a lifecycle operation or shutdown", 409);
     if (this.active && this.active.view.status !== "finished") throw new ScriptError("A script is already running", 409);
     if (!request || typeof request.scriptId !== "string" || !request.scriptId
       || !Array.isArray(request.profileIds) || !request.profileIds.length || !request.profileIds.every((id) => typeof id === "string" && id)
@@ -470,6 +470,7 @@ export class ScriptSupervisor {
             inputs: request.inputs,
             credentials: request.useCredentials ? Object.fromEntries(["username", "password", "email", "emailPassword", "twofa"].map((key) => [key, (profile as unknown as Record<string, string>)[key] ?? ""])) : null,
           };
+          if (opened.engine === "webkit") throw new ScriptError("WebKit script automation is not available in this experimental runtime", 400);
           if (opened.engine === "firefox") {
             const launch = this.options.store.getLaunch(item.id) as { firefoxOwner?: FirefoxOwner } | null;
             if (!launch?.firefoxOwner) throw new ScriptError("Firefox browser owner is unavailable", 503);

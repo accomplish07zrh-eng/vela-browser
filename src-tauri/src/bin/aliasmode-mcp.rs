@@ -1,6 +1,6 @@
 //! `aliasmode-mcp` starts the MCP helper that ships inside the `aliasmode-sidecar` program.
 //!
-//! AI clients and Remote MCP start this file by its installed path. It keeps that path and passes
+//! Local AI clients start this file by its installed path. It keeps that path and passes
 //! the arguments, the environment, stdin, stdout, stderr and the exit code through unchanged.
 
 use std::{

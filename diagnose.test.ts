@@ -9,10 +9,42 @@ test("fingerprint probe retains audio rejection instead of waiting forever for o
     async startRendering() { throw new Error("audio rendering failed"); }
   }
   const sample = await runInNewContext(`(${fingerprintProbe.toString()})()`, {
-    window: { OfflineAudioContext: AudioContext },
+    OfflineAudioContext: AudioContext,
+    setTimeout, clearTimeout,
   });
   expect(sample.errors.audio).toContain("audio rendering failed");
   expect(sample.audioHash).toBeUndefined();
+});
+
+test("missing samples never establish canvas uniqueness", () => {
+  for (const profiles of [[], [report({ fingerprint: null })], [report({})]]) {
+    const a = analyze(profiles, REAL_IP);
+    expect(a.verdicts.some((verdict) => verdict.includes("✅ canvas fingerprints unique"))).toBe(false);
+    expect(a.verdicts.some((verdict) => verdict.includes("uniqueness not established"))).toBe(true);
+  }
+});
+
+test("restart checks include audio, rendered WebGL, fonts and disappearing values", () => {
+  const a = analyze([report({
+    fingerprint: { canvasHash: "same", audioHash: "audio-a", webglHash: "gl-a", fontsHash: "fonts-a", textMetricsHash: "text-a" },
+    fingerprintRelaunch: { canvasHash: "same", audioHash: "audio-b", webglHash: "gl-b", textMetricsHash: "text-b" },
+  })]);
+  expect(a.unstableFingerprints).toEqual(["p"]);
+  expect(a.fingerprintChanges.map((change) => change.field)).toEqual(["audioHash", "webglHash", "fontsHash", "textMetricsHash"]);
+  expect(a.fingerprintChanges.find((change) => change.field === "fontsHash")?.after).toBe("unavailable");
+});
+
+test("equal GPU model strings do not imply equal rendered WebGL fingerprints", () => {
+  const a = analyze([
+    report({ profileId: "a", fingerprint: { webglRenderer: "Intel", webglHash: "pixels-a" } }),
+    report({ profileId: "b", fingerprint: { webglRenderer: "Intel", webglHash: "pixels-b" } }),
+  ]);
+  expect(a.fingerprintCollisions.webgl).toEqual([]);
+  const same = analyze([
+    report({ profileId: "a", fingerprint: { webglHash: "same" } }),
+    report({ profileId: "b", fingerprint: { webglHash: "same" } }),
+  ]);
+  expect(same.fingerprintCollisions.webgl[0]?.profiles).toEqual(["a", "b"]);
 });
 
 function report(over: Partial<ProfileReport>): ProfileReport {

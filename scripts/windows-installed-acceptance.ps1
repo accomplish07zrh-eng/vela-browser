@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)]
-  [ValidateSet("runtime-protocol", "runtime-ownership", "runtime-desktop", "browser", "cloud")]
+  [ValidateSet("runtime-protocol", "runtime-ownership", "runtime-desktop", "browser", "local-upgrade")]
   [string]$Shard,
 
   [Parameter(Mandatory)]
@@ -573,7 +573,7 @@ $DiagnosticsPath = [IO.Path]::GetFullPath($DiagnosticsPath)
 $runId = [Guid]::NewGuid().ToString("N")
 $runRoot = Join-Path $env:RUNNER_TEMP "aliasmode-installed-$Shard-$runId"
 $installRoot = Join-Path $runRoot "aliasmode installed"
-$appDataRoot = Join-Path $env:APPDATA "com.aliasmode.desktop"
+$appDataRoot = Join-Path $env:APPDATA "com.velabrowser.desktop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $workspaceRoot = if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) { $repoRoot } else { $env:GITHUB_WORKSPACE }
 $registrationKeys = @(
@@ -596,6 +596,9 @@ $changedEnvironmentNames = @(
   "ALIASMODE_FIREFOX_BINARY_SHA256"
   "ALIASMODE_SESSION_LAUNCH"
   "ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG"
+  "ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG_PORT"
+  "ALIASMODE_ACCEPTANCE_DATA_DIR"
+  "HUB_URL"
   "WEBVIEW2_USER_DATA_FOLDER"
   "ALIASMODE_CLOUD_URL"
   "ALIASMODE_SUPABASE_URL"
@@ -644,11 +647,9 @@ $checks = [ordered]@{
   proxyMismatch = $false
   authenticatedHttpProxy = $false
   authenticatedSocks5Proxy = $false
-  credentialManager = $false
-  cloudRestartRecovery = $false
-  cloudRevocation = $false
-  cloudRestore = $false
-  cloudCrossDeviceCounts = $false
+  accountRetirement = $false
+  localConfigurationUpgrade = $false
+  recoveryArchivesPreserved = $false
   automationPortConflict = $false
 }
 
@@ -702,7 +703,7 @@ try {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-public static class Vela BrowserWindow {
+public static class VelaBrowserWindow {
   private delegate bool EnumWindowsProc(IntPtr handle, IntPtr parameter);
   [StructLayout(LayoutKind.Sequential)]
   private struct Rect { public int Left, Top, Right, Bottom; }
@@ -859,7 +860,7 @@ public static class Vela BrowserWindow {
         }
         $backgroundVisible = $false
         for ($attempt = 0; $attempt -lt 20; $attempt++) {
-          $mainWindow = [Vela BrowserWindow]::FindAppWindow([uint32]$descriptor.desktopPid, $true)
+          $mainWindow = [VelaBrowserWindow]::FindAppWindow([uint32]$descriptor.desktopPid, $true)
           if ($mainWindow -ne [IntPtr]::Zero) {
             $backgroundVisible = $true
             break
@@ -1304,7 +1305,7 @@ async def run(*, log, **_):
             Where-Object { $_.Name -like "aliasmode-sidecar*.exe" } |
             Select-Object -First 1
           if ($sidecar) { $sidecarPid = [int]$sidecar.ProcessId }
-          $mainWindow = [Vela BrowserWindow]::FindAppWindow([uint32]$descriptor.desktopPid, $true)
+          $mainWindow = [VelaBrowserWindow]::FindAppWindow([uint32]$descriptor.desktopPid, $true)
           if ($sidecarPid -and $mainWindow -ne [IntPtr]::Zero) { break }
           Start-Sleep -Milliseconds 500
         }
@@ -1312,7 +1313,7 @@ async def run(*, log, **_):
         if ($mainWindow -eq [IntPtr]::Zero) { throw "installed desktop did not show its main window" }
         Start-Sleep -Seconds 2
         $app.Refresh()
-        $mainWindow = [Vela BrowserWindow]::FindAppWindow([uint32]$descriptor.desktopPid, $true)
+        $mainWindow = [VelaBrowserWindow]::FindAppWindow([uint32]$descriptor.desktopPid, $true)
         if (
           $app.HasExited -or
           -not (Get-Process -Id $sidecarPid -ErrorAction SilentlyContinue) -or
@@ -1323,7 +1324,7 @@ async def run(*, log, **_):
       } finally {
         $app.Refresh()
         if (-not $app.HasExited) {
-          if (-not [Vela BrowserWindow]::CloseWindow($mainWindow)) {
+          if (-not [VelaBrowserWindow]::CloseWindow($mainWindow)) {
             $shutdownFailure = "installed desktop rejected its main-window close request"
           } elseif (-not $app.WaitForExit(15000)) {
             $shutdownFailure = "installed desktop did not exit after its main window closed"
@@ -1509,7 +1510,7 @@ try {
       $windowAcceptanceFailure = $null
       $windowCleanupFailure = $null
       try {
-        & $installation.SidecarPath __cloud-launcher-smoke --windows-window-acceptance --state-root $windowAcceptanceRoot
+        & $installation.SidecarPath __browser-lifecycle-smoke --windows-window-acceptance --state-root $windowAcceptanceRoot
         if ($LASTEXITCODE -ne 0) {
           throw "installed native CloakBrowser window acceptance exited with code $LASTEXITCODE"
         }
@@ -1566,7 +1567,7 @@ try {
 
       Set-AcceptanceStage "browser-proxy-mismatch"
       $proxyMismatchRoot = Join-Path $runRoot "proxy-mismatch"
-      & $installation.SidecarPath __cloud-launcher-smoke --proxy-mismatch --state-root $proxyMismatchRoot
+      & $installation.SidecarPath __browser-lifecycle-smoke --proxy-mismatch --state-root $proxyMismatchRoot
       if ($LASTEXITCODE -ne 0) {
         throw "installed deterministic proxy mismatch smoke exited with code $LASTEXITCODE"
       }
@@ -1576,12 +1577,12 @@ try {
         [Environment]::SetEnvironmentVariable($name, $savedProcessEnvironment[$name], "Process")
       }
       if ([string]::IsNullOrWhiteSpace($env:ALIASMODE_LIVE_PROXY_HOST)) {
-        Write-Host "Installed headful Cloud proxy smoke skipped: no temporary test proxy configured"
+        Write-Host "Installed headful local proxy smoke skipped: no temporary test proxy configured"
       } else {
         foreach ($proxyType in @("http", "socks5")) {
           Set-AcceptanceStage "browser-authenticated-$proxyType-proxy"
           $stateRoot = Join-Path $runRoot "authenticated-$proxyType"
-          & $installation.SidecarPath __cloud-launcher-smoke --proxy-type $proxyType --state-root $stateRoot
+          & $installation.SidecarPath __browser-lifecycle-smoke --proxy-type $proxyType --state-root $stateRoot
           if ($LASTEXITCODE -ne 0) {
             throw "installed headful Cloud proxy smoke exited with code $LASTEXITCODE"
           }
@@ -1593,574 +1594,60 @@ try {
         }
       }
     }
-    "cloud" {
-      Set-AcceptanceStage "cloud-preparing"
-      $browserRuntime = Set-BrowserRuntimeEnvironment $installRoot (Join-Path $runRoot "browsers")
-      $playwrightRuntime = $browserRuntime.PlaywrightRuntime
-      $cloudAcceptanceRoot = Join-Path $runRoot "cloud-restore"
-      Remove-Item -LiteralPath $cloudAcceptanceRoot -Recurse -Force -ErrorAction SilentlyContinue
-      New-Item -ItemType Directory -Force $cloudAcceptanceRoot | Out-Null
-
-      Add-Type @'
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-public static class Vela BrowserAcceptanceCredentials {
-  [DllImport("Advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]
-  public static extern bool Delete(string target, uint type, uint flags);
-
-  [DllImport("Advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
-  private static extern bool Read(string target, uint type, uint flags, out System.IntPtr credential);
-
-  [DllImport("Advapi32.dll", EntryPoint = "CredFree")]
-  private static extern void Free(System.IntPtr credential);
-
-  public static bool Exists(string target) {
-    System.IntPtr credential;
-    if (Read(target, 1, 0, out credential)) {
-      Free(credential);
-      return true;
-    }
-    int error = Marshal.GetLastWin32Error();
-    if (error == 1168) return false;
-    throw new Win32Exception(error);
-  }
-}
-'@
-
-      $acceptanceCredentialTargets = @(
-        "Vela Browser/refresh-token",
-        "Vela Browser/device-credential",
-        "Vela Browser/queue-encryption-key"
-      )
-
-      function Remove-Vela BrowserAcceptanceCredentials {
-        foreach ($target in $acceptanceCredentialTargets) {
-          [void][Vela BrowserAcceptanceCredentials]::Delete($target, 1, 0)
-        }
-      }
-
-      function Assert-Vela BrowserAcceptanceCredentialsAbsent {
-        foreach ($target in $acceptanceCredentialTargets) {
-          if ([Vela BrowserAcceptanceCredentials]::Exists($target)) {
-            throw "Cloud acceptance credential cleanup was not confirmed"
-          }
-        }
-      }
-
-      function Get-FreeLoopbackPort {
-        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-        $listener.Start()
-        try { return ([Net.IPEndPoint]$listener.LocalEndpoint).Port }
-        finally { $listener.Stop() }
-      }
-
-      $trackedPids = [Collections.Generic.HashSet[int]]::new()
-      $fixtureProcess = $null
-      $activeAcceptanceApp = $null
-      $fixturePort = Get-FreeLoopbackPort
-      $fixtureUrl = "http://127.0.0.1:$fixturePort"
-      $isolatedState = $appDataRoot
-      Remove-Item -LiteralPath $isolatedState -Recurse -Force -ErrorAction SilentlyContinue
-      if (Test-Path -LiteralPath $isolatedState) {
-        throw "installed Cloud acceptance state root was not clean"
-      }
-      New-Item -ItemType Directory -Force $isolatedState | Out-Null
-      $config = @{
-        version = 1
-        mode = "cloud"
-        cloudUrl = $fixtureUrl
-        localAnalytics = $false
-      } | ConvertTo-Json
-      [IO.File]::WriteAllText(
-        (Join-Path $isolatedState "config.json"),
-        $config,
-        [Text.UTF8Encoding]::new($false)
-      )
-
-      [Environment]::SetEnvironmentVariable("ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG", "1", "Process")
-      [Environment]::SetEnvironmentVariable("ALIASMODE_CLOUD_URL", $fixtureUrl, "Process")
-      [Environment]::SetEnvironmentVariable("ALIASMODE_SUPABASE_URL", $fixtureUrl, "Process")
-      [Environment]::SetEnvironmentVariable("ALIASMODE_SUPABASE_ANON_KEY", "aliasmode-fixture-anon", "Process")
-
-      $acceptanceCredentialCanaries = @{
-        seededRefresh = "aliasmode-acceptance-refresh-seeded"
-        rotatedRefresh = "aliasmode-fixture-refresh-rotated"
-        access = "aliasmode-fixture-access"
-        device = "aliasmode-acceptance-device"
-        queue = "YWxpYXNtb2RlLWFjY2VwdGFuY2UtcXVldWUta2V5MDE="
-      }
-
-      function Assert-Vela BrowserAcceptanceLogsExcludeCredentials {
-        $logRoot = Join-Path $isolatedState "logs"
-        $logFiles = @(Get-ChildItem $logRoot -Recurse -File -ErrorAction SilentlyContinue)
-        if ($logFiles.Count -eq 0) { throw "installed Cloud acceptance sidecar log was not found" }
-        foreach ($file in $logFiles) {
-          $content = [IO.File]::ReadAllText($file.FullName)
-          foreach ($canary in $acceptanceCredentialCanaries.Values) {
-            if ($content.Contains($canary, [StringComparison]::Ordinal)) {
-              throw "Cloud acceptance log exposed a synthetic credential"
-            }
-          }
-        }
-      }
-
-      function Start-CloudRestoreFixture([string]$Mode, [string]$InitialRefresh) {
-        $process = Start-Process -PassThru $installation.SidecarPath -ArgumentList @(
-          "__cloud-restore-fixture",
-          "--port", "$fixturePort",
-          "--mode", $Mode,
-          "--initial-refresh", $InitialRefresh
-        )
-        [void]$trackedPids.Add([int]$process.Id)
-        for ($attempt = 0; $attempt -lt 60; $attempt++) {
-          $process.Refresh()
-          if ($process.HasExited) { throw "Cloud restore fixture $Mode exited before readiness" }
-          try {
-            $health = Invoke-RestMethod "$fixtureUrl/health" -TimeoutSec 1
-            if ($health.ok -eq $true -and $health.mode -eq $Mode) { return $process }
-          } catch {}
-          Start-Sleep -Milliseconds 100
-        }
-        throw "Cloud restore fixture $Mode did not become ready"
-      }
-
-      function Stop-AcceptanceProcess($Process) {
-        if (-not $Process) { return }
-        $Process.Refresh()
-        if (-not $Process.HasExited) {
-          $Process.Kill($true)
-          if (-not $Process.WaitForExit(10000)) {
-            throw "Cloud acceptance process tree did not exit"
-          }
-        }
-      }
-
-      function Stop-CloudRestoreFixture($Process) {
-        if (-not $Process) { return }
-        Stop-AcceptanceProcess $Process
-        for ($attempt = 0; $attempt -lt 50; $attempt++) {
-          try {
-            Invoke-RestMethod "$fixtureUrl/health" -TimeoutSec 1 | Out-Null
-            Start-Sleep -Milliseconds 100
-          } catch { return }
-        }
-        throw "Cloud restore fixture did not release its loopback port"
-      }
-
-      function Start-InstalledCloudAcceptanceApp {
-        $webviewRoot = Join-Path $cloudAcceptanceRoot "webview-$([Guid]::NewGuid().ToString('N'))"
-        [Environment]::SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER", $webviewRoot, "Process")
-        $process = Start-Process -PassThru $installation.AppPath
-        [void]$trackedPids.Add([int]$process.Id)
-        $sidecarPid = 0
-        $debugPort = 0
-        $debugReady = $false
-        for ($attempt = 0; $attempt -lt 120; $attempt++) {
-          $process.Refresh()
-          if ($process.HasExited) { throw "installed Cloud acceptance app exited before readiness" }
-          if ($sidecarPid -le 0) {
-            $sidecar = Get-CimInstance Win32_Process -Filter "ParentProcessId = $($process.Id)" -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -like "aliasmode-sidecar*.exe" } |
-              Select-Object -First 1
-            if ($sidecar) { $sidecarPid = [int]$sidecar.ProcessId }
-          }
-          if ($debugPort -le 0) {
-            $activePortPath = Join-Path $webviewRoot "EBWebView\DevToolsActivePort"
-            if (Test-Path -LiteralPath $activePortPath -PathType Leaf) {
-              try {
-                $activePortLine = [IO.File]::ReadLines($activePortPath) | Select-Object -First 1
-                $parsedPort = 0
-                if ([int]::TryParse($activePortLine, [ref]$parsedPort) -and $parsedPort -gt 0 -and $parsedPort -le 65535) {
-                  $debugPort = $parsedPort
-                }
-              } catch {}
-            }
-          }
-          if ($debugPort -gt 0) {
-            try {
-              Invoke-RestMethod "http://127.0.0.1:$debugPort/json/version" -TimeoutSec 1 | Out-Null
-              $debugReady = $true
-            } catch {}
-          }
-          if ($sidecarPid -gt 0 -and $process.MainWindowHandle -ne 0 -and $debugReady) { break }
-          Start-Sleep -Milliseconds 250
-        }
-        if ($sidecarPid -le 0) { throw "installed Cloud acceptance app did not start its packaged sidecar" }
-        if ($process.MainWindowHandle -eq 0) { throw "installed Cloud acceptance app did not create its main window" }
-        if ($debugPort -le 0) { throw "installed Cloud acceptance WebView2 endpoint was not published" }
-        if (-not $debugReady) { throw "installed Cloud acceptance WebView2 endpoint did not become ready" }
-        [void]$trackedPids.Add($sidecarPid)
-        return [pscustomobject]@{
-          Process = $process
-          SidecarPid = $sidecarPid
-          DebugPort = $debugPort
-        }
-      }
-
-      function Stop-InstalledCloudAcceptanceApp($Record) {
-        if (-not $Record) { return }
-        $process = $Record.Process
-        $process.Refresh()
-        if (-not $process.HasExited) {
-          if (-not $process.CloseMainWindow()) {
-            throw "installed Cloud acceptance app rejected its close request"
-          }
-          if (-not $process.WaitForExit(30000)) {
-            throw "installed Cloud acceptance app did not exit during restart"
-          }
-        }
-        for ($attempt = 0; $attempt -lt 60; $attempt++) {
-          if (-not (Get-Process -Id $Record.SidecarPid -ErrorAction SilentlyContinue)) { return }
-          Start-Sleep -Milliseconds 250
-        }
-        throw "installed Cloud acceptance sidecar survived app restart"
-      }
-
-      $desktopProbe = @'
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-
-let input = "";
-for await (const chunk of process.stdin) input += chunk;
-const { runtimeRoot, endpoint, fixtureEndpoint, action, expected } = JSON.parse(input);
-if (!runtimeRoot || !endpoint || !fixtureEndpoint || !action || !expected) {
-  throw new Error("desktop acceptance input is incomplete");
-}
-if (![expected.seededRefresh, expected.rotatedRefresh, expected.device, expected.queue]
-  .every((value) => typeof value === "string" && value.length > 0)) {
-  throw new Error("desktop acceptance credential canaries are incomplete");
-}
-const { chromium } = await import(pathToFileURL(join(runtimeRoot, "node_modules", "playwright-core", "index.mjs")).href);
-const browser = await chromium.connectOverCDP(endpoint, { timeout: 30_000 });
-try {
-  let page;
-  for (let attempt = 0; attempt < 100 && !page; attempt++) {
-    page = browser.contexts().flatMap((context) => context.pages())
-      .find((candidate) => candidate.url().startsWith("http://127.0.0.1:"));
-    if (!page) await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  if (!page) throw new Error("installed Vela Browser dashboard target was not found");
-  await page.waitForFunction(() => typeof window.__TAURI_INTERNALS__?.invoke === "function", undefined, { timeout: 30_000 });
-  const waitForText = (values) => page.waitForFunction(
-    (expectedText) => expectedText.every((value) => document.body?.innerText.includes(value)),
-    values,
-    { timeout: 30_000 },
-  );
-  const releaseRestore = async (count = 1) => {
-    for (let index = 0; index < count; index++) {
-      const deadline = Date.now() + 30_000;
-      while (true) {
-        const response = await fetch(`${fixtureEndpoint}/control/release`, { method: "POST" });
-        if (response.ok) break;
-        if (response.status !== 409 || Date.now() >= deadline) {
-          throw new Error("Cloud restore fixture could not be released");
-        }
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-    }
-  };
-  const credentialFlags = () => page.evaluate(async (credential) => {
-    const invoke = window.__TAURI_INTERNALS__.invoke;
-    const [refresh, device, queue] = await Promise.all([
-      invoke("credential_get", { key: "refresh_token" }),
-      invoke("credential_get", { key: "device_credential" }),
-      invoke("credential_get", { key: "queue_encryption_key" }),
-    ]);
-    return {
-      seededRefresh: refresh === credential.seededRefresh,
-      rotatedRefresh: refresh === credential.rotatedRefresh,
-      refreshMissing: refresh === null,
-      device: device === credential.device,
-      deviceMissing: device === null,
-      queue: queue === credential.queue,
-      queueMissing: queue === null,
-    };
-  }, expected);
-  const requireStored = async (refreshKind) => {
-    const flags = await credentialFlags();
-    if (!flags[refreshKind] || !flags.device || !flags.queue) {
-      throw new Error("installed Credential Manager persistence did not match the expected structure");
-    }
-  };
-  const openMemberSettings = async () => {
-    await page.getByRole("button", { name: "Open Account and Settings" }).click();
-    await waitForText(["Fixture workspace"]);
-    await page.getByRole("tab", { name: "Team", exact: true }).click();
-    const roleRow = page.locator(".settings-row").filter({ has: page.getByText("Role", { exact: true }) });
-    await roleRow.waitFor({ state: "visible", timeout: 30_000 });
-    if ((await roleRow.locator(":scope > strong").innerText()).trim() !== "member") {
-      throw new Error("restored Cloud workspace role was not member");
-    }
-  };
-
-  if (action === "seed") {
-    await page.evaluate(async (credential) => {
-      const invoke = window.__TAURI_INTERNALS__.invoke;
-      await invoke("credential_set", { key: "queue_encryption_key", secret: credential.queue });
-      await invoke("credential_set", { key: "device_credential", secret: credential.device });
-      await invoke("credential_set", { key: "refresh_token", secret: credential.seededRefresh });
-    }, expected);
-    await requireStored("seededRefresh");
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await waitForText(["Restoring saved session"]);
-    await releaseRestore();
-    await waitForText(["No profiles yet"]);
-    await requireStored("rotatedRefresh");
-  } else if (action === "healthy") {
-    await waitForText(["Restoring saved session"]);
-    await releaseRestore();
-    await waitForText(["No profiles yet"]);
-    await openMemberSettings();
-    await requireStored("rotatedRefresh");
-  } else if (action === "offline") {
-    await page.getByRole("heading", { name: "Restoring saved session", exact: true })
-      .waitFor({ state: "visible", timeout: 30_000 });
-    await releaseRestore(2);
-    await page.getByRole("button", { name: "Try again", exact: true })
-      .waitFor({ state: "visible", timeout: 30_000 });
-    await page.getByRole("button", { name: "Sign in instead", exact: true })
-      .waitFor({ state: "visible", timeout: 30_000 });
-    await requireStored("rotatedRefresh");
-  } else if (action === "online") {
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await waitForText(["Restoring saved session"]);
-    await releaseRestore();
-    await waitForText(["No profiles yet"]);
-    await openMemberSettings();
-    await requireStored("rotatedRefresh");
-  } else if (action === "revoked") {
-    await waitForText(["Restoring saved session"]);
-    await releaseRestore();
-    await waitForText(["Sign in to Vela Cloud", "Saved Cloud session is no longer valid"]);
-    const flags = await credentialFlags();
-    if (!flags.refreshMissing || !flags.deviceMissing || !flags.queue || flags.queueMissing) {
-      throw new Error("membership revocation did not preserve only the queue credential");
-    }
-  } else {
-    throw new Error("unknown desktop acceptance action");
-  }
-} finally {
-  await browser.close();
-}
-'@
-      $desktopProbePath = Join-Path $cloudAcceptanceRoot "desktop-probe.mjs"
-      [IO.File]::WriteAllText($desktopProbePath, $desktopProbe, [Text.UTF8Encoding]::new($false))
-
-      function Invoke-InstalledDesktopProbe($Record, [string]$Action) {
-        $probeInput = @{
-          runtimeRoot = $playwrightRuntime
-          endpoint = "http://127.0.0.1:$($Record.DebugPort)"
-          fixtureEndpoint = $fixtureUrl
-          action = $Action
-          expected = $acceptanceCredentialCanaries
-        } | ConvertTo-Json -Compress -Depth 4
-        $probeStart = [Diagnostics.ProcessStartInfo]::new()
-        $probeStart.FileName = Join-Path $playwrightRuntime "node\node.exe"
-        $probeStart.ArgumentList.Add($desktopProbePath)
-        $probeStart.UseShellExecute = $false
-        $probeStart.RedirectStandardInput = $true
-        $probeStart.RedirectStandardOutput = $true
-        $probeStart.RedirectStandardError = $true
-        $probe = [Diagnostics.Process]::new()
-        $probe.StartInfo = $probeStart
-        if (-not $probe.Start()) { throw "installed desktop probe did not start" }
-        try {
-          $probeOutput = $probe.StandardOutput.ReadToEndAsync()
-          $probeError = $probe.StandardError.ReadToEndAsync()
-          $probe.StandardInput.Write($probeInput)
-          $probe.StandardInput.Close()
-          if (-not $probe.HasExited) {
-            $probeCommand = Get-CimInstance Win32_Process -Filter "ProcessId = $($probe.Id)" -ErrorAction Stop
-            if (-not $probeCommand -or [string]::IsNullOrEmpty($probeCommand.CommandLine) -or $probeCommand.CommandLine.Contains("--eval")) {
-              throw "installed desktop probe used an unsafe process command"
-            }
-            foreach ($canary in $acceptanceCredentialCanaries.Values) {
-              if ($probeCommand.CommandLine.Contains($canary, [StringComparison]::Ordinal)) {
-                throw "installed desktop probe exposed a credential in its process command"
-              }
-            }
-          }
-          if (-not $probe.WaitForExit(180000)) {
-            $probe.Kill($true)
-            $probe.WaitForExit()
-            throw "installed desktop $Action probe timed out"
-          }
-          [void]$probeOutput.GetAwaiter().GetResult()
-          [void]$probeError.GetAwaiter().GetResult()
-          if ($probe.ExitCode -ne 0) {
-            throw "installed desktop $Action probe exited with code $($probe.ExitCode)"
-          }
-        } finally {
-          if (-not $probe.HasExited) {
-            $probe.Kill($true)
-            $probe.WaitForExit()
-          }
-          $probe.Dispose()
-        }
-      }
-
-      $cloudAcceptanceFailure = $null
+    "local-upgrade" {
+      Set-AcceptanceStage "local-upgrade-preparing"
+      $playwrightRuntime = Join-Path $installRoot "playwright"
+      $upgradeRoot = Join-Path $runRoot "local-upgrade"
+      New-Item -ItemType Directory -Force $upgradeRoot | Out-Null
+      $configPath = Join-Path $upgradeRoot "config.json"
+      $legacyConfig = @{ version = 1; mode = "cloud"; cloudUrl = "http://127.0.0.1:1"; localAnalytics = $false; servicesHidden = $true }
+      [IO.File]::WriteAllText($configPath, ($legacyConfig | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+      $archiveRoot = Join-Path $upgradeRoot "cloud-cache"
+      New-Item -ItemType Directory -Force $archiveRoot | Out-Null
+      $archive = Join-Path $archiveRoot "recovery-sentinel.bin"
+      [IO.File]::WriteAllBytes($archive, [byte[]](1, 7, 12, 35, 98, 201))
+      $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+      $debugListener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+      $debugListener.Start()
+      $debugPort = ([Net.IPEndPoint]$debugListener.LocalEndpoint).Port
+      $debugListener.Stop()
+      $env:ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG = "1"
+      $env:ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG_PORT = "$debugPort"
+      $env:ALIASMODE_ACCEPTANCE_DATA_DIR = $upgradeRoot
+      $env:ALIASMODE_CLOUD_URL = "http://127.0.0.1:1"
+      $env:ALIASMODE_SUPABASE_URL = "http://127.0.0.1:1"
+      $env:ALIASMODE_SUPABASE_ANON_KEY = "retired-fixture"
+      $env:HUB_URL = "http://127.0.0.1:1"
+      $upgradeApp = $null
       try {
-        Set-AcceptanceStage "cloud-credentials-seed"
-        Remove-Vela BrowserAcceptanceCredentials
-        Assert-Vela BrowserAcceptanceCredentialsAbsent
-
-        $fixtureProcess = Start-CloudRestoreFixture "healthy" "seeded"
-        $activeAcceptanceApp = Start-InstalledCloudAcceptanceApp
-        Invoke-InstalledDesktopProbe $activeAcceptanceApp "seed"
-        Stop-InstalledCloudAcceptanceApp $activeAcceptanceApp
-        $activeAcceptanceApp = $null
-        $checks.credentialManager = $true
-        Write-Host "installed Cloud session acceptance stage credentials_seeded"
-
-        Set-AcceptanceStage "cloud-healthy-restart"
-        $activeAcceptanceApp = Start-InstalledCloudAcceptanceApp
-        Invoke-InstalledDesktopProbe $activeAcceptanceApp "healthy"
-        Stop-InstalledCloudAcceptanceApp $activeAcceptanceApp
-        $activeAcceptanceApp = $null
-        Stop-CloudRestoreFixture $fixtureProcess
-        $fixtureProcess = $null
-        $checks.cloudRestore = $true
-        Write-Host "installed Cloud session acceptance stage healthy_restart"
-
-        Set-AcceptanceStage "cloud-offline-online-recovery"
-        $fixtureProcess = Start-CloudRestoreFixture "offline" "rotated"
-        $activeAcceptanceApp = Start-InstalledCloudAcceptanceApp
-        Invoke-InstalledDesktopProbe $activeAcceptanceApp "offline"
-        Write-Host "installed Cloud session acceptance stage offline_recovery"
-        Stop-CloudRestoreFixture $fixtureProcess
-        $fixtureProcess = Start-CloudRestoreFixture "healthy" "rotated"
-        Invoke-InstalledDesktopProbe $activeAcceptanceApp "online"
-        Stop-InstalledCloudAcceptanceApp $activeAcceptanceApp
-        $activeAcceptanceApp = $null
-        Stop-CloudRestoreFixture $fixtureProcess
-        $fixtureProcess = $null
-        $checks.cloudRestartRecovery = $true
-        Write-Host "installed Cloud session acceptance stage online_recovery"
-
-        Set-AcceptanceStage "cloud-membership-revocation"
-        $fixtureProcess = Start-CloudRestoreFixture "membership-revoked" "rotated"
-        $activeAcceptanceApp = Start-InstalledCloudAcceptanceApp
-        Invoke-InstalledDesktopProbe $activeAcceptanceApp "revoked"
-        Stop-CloudRestoreFixture $fixtureProcess
-        $fixtureProcess = $null
-        $checks.cloudRevocation = $true
-        Write-Host "installed Cloud session acceptance stage membership_revoked"
-
-        Set-AcceptanceStage "cloud-cross-device"
-        $fixtureProcess = Start-CloudRestoreFixture "cross-device" "seeded"
-        $crossDeviceRoot = Join-Path $cloudAcceptanceRoot "cross-device"
-        if (Test-Path -LiteralPath $crossDeviceRoot) {
-          throw "cross-device acceptance state root was not clean"
-        }
-        & $installation.SidecarPath __cloud-cross-device-acceptance `
-          --fixture-url $fixtureUrl `
-          --state-root $crossDeviceRoot
-        if ($LASTEXITCODE -ne 0) {
-          throw "installed cross-device Cloud acceptance exited with code $LASTEXITCODE"
-        }
-        $crossDeviceState = Invoke-RestMethod "$fixtureUrl/control/state" -TimeoutSec 5
-        if ($crossDeviceState.version -ne 42 -or $null -ne $crossDeviceState.activeDevice) {
-          throw "cross-device fixture ended in an unexpected profile state"
-        }
-        foreach ($device in @("a", "b")) {
-          $expectedClose = if ($device -eq "a") { 4 } else { 2 }
-          if ($crossDeviceState.counters.open.$device -ne 3 -or
-              $crossDeviceState.counters.close.$device -ne $expectedClose -or
-              $crossDeviceState.counters.heartbeat.$device -ne 0 -or
-              $crossDeviceState.counters.abandon.$device -ne 0) {
-            throw "cross-device fixture request counters were not exact for device $device"
+        Set-AcceptanceStage "local-upgrade-desktop"
+        $upgradeApp = Start-Process -FilePath $installation.AppPath -WorkingDirectory $runRoot -WindowStyle Hidden -PassThru
+        $descriptorPath = Join-Path $upgradeRoot "agent-runtime.json"
+        $descriptor = $null
+        for ($attempt = 0; $attempt -lt 360; $attempt++) {
+          if (Test-ProcessExited $upgradeApp) { throw "local upgrade desktop exited before readiness" }
+          if (Test-Path -LiteralPath $descriptorPath -PathType Leaf) {
+            try { $descriptor = Read-ValidRuntimeDescriptor $descriptorPath $installation.Version; break } catch {}
           }
-        }
-        if ($crossDeviceState.counters.acceptedCloses -ne 4 -or
-            $crossDeviceState.counters.conflicts -ne 1 -or
-            $crossDeviceState.counters.profileOpen -ne 1 -or
-            $crossDeviceState.counters.droppedResponses -ne 2) {
-          throw "cross-device fixture outcome counters were not exact"
-        }
-        Stop-CloudRestoreFixture $fixtureProcess
-        $fixtureProcess = $null
-        $checks.cloudCrossDeviceCounts = $true
-        Write-Host "installed Cloud session acceptance stage cross_device"
-      } catch {
-        $cloudAcceptanceFailure = $_
-      } finally {
-        foreach ($record in @($activeAcceptanceApp, $fixtureProcess)) {
-          if ($record) {
-            $process = if ($record.Process) { $record.Process } else { $record }
-            try { Stop-AcceptanceProcess $process } catch {}
-          }
-        }
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-          Where-Object { $_.CommandLine -and $_.CommandLine.Contains($cloudAcceptanceRoot) } |
-          ForEach-Object {
-            $process = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
-            if ($process) {
-              try {
-                $process.Kill($true)
-                [void]$process.WaitForExit(10000)
-              } catch {}
-            }
-          }
-        foreach ($trackedPid in $trackedPids) {
-          $process = Get-Process -Id $trackedPid -ErrorAction SilentlyContinue
-          if ($process) {
-            try {
-              $process.Kill($true)
-              [void]$process.WaitForExit(10000)
-            } catch {}
-          }
-        }
-        $trackedRemaining = @()
-        $rootRemaining = @()
-        for ($attempt = 0; $attempt -lt 120; $attempt++) {
-          $trackedRemaining = @($trackedPids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
-          $rootRemaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($cloudAcceptanceRoot) })
-          if ($trackedRemaining.Count -eq 0 -and $rootRemaining.Count -eq 0) { break }
           Start-Sleep -Milliseconds 250
         }
-
-        $cloudCleanupFailure = $null
-        try {
-          if ($trackedRemaining.Count -ne 0 -or $rootRemaining.Count -ne 0) {
-            throw "Cloud acceptance processes survived final cleanup"
-          }
-          Assert-Vela BrowserAcceptanceLogsExcludeCredentials
-        } catch {
-          $cloudCleanupFailure = $_
+        if (-not $descriptor) { throw "local upgrade did not publish local readiness" }
+        $migrated = Get-Content -LiteralPath $configPath | ConvertFrom-Json
+        if ($migrated.mode -ne "local" -or $migrated.PSObject.Properties.Name -contains "cloudUrl" -or $migrated.servicesHidden -ne $true) {
+          throw "legacy configuration did not migrate to the local workspace with its preferences"
         }
-        try {
-          Remove-Vela BrowserAcceptanceCredentials
-          Assert-Vela BrowserAcceptanceCredentialsAbsent
-        } catch {
-          if (-not $cloudCleanupFailure) { $cloudCleanupFailure = $_ }
+        $checks.localConfigurationUpgrade = $true
+        Set-AcceptanceStage "local-upgrade-interface-and-api"
+        $nodePath = Join-Path $playwrightRuntime "node\node.exe"
+        & $nodePath (Join-Path $repoRoot "scripts\accounts-retirement-acceptance.mjs") --runtime $playwrightRuntime --cdp "http://127.0.0.1:$debugPort" --origin "http://127.0.0.1:$($descriptor.port)" --output (Join-Path $runRoot "local-upgrade-interface.json")
+        if ($LASTEXITCODE -ne 0) { throw "installed local upgrade interface acceptance failed" }
+        $checks.accountRetirement = $true
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $archiveHash) { throw "upgrade modified a recovery archive" }
+        $checks.recoveryArchivesPreserved = $true
+      } finally {
+        if ($upgradeApp -and -not (Test-ProcessExited $upgradeApp)) {
+          if (-not $upgradeApp.CloseMainWindow() -or -not $upgradeApp.WaitForExit(20000)) { Stop-ProcessTree $upgradeApp }
         }
-        foreach ($name in @(
-          "ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG",
-          "WEBVIEW2_USER_DATA_FOLDER",
-          "ALIASMODE_CLOUD_URL",
-          "ALIASMODE_SUPABASE_URL",
-          "ALIASMODE_SUPABASE_ANON_KEY"
-        )) {
-          [Environment]::SetEnvironmentVariable($name, $savedProcessEnvironment[$name], "Process")
-        }
-        foreach ($path in @($isolatedState, $cloudAcceptanceRoot)) {
-          for ($attempt = 0; $attempt -lt 120; $attempt++) {
-            try { [IO.Directory]::Delete($path, $true) } catch {}
-            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
-            if (-not (Test-Path -LiteralPath $path)) { break }
-            Start-Sleep -Milliseconds 250
-          }
-          if ((Test-Path -LiteralPath $path) -and -not $cloudCleanupFailure) {
-            $cloudCleanupFailure = "Cloud acceptance state survived final cleanup: $(Split-Path $path -Leaf)"
-          }
-        }
-        if ($cloudAcceptanceFailure -and $cloudCleanupFailure) {
-          throw "$($cloudAcceptanceFailure.Exception.Message); cleanup also failed: $cloudCleanupFailure"
-        }
-        if ($cloudAcceptanceFailure) { throw $cloudAcceptanceFailure }
-        if ($cloudCleanupFailure) { throw $cloudCleanupFailure }
       }
     }
   }

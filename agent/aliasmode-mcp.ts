@@ -179,7 +179,7 @@ async function browser(args: string[]): Promise<unknown> {
   if (action === "status") {
     return await withRuntime(async (client) => {
       const value = await client.call("browser.status", { profileId });
-      if (value.engine === "firefox") {
+      if (value.engine === "firefox" || value.engine === "webkit") {
         const { ws: _ws, port: _port, debugPort: _debugPort, firefoxOwner: _firefoxOwner, ...status } = value;
         return status;
       }
@@ -200,8 +200,8 @@ async function browser(args: string[]): Promise<unknown> {
       await client.call("browser.detach", { profileId });
       return {
         profileId: opened.profileId,
-        ...(opened.engine === "firefox"
-          ? { engine: "firefox", capabilities: opened.capabilities }
+        ...(opened.engine === "firefox" || opened.engine === "webkit"
+          ? { engine: opened.engine, capabilities: opened.capabilities }
           : { port: opened.port }),
         headless: opened.headless,
         alreadyOpen: opened.alreadyOpen,
@@ -226,6 +226,9 @@ async function playwright(args: string[]): Promise<unknown> {
       headless: has(rest, "headless"),
     });
     try {
+      if (opened.engine === "webkit") {
+        throw new Error("WebKit script automation is not available in this experimental runtime");
+      }
       if (opened.engine === "firefox") {
         throw new Error("Firefox scripts run through the Vela Browser script library");
       }
@@ -251,24 +254,6 @@ async function playwright(args: string[]): Promise<unknown> {
       }
     }
   });
-}
-
-async function remoteMcp(args: string[]): Promise<unknown> {
-  const [action, ...rest] = args;
-  if (action === "create") {
-    const label = value(rest, "name");
-    if (!label) throw new Error("remote-mcp create requires --name");
-    return await withRuntime((client) => client.call("mcp.connectors.create", { label }));
-  }
-  if (action === "list") {
-    return await withRuntime((client) => client.call("mcp.connectors.list"));
-  }
-  if (action === "revoke") {
-    const connectorId = value(rest, "id");
-    if (!connectorId) throw new Error("remote-mcp revoke requires --id");
-    return await withRuntime((client) => client.call("mcp.connectors.revoke", { connectorId }));
-  }
-  throw new Error("remote-mcp requires create, list, or revoke");
 }
 
 async function setup(args: string[]): Promise<unknown> {
@@ -302,7 +287,6 @@ async function main(argv: string[]): Promise<void> {
   else if (command === "profiles") result = await profiles(args);
   else if (command === "browser") result = await browser(args);
   else if (command === "playwright") result = await playwright(args);
-  else if (command === "remote-mcp") result = await remoteMcp(args);
   else throw new Error(`unknown Vela Browser MCP command: ${command}`);
   process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);
 }

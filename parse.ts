@@ -162,7 +162,7 @@ export function mergeCookies(existing: CookieRecord[], added: CookieRecord[]): C
 }
 
 /** Firefox has no Chromium cookie partitions; it gets the cookies without those fields. */
-export function cookiesForEngine(cookies: CookieRecord[], engine: "chromium" | "firefox"): CookieRecord[] {
+export function cookiesForEngine(cookies: CookieRecord[], engine: "chromium" | "firefox" | "webkit"): CookieRecord[] {
   if (engine === "chromium") return cookies;
   return cookies.map(({ partitionKey: _partitionKey, _crHasCrossSiteAncestor: _ancestor, ...cookie }) => cookie);
 }
@@ -363,13 +363,23 @@ export function parsePlatformOs(raw: string | undefined): "windows" | "macos" | 
 function parseFirefoxExport(
   rec: Record<string, string>,
   validationErrors: string[],
-): Pick<Profile, "engine" | "firefox"> {
+): Pick<Profile, "engine" | "firefox" | "webkit"> {
   const hasEngine = Object.hasOwn(rec, "engine");
-  const hasConfig = !!rec.firefox_config?.trim();
+  const hasConfig = !!rec.firefox_config?.trim() || !!rec.webkit_config?.trim();
   if (!hasEngine && !hasConfig) return {};
 
   const engine = (rec.engine ?? "").trim().toLowerCase();
+  if (engine === "webkit") {
+    try {
+      const browser = normalizeProfileEngine("webkit", rec.firefox_config?.trim() ? JSON.parse(rec.firefox_config) : undefined, rec.webkit_config?.trim() ? JSON.parse(rec.webkit_config) : undefined);
+      return { engine: "webkit", webkit: browser.webkit! };
+    } catch (error) {
+      validationErrors.push(error instanceof Error ? error.message : String(error));
+      return { engine: "webkit" };
+    }
+  }
   if (engine === "firefox") {
+    if (rec.webkit_config?.trim()) validationErrors.push("WebKit config requires engine=webkit");
     const rawConfig = rec.firefox_config?.trim();
     if (!rawConfig) {
       validationErrors.push("Firefox profiles require a Firefox config");
@@ -794,8 +804,9 @@ function profileFields(p: ProfileExport): Record<string, string> {
     tags: (p.tags ?? []).join(","),
     engine: p.engine ?? "chromium",
     firefox_config: p.firefox ? JSON.stringify(p.firefox) : "",
+    webkit_config: p.webkit ? JSON.stringify(p.webkit) : "",
     // Named for every Chromium profile: an import that names none gets the computer's default browser.
-    chromium_runtime: p.engine === "firefox" ? "" : p.chromiumRuntime ?? "cloakbrowser",
+    chromium_runtime: p.engine === "firefox" || p.engine === "webkit" ? "" : p.chromiumRuntime ?? "cloakbrowser",
     hardware_cores: p.hardware ? String(p.hardware.cores) : "",
     // Attested fields: a photograph of the identity, never an input to one.
     ...attestationFields(fp),
@@ -832,7 +843,7 @@ const FIREFOX_XLSX_COLUMNS = [...XLSX_COLUMNS, ...FIREFOX_EXPORT_KEYS] as const;
 export function serializeAdsTxt(profiles: ProfileExport[]): string {
   const blocks = profiles.map((p) => {
     const f = profileFields(p);
-    const keys: readonly string[] = p.engine === "firefox" ? [...TXT_KEYS, ...FIREFOX_EXPORT_KEYS]
+    const keys: readonly string[] = p.engine === "webkit" ? [...TXT_KEYS, "engine", "webkit_config"] : p.engine === "firefox" ? [...TXT_KEYS, ...FIREFOX_EXPORT_KEYS]
       : [...TXT_KEYS, "chromium_runtime", ...(p.hardware ? ["hardware_cores"] : [])];
     return [...keys.map((k) => `${k}=${f[k]}`), "******************"].join("\n");
   });
@@ -847,7 +858,8 @@ export function serializeAdsTxt(profiles: ProfileExport[]): string {
 export function serializeXlsxRows(profiles: ProfileExport[]): { headers: string[]; rows: string[][] } {
   const columns: readonly string[] = [
     ...(profiles.some((profile) => profile.engine === "firefox") ? FIREFOX_XLSX_COLUMNS : XLSX_COLUMNS),
-    ...(profiles.some((profile) => profile.engine !== "firefox") ? ["chromium_runtime"] : []),
+    ...(profiles.some((profile) => profile.engine === "webkit") ? [...(profiles.some((profile) => profile.engine === "firefox") ? [] : ["engine"]), "webkit_config"] : []),
+    ...(profiles.some((profile) => profile.engine !== "firefox" && profile.engine !== "webkit") ? ["chromium_runtime"] : []),
     ...(profiles.some((profile) => profile.hardware) ? ["hardware_cores"] : []),
   ];
   return {

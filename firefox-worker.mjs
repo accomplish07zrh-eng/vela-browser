@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs";
 import { MAX_BYTES, VERSION, operatePersistentContext } from "./playwright-worker.mjs";
+import { FirefoxWorkbench } from "./workbench-firefox.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -267,6 +268,7 @@ async function run() {
   for (const page of context.pages()) observePage(page);
   context.on?.("page", observePage);
   const hasPages = trackFirefoxPages(context);
+  const workbench = new FirefoxWorkbench(context);
   let official;
   let closed = false;
   let closing = false;
@@ -374,6 +376,7 @@ async function run() {
         };
       }
     }
+    if (name === "workbench") return workbench.run(payload);
     if (name === "close") return null;
     if (name === "status") return {
       generation: input.owner.generation,

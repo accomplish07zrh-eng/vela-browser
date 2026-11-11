@@ -15,7 +15,7 @@ export interface AppConfig {
 
 const DEFAULT_CONFIG: AppConfig = {
   version: 1,
-  mode: "unconfigured",
+  mode: "local",
   localAnalytics: false,
 };
 
@@ -26,11 +26,6 @@ export function normalizeSecureServiceUrl(value: string, label: string): string 
   return parsed.toString().replace(/\/$/, "");
 }
 
-function normalizeCloudUrl(value: unknown): string | undefined {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  return normalizeSecureServiceUrl(value, "Cloud");
-}
-
 export function parseAppConfig(value: unknown): AppConfig {
   if (!value || typeof value !== "object") throw new Error("Vela Browser config must be an object");
   const raw = value as Record<string, unknown>;
@@ -38,12 +33,11 @@ export function parseAppConfig(value: unknown): AppConfig {
   if (raw.mode !== "unconfigured" && raw.mode !== "local" && raw.mode !== "cloud") {
     throw new Error("invalid Vela Browser mode");
   }
-  const cloudUrl = normalizeCloudUrl(raw.cloudUrl);
-  if (raw.mode === "cloud" && !cloudUrl) throw new Error("Cloud mode requires a Cloud URL");
   return {
     version: 1,
-    mode: raw.mode,
-    ...(cloudUrl ? { cloudUrl } : {}),
+    // Retired Cloud and first-run configurations open the same local workspace.
+    // Profile databases, browser directories and recovery archives are untouched.
+    mode: "local",
     localAnalytics: raw.localAnalytics === true,
     ...(raw.servicesHidden === true ? { servicesHidden: true } : {}),
   };
@@ -53,7 +47,7 @@ export function legacyHubUrl(
   config: AppConfig,
   env: Record<string, string | undefined> = process.env,
 ): string | undefined {
-  return config.mode === "unconfigured" ? env.HUB_URL : undefined;
+  return undefined;
 }
 
 export class AppConfigStore {
@@ -78,7 +72,8 @@ export class AppConfigStore {
   }
 
   setMode(mode: Exclude<AppMode, "unconfigured">, cloudUrl?: string): AppConfig {
+    if (mode !== "local") throw new Error("Accounts and Cloud mode have been removed from Vela Browser");
     const current = this.read();
-    return this.write({ ...current, mode, ...(mode === "cloud" ? { cloudUrl } : { cloudUrl: undefined }) });
+    return this.write({ ...current, mode: "local" });
   }
 }

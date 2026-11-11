@@ -69,7 +69,7 @@ test("buildNewProfile generates and fixes a selected Windows identity for Firefo
 });
 
 test("buildNewProfile rejects an unknown browser engine", () => {
-  expect(() => buildNewProfile({ engine: "webkit" as any }, () => false)).toThrow("unsupported profile engine");
+  expect(() => buildNewProfile({ engine: "servo" as any }, () => false)).toThrow("unsupported profile engine");
 });
 
 test("new profiles default to Vela Chromium on Windows and Vela Firefox on macOS and Linux", () => {

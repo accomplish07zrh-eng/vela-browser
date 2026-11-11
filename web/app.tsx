@@ -1,20 +1,24 @@
 import { Channel } from "@tauri-apps/api/core";
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
-import "./services.css";
 import { ProxiesPage } from "./proxies.tsx";
-import { ServicesPage } from "./services.tsx";
-import { CartIcon, ProxyProviderOffer, ProxyStoreContext, proxyOfferUrl, type ProxySrc } from "./proxy-offer.tsx";
-import { StorePage, useCloudStore } from "./store.tsx";
-import { trackStoreEvent, useStoreEvents } from "./store-events.ts";
+import { WorkbenchPage } from "./workbench.tsx";
+import { CommandPalette, type SearchTarget } from "./command-palette.tsx";
+import "./design-tokens.css";
+import "./shell.css";
+import "./profile-management.css";
+import { ProfileDetailDrawer } from "./profile-detail.tsx";
+import { SavedProfileViews, ProfileTemplateBar, ProfileBatchOptions, ProfileCreationDialog, ProfileCreationReceipt, ProfileCreateSummary } from "./profile-management-controls.tsx";
+import { batchProfileNames, matchesProfileFilters, runProfileCreation, type BatchCreateItem, type ProfileFilters, type ProfileStatusFilter, type ProfileEngineFilter } from "./profile-management.ts";
 import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
 import { localeTimezoneMismatch } from "../profile-locale.ts";
-import { folderTree, folderScope, folderGrantPermission, type FolderInfo } from "../folders.ts";
+import type { FingerprintAudit } from "../fingerprint-audit.ts";
+import { folderTree, folderScope, type FolderInfo } from "../folders.ts";
 import { THEME_KEY, readThemeChoice, themeCookie, type ThemeChoice } from "./theme.ts";
 import {
   describeDesktopUpdateResult,
@@ -29,35 +33,9 @@ import {
   type Extension,
   type GroupExtensionDefaults,
   type AppModeConfig,
-  type CloudAuthState,
-  CloudSessionRestoreError,
-  CloudAuthError,
-  type CloudDiagnosticEvent,
-  type CloudTeamState,
-  acceptCloudInvitation,
-  acceptCloudLegal,
-  createCloudConnector,
-  fetchCloudConnector,
-  revokeCloudConnector,
-  cloudSessionContextReady,
-  cloudWorkspaceReady,
   fetchAppMode,
-  fetchCloudAuth,
-  fetchCloudEvents,
   fetchRuntimeDownloads,
   type RuntimeDownload,
-  fetchCloudTeam,
-  cloudWorkspaceAction,
-  forgetCloudSession,
-  signInCloud,
-  signOutCloud,
-  signUpCloud,
-  restoreCloudSession,
-  requestCloudPasswordReset,
-  resendCloudSignUp,
-  verifyCloudSignUp,
-  selectAppMode,
-  saveServicesHidden,
   fetchProfiles,
   serialLoader,
   fetchHealth,
@@ -77,7 +55,7 @@ import {
   restartProfile,
   raiseProfile,
   checkFingerprint,
-  restoreParkedSession,
+  measureFingerprint,
   fetchExtensions,
   installWebStoreExtension,
   uploadExtensions,
@@ -156,19 +134,18 @@ const REFRESH_MS = 3000;
 const PROFILE_PAGE_SIZE = 50;
 const PAGE_SIZES = [25, 50, 100, 200];
 
-const PAGE_TITLES: Record<"profiles" | "scripts" | "settings" | "extensions" | "proxies" | "trash" | "services", string> = {
+const PAGE_TITLES: Record<"profiles" | "workbench" | "scripts" | "settings" | "extensions" | "proxies" | "trash", string> = {
   profiles: "Profiles",
+  workbench: "Multi-view workbench",
   scripts: "Scripts",
   settings: "Settings",
   extensions: "Extensions",
   proxies: "Proxies",
   trash: "Trash",
-  services: "Services",
 };
 
 const SETTINGS_TABS = [
-  { key: "account", label: "Account" },
-  { key: "team", label: "Workspace" },
+  { key: "general", label: "General" },
   { key: "advanced", label: "Advanced" },
 ] as const;
 
@@ -214,18 +191,6 @@ function readTheme(): ThemeChoice {
   return readThemeChoice(cookies, stored);
 }
 
-const SIDEBAR_KEY = "aliasmode.shell.sidebarCollapsed";
-
-/**
- * Below this width the sidebar always renders as the icon rail. Hiding it
- * entirely (the old breakpoint behavior) left a small window with no
- * navigation at all — this is a desktop app and the user sizes it freely.
- */
-const RAIL_MEDIA = "(max-width: 760px)";
-
-function readRailForced(): boolean {
-  try { return window.matchMedia(RAIL_MEDIA).matches; } catch { return false; }
-}
 const HIDDEN_COLUMNS_KEY = "aliasmode.roster.hiddenColumns";
 const PAGE_SIZE_KEY = "aliasmode.roster.pageSize";
 
@@ -243,10 +208,6 @@ function readHiddenColumns(): Set<ColumnKey> {
   } catch { return new Set(DEFAULT_HIDDEN_COLUMNS); }
 }
 
-function readSidebarCollapsed(): boolean {
-  try { return localStorage.getItem(SIDEBAR_KEY) === "1"; } catch { return false; }
-}
-
 function readPageSize(): number {
   try {
     const stored = Number(localStorage.getItem(PAGE_SIZE_KEY));
@@ -256,73 +217,6 @@ function readPageSize(): number {
 
 function writeSetting(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch { /* private mode / disabled storage */ }
-}
-
-const CLOUD_DIAGNOSTIC_LABELS: Record<CloudDiagnosticEvent["type"], string> = {
-  open_started: "Cloud open started",
-  cloud_registered: "Cloud session registered",
-  browser_started: "CloakBrowser started",
-  browser_launch_preflight_failed: "Browser profile preparation failed",
-  browser_launch_mode_conflict_failed: "Browser was already starting in another mode",
-  browser_launch_binary_verification_failed: "Browser runtime verification failed",
-  browser_launch_profile_directory_failed: "Browser profile folder could not be prepared",
-  browser_launch_relay_setup_failed: "Proxy relay setup failed",
-  browser_launch_process_spawn_failed: "CloakBrowser process could not start",
-  browser_launch_cdp_readiness_failed: "CloakBrowser debugging connection was not ready",
-  session_restore_started: "Session restore started",
-  session_restore_completed: "Session restore completed",
-  session_restore_unclassified_failed: "Session restore failed before classification",
-  session_restore_invalid_bundle_failed: "Session data was invalid",
-  session_restore_invalid_bundle_timeout: "Session data validation timed out",
-  session_restore_connect_failed: "Browser connection failed",
-  session_restore_connect_timeout: "Browser connection timed out",
-  session_restore_context_failed: "Persistent browser context was unavailable",
-  session_restore_context_timeout: "Persistent browser context timed out",
-  session_restore_origin_storage_failed: "Website storage restore failed",
-  session_restore_origin_storage_timeout: "Website storage restore timed out",
-  session_restore_cookie_clear_failed: "Cookie clear failed",
-  session_restore_cookie_clear_timeout: "Cookie clear timed out",
-  session_restore_cookie_add_failed: "Cookie restore failed",
-  session_restore_cookie_add_timeout: "Cookie restore timed out",
-  session_restore_navigation_failed: "Startup navigation failed",
-  session_restore_navigation_timeout: "Startup navigation timed out",
-  session_restore_disconnect_failed: "Browser connection cleanup failed",
-  session_restore_disconnect_timeout: "Browser connection cleanup timed out",
-  open_running: "Cloud profile is running",
-  open_failed: "Cloud profile open failed",
-  close_started: "Cloud close started",
-  session_captured: "Session captured",
-  browser_stopped: "CloakBrowser stopped",
-  session_synced: "Session synchronized",
-  checkpoint_saved: "Session checkpoint saved",
-  checkpoint_unchanged: "Session checkpoint unchanged",
-  checkpoint_capture_failed: "Session checkpoint capture failed",
-  checkpoint_invalid: "Session checkpoint was invalid",
-  manual_stop_detected: "Manual browser close detected",
-  session_sync_pending: "Session synchronization is pending",
-  dirty_monitor_unavailable: "Fast session monitoring is unavailable",
-  cloud_registration_released: "Cloud session registration released",
-  cleanup_retained: "Browser or recovery state was retained",
-  heartbeat_failed: "Cloud heartbeat failed",
-  heartbeat_terminal_conflict: "Cloud lease ended after a version conflict",
-  heartbeat_terminal_access_ended: "Cloud lease ended after access was revoked",
-  no_page_observed: "Browser has no visible page",
-  no_page_close_requested: "Browser close requested after pages disappeared",
-  browser_death_confirmed: "Browser process exit confirmed",
-  browser_teardown_unconfirmed: "Browser teardown could not be confirmed",
-  session_sync_conflict: "Session synchronization has a terminal conflict",
-  access_ended: "Cloud access ended",
-  parked_session_restored: "Saved session restored to Cloud",
-  checkpoint_uploaded: "Open session saved to Cloud",
-  checkpoint_upload_failed: "Open session could not be saved to Cloud",
-};
-
-function cloudDiagnosticFailed(type: CloudDiagnosticEvent["type"]): boolean {
-  return type.includes("failed") || type.includes("timeout") || type === "checkpoint_invalid"
-    || type === "session_sync_pending" || type === "session_sync_conflict"
-    || type === "cleanup_retained" || type === "heartbeat_terminal_conflict"
-    || type === "heartbeat_terminal_access_ended" || type === "no_page_close_requested"
-    || type === "browser_teardown_unconfirmed" || type === "access_ended";
 }
 
 /**
@@ -368,8 +262,11 @@ const ICONS = {
   warning: <><path d="M10.3 4.2L2.8 17a2 2 0 001.7 3h15a2 2 0 001.7-3L13.7 4.2a2 2 0 00-3.4 0z" /><path d="M12 9.5v4M12 17v.3" /></>,
   check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
   activity: <path d="M3 12h4l3 8 4-16 3 8h4" />,
+  // The wall: two lanes of live pages, the lower one running off both edges.
+  wall: <><rect x="3" y="4.5" width="8" height="6.5" rx="1.5" /><rect x="13" y="4.5" width="8" height="6.5" rx="1.5" /><rect x="7.5" y="13" width="9" height="6.5" rx="1.5" /><path d="M3 13.5v5.5M21 13.5v5.5" /></>,
+  globe: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.6 2.5 4 5.6 4 9s-1.4 6.5-4 9c-2.6-2.5-4-5.6-4-9s1.4-6.5 4-9z" /></>,
+  code: <path d="M8.5 7l-5 5 5 5M15.5 7l5 5-5 5M13.5 5l-3 14" />,
   lock: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 118 0v3" /></>,
-  cloud: <path d="M7.5 19a4.5 4.5 0 01-.4-9 6 6 0 0111.4 1.6A3.9 3.9 0 0117.5 19z" />,
   laptop: <><rect x="4" y="5" width="16" height="11" rx="2" /><path d="M2 20h20" /></>,
   hash: <path d="M9 4L7 20M17 4l-2 16M4 9h16M3 15h16" />,
   window: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /></>,
@@ -378,7 +275,6 @@ const ICONS = {
   filter: <path d="M4 5h16l-6 7v6l-4 2v-8z" />,
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
   moon: <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />,
-  services: <><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></>,
   help: <><circle cx="12" cy="12" r="9" /><path d="M9.4 9.1a2.7 2.7 0 015.3.7c0 1.8-2.7 2.2-2.7 3.7" /><path d="M12 16.8v.3" /></>,
 } as const;
 
@@ -622,7 +518,7 @@ function PlatformPill({ platform }: { platform: string }) {
 
 /**
  * Group selector used in every dialog: a styled <select> of existing groups
- * plus "➕ New group…", which flips to an inline text field so you can create a
+ * plus "New group…", which flips to an inline text field so you can create a
  * group on the fly. Consistent with the other modal selects (no native datalist).
  */
 function GroupPicker({ value, onChange, groups, allowCreate = true }: { value: string; onChange: (v: string) => void; groups: string[]; allowCreate?: boolean }) {
@@ -646,7 +542,7 @@ function GroupPicker({ value, onChange, groups, allowCreate = true }: { value: s
     >
       <option value="">{t("(ungrouped)")}</option>
       {groups.map((g) => <option key={g} value={g}>{g}</option>)}
-      {allowCreate && <option value="__new__">{t("➕ New group…")}</option>}
+      {allowCreate && <option value="__new__">{t("New group…")}</option>}
     </select>
   );
 }
@@ -666,46 +562,8 @@ function PlatformPicker({ value, onChange }: { value: string; onChange: (v: stri
   return (
     <select value={value} onChange={(e) => { if (e.target.value === "__new__") { setCreating(true); onChange(""); } else onChange(e.target.value); }}>
       {KNOWN_PLATFORMS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-      <option value="__new__">{t("➕ New platform…")}</option>
+      <option value="__new__">{t("New platform…")}</option>
     </select>
-  );
-}
-
-function ModeSwitchConfirmation({
-  mode,
-  busy,
-  error,
-  onConfirm,
-  onCancel,
-}: {
-  mode: "local" | "cloud";
-  busy: boolean;
-  error: string | null;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const toLocal = mode === "local";
-  return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal mode-confirm" role="dialog" aria-modal="true" aria-labelledby="mode-confirm-title" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-head" id="mode-confirm-title">Switch to {toLocal ? "Local" : "Cloud"}?</div>
-        <div className="modal-body">
-          <p>
-            {toLocal
-              ? "Cloud profiles will not appear until you switch back. Local mode does not contact Vela Cloud."
-              : "Your Local profiles stay on this computer. Vela Browser does not upload them to Cloud automatically."}
-          </p>
-          <p className="hint">Vela Browser saves and closes active browsers, then restarts automatically.</p>
-          {error && <div className="modal-err" role="alert">{error}</div>}
-        </div>
-        <div className="modal-foot">
-          <button className="btn ghost" type="button" disabled={busy} onClick={onCancel}>Cancel</button>
-          <button className="btn primary" type="button" disabled={busy} onClick={onConfirm}>
-            {busy ? "Switching…" : `Switch to ${toLocal ? "Local" : "Cloud"}`}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -776,7 +634,10 @@ Save fingerprint changes?`;
 
 const CLOAKBROWSER_NOTE = "CloakBrowser profiles on one computer can be linked to each other. Use Vela Chromium or Vela Firefox for separate identities.";
 
-function browserLabel(engine: "chromium" | "firefox", chromiumRuntime?: string): string {
+const WEBKIT_NOTE = "Independent process and storage; saved language, timezone and screen. Canvas, audio, fonts and GPU have no per-profile spoofing. This runtime is not Safari.";
+
+function browserLabel(engine: "chromium" | "firefox" | "webkit", chromiumRuntime?: string): string {
+  if (engine === "webkit") return "WebKit";
   if (engine === "firefox") return "Vela Firefox";
   return chromiumRuntime ? "Vela Chromium" : "CloakBrowser";
 }
@@ -800,7 +661,7 @@ function FingerprintSettings({
   onUndo,
   hardware,
 }: {
-  engine: "chromium" | "firefox";
+  engine: "chromium" | "firefox" | "webkit";
   chromiumRuntime?: string;
   screen: string;
   onScreenChange: (value: string) => void;
@@ -831,12 +692,12 @@ function FingerprintSettings({
           <input value={browserLabel(engine, chromiumRuntime)} readOnly tabIndex={-1} className="ro" />
         </label>
         <label className="fld">
-          <span>Screen</span>
+          <span>{t("Screen")}</span>
           <input value={screen} disabled={disabled} placeholder={t("Automatic · e.g. 1920x1080")} onChange={(event) => onScreenChange(event.target.value)} />
         </label>
         <label className="fld">
           <span>{t("Operating system")}</span>
-          {onPlatformOsChange ? (
+          {onPlatformOsChange && engine !== "webkit" ? (
             <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
               <option value="">{t("Automatic — match this computer")}</option>
               <option value="windows">Windows</option>
@@ -859,19 +720,23 @@ function FingerprintSettings({
             <input value={locale ?? ""} disabled={disabled} placeholder={t("Automatic · e.g. en-US")} onChange={(event) => onLocaleChange(event.target.value)} />
           </label>
         )}
-        {onCoresChange && (
+        {onCoresChange && engine !== "webkit" && (
           <label className="fld">
             <span>{t("CPU")}</span>
             <input value={cores ?? ""} disabled={disabled} inputMode="numeric" placeholder={hardware?.cores ? t("Automatic · {n} cores", { n: hardware.cores }) : t("Automatic · e.g. 8")} onChange={(event) => onCoresChange(event.target.value)} />
           </label>
         )}
-        {onSeedChange && (
+        {onSeedChange && engine !== "webkit" && (
           <label className="fld">
             <span>{t("Fingerprint seed")}</span>
             <input value={seed ?? ""} disabled={disabled} inputMode="numeric" onChange={(event) => onSeedChange(event.target.value)} />
           </label>
         )}
-        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => !(
+        {(engine === "webkit" ? [
+          ["User agent", "WebKit default"], ["Browser version", "WebKit 27.2 · pinned"],
+          ["GPU", "Engine default"], ["CPU", "Engine default"], ["RAM", "Engine default"],
+          ["Timezone", "Stored · set from the proxy automatically"], ["Canvas / WebGL / audio", "Engine default · no fingerprint spoofing"], ["WebRTC", "Unavailable in this build"],
+        ] : AUTOMATIC_FINGERPRINT_FIELDS).filter(([label]) => !(
           (label === "Timezone" && onTimezoneChange) || (label === "CPU" && onCoresChange) || (label === "Fingerprint seed" && onSeedChange)
         )).map(([label, value]) => {
           // A stored value is the same on every computer that opens the profile.
@@ -884,7 +749,7 @@ function FingerprintSettings({
           );
         })}
         <div className="hint">{t("We recommend keeping every setting automatic. Custom values can make the browser look inconsistent, easier to detect, and can trigger account checks.")}</div>
-        <div className="hint">{onTimezoneChange
+        <div className="hint">{engine === "webkit" ? t(WEBKIT_NOTE) : onTimezoneChange
           ? `${t("Leave a field blank to keep it automatic. A timezone you type stays when the proxy changes.")}${chromiumRuntime && cores ? ` ${t("Vela Chromium shows at most the processor count of the computer it runs on.")}` : ""}`
           : engine === "firefox"
             ? t("Vela Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable.")
@@ -905,60 +770,6 @@ type DesktopUpdateProgress =
 type DesktopUpdateMessage =
   | DesktopUpdateProgress
   | { phase: "ready"; version: string; highlights: string[] };
-type SavedSessionPhase = "restoring" | "manual-signin" | "retryable-failure";
-type RemoteMcpCredential =
-  | { version: 1; state: "active"; connectorId: string; deviceId: string; token: string }
-  | { version: 1; state: "disabled" };
-interface RemoteMcpSettings {
-  state: "idle" | "loading" | "active" | "disabled" | "error";
-  connectorId?: string;
-  deviceId?: string;
-  url?: string;
-  token?: string;
-  error?: string;
-}
-
-function parseRemoteMcpCredential(value: string): RemoteMcpCredential {
-  const parsed = JSON.parse(value) as Record<string, unknown>;
-  if (parsed.version !== 1) throw new Error("Stored Remote MCP settings are invalid.");
-  if (parsed.state === "disabled") return { version: 1, state: "disabled" };
-  if (
-    parsed.state === "active" &&
-    typeof parsed.connectorId === "string" && parsed.connectorId &&
-    typeof parsed.deviceId === "string" && parsed.deviceId &&
-    typeof parsed.token === "string" && parsed.token
-  ) {
-    return {
-      version: 1,
-      state: "active",
-      connectorId: parsed.connectorId,
-      deviceId: parsed.deviceId,
-      token: parsed.token,
-    };
-  }
-  throw new Error("Stored Remote MCP settings are invalid.");
-}
-
-async function readDesktopRemoteMcpCredential(): Promise<RemoteMcpCredential | null | undefined> {
-  const invoke = desktopInvoke();
-  if (!invoke) return undefined;
-  const value = await invoke("credential_get", { key: "remote_mcp_connector" });
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "string") throw new Error("Stored Remote MCP settings are invalid.");
-  return parseRemoteMcpCredential(value);
-}
-
-async function storeDesktopRemoteMcpCredential(value: RemoteMcpCredential): Promise<void> {
-  const invoke = desktopInvoke();
-  if (!invoke) throw new Error("Remote MCP settings are available in the desktop app.");
-  await invoke("credential_set", { key: "remote_mcp_connector", secret: JSON.stringify(value) });
-}
-
-async function deleteDesktopRemoteMcpCredential(): Promise<void> {
-  const invoke = desktopInvoke();
-  if (invoke) await invoke("credential_delete", { key: "remote_mcp_connector" });
-}
-
 function isUpdateHighlights(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= 3 && value.every((highlight) => typeof highlight === "string");
 }
@@ -1073,7 +884,7 @@ function downloadPercent(downloads: RuntimeDownload[]): number {
 
 /** The browser downloads that opening this profile waits for. */
 function profileDownloads(profile: UiProfile, downloads: RuntimeDownload[]): RuntimeDownload[] {
-  const runtime = profile.engine === "firefox" ? "firefox" : profile.chromiumRuntime ?? "cloakbrowser";
+  const runtime = profile.engine === "webkit" ? "webkit" : profile.engine === "firefox" ? "firefox" : profile.chromiumRuntime ?? "cloakbrowser";
   return downloads.filter((download) => download.runtime === runtime);
 }
 
@@ -1088,45 +899,10 @@ function RuntimeDownloadProgressView({ downloads }: { downloads: RuntimeDownload
   );
 }
 
-async function readDesktopCloudCredentials(): Promise<{
-  refreshToken?: string;
-  deviceCredential?: string;
-  queueKey?: string;
-} | null> {
-  const invoke = desktopInvoke();
-  if (!invoke) return null;
-  const [refreshToken, deviceCredential, queueKey] = await Promise.all([
-    invoke("credential_get", { key: "refresh_token" }),
-    invoke("credential_get", { key: "device_credential" }),
-    invoke("credential_get", { key: "queue_encryption_key" }),
-  ]);
-  return {
-    ...(typeof refreshToken === "string" && refreshToken ? { refreshToken } : {}),
-    ...(typeof deviceCredential === "string" && deviceCredential ? { deviceCredential } : {}),
-    ...(typeof queueKey === "string" && queueKey ? { queueKey } : {}),
-  };
-}
-
-async function storeDesktopCloudCredentials(
-  refreshToken: string,
-  deviceCredential: string,
-  createdQueueKey?: string,
-): Promise<boolean> {
-  const invoke = desktopInvoke();
-  if (!invoke) return false;
-  if (createdQueueKey) {
-    await invoke("credential_set", { key: "queue_encryption_key", secret: createdQueueKey });
-  }
-  await invoke("credential_set", { key: "device_credential", secret: deviceCredential });
-  await invoke("credential_set", { key: "refresh_token", secret: refreshToken });
-  return true;
-}
-
 const BLANK_FORM = {
-  name: "", engine: "chromium" as "chromium" | "firefox", chromiumRuntime: "" as "" | "aliasmode", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
+  name: "", engine: "chromium" as "chromium" | "firefox" | "webkit", chromiumRuntime: "" as "" | "aliasmode", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
   screen: "", platformOs: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
 };
-
 const BLANK_COOKIE_FORM = { name: "", value: "", domain: "", path: "/" };
 
 type ProxyCheckUiState = {
@@ -1196,22 +972,6 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
   );
 }
 
-function GrantControl({ label, direct, inherited, busy, onChange }: {
-  label: string; direct: string; inherited: string; busy: boolean; onChange: (permission: string) => void;
-}) {
-  const { t } = useTranslation();
-  const effective = direct === "edit" || inherited === "edit" ? "edit" : direct || inherited;
-  const permissionLabel = (value: string) => value === "edit" ? t("Edit") : value === "view" ? t("View") : t("No access");
-  return <label className="grant-control">
-    <span>{label}</span>
-    <select className="select" aria-label={label} value={direct} disabled={busy} onChange={(event) => onChange(event.target.value)}>
-      <option value="">{inherited ? t("Inherited: {permission}", { permission: permissionLabel(inherited) }) : t("No access")}</option>
-      <option value="view">{t("View")}</option><option value="edit">{t("Edit")}</option>
-    </select>
-    <small>{t("Effective access: {permission}", { permission: permissionLabel(effective) })}{inherited && direct ? ` · ${t("Inherited: {permission}", { permission: permissionLabel(inherited) })}` : ""}</small>
-  </label>;
-}
-
 function App() {
   const { t, language, setLanguage } = useTranslation();
   const [profiles, setProfiles] = useState<UiProfile[]>([]);
@@ -1226,45 +986,27 @@ function App() {
   const [folderParent, setFolderParent] = useState("");
   const [folderMoveBusy, setFolderMoveBusy] = useState(false);
   const [folderMoveErr, setFolderMoveErr] = useState<string | null>(null);
-  const [accessTarget, setAccessTarget] = useState<{ kind: "folder" | "profile"; id: string; name: string; folder: string } | null>(null);
   const [appMode, setAppMode] = useState<AppModeConfig | null>(null);
-  const [modeBusy, setModeBusy] = useState(false);
-  const [modeErr, setModeErr] = useState<string | null>(null);
-  const [restartRequired, setRestartRequired] = useState(false);
   // "profiles" is the roster; "settings" replaces it in the same content area
   // rather than opening a dialog — Settings outgrew a modal. New profile and
   // Edit stay dialogs: short forms, and a page felt like too much ceremony.
-  const [view, setView] = useState<"profiles" | "scripts" | "settings" | "extensions" | "proxies" | "trash" | "services">("profiles");
+  // The wall is home: every other section rises over it as a sheet.
+  const [view, setView] = useState<"profiles" | "workbench" | "scripts" | "settings" | "extensions" | "proxies" | "trash">("workbench");
+  const [dockGroups, setDockGroups] = useState(false);
+  useEffect(() => {
+    if (!dockGroups) return;
+    const outside = (event: PointerEvent) => { if (!(event.target as Element).closest?.(".sidesection, .dock-groups")) setDockGroups(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setDockGroups(false); };
+    document.addEventListener("pointerdown", outside); document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
+  }, [dockGroups]);
   const [scriptRunOpen, setScriptRunOpen] = useState(false);
+  const [workbenchLocate, setWorkbenchLocate] = useState({ id: "", revision: 0 });
+  const [searchScriptId, setSearchScriptId] = useState<string>();
   const [scriptRunProfiles, setScriptRunProfiles] = useState<UiProfile[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [createProxyOpen, setCreateProxyOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
-  const [remoteMcp, setRemoteMcp] = useState<RemoteMcpSettings>({ state: "idle" });
-  const [remoteMcpTokenVisible, setRemoteMcpTokenVisible] = useState(false);
-  const [remoteMcpCopied, setRemoteMcpCopied] = useState<"url" | "token" | null>(null);
-  const [cloudEvents, setCloudEvents] = useState<CloudDiagnosticEvent[]>([]);
-  const [cloudEventsBusy, setCloudEventsBusy] = useState(false);
-  const [cloudEventsErr, setCloudEventsErr] = useState<string | null>(null);
-  const [pendingMode, setPendingMode] = useState<"local" | "cloud" | null>(null);
-  const [cloudAuth, setCloudAuth] = useState<CloudAuthState | null>(null);
-  const [savedSessionPhase, setSavedSessionPhase] = useState<SavedSessionPhase>("restoring");
-  const [scheduledRefreshPending, setScheduledRefreshPending] = useState(false);
-  const [authView, setAuthView] = useState<"signin" | "signup" | "verify">("signin");
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authErr, setAuthErr] = useState<string | null>(null);
-  const [authNotice, setAuthNotice] = useState<string | null>(null);
-  const [confirmationEmail, setConfirmationEmail] = useState("");
-  const [authCode, setAuthCode] = useState("");
-  const [localPrompt, setLocalPrompt] = useState(false);
-  const [invitationCode, setInvitationCode] = useState("");
-  const [team, setTeam] = useState<CloudTeamState | null>(null);
-  const [teamEmail, setTeamEmail] = useState("");
-  const [teamRole, setTeamRole] = useState<"admin" | "member">("member");
-  const [teamBusy, setTeamBusy] = useState(false);
-  const [teamErr, setTeamErr] = useState<string | null>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [healthSources, setHealthSources] = useState<HealthSource[]>([]);
   const [appVersion, setAppVersion] = useState("");
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateStatus | null>(null);
@@ -1283,6 +1025,10 @@ function App() {
   const [showDiag, setShowDiag] = useState(false);
   const [q, setQ] = useState("");
   const [group, setGroup] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<ProfileStatusFilter>("all");
+  const [engineFilter, setEngineFilter] = useState<ProfileEngineFilter>("all");
+  const [tagFilter, setTagFilter] = useState("");
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [profilePage, setProfilePage] = useState(0);
   const [pageSize, setPageSize] = useState(readPageSize);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "no", dir: 1 });
@@ -1291,8 +1037,6 @@ function App() {
   const [nodesOpen, setNodesOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [groupsOpen, setGroupsOpen] = useState(true);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
-  const [railForced, setRailForced] = useState(readRailForced);
   const [tableScrolled, setTableScrolled] = useState(false);
   const [theme, setTheme] = useState<ThemeChoice>(readTheme);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -1317,6 +1061,14 @@ function App() {
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState<string | null>(null);
   const [form, setForm] = useState(BLANK_FORM);
+  const [createBatch, setCreateBatch] = useState(false);
+  const [createCount, setCreateCount] = useState("5");
+  const [createPattern, setCreatePattern] = useState("Studio {n:2}");
+  const [createStart, setCreateStart] = useState("1");
+  const [createItems, setCreateItems] = useState<BatchCreateItem[]>([]);
+  const [createStopping, setCreateStopping] = useState(false);
+  const createInFlight = useRef(false);
+  const createStopRequested = useRef(false);
   const [createProxyCheck, setCreateProxyCheck] = useState<ProxyCheckUiState>(EMPTY_PROXY_CHECK);
   const createProxyCheckGeneration = useRef(0);
   const [cookieTargets, setCookieTargets] = useState<UiProfile[] | null>(null);
@@ -1325,6 +1077,8 @@ function App() {
   const [cookieErr, setCookieErr] = useState<string | null>(null);
   const [cookieSaving, setCookieSaving] = useState(false);
   const [pendingView, setPendingView] = useState<{ profile: UiProfile; cookies: Array<{ domain: string; name: string }> | null; error: string | null; busy: boolean } | null>(null);
+  const [fingerprintView, setFingerprintView] = useState<{ profile: UiProfile; audit: FingerprintAudit | null; error: string | null } | null>(null);
+  const fingerprintRequest = useRef(0);
   const [proxyPaste, setProxyPaste] = useState("");
   const [proxyPasteOk, setProxyPasteOk] = useState<string | null>(null);
   // Edit modal + bulk export/update + group rename
@@ -1338,11 +1092,8 @@ function App() {
   const [editErr, setEditErr] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
-  // Cloud profile open on this device: edits land in the local cache and sync
-  // to Cloud with the running session — no expectedVersion handshake.
-  const [editLive, setEditLive] = useState(false);
   // Null until the profile detail loads, so a failed load never names a browser.
-  const [editEngine, setEditEngine] = useState<"chromium" | "firefox" | null>(null);
+  const [editEngine, setEditEngine] = useState<"chromium" | "firefox" | "webkit" | null>(null);
   const [editChromiumRuntime, setEditChromiumRuntime] = useState("");
   const [editHardware, setEditHardware] = useState<{ gpu?: string; cores?: number } | undefined>();
   const [timezoneBusy, setTimezoneBusy] = useState(false);
@@ -1392,43 +1143,21 @@ function App() {
   // After an import, offer proxies for the profiles that have none, until dismissed.
   const [showImportOffer, setShowImportOffer] = useState(false);
   const bulkFileRef = useRef<HTMLInputElement>(null);
-  const authGeneration = useRef(0);
-  const remoteMcpInFlight = useRef<Promise<void> | null>(null);
-  const remoteMcpAccountExit = useRef(false);
   const publishedRuntimeReadiness = useRef<string | null>(null);
   const [runtimeReadinessAttempt, setRuntimeReadinessAttempt] = useState(0);
-  const restoreInFlight = useRef(false);
-  const savedSessionRestoreEnabled = useRef(true);
   const desktopUpdateCheckStarted = useRef(false);
-  const isCloudMode = appMode?.mode === "cloud";
-  // Profiles that need a proxy. Local mode only: a Cloud profile shows no
-  // proxy until its encrypted payload is fetched, so the count would be wrong.
-  const profilesWithoutProxy = isCloudMode ? 0 : profiles.filter((p) => !p.proxy?.trim()).length;
-  const workspaceReady = appMode?.mode === "local" || (isCloudMode && cloudWorkspaceReady(cloudAuth));
-  const canEditCloud = !isCloudMode || cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin" ||
-    team?.folders.some((folder) => folder.permission === "edit" && !folder.archivedAt) === true;
-  const canManageCloudFolders = cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin";
-  // In-app wallet and proxy store, when this Vela Cloud has it. Otherwise
-  // the offers stay links to NobleProxy.
-  const cloudStore = useCloudStore(isCloudMode && workspaceReady && !restartRequired, `${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`);
-  const storeSnapshot = cloudStore.state?.available === true ? cloudStore.state : null;
-  // Store placement events go to Cloud only while the in-app store is available (never in Local mode).
-  useStoreEvents(!!storeSnapshot);
-  // Each way into the store records its placement; the Buy tab view, Pay and the purchase carry it.
-  const [storeEntry, setStoreEntry] = useState<{ src: ProxySrc; key: number }>({ src: "direct", key: 0 });
-  const enterStore = useCallback((src: ProxySrc) => {
-    trackStoreEvent("entry_click", src);
-    setStoreEntry((current) => ({ src, key: current.key + 1 }));
-  }, []);
-  // Offers open the shop on the Proxies page: the quantity is preselected and the shop scrolls into view.
-  const [storeRequest, setStoreRequest] = useState({ quantity: 0, key: 0 });
-  const openStore = useCallback((quantity: number, src: ProxySrc) => {
-    enterStore(src);
-    setStoreRequest((current) => ({ quantity, key: current.key + 1 }));
-    setView("proxies");
-    void cloudStore.reload();
-  }, [cloudStore.reload, enterStore]);
-
+  // Only public proxy addresses are needed for the missing-proxy count.
+  const profilesWithoutProxy = profiles.filter((p) => !p.proxy?.trim()).length;
+  const workspaceReady = appMode !== null;
+  const managementScope = "local";
+  const creationScope = useRef(managementScope);
+  creationScope.current = managementScope;
+  useEffect(() => {
+    setStatusFilter("all"); setEngineFilter("all"); setTagFilter(""); setDetailId(null);
+    setQ(""); setGroup("all"); setSharedOnly(false); setSelected(new Set());
+    createStopRequested.current = true;
+    if (!createInFlight.current) { setShowCreate(false); setCreateItems([]); }
+  }, [managementScope]);
   // The app resolves "system" itself and stamps the result on <html>, so the
   // stylesheet carries exactly one dark palette instead of a duplicated media query.
   useEffect(() => {
@@ -1444,28 +1173,25 @@ function App() {
     return () => media.removeEventListener("change", apply);
   }, [theme]);
 
-  useEffect(() => {
-    const media = window.matchMedia(RAIL_MEDIA);
-    const apply = () => setRailForced(media.matches);
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
-  }, []);
-
   // Escape closes whatever dialog is open, topmost first — standard desktop
   // behavior the mouse-only close buttons don't cover.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (accessTarget) { if (!teamBusy) setAccessTarget(null); return; }
+      if (document.querySelector("dialog[open]")) return;
+
       if (movingFolder) { if (!folderMoveBusy) setMovingFolder(null); return; }
-      if (pendingMode) { if (!modeBusy) setPendingMode(null); return; }
+
       if (logView || logErr) { setLogView(null); setLogErr(null); return; }
       if (showUpdate) { setShowUpdate(false); return; }
       if (showBulk) { closeBulk(); return; }
       if (pendingView) { if (!pendingView.busy) setPendingView(null); return; }
       if (cookieTargets) { if (!cookieSaving) closeCookie(); return; }
       if (editId) { closeEdit(); return; }
-      if (showCreate) closeCreate();
+      if (showCreate) { closeCreate(); return; }
+      // Nothing left to close: Escape puts the sheet away and returns to the wall.
+      if (view !== "workbench" && !event.defaultPrevented && !document.querySelector('.popover, [role="dialog"], [aria-modal="true"]')
+        && !(event.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) setView("workbench");
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -1497,53 +1223,6 @@ function App() {
     } finally {
       setLoaded(true);
     }
-  };
-
-  const loadCloudEvents = async () => {
-    if (!isCloudMode) {
-      setCloudEvents([]);
-      setCloudEventsErr(null);
-      return;
-    }
-    setCloudEventsBusy(true);
-    setCloudEventsErr(null);
-    try {
-      setCloudEvents((await fetchCloudEvents()).slice().reverse());
-    } catch {
-      setCloudEventsErr("Recent diagnostics could not be loaded.");
-    } finally {
-      setCloudEventsBusy(false);
-    }
-  };
-
-  const loadTeam = async () => {
-    if (!isCloudMode) return;
-    setTeamBusy(true);
-    setTeamErr(null);
-    try { setTeam(await fetchCloudTeam()); }
-    catch (error) { setTeamErr(error instanceof Error ? error.message : String(error)); }
-    finally { setTeamBusy(false); }
-  };
-
-  const runTeamAction = async (action: string, input: Record<string, string>, done?: string): Promise<boolean> => {
-    setTeamBusy(true);
-    setTeamErr(null);
-    try {
-      await cloudWorkspaceAction(action, input);
-      await loadTeam();
-      if (done) flash(done);
-      return true;
-    } catch (error) {
-      setTeamErr(error instanceof Error ? error.message : String(error));
-      setTeamBusy(false);
-      return false;
-    }
-  };
-
-  const inviteTeamMember = async () => {
-    const email = teamEmail.trim();
-    const ok = await runTeamAction("invite", { email, role: teamRole }, `Invitation sent to ${email}`);
-    if (ok) setTeamEmail("");
   };
 
   const checkDesktopUpdate = async (manual: boolean) => {
@@ -1591,466 +1270,7 @@ function App() {
     }
   };
 
-  const provisionRemoteMcp = async (): Promise<RemoteMcpSettings> => {
-    const created = await createCloudConnector();
-    if (
-      created.state !== "active" ||
-      typeof created.connectorId !== "string" || !created.connectorId ||
-      typeof created.deviceId !== "string" || !created.deviceId ||
-      typeof created.url !== "string" || !created.url ||
-      typeof created.token !== "string" || !created.token
-    ) {
-      throw new Error("Vela Cloud returned invalid Remote MCP settings.");
-    }
-    try {
-      await storeDesktopRemoteMcpCredential({
-        version: 1,
-        state: "active",
-        connectorId: created.connectorId,
-        deviceId: created.deviceId,
-        token: created.token,
-      });
-    } catch {
-      await revokeCloudConnector(created.connectorId).catch(() => undefined);
-      throw new Error("The Remote MCP access key could not be stored securely.");
-    }
-    return {
-      state: "active",
-      connectorId: created.connectorId,
-      deviceId: created.deviceId,
-      url: created.url,
-      token: created.token,
-    };
-  };
-
-  const runRemoteMcpTask = (work: () => Promise<void>): Promise<void> => {
-    if (remoteMcpAccountExit.current) return Promise.resolve();
-    if (remoteMcpInFlight.current) return remoteMcpInFlight.current;
-    const task = work().finally(() => {
-      if (remoteMcpInFlight.current === task) remoteMcpInFlight.current = null;
-    });
-    remoteMcpInFlight.current = task;
-    return task;
-  };
-
-  const loadRemoteMcp = (): Promise<void> => runRemoteMcpTask(async () => {
-    if (!isCloudMode || !cloudWorkspaceReady(cloudAuth)) {
-      setRemoteMcp({ state: "idle" });
-      return;
-    }
-    setRemoteMcpTokenVisible(false);
-    setRemoteMcpCopied(null);
-    setRemoteMcp({ state: "loading" });
-    try {
-      const stored = await readDesktopRemoteMcpCredential();
-      if (stored === undefined) {
-        throw new Error("Remote MCP settings are available in the desktop app.");
-      }
-      if (stored?.state === "disabled") {
-        setRemoteMcp({ state: "disabled" });
-        return;
-      }
-      if (stored?.state === "active") {
-        const status = await fetchCloudConnector(stored.connectorId);
-        if (status.state === "active" && status.url) {
-          setRemoteMcp({
-            state: "active",
-            connectorId: stored.connectorId,
-            deviceId: stored.deviceId,
-            url: status.url,
-            token: stored.token,
-          });
-          return;
-        }
-      }
-      setRemoteMcp(await provisionRemoteMcp());
-    } catch (error) {
-      setRemoteMcp({ state: "error", error: error instanceof Error ? error.message : String(error) });
-    }
-  });
-
-  const enableRemoteMcp = (): Promise<void> => runRemoteMcpTask(async () => {
-    setRemoteMcp({ state: "loading" });
-    setRemoteMcpTokenVisible(false);
-    try {
-      setRemoteMcp(await provisionRemoteMcp());
-    } catch (error) {
-      setRemoteMcp({ state: "error", error: error instanceof Error ? error.message : String(error) });
-    }
-  });
-
-  const disableRemoteMcp = async () => {
-    if (remoteMcp.state !== "active" || !remoteMcp.connectorId) return;
-    if (!window.confirm("Disable this Remote MCP connection? Connected clients will stop working.")) return;
-    await runRemoteMcpTask(async () => {
-      setRemoteMcp({ state: "loading" });
-      setRemoteMcpTokenVisible(false);
-      try {
-        await revokeCloudConnector(remoteMcp.connectorId!);
-        await storeDesktopRemoteMcpCredential({ version: 1, state: "disabled" });
-        setRemoteMcp({ state: "disabled" });
-      } catch (error) {
-        setRemoteMcp({ state: "error", error: error instanceof Error ? error.message : String(error) });
-      }
-    });
-  };
-
-  const regenerateRemoteMcp = async () => {
-    if (remoteMcp.state !== "active" || !remoteMcp.connectorId) return;
-    if (!window.confirm("Generate a new Remote MCP access key? Existing clients will disconnect.")) return;
-    await runRemoteMcpTask(async () => {
-      setRemoteMcp({ state: "loading" });
-      setRemoteMcpTokenVisible(false);
-      try {
-        await revokeCloudConnector(remoteMcp.connectorId!);
-        await storeDesktopRemoteMcpCredential({ version: 1, state: "disabled" });
-        setRemoteMcp(await provisionRemoteMcp());
-      } catch (error) {
-        setRemoteMcp({ state: "error", error: error instanceof Error ? error.message : String(error) });
-      }
-    });
-  };
-
-  const copyRemoteMcp = async (kind: "url" | "token", value: string) => {
-    try {
-      await copyPlainText(value);
-      setRemoteMcpCopied(kind);
-      window.setTimeout(() => setRemoteMcpCopied((current) => current === kind ? null : current), 1200);
-    } catch {
-      setRemoteMcp((current) => ({ ...current, error: "Remote MCP connection details could not be copied." }));
-    }
-  };
-
-  const prepareRemoteMcpForAccountExit = async (bestEffort = false) => {
-    remoteMcpAccountExit.current = true;
-    try {
-      if (remoteMcpInFlight.current) await remoteMcpInFlight.current;
-      const connector = await readDesktopRemoteMcpCredential();
-      if (connector?.state === "active") {
-        await revokeCloudConnector(connector.connectorId);
-        await storeDesktopRemoteMcpCredential({ version: 1, state: "disabled" });
-        setRemoteMcp({ state: "disabled" });
-        setRemoteMcpTokenVisible(false);
-      }
-    } catch (error) {
-      if (!bestEffort) throw error;
-    }
-  };
-
-  const openAccountSettings = () => {
-    setModeErr(null);
-    setView("settings");
-    setRemoteMcpTokenVisible(false);
-    void loadRemoteMcp();
-    void loadCloudEvents();
-    void loadTeam();
-  };
-
-  /** Leaving Settings must never keep a revealed Remote MCP key on screen. */
-  const closeAccountSettings = () => {
-    setRemoteMcpTokenVisible(false);
-    setRemoteMcpCopied(null);
-    setView("profiles");
-  };
-
-  const chooseMode = async (mode: "local" | "cloud"): Promise<boolean> => {
-    setModeBusy(true);
-    setModeErr(null);
-    try {
-      const result = await selectAppMode(mode);
-      setAppMode(result.config);
-      const needsRestart = result.restartRequired === true;
-      setRestartRequired(needsRestart);
-      const invoke = desktopInvoke();
-      if (needsRestart && invoke) await invoke("restart_after_mode_change");
-      return true;
-    } catch (error) {
-      setModeErr(error instanceof Error ? error.message : String(error));
-      return false;
-    } finally {
-      setModeBusy(false);
-    }
-  };
-
-  const requestModeSwitch = (mode: "local" | "cloud") => {
-    setModeErr(null);
-    setPendingMode(mode);
-  };
-
-  const confirmModeSwitch = async () => {
-    if (!pendingMode) return;
-    if (await chooseMode(pendingMode)) {
-      setPendingMode(null);
-      closeAccountSettings();
-    }
-  };
-
-  const restoreSavedSession = async (startup: boolean) => {
-    if (!savedSessionRestoreEnabled.current || restoreInFlight.current) return;
-    restoreInFlight.current = true;
-    const generation = authGeneration.current;
-    if (startup) {
-      setSavedSessionPhase("restoring");
-      setAuthBusy(true);
-    }
-    try {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const stored = await readDesktopCloudCredentials();
-          if (generation !== authGeneration.current || !savedSessionRestoreEnabled.current) return;
-          if (!stored?.refreshToken || !stored.deviceCredential || !stored.queueKey) {
-            setCloudAuth({ authenticated: false });
-            setSavedSessionPhase("manual-signin");
-            setScheduledRefreshPending(false);
-            setAuthErr(null);
-            return;
-          }
-          const result = await restoreCloudSession(
-            stored.refreshToken,
-            stored.deviceCredential,
-            stored.queueKey,
-            startup,
-          );
-          if (generation !== authGeneration.current || !savedSessionRestoreEnabled.current) return;
-          if (typeof result.refreshToken !== "string" || !result.refreshToken) {
-            throw new Error("Cloud did not return a refresh token");
-          }
-          await storeDesktopCloudCredentials(result.refreshToken, stored.deviceCredential);
-          if (generation !== authGeneration.current || !savedSessionRestoreEnabled.current) return;
-          setCloudAuth({
-            authenticated: true,
-            expiresAt: result.expiresAt,
-            user: result.user,
-            workspace: result.workspace,
-            legal: result.legal,
-          });
-          setSavedSessionPhase("manual-signin");
-          setScheduledRefreshPending(false);
-          setAuthErr(null);
-          return;
-        } catch (error) {
-          if (generation !== authGeneration.current || !savedSessionRestoreEnabled.current) return;
-          if (error instanceof CloudSessionRestoreError && !error.retryable) {
-            await deleteDesktopRemoteMcpCredential().catch(() => undefined);
-            setRemoteMcp({ state: "idle" });
-            setRemoteMcpTokenVisible(false);
-            setCloudAuth({ authenticated: false });
-            setSavedSessionPhase("manual-signin");
-            setScheduledRefreshPending(false);
-            setAuthErr(error.message);
-            return;
-          }
-          if (attempt === 0) continue;
-          const message = error instanceof CloudSessionRestoreError
-            ? error.message
-            : "Saved Cloud session could not be restored. Try again when the connection is available.";
-          setAuthErr(message);
-          if (startup) setSavedSessionPhase("retryable-failure");
-          else setScheduledRefreshPending(true);
-        }
-      }
-    } finally {
-      restoreInFlight.current = false;
-      if (startup && generation === authGeneration.current) setAuthBusy(false);
-    }
-  };
-
-  const signInInstead = async () => {
-    savedSessionRestoreEnabled.current = false;
-    const generation = ++authGeneration.current;
-    setAuthBusy(true);
-    setAuthErr(null);
-    try {
-      await prepareRemoteMcpForAccountExit(true);
-      await forgetCloudSession();
-      await deleteDesktopRemoteMcpCredential().catch(() => undefined);
-      setRemoteMcp({ state: "idle" });
-      if (generation !== authGeneration.current) return;
-      setCloudAuth({ authenticated: false });
-      setSavedSessionPhase("manual-signin");
-      setScheduledRefreshPending(false);
-      setProfiles([]);
-      setHealthSources([]);
-      setSelected(new Set());
-      setTeam(null);
-      setCloudEvents([]);
-      setAuthPassword("");
-      setAuthNotice(null);
-    } catch (error) {
-      if (generation === authGeneration.current) {
-        savedSessionRestoreEnabled.current = true;
-        setAuthErr(error instanceof Error ? error.message : String(error));
-      }
-    } finally {
-      remoteMcpAccountExit.current = false;
-      if (generation === authGeneration.current) setAuthBusy(false);
-    }
-  };
-
-  const submitCloudAuth = async () => {
-    const generation = authGeneration.current;
-    setAuthBusy(true);
-    setAuthErr(null);
-    setAuthNotice(null);
-    try {
-      if (authView === "signup") {
-        const result = await signUpCloud(authEmail, authPassword);
-        if (result.verificationRequired) {
-          setConfirmationEmail(authEmail);
-          setAuthCode("");
-          setAuthView("verify");
-        } else {
-          setAuthNotice(t("Account created. You can sign in now."));
-          setAuthView("signin");
-        }
-      } else {
-        if (authView === "verify") {
-          await verifyCloudSignUp(confirmationEmail, authCode);
-          // The code works once: if the sign-in below fails, the user retries from the sign-in form.
-          setAuthView("signin");
-        }
-        const stored = await readDesktopCloudCredentials();
-        const result = await signInCloud(authEmail, authPassword, stored?.queueKey);
-        if (generation !== authGeneration.current) return;
-        if (typeof result.refreshToken !== "string" || !result.refreshToken) {
-          throw new Error("Cloud did not return a refresh token");
-        }
-        if (typeof result.deviceCredential !== "string" || !result.deviceCredential) {
-          throw new Error("Cloud did not return a device credential");
-        }
-        if (
-          !stored?.queueKey &&
-          result.queueKeyPersisted !== true &&
-          (typeof result.queueKey !== "string" || !result.queueKey)
-        ) {
-          throw new Error("Cloud did not initialize encrypted pending sync");
-        }
-        const persisted = await storeDesktopCloudCredentials(
-          result.refreshToken,
-          result.deviceCredential,
-          typeof result.queueKey === "string" ? result.queueKey : undefined,
-        );
-        if (generation !== authGeneration.current) return;
-        savedSessionRestoreEnabled.current = true;
-        setCloudAuth({
-          authenticated: true,
-          expiresAt: result.expiresAt,
-          user: result.user,
-          workspace: result.workspace,
-          legal: result.legal,
-        });
-        setSavedSessionPhase("manual-signin");
-        setScheduledRefreshPending(false);
-        setAuthPassword("");
-        if (!persisted) setAuthNotice(t("Signed in for this run; desktop credential storage is unavailable."));
-      }
-    } catch (error) {
-      if (generation !== authGeneration.current) return;
-      if (error instanceof CloudAuthError && error.code === "email_not_confirmed") {
-        // An account that was never confirmed signs in through the code screen.
-        setConfirmationEmail(authEmail);
-        setAuthCode("");
-        setAuthView("verify");
-        setAuthNotice(t("Confirm your email first. Enter the code from the email, or send a new code."));
-      } else if (error instanceof CloudAuthError && error.code === "otp_invalid") {
-        setAuthErr(t("The code is wrong or has expired. Check the newest email, or send a new code."));
-      } else {
-        setAuthErr(error instanceof Error ? error.message : String(error));
-      }
-    } finally {
-      if (generation === authGeneration.current) setAuthBusy(false);
-    }
-  };
-
-  const signOut = async () => {
-    setAuthBusy(true);
-    setAuthErr(null);
-    try {
-      await prepareRemoteMcpForAccountExit();
-      await signOutCloud();
-      await deleteDesktopRemoteMcpCredential().catch(() => undefined);
-      setRemoteMcp({ state: "idle" });
-      authGeneration.current++;
-      setCloudAuth({ authenticated: false });
-      setSavedSessionPhase("manual-signin");
-      setScheduledRefreshPending(false);
-      setProfiles([]);
-      setHealthSources([]);
-      setSelected(new Set());
-      setTeam(null);
-      setCloudEvents([]);
-      setAuthPassword("");
-      setAuthNotice(null);
-      closeAccountSettings();
-    } catch (error) {
-      setAuthErr(error instanceof Error ? error.message : String(error));
-    } finally {
-      remoteMcpAccountExit.current = false;
-      setAuthBusy(false);
-    }
-  };
-
-  const resendConfirmation = async () => {
-    setAuthBusy(true);
-    setAuthErr(null);
-    try {
-      await resendCloudSignUp(confirmationEmail);
-      setAuthCode("");
-      setAuthNotice(t("We sent a new email to {email}.", { email: confirmationEmail }));
-    } catch (error) {
-      setAuthErr(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const forgotPassword = async () => {
-    const email = authEmail.trim();
-    setAuthErr(null);
-    setAuthNotice(null);
-    if (!email) {
-      setAuthErr(t("Enter your email, then select Forgot password."));
-      return;
-    }
-    setAuthBusy(true);
-    try {
-      await requestCloudPasswordReset(email);
-      setAuthNotice(t("If {email} has an account, a password reset link is on its way. Check spam too.", { email }));
-    } catch (error) {
-      setAuthErr(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const acceptInvitation = async () => {
-    setAuthBusy(true);
-    setAuthErr(null);
-    try {
-      await acceptCloudInvitation(invitationCode);
-      setInvitationCode("");
-      setAuthNotice("Invitation accepted.");
-      setCloudAuth(await fetchCloudAuth());
-      await Promise.all([load(), loadTeam()]);
-    } catch (error) {
-      setAuthErr(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const acceptCurrentLegal = async () => {
-    setAuthBusy(true);
-    setAuthErr(null);
-    try {
-      const result = await acceptCloudLegal();
-      setCloudAuth((state) => state ? { ...state, legal: result.legal } : state);
-    } catch (error) {
-      setAuthErr(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
+  const openSettings = () => setView("settings");
 
   useEffect(() => {
     const invoke = desktopInvoke();
@@ -2071,7 +1291,6 @@ function App() {
   useEffect(() => {
     fetchAppMode().then((config) => {
       setAppMode(config);
-      setRestartRequired(config.restartRequired === true);
     }).catch((error) => {
       setConnErr(String(error));
       setLoaded(true);
@@ -2079,12 +1298,8 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (restartRequired) return;
-    const readiness = appMode?.mode === "local"
-      ? "local"
-      : appMode?.mode === "cloud" && cloudAuth !== null
-        ? cloudAuth.authenticated ? "cloud_authenticated" : "sign_in_required"
-        : null;
+
+    const readiness = appMode ? "local" : null;
     const invoke = desktopInvoke();
     if (!readiness || !invoke || publishedRuntimeReadiness.current === readiness) return;
     let active = true;
@@ -2101,87 +1316,29 @@ function App() {
       active = false;
       if (retry !== undefined) window.clearTimeout(retry);
     };
-  }, [appMode?.mode, cloudAuth?.authenticated, restartRequired, runtimeReadinessAttempt]);
+  }, [appMode, runtimeReadinessAttempt]);
 
   useEffect(() => {
-    if (!appMode || restartRequired || desktopUpdateCheckStarted.current) return;
+    if (!appMode  || desktopUpdateCheckStarted.current) return;
     desktopUpdateCheckStarted.current = true;
     void checkDesktopUpdate(false);
-  }, [appMode?.mode, restartRequired]);
+  }, [appMode?.mode]);
 
   useEffect(() => {
-    if (appMode?.mode !== "cloud" || restartRequired) return;
-    let active = true;
-    const generation = authGeneration.current;
-    setSavedSessionPhase("restoring");
-    const restore = async () => {
-      try {
-        const state = await fetchCloudAuth();
-        if (cloudSessionContextReady(state)) {
-          if (active && generation === authGeneration.current) {
-            setCloudAuth(state);
-            setSavedSessionPhase("manual-signin");
-            setAuthErr(null);
-          }
-          return;
-        }
-      } catch {
-        // A saved session can still recover when the first status probe fails.
-      }
-      if (active && generation === authGeneration.current) await restoreSavedSession(true);
-    };
-    void restore();
-    return () => { active = false; };
-  }, [appMode?.mode, restartRequired]);
-
-  useEffect(() => {
-    if (
-      appMode?.mode !== "cloud" ||
-      restartRequired ||
-      !cloudAuth?.authenticated ||
-      !cloudAuth.expiresAt
-    ) return;
-    const delay = Math.max(1_000, cloudAuth.expiresAt - Date.now() - 60_000);
-    const timer = window.setTimeout(() => { void restoreSavedSession(false); }, delay);
-    return () => window.clearTimeout(timer);
-  }, [appMode?.mode, restartRequired, cloudAuth?.authenticated, cloudAuth?.expiresAt]);
-
-  useEffect(() => {
-    if (appMode?.mode !== "cloud" || restartRequired) return;
-    const retryWhenOnline = () => {
-      if (savedSessionPhase === "retryable-failure") void restoreSavedSession(true);
-      else if (scheduledRefreshPending) void restoreSavedSession(false);
-    };
-    window.addEventListener("online", retryWhenOnline);
-    return () => window.removeEventListener("online", retryWhenOnline);
-  }, [appMode?.mode, restartRequired, savedSessionPhase, scheduledRefreshPending]);
-
-  useEffect(() => {
-    if (!isCloudMode || !workspaceReady || restartRequired) return;
-    void loadTeam();
-  }, [isCloudMode, restartRequired, workspaceReady]);
-
-  useEffect(() => {
-    if (view !== "settings" || !isCloudMode || !workspaceReady || restartRequired) return;
-    void loadRemoteMcp();
-  }, [view, isCloudMode, restartRequired, workspaceReady]);
-
-  useEffect(() => {
-    if (!appMode || !workspaceReady || restartRequired) return;
+    if (!appMode || !workspaceReady ) return;
     load();
     fetchHealth().then((health) => { setAppVersion(health.version); setLogDir(health.logDir); }).catch(() => {});
-    // The extension registry is local to this computer in both modes; Cloud
-    // profiles carry assignments and load the matching uploads at launch.
+    // Extensions are managed locally and shared only through explicit assignments.
     fetchExtensions().then(setExtensions).catch(() => {});
-    if (appMode.mode === "local") {
+    {
       fetchDiagnose().then(setDiag).catch(() => {});
     }
-  }, [appMode?.mode, restartRequired, workspaceReady]);
+  }, [appMode?.mode, false, workspaceReady]);
 
   useEffect(() => {
-    if (view !== "extensions" || !appMode || !workspaceReady || restartRequired) return;
+    if (view !== "extensions" || !appMode || !workspaceReady ) return;
     void reloadGroupExtensionDefaults();
-  }, [view, appMode?.mode, restartRequired, workspaceReady]);
+  }, [view, appMode?.mode, false, workspaceReady]);
 
   useEffect(() => {
     const editable = groupExtensionDefaults.filter((item) => item.permission === "edit");
@@ -2197,10 +1354,10 @@ function App() {
   }, [groupExtensionDefaults, groupDefaultName]);
 
   useEffect(() => {
-    if (!appMode || !workspaceReady || restartRequired) return;
+    if (!appMode || !workspaceReady ) return;
     const t = setInterval(pollRoster, REFRESH_MS);
     return () => clearInterval(t);
-  }, [appMode?.mode, restartRequired, workspaceReady]);
+  }, [appMode?.mode, false, workspaceReady]);
 
   // Both browsers delete saved site data when the profiles drive is almost full.
   useEffect(() => {
@@ -2234,7 +1391,7 @@ function App() {
   // Live 2FA code in the Edit modal: fetch the current TOTP, count it down
   // locally, and refetch when the window rolls over.
   useEffect(() => {
-    if (!editId || isCloudMode) { setEditTotp(null); return; }
+    if (!editId ) { setEditTotp(null); return; }
     let alive = true;
     const tick = async () => {
       try {
@@ -2251,21 +1408,20 @@ function App() {
       });
     }, 1000);
     return () => { alive = false; clearInterval(timer); };
-  }, [editId, isCloudMode]);
+  }, [editId]);
 
   const folders = useMemo<FolderInfo[]>(() => {
-    if (isCloudMode) return team?.folders.filter((folder) => !folder.archivedAt) ?? [];
+
     const metadata = new Map(localFolders.map((folder) => [folder.name, folder]));
     return [...new Set([...registeredGroups, ...profiles.map((profile) => profile.group).filter(Boolean)])]
       .map((name) => metadata.get(name) ?? { name });
-  }, [isCloudMode, team?.folders, localFolders, registeredGroups, profiles]);
+  }, [localFolders, registeredGroups, profiles]);
   const tree = useMemo(() => folderTree(folders), [folders]);
   const groups = useMemo(() => ["all", ...tree.map((folder) => folder.name)], [tree]);
   const selectedScope = useMemo(() => folderScope(folders, group), [folders, group]);
-  const sharedProfiles = useMemo(() => isCloudMode
-    ? profiles.filter((profile) => !folders.some((folder) => folder.name === profile.group)) : [], [isCloudMode, profiles, folders]);
+  const sharedProfiles = useMemo<UiProfile[]>(() => [], []);
   const breadcrumb = tree.find((folder) => folder.name === group);
-  const selectFolder = (name: string) => { setSharedOnly(false); setGroup(name); setView("profiles"); };
+  const selectFolder = (name: string) => { setSharedOnly(false); setGroup(name); if (view !== "workbench") setView("profiles"); };
   const folderLabel = (name: string) => folders.find((folder) => folder.name === name)?.label ?? name;
 
   /**
@@ -2290,20 +1446,18 @@ function App() {
     }
   };
 
+  const profileFilters = useMemo<ProfileFilters>(() => ({ query: q, group, sharedOnly, status: statusFilter, engine: engineFilter, tag: tagFilter }), [q, group, sharedOnly, statusFilter, engineFilter, tagFilter]);
+  const profileTags = useMemo(() => [...new Set(profiles.flatMap((profile) => profile.tags ?? []))].sort((a, b) => a.localeCompare(b)), [profiles]);
+  const clearProfileFilters = () => { setQ(""); setGroup("all"); setSharedOnly(false); setStatusFilter("all"); setEngineFilter("all"); setTagFilter(""); };
+  const applyProfileFilters = (filters: ProfileFilters) => {
+    setQ(filters.query); setGroup(filters.group); setSharedOnly(filters.sharedOnly);
+    setStatusFilter(filters.status); setEngineFilter(filters.engine); setTagFilter(filters.tag);
+    setSelected(new Set());
+  };
   const filtered = useMemo(() => {
     const matched = profiles.filter((p) => {
       if (sharedOnly ? !sharedProfiles.includes(p) : group !== "all" && !selectedScope.has(p.group)) return false;
-      if (q) {
-        const needle = q.toLowerCase();
-        const no = numbering.get(p.id)?.value ?? "";
-        if (
-          !p.id.toLowerCase().includes(needle) &&
-          !p.name.toLowerCase().includes(needle) &&
-          !no.includes(needle) &&
-          !(p.tags ?? []).some((tag) => tag.toLowerCase().includes(needle))
-        ) return false;
-      }
-      return true;
+      return matchesProfileFilters(p, profileFilters, numbering.get(p.id)?.value ?? "");
     });
     // Running profiles stay on top regardless of the chosen column: an open
     // browser is the row an operator acts on next.
@@ -2315,12 +1469,13 @@ function App() {
       if (left > right) return sort.dir;
       return a.id.localeCompare(b.id);
     });
-  }, [profiles, group, sharedOnly, sharedProfiles, selectedScope, q, sort, numbering]);
+  }, [profiles, group, sharedOnly, sharedProfiles, selectedScope, profileFilters, sort, numbering]);
 
   const profilePageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const visibleProfilePage = Math.min(profilePage, profilePageCount - 1);
   const visibleProfiles = filtered.slice(visibleProfilePage * pageSize, (visibleProfilePage + 1) * pageSize);
-  useEffect(() => setProfilePage(0), [q, group, sharedOnly, pageSize]);
+  useEffect(() => setProfilePage(0), [profileFilters, pageSize]);
+  const detailProfile = detailId && view === "profiles" ? profiles.find((profile) => profile.id === detailId) : undefined;
 
   const editSerial = editId ? profiles.find((profile) => profile.id === editId)?.serial ?? null : null;
   const editRunning = editId ? profiles.find((profile) => profile.id === editId)?.running === true : false;
@@ -2351,27 +1506,11 @@ function App() {
     writeSetting(THEME_KEY, choice);
     try { document.cookie = themeCookie(choice); } catch {}
   };
-  const [servicesSettingErr, setServicesSettingErr] = useState("");
-  const showServices = async (shown: boolean) => {
-    setServicesSettingErr("");
-    setAppMode((current) => current ? { ...current, servicesHidden: !shown } : current);
-    try {
-      await saveServicesHidden(!shown);
-    } catch (error) {
-      setAppMode((current) => current ? { ...current, servicesHidden: shown } : current);
-      setServicesSettingErr(error instanceof Error ? error.message : String(error));
-    }
-  };
-  const toggleSidebar = () =>
-    setSidebarCollapsed((collapsed) => {
-      writeSetting(SIDEBAR_KEY, collapsed ? "0" : "1");
-      return !collapsed;
-    });
   const toggleSort = (key: SortKey) =>
     setSort((current) => (current.key === key ? { key, dir: current.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
   const refreshRoster = async () => {
     setRefreshing(true);
-    try { await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]); } finally { setRefreshing(false); }
+    try { await Promise.all([load(), Promise.resolve()]); } finally { setRefreshing(false); }
   };
   useEffect(() => {
     if (profilePage !== visibleProfilePage) setProfilePage(visibleProfilePage);
@@ -2380,10 +1519,7 @@ function App() {
   const runningCount = profiles.filter((p) => p.running).length;
   const selectedMobileCount = profiles.filter((p) => selected.has(p.id) && p.mobilePersona).length;
   const existingGroups = groups.slice(1); // drop the "all" pseudo-group
-  const editableGroups = isCloudMode
-    ? existingGroups.filter((name) => team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt))
-    : existingGroups;
-  const selectedEditable = [...selected].every((id) => profiles.find((profile) => profile.id === id)?.permission === "edit");
+  const editableGroups = existingGroups;
   const selectedProfilesSupportChromeExtensions = [...selected].every((id) =>
     profiles.find((profile) => profile.id === id)?.engine === "chromium");
   const folderCounts = useMemo(() => {
@@ -2395,9 +1531,8 @@ function App() {
     return counts;
   }, [tree, profiles]);
   const countFor = (g: string) => folderCounts.get(g) ?? 0;
-  const canEditGroup = (name: string) => !isCloudMode ||
-    team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt) === true;
-  const selectedMovable = !isCloudMode || [...selected].every((id) => canEditGroup(profiles.find((profile) => profile.id === id)?.group ?? ""));
+  const canEditGroup = (name: string) => true;
+  const selectedMovable = true;
   const editableDefaultGroups = groupExtensionDefaults.filter((item) => item.permission === "edit");
   const installedExtensionIds = new Set(extensions.map((item) => item.id));
   const storedGroupDefaultExts = groupExtensionDefaults.find((item) => item.name === groupDefaultName)?.extensions ?? [];
@@ -2442,7 +1577,7 @@ function App() {
     if (ids.length === 0 || !group) return;
     setActionErr(null);
     try {
-      if (isCloudMode && newMode) await cloudWorkspaceAction("create-folder", { name: group });
+
       const r = await moveProfiles(ids, group);
       if (r.ok === false) {
         setActionErr(r.error || "move failed");
@@ -2467,10 +1602,8 @@ function App() {
     deleteInFlight.current = true;
     setDeleting(true);
     setActionErr(null);
-    const generation = authGeneration.current;
     try {
       const r = await deleteProfiles(ids);
-      if (generation !== authGeneration.current) return;
       if (r.ok === false) {
         setActionErr(r.error || "delete failed");
         return;
@@ -2484,17 +1617,14 @@ function App() {
       flash(`${r.deleted.toLocaleString()} profiles ${appMode?.legacyRemote ? "deleted" : "moved to Trash"}`);
       await load();
     } catch (e) {
-      if (generation === authGeneration.current) setActionErr(String(e));
+      setActionErr(String(e));
     } finally {
       deleteInFlight.current = false;
       setDeleting(false);
     }
   };
 
-  /** A Cloud close whose final capture failed gets a translated notice instead of the server's English one. */
-  const actionWarning = (r: any): string => r.captureFailed
-    ? t("Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.")
-    : r.warning;
+  const actionWarning = (r: any): string => r.warning;
   const fingerprintPage = language.startsWith("ru") ? "ru" : language.startsWith("zh") ? "zh-cn" : "en";
   const act = async (id: string, fn: (id: string) => Promise<any>) => {
     setActionErr(null);
@@ -2519,22 +1649,6 @@ function App() {
     return waiting.length > 0
       ? t("Downloading browser… {percent}%", { percent: String(downloadPercent(waiting)) })
       : t("Opening…");
-  };
-
-  /**
-   * A session Cloud refused is kept encrypted here. Restoring writes it back as
-   * the profile's current session, replacing the logins Cloud holds now.
-   */
-  const restoreSession = (profile: UiProfile) => {
-    const savedAt = profile.parkedSession
-      ? new Date(profile.parkedSession.savedAt).toLocaleString()
-      : "";
-    if (!confirm(
-      `Restore the session saved on this device for ${profile.name} (${savedAt})?\n\n` +
-      "Its cookies and logins replace the ones Cloud has for this profile. " +
-      "Everything else keeps its current Cloud values.",
-    )) return;
-    void act(profile.id, restoreParkedSession);
   };
 
   const openCookie = (targets: UiProfile[]) => {
@@ -2622,7 +1736,7 @@ function App() {
   const openBulk = () => {
     setBulkFiles([]);
     setBulkText("");
-    setBulkGroup(group !== "all" && (!isCloudMode || editableGroups.includes(group)) ? group : "");
+    setBulkGroup(group !== "all" && (true) ? group : "");
     setBulkPlatform("");
     setBulkErr(null);
     setBulkSource("file");
@@ -2635,7 +1749,7 @@ function App() {
     setBulkErr(null);
   };
   const submitBulk = async () => {
-    if ((!bulkFiles.length && !bulkText.trim()) || (isCloudMode && !bulkGroup.trim())) return;
+    if ((!bulkFiles.length && !bulkText.trim()) || (false)) return;
     setBulkBusy(true);
     setBulkErr(null);
     try {
@@ -2671,22 +1785,27 @@ function App() {
   // Open prefilled with the folder you're browsing; close always resets so a
   // cancelled draft never leaks into the next open.
   const openCreate = () => {
+    if (createInFlight.current) return;
+    setDetailId(null);
     resetCreateProxyCheck();
-    setForm({ ...BLANK_FORM, engine: appMode?.defaultEngine ?? "chromium", chromiumRuntime: appMode?.defaultChromiumRuntime ?? "", group: group !== "all" && (!isCloudMode || editableGroups.includes(group)) ? group : "" });
+    setForm({ ...BLANK_FORM, engine: appMode?.defaultEngine ?? "chromium", chromiumRuntime: appMode?.defaultChromiumRuntime ?? "", group: group !== "all" && (true) ? group : "" });
     setProxyPaste("");
     setProxyPasteOk(null);
     setCreateErr(null);
+    setCreateBatch(false); setCreateCount("5"); setCreatePattern("Studio {n:2}"); setCreateStart("1"); setCreateItems([]);
     // A first profile needs no proxy, so the section starts closed until profiles use one.
     setCreateProxyOpen(profiles.some((profile) => !!profile.proxy));
     setShowCreate(true);
   };
   const closeCreate = () => {
+    if (createInFlight.current) return;
     resetCreateProxyCheck();
     setShowCreate(false);
     setForm(BLANK_FORM);
     setProxyPaste("");
     setProxyPasteOk(null);
     setCreateErr(null);
+    setCreateItems([]);
   };
   const applyProxyPaste = (raw: string) => {
     try {
@@ -2737,36 +1856,54 @@ function App() {
       }
     }
   };
-  const submitCreate = async () => {
+  const submitCreate = async (resume = false, retryFailed = false) => {
+    if (createInFlight.current  || !workspaceReady) return;
+    let items: BatchCreateItem[];
+    try {
+      if (resume) {
+        // The result list retains successes and ambiguous responses across explicit retries.
+        if (createItems.some((item) => item.state === "uncertain")) return;
+        items = createItems.map((item) => retryFailed && item.state === "failed" ? { input: item.input, state: "queued" } : { ...item });
+      } else {
+        const names = createBatch ? batchProfileNames(Number(createCount), createPattern, Number(createStart)) : [form.name];
+        const input: BatchCreateItem["input"] = {
+          name: form.name,
+          engine: form.engine,
+          ...(form.engine === "chromium" && !appMode?.legacyRemote ? { chromiumRuntime: appMode?.chromiumRuntime ?? (form.chromiumRuntime || "cloakbrowser") } : {}),
+          group: form.group,
+          platform: form.platform,
+          screen: form.screen,
+          ...(form.platformOs && form.engine !== "webkit" ? { platformOs: form.platformOs } : {}),
+          customNo: form.customNo,
+          username: form.username,
+          password: form.password,
+          email: form.email,
+          emailPassword: form.emailPassword,
+          twofa: form.twofa,
+          proxy: form.host.trim() ? { type: form.proxyType, host: form.host, port: form.port, user: form.user, pass: form.pass } : null,
+        };
+        items = names.map((name) => ({ input: { ...input, name, ...(createBatch ? { customNo: "" } : {}) }, state: "queued" }));
+      }
+    } catch (error) { setCreateErr(t(error instanceof Error ? error.message : String(error))); return; }
+    const scope = managementScope;
+    createInFlight.current = true;
+    createStopRequested.current = false;
+    setCreateStopping(false);
     setCreating(true);
     setCreateErr(null);
     try {
-      const r = await createProfile({
-        name: form.name,
-        engine: form.engine,
-        ...(form.engine === "chromium" && !appMode?.legacyRemote ? { chromiumRuntime: form.chromiumRuntime || "cloakbrowser" } : {}),
-        group: form.group,
-        platform: form.platform,
-        screen: form.screen,
-        ...(form.platformOs ? { platformOs: form.platformOs } : {}),
-        ...(isCloudMode ? {} : { customNo: form.customNo }),
-        username: form.username,
-        password: form.password,
-        email: form.email,
-        emailPassword: form.emailPassword,
-        twofa: form.twofa,
-        proxy: form.host.trim() ? { type: form.proxyType, host: form.host, port: form.port, user: form.user, pass: form.pass } : null,
-      });
-      if (r.ok) {
-        closeCreate();
+      const result = await runProfileCreation(items, createProfile, (next) => {
+        if (creationScope.current === scope) setCreateItems(next);
+      }, () => createStopRequested.current || creationScope.current !== scope);
+      if (creationScope.current === scope) {
+        setCreateItems(result);
+        if (!createBatch && result[0]?.state === "created") { setShowCreate(false); setCreateItems([]); }
         await load();
-      } else {
-        setCreateErr(r.error || "create failed"); // shown inside the modal
       }
-    } catch (e) {
-      setCreateErr(String(e));
     } finally {
+      createInFlight.current = false;
       setCreating(false);
+      if (creationScope.current !== scope) { setShowCreate(false); setCreateItems([]); }
     }
   };
 
@@ -2795,7 +1932,6 @@ function App() {
     setEditInitialExts([]);
     setEditMobile(null);
     setEditExpectedVersion(null);
-    setEditLive(false);
     setEditEngine(null);
     setEditChromiumRuntime("");
     setEditHardware(undefined);
@@ -2825,14 +1961,13 @@ function App() {
           resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "",
           locale: p.locale ?? "", cores: p.cores ?? "", fingerprintSeed: p.fingerprintSeed ?? "",
         });
-        setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
+        setEditEngine(p.engine === "firefox" || p.engine === "webkit" ? p.engine : "chromium");
         setEditChromiumRuntime(p.chromiumRuntime ?? "");
         setEditHardware(p.hardware);
         setEditExts(p.extensions ?? []);
         setEditInitialExts(p.extensions ?? []);
         setEditMobile(p.desktopConversion ?? null);
         setEditExpectedVersion(p.expectedVersion ?? null);
-        setEditLive(p.liveEdit === true);
       } catch (e) {
         if (editFetchId.current === id) setEditErr(String(e));
       } finally {
@@ -2845,7 +1980,6 @@ function App() {
     editFetchId.current = null;
     setEditId(null);
     setEditExpectedVersion(null);
-    setEditLive(false);
     setEditEngine(null);
     setEditChromiumRuntime("");
     setEditHardware(undefined);
@@ -2891,7 +2025,7 @@ function App() {
     }
   };
   const refreshEditedTimezone = async () => {
-    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError || editLive || !confirm(t(FINGERPRINT_EDIT_WARNING))) return;
+    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError  || !confirm(t(FINGERPRINT_EDIT_WARNING))) return;
     const id = editId;
     const generation = editProxyCheckGeneration.current;
     setTimezoneBusy(true);
@@ -2917,23 +2051,23 @@ function App() {
     setEditSaving(true);
     setEditErr(null);
     try {
-      if (isCloudMode && !editLive && editExpectedVersion === null) throw new Error("Cloud profile version is missing; close and reopen Edit");
+
       const r = await updateProfile(editId, {
         name: editForm.name ?? "", group: editForm.group ?? "", platform: editForm.platform ?? "",
         proxy: editForm.proxy ?? "", proxyType: editForm.proxyType ?? "http",
         username: editForm.username ?? "", password: editForm.password ?? "",
         email: editForm.email ?? "", emailPassword: editForm.emailPassword ?? "", twofa: editForm.twofa ?? "",
         tags: editForm.tags ?? "", ...fingerprintEdits,
-        ...(!isCloudMode ? { customNo: editForm.customNo ?? "" } : {}),
+        customNo: editForm.customNo ?? "",
         ...(!sameExtensionSelection(editExts, editInitialExts) && editEngine === "chromium" ? { extensions: editExts } : {}),
-      }, isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined);
+      }, undefined);
       if (r.ok) {
         closeEdit();
         await load();
         if (r.restartRequired) flash(t("Saved. The open browser keeps its current proxy and fingerprint until it restarts."));
       }
       else if (r.status === 409) {
-        const message = r.error || "Cloud profile changed; reopen Edit before saving";
+        const message = r.error || "Profile changed; reopen Edit before saving";
         closeEdit();
         setActionErr(message);
       } else setEditErr(r.error || "save failed");
@@ -3025,9 +2159,7 @@ function App() {
     }
   };
   const doRemoveExtension = async (id: string, name: string) => {
-    const message = isCloudMode
-      ? `Remove extension "${name}" from this device? Cloud assignments remain and will show as not installed here.`
-      : `Remove extension "${name}"? It will be unassigned from all profiles.`;
+    const message = `Remove extension "${name}"? It will be unassigned from all profiles.`;
     if (!confirm(message)) return;
     setExtErr(null);
     try {
@@ -3171,14 +2303,12 @@ function App() {
     }
     setActionErr(null);
     try {
-      const result = isCloudMode
-        ? await cloudWorkspaceAction("create-folder", { name, parentName: newFolderParent })
-        : await createGroup(name, newFolderParent);
+      const result = await createGroup(name, newFolderParent);
       if (result.ok === false) {
         setActionErr(result.error || "create failed");
         return;
       }
-      await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
+      await Promise.all([load(), Promise.resolve()]);
       selectFolder(result.folder?.name ?? name);
       setCollapsedFolders((current) => new Set([...current].filter((folder) => folder !== newFolderParent)));
       setSidebarGroupName("");
@@ -3196,20 +2326,14 @@ function App() {
     setFolderMoveBusy(true);
     setFolderMoveErr(null);
     try {
-      const result = isCloudMode
-        ? await cloudWorkspaceAction("move-folder", { name: movingFolder, parentName: folderParent || null })
-        : await moveGroup(movingFolder, folderParent || null);
+      const result = await moveGroup(movingFolder, folderParent || null);
       if (result.ok === false) throw new Error(result.error || "Move failed");
       remapSelectedFolder(movingFolder, result.folder.name);
       setMovingFolder(null);
-      await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
+      await Promise.all([load(), Promise.resolve()]);
     } catch (error) {
       setFolderMoveErr(error instanceof Error ? error.message : String(error));
     } finally { setFolderMoveBusy(false); }
-  };
-  const openAccess = (target: NonNullable<typeof accessTarget>) => {
-    setAccessTarget(target);
-    void loadTeam();
   };
   const commitRename = async () => {
     const from = renaming, to = renameVal.trim();
@@ -3221,7 +2345,7 @@ function App() {
       if (r.ok === false) setActionErr(r.error || "rename failed");
       else {
         remapSelectedFolder(from, r.folder?.name ?? to);
-        await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
+        await Promise.all([load(), Promise.resolve()]);
       }
     } catch (e) {
       setActionErr(String(e));
@@ -3229,19 +2353,15 @@ function App() {
   };
   const removeGroup = async (g: string) => {
     const n = countFor(g);
-    const prompt = isCloudMode
-      ? `Permanently delete folder "${g}"? Only an empty folder can be deleted.`
-      : `Delete group "${g}"?${n ? ` Its ${n} profile(s) move to Ungrouped (not deleted).` : ""}`;
+    const prompt = `Delete group "${g}"?${n ? ` Its ${n} profile(s) move to Ungrouped (not deleted).` : ""}`;
     if (!confirm(prompt)) return;
     setActionErr(null);
     try {
-      const r = isCloudMode
-        ? await cloudWorkspaceAction("delete-folder", { name: g })
-        : await deleteGroup(g);
+      const r = await deleteGroup(g);
       if (r.ok === false) setActionErr(r.error || "delete failed");
       else {
         if (group === g) setGroup("all");
-        await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
+        await Promise.all([load(), Promise.resolve()]);
       }
     } catch (e) {
       setActionErr(e instanceof Error ? e.message : String(e));
@@ -3252,160 +2372,13 @@ function App() {
     ? describeDesktopUpdateResult(desktopUpdateResult, t)
     : null;
 
-  if (!appMode || !workspaceReady || restartRequired) {
-    return (
-      <>
-        <main className="onboarding">
-        <section className="onboarding-card" aria-labelledby="onboarding-title">
-          <div className="onboarding-brand"><AliasLoop />Vela Browser</div>
-          {restartRequired ? (
-            <>
-              <h1 id="onboarding-title">{appMode?.mode === "cloud" ? t("Switching to Cloud mode") : t("Switching to Local mode")}</h1>
-              {desktopInvoke() ? (
-                <>
-                  <p role="status">{t("Vela Browser restarts to finish the switch.")}</p>
-                  {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                  <button className="mode-primary" type="button" onClick={() => void desktopInvoke()?.("restart_after_mode_change").catch((error) => setModeErr(String(error)))}>{t("Restart Vela Browser")}</button>
-                </>
-              ) : (
-                <>
-                  <p>{t("Quit and reopen Vela Browser to finish the switch.")}</p>
-                  {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                  <button className="mode-primary" type="button" onClick={() => window.close()}>{t("Quit Vela Browser")}</button>
-                </>
-              )}
-            </>
-          ) : appMode?.mode === "cloud" ? (
-            cloudAuth?.authenticated ? (
-              <>
-                <h1 id="onboarding-title">{t("Review the Cloud terms")}</h1>
-                <p>{t("Accept the terms to start using Vela Cloud.")}</p>
-                <div className="auth-actions">
-                  <a href="https://github.com/accomplish07zrh-eng/vela-browser/terms/" target="_blank" rel="noreferrer">{t("Terms")}</a>
-                  <a href="https://github.com/accomplish07zrh-eng/vela-browser/privacy/" target="_blank" rel="noreferrer">{t("Privacy")}</a>
-                  <a href="https://github.com/accomplish07zrh-eng/vela-browser/acceptable-use/" target="_blank" rel="noreferrer">{t("Acceptable Use")}</a>
-                </div>
-                {authErr && <div className="mode-error" role="alert">{authErr}</div>}
-                <button
-                  className="mode-primary"
-                  type="button"
-                  disabled={authBusy || !cloudAuth.legal}
-                  onClick={() => void acceptCurrentLegal()}
-                >
-                  {authBusy ? t("Working…") : cloudAuth.legal ? t("Accept and continue to Cloud") : t("Checking workspace…")}
-                </button>
-                {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-              </>
-            ) : savedSessionPhase === "restoring" ? (
-              <>
-                <h1 id="onboarding-title">{t("Restoring saved session")}</h1>
-                <p role="status">{t("Checking the saved Cloud session on this device…")}</p>
-              </>
-            ) : savedSessionPhase === "retryable-failure" ? (
-              <>
-                <h1 id="onboarding-title">{t("Restoring saved session")}</h1>
-                <p>{t("The saved session is still on this device. Reconnect and try again.")}</p>
-                {authErr && <div className="mode-error" role="alert">{authErr}</div>}
-                <div className="auth-actions">
-                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>{t("Try again")}</button>
-                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>{t("Sign in instead")}</button>
-                </div>
-              </>
-            ) : localPrompt ? (
-              <>
-                <h1 id="onboarding-title">{t("Continue without Cloud?")}</h1>
-                <p>{t("Local profiles stay on this computer only. They do not sync across your devices. You can switch to Cloud later in Settings.")}</p>
-                {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                <div className="local-choice">
-                  <button className="mode-primary" type="button" disabled={modeBusy} onClick={() => { setModeErr(null); setLocalPrompt(false); }}>{t("Back to Cloud sign-in")}</button>
-                  <button className="mode-secondary" type="button" disabled={modeBusy} onClick={() => void chooseMode("local")}>{modeBusy ? t("Switching…") : t("Continue locally")}</button>
-                </div>
-              </>
-            ) : authView === "verify" ? (
-              <>
-                <h1 id="onboarding-title">{t("Check your email")}</h1>
-                <p>{t("Enter the 6-digit code we sent to {email}.", { email: confirmationEmail })}</p>
-                <form className="auth-form" onSubmit={(event) => { event.preventDefault(); void submitCloudAuth(); }}>
-                  <label>{t("Confirmation code")}
-                    <input
-                      className="code-input"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      autoFocus
-                      required
-                      value={authCode}
-                      onChange={(event) => setAuthCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                    />
-                  </label>
-                  {authErr && <div className="mode-error" role="alert">{authErr}</div>}
-                  {authNotice && <div className="auth-notice" role="status">{authNotice}</div>}
-                  <button className="mode-primary" type="submit" disabled={authBusy || authCode.length !== 6}>{authBusy ? t("Working…") : t("Confirm and sign in")}</button>
-                </form>
-                <div className="auth-actions">
-                  <button type="button" disabled={authBusy} onClick={() => void resendConfirmation()}>{t("Send a new code")}</button>
-                  <button type="button" disabled={authBusy} onClick={() => { setAuthErr(null); setAuthNotice(null); setAuthView("signin"); }}>{t("Back to sign in")}</button>
-                </div>
-                <p className="auth-hint">{t("Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.")}</p>
-              </>
-            ) : (
-              <>
-                <h1 id="onboarding-title">{authView === "signin" ? t("Sign in to Vela Cloud") : t("Create your Cloud account")}</h1>
-                <p>{t("Sync your profiles across your computers and work with your team.")}</p>
-                <form className="auth-form" onSubmit={(event) => { event.preventDefault(); void submitCloudAuth(); }}>
-                  <label>{t("Email")}<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
-                  <label>{t("Password")}<input type="password" autoComplete={authView === "signin" ? "current-password" : "new-password"} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
-                  {authErr && <div className="mode-error" role="alert">{authErr}</div>}
-                  {authNotice && <div className="auth-notice" role="status">{authNotice}</div>}
-                  <button className="mode-primary" type="submit" disabled={authBusy}>{authBusy ? t("Working…") : authView === "signin" ? t("Sign in") : t("Create account")}</button>
-                </form>
-                <div className="auth-actions">
-                  <button type="button" onClick={() => { setAuthErr(null); setAuthNotice(null); setAuthView(authView === "signin" ? "signup" : "signin"); }}>
-                    {authView === "signin" ? t("Create an account") : t("Back to sign in")}
-                  </button>
-                  {authView === "signin" && <button type="button" disabled={authBusy} onClick={() => void forgotPassword()}>{t("Forgot password?")}</button>}
-                </div>
-                {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                <button type="button" className="continue-local" disabled={authBusy} onClick={() => { setModeErr(null); setLocalPrompt(true); }}>{t("Continue locally instead")}</button>
-              </>
-            )
-          ) : appMode ? (
-            <>
-              <h1 id="onboarding-title">{t("How do you want to use Vela Browser?")}</h1>
-              <p>{t("Choose where browser profiles live for this installation.")}</p>
-              <div className="mode-options">
-                <button className="mode-option primary" type="button" disabled={modeBusy} onClick={() => chooseMode("cloud")}>
-                  <span className="badge"><Icon name="cloud" className="lg" /></span>
-                  <strong>Vela Cloud</strong>
-                  <span>{t("Sync your profiles across your computers and work with your team.")}</span>
-                </button>
-                <button className="mode-option" type="button" disabled={modeBusy} onClick={() => chooseMode("local")}>
-                  <span className="badge"><Icon name="laptop" className="lg" /></span>
-                  <strong>Vela Local</strong>
-                  <span>{t("No account. Profile data stays on this computer and analytics is off.")}</span>
-                </button>
-              </div>
-              {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-            </>
-          ) : (
-            <>
-              <h1 id="onboarding-title">{t("Starting Vela Browser")}</h1>
-              <p>{connErr ?? t("Loading your configuration…")}</p>
-              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>{t("Try again")}</button>}
-            </>
-          )}
-          </section>
-        </main>
-        {pendingMode && (
-          <ModeSwitchConfirmation
-            mode={pendingMode}
-            busy={modeBusy}
-            error={modeErr}
-            onConfirm={() => void confirmModeSwitch()}
-            onCancel={() => { if (!modeBusy) setPendingMode(null); }}
-          />
-        )}
-      </>
-    );
+  if (!appMode) {
+    return <main className="onboarding"><section className="onboarding-card" aria-labelledby="onboarding-title">
+      <div className="onboarding-brand"><AliasLoop />Vela Browser</div>
+      <h1 id="onboarding-title">{t("Starting Vela Browser")}</h1>
+      {connErr ? <><p role="alert">{connErr}</p><button className="mode-primary" type="button" onClick={() => window.location.reload()}>{t("Try again")}</button></>
+        : <><p role="status">{t("Loading your configuration…")}</p><div className="startup-skeleton" aria-hidden="true"><i /><i /><i /></div></>}
+    </section></main>;
   }
 
   const diagWhen = diag ? new Date(diag.generatedAt).toLocaleTimeString() : null;
@@ -3418,7 +2391,7 @@ function App() {
     // The Action column carries no header text: its buttons explain themselves,
     // and a floating "ACTION" label over a right-aligned cluster read as an
     // empty column. The column chooser still lists it by its registry label.
-    const label = column.key === "action" ? "" : column.key === "group" && isCloudMode ? t("Folder") : t(column.label);
+    const label = column.key === "action" ? "" : column.key === "group" && false ? t("Folder") : t(column.label);
     // Every column declares its width, so a wide window's extra space spreads
     // proportionally across all of them — an even layout, no dead gap.
     const style = { width: column.width } as CSSProperties;
@@ -3441,79 +2414,66 @@ function App() {
   };
 
   return (
-    <ProxyStoreContext.Provider value={storeSnapshot ? openStore : null}>
+    <>
     <div
       className="app"
-      onDragOver={(e) => { e.preventDefault(); if (isCloudMode) return; if (!dragging) setDragging(true); }}
-      onDragLeave={(e) => { e.preventDefault(); if (isCloudMode) return; if (e.currentTarget === e.target) setDragging(false); }}
+      data-view={view}
+      onDragOver={(e) => { e.preventDefault();  if (!dragging) setDragging(true); }}
+      onDragLeave={(e) => { e.preventDefault();  if (e.currentTarget === e.target) setDragging(false); }}
       onDrop={(e) => {
         e.preventDefault();
-        if (isCloudMode) return;
+
         setDragging(false);
         if (e.dataTransfer.files?.length) doUpload(e.dataTransfer.files);
       }}
     >
-      {!isCloudMode && dragging && (
+      {dragging && (
         <div className="dropzone">
           <Icon name="fileImport" />
           <span>Drop TXT, CSV, JSON, or XLSX profile exports to import</span>
         </div>
       )}
 
-      <aside className={`sidebar${sidebarCollapsed || railForced ? " collapsed" : ""}`}>
-        {/* A too-narrow window forces the rail; the toggle would be a no-op. */}
-        {!railForced && (
-          <button
-            type="button"
-            className="rail-toggle tip"
-            data-tip={sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")}
-            aria-label={sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")}
-            aria-expanded={!sidebarCollapsed}
-            onClick={toggleSidebar}
-          >
-            <Icon name={sidebarCollapsed ? "chevronRight" : "chevronLeft"} className="sm" />
-          </button>
-        )}
-        <div className="brandrow">
-          <div className="brand"><AliasLoop />Vela Browser</div>
+      <aside className="sidebar dock">
+        <div className="brandrow" title={appVersion ? `Vela Browser · ${appVersion}` : undefined} onClick={() => setView("workbench")}>
+          <div className="brand"><AliasLoop /><span className="brandlabel">Vela Browser</span></div>
           {appVersion && <span className="appversion" title={appVersion}>{appVersion}</span>}
         </div>
         <div className="newrow">
-          <button className="btn primary newbtn" data-tip={t("New profile")} title={t("New profile")} disabled={!canEditCloud} onClick={openCreate}>
+          <button className="btn primary newbtn" data-tip={t("New profile")} title={t("New profile")} disabled={false} onClick={openCreate}>
             <Icon name="plus" /><span className="navlabel">{t("New Profile")}</span>
           </button>
           <button
             className="btn importbtn tip"
             data-tip={t("Import profiles")}
             aria-label={t("Import profiles")}
-            disabled={!canEditCloud}
+            disabled={false}
             title={t("Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports")}
             onClick={openBulk}
           ><Icon name="fileImport" /><span className="navlabel">{t("Import profiles")}</span></button>
         </div>
 
         <nav className="sidenav" aria-label={t("Sections")}>
+          <button type="button" className={`navitem${view === "workbench" ? " active" : ""}`} data-tip={t("Multi-view workbench")} title={t("Multi-view workbench")} onClick={() => setView("workbench")}>
+            <Icon name="wall" /><span className="navlabel">{t("Multi-view workbench")}</span>
+          </button>
           <button
             type="button"
             className={`navitem${view === "profiles" && group === "all" && !sharedOnly ? " active" : ""}`}
             data-tip={t("All profiles")}
             title={t("All profiles")}
-            onClick={() => selectFolder("all")}
+            onClick={() => { selectFolder("all"); setView("profiles"); }}
           >
             <Icon name="profiles" /><span className="navlabel">{t("All profiles")}</span>
             <span className="cnt">{profiles.length}</span>
           </button>
-          {isCloudMode && sharedProfiles.length > 0 && <button type="button" className={`navitem${view === "profiles" && sharedOnly ? " active" : ""}`} title={t("Shared with me")} onClick={() => { setGroup("all"); setSharedOnly(true); setView("profiles"); }}>
-            <Icon name="user" /><span className="navlabel">{t("Shared with me")}</span><span className="cnt">{sharedProfiles.length}</span>
-          </button>}
+
           {!appMode?.legacyRemote && <>
             <div className="navrow">
-              <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip={t("Proxies")} title={t("Proxies")} onClick={() => { setView("proxies"); if (storeSnapshot) { enterStore("proxies-tab"); void cloudStore.reload(); } }}>
-                <Icon name="activity" /><span className="navlabel">{t("Proxies")}</span>
+              <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip={t("Proxies")} title={t("Proxies")} onClick={() => { setView("proxies");  }}>
+                <Icon name="globe" /><span className="navlabel">{t("Proxies")}</span>
               </button>
-              {storeSnapshot && (
-                <button type="button" className="navbuy" title={t("Buy proxies")} aria-label={t("Buy proxies")} onClick={() => openStore(0, "sidebar-cart")}><CartIcon /></button>
-              )}
+
             </div>
             <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip={t("Trash")} title={t("Trash")} onClick={() => setView("trash")}>
               <Icon name="trash" /><span className="navlabel">{t("Trash")}</span>
@@ -3526,7 +2486,7 @@ function App() {
             title={t("Scripts")}
             onClick={() => setView("scripts")}
           >
-            <Icon name="file" /><span className="navlabel">{t("Scripts")}</span>
+            <Icon name="code" /><span className="navlabel">{t("Scripts")}</span>
           </button>
           <button
             type="button"
@@ -3538,26 +2498,28 @@ function App() {
             <Icon name="puzzle" /><span className="navlabel">{t("Manage extensions")}</span>
             {extensions.length > 0 && <span className="cnt">{extensions.length}</span>}
           </button>
-          {false && !appMode?.servicesHidden && <button type="button" className={`navitem${view === "services" ? " active" : ""}`} data-tip={t("Services")} title={t("Services")} onClick={() => setView("services")}>
-            <Icon name="services" /><span className="navlabel">{t("Services")}</span>
-          </button>}
+          <button type="button" className={`navitem dock-groups${dockGroups ? " open" : ""}`} data-tip={t("Groups")} title={t("Groups")} aria-expanded={dockGroups} onClick={() => setDockGroups((open) => !open)}>
+            <Icon name="folder" /><span className="navlabel">{t("Groups")}</span>
+            {group !== "all" && <span className="cnt">{group ? folderLabel(group) : t("Ungrouped")}</span>}
+          </button>
+
         </nav>
 
-        <div className="sidesection">
+        <div className={`sidesection${dockGroups ? " open" : ""}`} inert={!dockGroups}>
           <button className="sidehead" onClick={() => setGroupsOpen((o) => !o)}>
             <span className={`chev${groupsOpen ? " open" : ""}`}><Icon name="chevronRight" className="sm" /></span>
-            <span>{isCloudMode ? t("Folders") : t("Groups")}</span>
+            <span>{t("Groups")}</span>
             <span className="grow" />
             <span className="cnt">{existingGroups.length}</span>
           </button>
           {groupsOpen && <>
             <div className="folders">
-            {existingGroups.length === 0 && <div className="folders-empty">{isCloudMode ? t("No folders yet") : t("No groups yet")}</div>}
+            {existingGroups.length === 0 && <div className="folders-empty">{t("No groups yet")}</div>}
             {tree.filter((folder) => !folder.ancestors.some((name) => collapsedFolders.has(name))).map(({ name: g, label, depth }) => (
               <div
                 key={g}
                 style={{ paddingLeft: 10 + depth * 16 }}
-                className={`folder${view === "profiles" && !sharedOnly && group === g ? " active" : ""}`}
+                className={`folder${(view === "profiles" || view === "workbench") && !sharedOnly && group === g ? " active" : ""}`}
                 onClick={() => { if (renaming !== g) selectFolder(g); }}
               >
                 {renaming === g ? (
@@ -3576,7 +2538,7 @@ function App() {
                       event.stopPropagation(); setCollapsedFolders((current) => { const next = new Set(current); if (next.has(g)) next.delete(g); else next.add(g); return next; });
                     }}><Icon name={collapsedFolders.has(g) ? "chevronRight" : "chevronDown"} className="sm" /></button> : <Icon name="folder" className="sm" />}
                     <button className="fname folder-select" title={g} onClick={() => selectFolder(g)}>{label ?? g}</button>
-                    {!appMode?.legacyRemote && (canEditGroup(g) || canManageCloudFolders) && (
+                    {!appMode?.legacyRemote && (canEditGroup(g) ) && (
                       <span className="gactions menuwrap" ref={folderMenu === g ? folderMenuRef : undefined} onClick={(event) => event.stopPropagation()}>
                         <button type="button" title={t("Folder actions")} aria-label={t("Actions for {folder}", { folder: g })} aria-expanded={folderMenu === g} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setFolderMenuPosition({ left: rect.right + 8, top: Math.min(rect.top, window.innerHeight - 220) }); setFolderMenu(folderMenu === g ? null : g); }}><Icon name="more" className="sm" /></button>
                         {folderMenu === g && <span className="popover folder-menu" style={folderMenuPosition} onClick={() => setFolderMenu(null)}>
@@ -3584,15 +2546,15 @@ function App() {
                             <button className="pop-item" onClick={() => { setNewFolderParent(g); setSidebarGroupName(""); setAddingGroup(true); }}><Icon name="plus" className="sm" />{t("New subfolder")}</button>
                             <button className="pop-item" onClick={() => startRename(g)}><Icon name="edit" className="sm" />{t("Rename")}</button>
                           </>}
-                          {(!isCloudMode || canManageCloudFolders) && <>
+                          {<>
                             <button className="pop-item" onClick={() => { setMovingFolder(g); setFolderParent(folders.find((folder) => folder.name === g)?.parentName ?? ""); setFolderMoveErr(null); }}><Icon name="move" className="sm" />{t("Move to…")}</button>
                             <button className="pop-item danger" disabled={folders.some((folder) => folder.parentName === g)} onClick={() => void removeGroup(g)}><Icon name="trash" className="sm" />{t("Delete")}</button>
                           </>}
-                          {isCloudMode && canManageCloudFolders && <button className="pop-item" onClick={() => openAccess({ kind: "folder", id: g, name: g, folder: g })}><Icon name="user" className="sm" />{t("Manage access")}</button>}
+
                         </span>}
                       </span>
                     )}
-                    <span className="cnt">{countFor(g)}</span>
+                    <span className={`cnt${profiles.some((profile) => folderScope(folders, g).has(profile.group) && profile.proxyError) ? " has-issues" : ""}`}>{countFor(g)}</span>
                   </>
                 )}
               </div>
@@ -3603,7 +2565,7 @@ function App() {
                 {newFolderParent && <small>{t("In {folder}", { folder: folderLabel(newFolderParent) })}</small>}
                 <input
                   autoFocus
-                  aria-label={isCloudMode ? t("New folder name") : t("New group name")}
+                  aria-label={t("New group name")}
                   value={sidebarGroupName}
                   onChange={(event) => setSidebarGroupName(event.target.value)}
                   onKeyDown={(event) => {
@@ -3615,25 +2577,15 @@ function App() {
                 <button type="button" title={t("Cancel")} onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
               </div>
             ) : (
-              <button className="newgroup" type="button" disabled={!canEditCloud || appMode?.legacyRemote} onClick={() => { setNewFolderParent(null); setAddingGroup(true); }}>
-                <Icon name="plus" className="sm" />{isCloudMode ? t("New folder") : t("New group")}
+              <button className="newgroup" type="button" disabled={appMode?.legacyRemote} onClick={() => { setNewFolderParent(null); setAddingGroup(true); }}>
+                <Icon name="plus" className="sm" />{t("New group")}
               </button>
             )}
           </>}
         </div>
 
         <div className="sidefoot">
-          <a
-            className="navitem"
-            href="https://github.com/accomplish07zrh-eng/vela-browser/support/"
-            target="_blank"
-            rel="noreferrer"
-            data-tip={t("Support")}
-            title={t("Support — chat with the Vela Browser team")}
-          >
-            <Icon name="help" /><span className="navlabel">{t("Support")}</span>
-          </a>
-          <button type="button" className={`navitem${view === "settings" ? " active" : ""}`} data-tip={t("Settings")} title={t("Settings")} onClick={openAccountSettings}>
+          <button type="button" className={`navitem${view === "settings" ? " active" : ""}`} data-tip={t("Settings")} title={t("Settings")} onClick={openSettings}>
             <Icon name="settings" /><span className="navlabel">{t("Settings")}</span>
           </button>
           <div className="sidecredit">
@@ -3655,8 +2607,14 @@ function App() {
             <p className="footer-mark" aria-hidden="true">Vela Browser</p>
           </div>
         </div>
-        {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+
       </aside>
+
+      <div className="wall" inert={view !== "workbench"}>
+        <WorkbenchPage profiles={profiles} groups={existingGroups} folders={folders} group={group} onGroupChange={setGroup} onOpenProfiles={() => setView("profiles")} onRefresh={refreshRoster} locateId={workbenchLocate.id} locateRevision={workbenchLocate.revision} covered={view !== "workbench"} />
+      </div>
+
+      {view !== "workbench" && <button type="button" className="sheet-dismiss" aria-label={t("Back to the workbench")} title={t("Back to the workbench")} onClick={() => setView("workbench")}><span /></button>}
 
       <div className="main">
       <header className="pagehead">
@@ -3668,6 +2626,30 @@ function App() {
         )}
         <span className="spacer" />
         <div className="headactions">
+          <CommandPalette profiles={profiles} groups={existingGroups}
+            commands={[
+              { id: "workbench", label: t("Multi-view workbench") }, { id: "profiles", label: t("All profiles") },
+              { id: "new", label: t("New Profile") }, { id: "import", label: t("Import profiles") },
+              { id: "proxies", label: t("Proxies") }, { id: "settings", label: t("Settings") },
+              { id: "theme", label: t(theme === "dark" ? "Switch to light appearance" : "Switch to dark appearance") },
+            ].filter((command) => true)}
+            onChoose={(target: SearchTarget) => {
+              setDetailId(null);
+              if (target.kind === "profile") {
+                const profile = profiles.find((item) => item.id === target.id); if (!profile) return;
+                setStatusFilter("all"); setEngineFilter("all"); setTagFilter("");
+                setSharedOnly(false); setGroup("all");
+                if (profile.running && profile.permission !== "view") { setWorkbenchLocate((old) => ({ id: target.id, revision: old.revision + 1 })); setView("workbench"); }
+                else { setQ(profile.id); setSelected(new Set([profile.id])); setView("profiles"); }
+              } else if (target.kind === "group") selectFolder(target.id);
+              else if (target.kind === "proxy") setView("proxies");
+              else if (target.kind === "script") { setSearchScriptId(target.id); setView("scripts"); }
+              else if (target.id === "new") openCreate();
+              else if (target.id === "import") openBulk();
+              else if (target.id === "theme") chooseTheme(theme === "dark" ? "light" : "dark");
+              else if (target.id === "settings") openSettings();
+              else if (["workbench", "profiles", "proxies"].includes(target.id)) setView(target.id as "workbench" | "profiles" | "proxies");
+            }} />
           {view === "profiles" && <>
           {/* Health snapshots are pushed by automation workers through the hub, so
               in Local mode this list is always empty (see ui.ts: the local roster
@@ -3719,20 +2701,7 @@ function App() {
             )}
           </div>
           </>}
-          <button
-            className="account-button"
-            type="button"
-            aria-label={t("Open Account and Settings")}
-            title={t("Account & Settings")}
-            onClick={openAccountSettings}
-          >
-            <span className="avatar"><Icon name="user" /></span>
-            <span className="who">
-              <b>{isCloudMode ? cloudAuth?.user?.email ?? t("Cloud account") : t("Local workspace")}</b>
-              <span>{isCloudMode ? t(cloudAuth?.workspace?.role ?? "member") : t("Local · no account")}</span>
-            </span>
-            <Icon name="chevronRight" className="sm" />
-          </button>
+
         </div>
       </header>
 
@@ -3806,16 +2775,12 @@ function App() {
       )}
 
       {!appMode?.legacyRemote && <>
-        <ProxiesPage profilesWithoutProxy={profilesWithoutProxy} key={`proxies:${appMode?.mode}:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`}
-          active={view === "proxies"} groups={[...(isCloudMode ? [] : [""]), ...groups.slice(1)]} folders={folders} onChanged={load}
-          store={storeSnapshot ? (tools) => <StorePage state={storeSnapshot} role={cloudAuth?.workspace?.role} tools={tools}
-            selectedProfileIds={profiles.filter((profile) => selected.has(profile.id)).map((profile) => profile.id)}
-            requestedQuantity={storeRequest.quantity} focusKey={storeRequest.key} active={view === "proxies"} src={storeEntry.src} entryKey={storeEntry.key}
-            onEnter={enterStore} onReload={cloudStore.reload} onProfilesChanged={load} /> : undefined} />
-        <TrashPage key={`trash:${appMode?.mode}:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`}
+        <ProxiesPage profilesWithoutProxy={profilesWithoutProxy} key="proxies"
+          active={view === "proxies"} groups={[...([""]), ...groups.slice(1)]} folders={folders} onChanged={load}
+           />
+        <TrashPage key="trash"
           active={view === "trash"} onChanged={load} folderTree={folders} />
       </>}
-      <ServicesPage active={view === "services"} />
       {view === "profiles" ? (
       <div className="workspace">
         {(breadcrumb || sharedOnly) && <nav className="folder-breadcrumb" aria-label={t("Folder path")}>
@@ -3825,11 +2790,11 @@ function App() {
         <div className="filterbar">
           <select
             className="select group-filter"
-            aria-label={isCloudMode ? "Folder filter" : "Group filter"}
+            aria-label={"Group filter"}
             value={group}
             onChange={(e) => selectFolder(e.target.value)}
           >
-            <option value="all">{isCloudMode ? t("All folders") : t("All profiles")}</option>
+            <option value="all">{t("All profiles")}</option>
             {existingGroups.map((g) => <option key={g} value={g}>{g}</option>)}
           </select>
           <div className="searchfield">
@@ -3844,6 +2809,20 @@ function App() {
             {q && <button type="button" className="clear" aria-label={t("Clear search")} onClick={() => setQ("")}><Icon name="close" className="sm" /></button>}
           </div>
           {runtimeDownloads.length > 0 && <RuntimeDownloadProgressView downloads={runtimeDownloads} />}
+        </div>
+
+        <div className="profile-filters" aria-label={t("Profile filters")}>
+          <select className="select quiet-select" aria-label={t("Filter by status")} value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as ProfileStatusFilter)}>
+            <option value="all">{t("All statuses")}</option><option value="running">{t("running")}</option><option value="stopped">{t("Not started")}</option><option value="attention">{t("Needs attention")}</option>
+          </select>
+          <select className="select quiet-select" aria-label={t("Filter by browser")} value={engineFilter} onChange={(event) => setEngineFilter(event.target.value as ProfileEngineFilter)}>
+            <option value="all">{t("All browsers")}</option><option value="chromium">Chromium</option><option value="firefox">Firefox</option><option value="webkit">WebKit</option>
+          </select>
+          {(profileTags.length > 0 || tagFilter) && <select className="select quiet-select" aria-label={t("Filter by tag")} value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
+            <option value="">{t("All tags")}</option>{[...new Set([...profileTags, ...(tagFilter ? [tagFilter] : [])])].map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+          </select>}
+          <span className="profile-filter-count">{t("{count} profiles in view", { count: filtered.length })}</span>
+          <SavedProfileViews key={`views:${managementScope}`} scope={managementScope} filters={profileFilters} onApply={applyProfileFilters} />
         </div>
 
         {filtered.length > 0 && (
@@ -3871,7 +2850,7 @@ function App() {
           <button className="btn solid-danger tip" data-tip={t("Close selected browsers")} disabled={!selected.size} onClick={closeSelected}>
             <Icon name="power" className="sm" />{t("Close")}
           </button>
-          {(!isCloudMode || selectedEditable) && <>
+          {<>
           <button
             className="btn"
             type="button"
@@ -3887,12 +2866,12 @@ function App() {
             onClick={() => openCookie(profiles.filter((profile) => selected.has(profile.id)))}
           ><Icon name="cookie" className="sm" />{t("Add cookies")}</button>
           <span className="vsep" />
-          {!isCloudMode && selectedMobileCount > 0 && (
+          {selectedMobileCount > 0 && (
             <button className="btn warn" onClick={convertSelectedMobile}>
               <Icon name="laptop" className="sm" />Convert mobile ({selectedMobileCount})
             </button>
           )}
-          {/* Export and file edits work in Cloud; mobile conversion remains Local-only. */}
+          {/* Bulk edits preserve each environment’s stored identity. */}
           <div className="menuwrap" ref={exportRef}>
             <button className="btn tip" data-tip={t("Export selected profiles")} disabled={!selected.size || !!exportProgress} onClick={() => setExportOpen((o) => !o)}>
               <Icon name="export" className="sm" />{t("Export")}<Icon name="chevronDown" className="sm" />
@@ -3935,7 +2914,7 @@ function App() {
               <Icon name="move" className="sm" />{t("Move")}
             </button>
           </div>
-          {!isCloudMode && extensions.length > 0 && selectedProfilesSupportChromeExtensions && (
+          {extensions.length > 0 && selectedProfilesSupportChromeExtensions && (
             <>
               <span className="vsep" />
               <div className="extctl">
@@ -3950,7 +2929,7 @@ function App() {
             </>
           )}
           <span className="spacer" />
-          {(!isCloudMode || selectedEditable) && (
+          {(
             <button className="btn danger tip" data-tip={appMode?.legacyRemote ? t("Delete selected profiles") : t("Move selected profiles to Trash")} disabled={!selected.size || deleting} onClick={deleteSelected}>
               <Icon name="trash" className="sm" />{deleting ? t("Processing…") : appMode?.legacyRemote ? t("Delete") : t("Move {count} to Trash", { count: selected.size.toLocaleString() })}
             </button>
@@ -3978,12 +2957,13 @@ function App() {
                 // lookup cannot miss; a silent fallback here would renumber
                 // rows wrongly if that invariant ever broke.
                 const no = numbering.get(p.id)!;
-                // Running rows are editable too: an open Cloud profile is edited
-                // live through the local cache. Only rows locked by ANOTHER
-                // session stay read-only — that writer owns the profile.
-                const canEditRow = !isCloudMode || (p.permission === "edit" && !p.lockedBy);
+                // Changes to a running browser apply on its next start.
+                const canEditRow = true;
                 return (
-                <tr key={p.id} className={`${p.running ? "running" : ""}${selected.has(p.id) ? " selected" : ""}`}>
+                <tr key={p.id} className={`${p.running ? "running" : ""}${selected.has(p.id) ? " selected" : ""}`} onClick={(event) => {
+                  if (event.target instanceof Element && event.target.closest("button, input, select, a, [role='button']")) return;
+                  setDetailId(p.id);
+                }}>
                   <td className="chk">
                     <input type="checkbox" aria-label={`Select ${p.name}`} checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
                   </td>
@@ -3995,10 +2975,10 @@ function App() {
                   {columnVisible("name") && (
                     <td className="col-name" title={`${p.name}\n${p.id}`}>
                       <span className="name-cell">
-                        <span className="n">{p.name}<FingerprintBadge p={p} /></span>
+                        <button type="button" className="profile-name-link" aria-label={t("View details for {profile}", { profile: p.name })} onClick={() => setDetailId(p.id)}><span className="n">{p.name}<FingerprintBadge p={p} /></span></button>
                         <span className="sub">
                           {p.id}
-                          <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>
+                          <span title={p.engine === "webkit" ? t(WEBKIT_NOTE) : p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>
                             {browserLabel(p.engine, p.chromiumRuntime)}
                           </span>
                           {p.running && <span className="live"><StatusDot running />{t("running")}</span>}
@@ -4007,13 +2987,7 @@ function App() {
                               <Icon name="lock" className="sm" />{p.lockedBy}
                             </span>
                           )}
-                          {p.cloudUnsavedSince && (
-                            <span className="unsaved" title={p.running
-                              ? t("Cloud has an older copy since {time}. This device keeps the latest session and retries.", { time: new Date(p.cloudUnsavedSince).toLocaleString() })
-                              : t("Closed at {time} without its latest session in Cloud. This device saves it to Cloud the next time the profile opens here.", { time: new Date(p.cloudUnsavedSince).toLocaleString() })}>
-                              <Icon name="warning" className="sm" />{t("not saved to Cloud yet")}
-                            </span>
-                          )}
+
                         </span>
                         {(p.restartPending || !!p.pendingCookieCount) && (
                           <span className="status">
@@ -4063,7 +3037,7 @@ function App() {
                   {columnVisible("action") && (
                     <td className="col-action">
                       <span className="rowactions">
-                        {!isCloudMode && p.has2fa && (
+                        {p.has2fa && (
                           <button
                             className={`iconbtn twofa tip${twoFaFlash?.id === p.id ? " flash" : ""}`}
                             data-tip={twoFaFlash?.id === p.id ? `Copied ${twoFaFlash.code}` : "Copy current 2FA code"}
@@ -4073,7 +3047,7 @@ function App() {
                             <Icon name={twoFaFlash?.id === p.id ? "check" : "key"} className="sm" />
                           </button>
                         )}
-                        {isCloudMode && canManageCloudFolders && <button className="iconbtn tip" data-tip={t("Manage access")} aria-label={t("Manage access for {profile}", { profile: p.name })} onClick={() => openAccess({ kind: "profile", id: p.id, name: p.name, folder: p.group })}><Icon name="user" className="sm" /></button>}
+
                         {canEditRow && (
                           <button className="iconbtn tip" data-tip={t("Edit profile")} aria-label={`Edit ${p.name}`} onClick={() => openEdit(p.id)}>
                             <Icon name="edit" className="sm" />
@@ -4103,38 +3077,27 @@ function App() {
                               data-tip={t("Check fingerprint")}
                               aria-label={t("Open the fingerprint test in {profile}", { profile: p.name })}
                               disabled={busy[p.id]}
-                              onClick={() => act(p.id, (id) => checkFingerprint(id, fingerprintPage))}
+                              onClick={() => {
+                                if (appMode?.legacyRemote) { void act(p.id, (id) => checkFingerprint(id, fingerprintPage)); return; }
+                                const request = ++fingerprintRequest.current;
+                                setFingerprintView({ profile: p, audit: null, error: null });
+                                void measureFingerprint(p.id).then((audit) => {
+                                  if (fingerprintRequest.current === request) setFingerprintView({ profile: p, audit, error: null });
+                                }, (error) => {
+                                  if (fingerprintRequest.current === request) setFingerprintView({ profile: p, audit: null, error: String(error.message ?? "Fingerprint measurement could not complete. Reopen this browser and try again.") });
+                                });
+                              }}
                             ><Icon name="fingerprint" className="sm" /></button>
                             <button className="btn sm solid-danger" aria-label={`Close ${p.name}`} disabled={busy[p.id]} onClick={() => act(p.id, closeProfile)}>
                               <Icon name="power" className="sm" />{t("Close")}
                             </button>
                           </>
                         ) : p.mobilePersona ? (
-                          !p.lockedBy && (!isCloudMode || p.permission === "edit") ? (
+                          !p.lockedBy && (true) ? (
                             <button className="btn sm warn" disabled={busy[p.id]} title={t("Convert this mobile persona to a desktop device")} onClick={() => openEdit(p.id)}>
                               <Icon name="laptop" className="sm" />Convert
                             </button>
                           ) : null
-                        ) : p.parkedSession && p.permission === "edit" ? (
-                          <>
-                            <button
-                              className="btn sm warn tip"
-                              data-tip={`Saved on this device ${new Date(p.parkedSession.savedAt).toLocaleString()}`}
-                              aria-label={`Restore the saved session of ${p.name}`}
-                              disabled={busy[p.id]}
-                              onClick={() => restoreSession(p)}
-                            >
-                              <Icon name="refresh" className="sm" />Restore session
-                            </button>
-                            <button
-                              className="btn sm primary"
-                              aria-label={`Open ${p.name}`}
-                              disabled={busy[p.id]}
-                              onClick={() => act(p.id, openProfile)}
-                            >
-                              <Icon name="play" className="sm" />{openLabel(p)}
-                            </button>
-                          </>
                         ) : (
                           <button
                             className="btn sm primary"
@@ -4162,15 +3125,15 @@ function App() {
                           <b>{t("No profiles yet")}</b>
                           <p>{t("Create a profile or import a readable export from another browser.")}</p>
                           <div className="empty-actions">
-                            <button className="btn primary" disabled={!canEditCloud} onClick={openCreate}><Icon name="plus" className="sm" />{t("New Profile")}</button>
-                            <button className="btn" disabled={!canEditCloud} onClick={openBulk}><Icon name="fileImport" className="sm" />{t("Import profiles")}</button>
+                            <button className="btn primary" disabled={false} onClick={openCreate}><Icon name="plus" className="sm" />{t("New Profile")}</button>
+                            <button className="btn" disabled={false} onClick={openBulk}><Icon name="fileImport" className="sm" />{t("Import profiles")}</button>
                           </div>
                         </>
                       ) : (
                         <>
                           <b>{t("No matches")}</b>
                           <p>{t("No profiles match the current filters.")}</p>
-                          <button className="btn" onClick={() => { setQ(""); setGroup("all"); }}>{t("Clear filters")}</button>
+                          <button className="btn" onClick={clearProfileFilters}>{t("Clear filters")}</button>
                         </>
                       )}
                     </div>
@@ -4221,8 +3184,8 @@ function App() {
           </span>
         </footer>
       </div>
-      ) : view === "scripts" ? (
-      <ScriptsPage onViewRun={() => setScriptRunOpen(true)} />
+      ) : view === "workbench" ? null : view === "scripts" ? (
+      <ScriptsPage onViewRun={() => setScriptRunOpen(true)} initialScriptId={searchScriptId} />
       ) : view === "extensions" ? (
       <div className="workspace">
         <div className="settingspage">
@@ -4250,7 +3213,7 @@ function App() {
           <p className="formnote">{t("The in-browser Store button does not work in CloakBrowser. Paste the Store link above, or upload a ZIP/CRX archive. Chrome extensions apply only to CloakBrowser profiles.")}</p>
           <ol className="steps">
             <li>{t("Install the extension here. New installs stay unassigned.")}</li>
-            <li>{t("Use")} <b>{t("Edit > Extensions")}</b> {isCloudMode ? t("to assign it to a profile.") : t("to assign it to a profile, or assign many at once from the roster toolbar.")}</li>
+            <li>{t("Use")} <b>{t("Edit > Extensions")}</b> {t("to assign it to a profile, or assign many at once from the roster toolbar.")}</li>
             <li>{t("Reopen the profile. Vela Browser loads the extension when the browser starts.")}</li>
           </ol>
           <section className="settings-card">
@@ -4358,99 +3321,15 @@ function App() {
               className={`tab${settingsTab === tab.key ? " active" : ""}`}
               onClick={() => setSettingsTab(tab.key)}
             >
-              {tab.key === "team" && isCloudMode ? t("Team") : t(tab.label)}
+              {t(tab.label)}
             </button>
           ))}
         </div>
         <div className="settingspage">
-          {settingsTab === "account" && (
+
+          {settingsTab === "general" && (
             <>
-              <h2 className="sect-title">{t("Account information")}</h2>
-              <div className="identity-card">
-                <span className="identity-avatar"><Icon name="user" className="lg" /></span>
-                <span className="identity-lines">
-                  <b>{isCloudMode ? cloudAuth?.user?.email ?? t("Cloud account") : t("Local workspace")}</b>
-                  <span>
-                    {isCloudMode
-                      ? `${t(cloudAuth?.workspace?.role ?? "member")} · ${cloudAuth?.workspace?.name ?? t("Cloud workspace")}`
-                      : t("No account · profile data stays on this computer")}
-                  </span>
-                </span>
-                <span className="chip">{isCloudMode ? t("Cloud") : t("Local")}</span>
-              </div>
-<section className="settings-card">
-            <header><Icon name="user" className="sm" /><h2>{t("Account")}</h2></header>
-            <div className="card-body">
-            <div className="settings-row"><span>{t("Signed in as")}</span><strong>{isCloudMode ? cloudAuth?.user?.email ?? t("Cloud account") : t("Local · no account")}</strong></div>
-            <div className="settings-row"><span>{t("Profiles stored")}</span><strong>{profiles.length}</strong></div>
-            {isCloudMode && cloudAuth?.authenticated && (
-              <button className="btn danger" type="button" disabled={authBusy} onClick={() => void signOut()}>
-                <Icon name="power" className="sm" />{authBusy ? t("Signing out…") : t("Sign out / Switch account")}
-              </button>
-            )}
-            {authErr && <p className="modal-err" role="alert">{authErr}</p>}
-            </div>
-          </section>
-
-          {isCloudMode && cloudAuth?.authenticated && (
-            <section className="settings-card remote-mcp-settings">
-              <header>
-                <Icon name="cloud" className="sm" /><h2>{t("Remote MCP")}</h2>
-                <span className={`remote-mcp-status ${remoteMcp.state}`}>
-                  {remoteMcp.state === "active" ? t("Ready") : remoteMcp.state === "disabled" ? t("Disabled") : remoteMcp.state === "loading" ? t("Preparing") : remoteMcp.state === "error" ? t("Unavailable") : t("Not ready")}
-                </span>
-              </header>
-              <div className="card-body">
-                <p>{t("Connect an AI client on another computer. Browser windows open on this Windows PC, so keep Vela Browser running.")}</p>
-                {remoteMcp.state === "loading" && <p className="hint" role="status">{t("Preparing your secure connection…")}</p>}
-                {remoteMcp.state === "active" && remoteMcp.url && remoteMcp.token && (
-                  <>
-                    <label className="fld remote-mcp-field">
-                      <span>{t("MCP server URL")}</span>
-                      <span className="remote-mcp-value">
-                        <input className="mono" value={remoteMcp.url} readOnly />
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("url", remoteMcp.url!)}>{remoteMcpCopied === "url" ? t("Copied") : t("Copy")}</button>
-                      </span>
-                    </label>
-                    <label className="fld remote-mcp-field">
-                      <span>{t("Access key")}</span>
-                      <span className="remote-mcp-value">
-                        <input className="mono" value={remoteMcpTokenVisible ? remoteMcp.token : "••••••••••••••••••••••••"} readOnly aria-label={t("Remote MCP access key")} />
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => setRemoteMcpTokenVisible((visible) => !visible)}>{remoteMcpTokenVisible ? t("Hide") : t("Reveal")}</button>
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("token", remoteMcp.token!)}>{remoteMcpCopied === "token" ? t("Copied") : t("Copy")}</button>
-                      </span>
-                    </label>
-                    <div className="hint remote-mcp-guide">
-                      <strong>{t("Connect Claude.ai or ChatGPT")}</strong>
-                      <ol>
-                        <li>{t("Add a custom MCP connector or app.")}</li>
-                        <li>{t("Paste the MCP server URL and select Connect.")}</li>
-                        <li>{t("Sign into Vela Browser and select Allow.")}</li>
-                      </ol>
-                      <details>
-                        <summary>{t("Claude Code and other clients")}</summary>
-                        <p>{t("Claude Code uses an HTTP entry in {file}. Keep the access key in an environment variable. Other bearer-capable MCP clients can use the same URL and secret header.", { file: ".mcp.json" })}</p>
-                        <p>{t("Claude.ai and ChatGPT use OAuth and do not need the access key.")}</p>
-                      </details>
-                    </div>
-                    <div className="update-actions">
-                      <button className="btn" type="button" disabled={authBusy} onClick={() => void regenerateRemoteMcp()}>{t("Regenerate key")}</button>
-                      <button className="btn danger" type="button" disabled={authBusy} onClick={() => void disableRemoteMcp()}>{t("Disable")}</button>
-                    </div>
-                  </>
-                )}
-                {remoteMcp.state === "disabled" && (
-                  <>
-                    <p>{t("Remote connections are disabled for this Windows device.")}</p>
-                    <button className="btn" type="button" disabled={authBusy} onClick={() => void enableRemoteMcp()}>{t("Enable Remote MCP")}</button>
-                  </>
-                )}
-                {remoteMcp.error && <div className="modal-err" role="alert">{t(remoteMcp.error)}</div>}
-                {remoteMcp.state === "error" && <button className="btn" type="button" disabled={authBusy} onClick={() => void loadRemoteMcp()}>{t("Try again")}</button>}
-              </div>
-            </section>
-          )}
-
+              <h2 className="sect-title">{t("General")}</h2>
 <section className="settings-card">
             <header><Icon name="sun" className="sm" /><h2>{t("Appearance")}</h2></header>
             <div className="card-body">
@@ -4476,96 +3355,12 @@ function App() {
                   </button>
                 ))}
               </div>
-              {servicesSettingErr && <p className="modal-err" role="alert">{t(servicesSettingErr)}</p>}
             </div>
           </section>
-          <section className="settings-card">
-            <header><Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" /><h2>{t("Switch mode")}</h2></header>
-            <div className="card-body settings-mode">
-              <p>{isCloudMode ? t("Local mode keeps this installation offline from Vela Cloud.") : t("Cloud mode requires an account and does not upload Local profiles automatically.")}</p>
-              <button className="btn" type="button" disabled={modeBusy || desktopUpdateInstalling} onClick={() => requestModeSwitch(isCloudMode ? "local" : "cloud")}>
-                <Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" />
-                {t("Switch to {target}", { target: isCloudMode ? t("Local") : t("Cloud") })}
-              </button>
-            </div>
-          </section>
-          
+
             </>
           )}
-          {settingsTab === "team" && (
-            <>
-              <h2 className="sect-title">{isCloudMode ? t("Team and folder access") : t("Workspace")}</h2>
-<section className="settings-card">
-            <header><Icon name="folders" className="sm" /><h2>{isCloudMode ? t("Team") : t("Workspace")}</h2></header>
-            <div className="card-body">
-            {isCloudMode ? (
-              <>
-                <div className="settings-row"><span>{t("Workspace")}</span><strong>{cloudAuth?.workspace?.name ?? t("Cloud workspace")}</strong></div>
-                <div className="settings-row"><span>{t("Role")}</span><strong>{t(cloudAuth?.workspace?.role ?? "member")}</strong></div>
-                {teamBusy && !team && <p className="hint" role="status">{t("Loading team…")}</p>}
-                <h3 className="settings-subhead">{t("Members")}</h3>
-                {team?.members.map((member) => (
-                  <div className="team-member" key={member.accountId}>
-                    <div className="settings-row">
-                      <span>{member.email}<small> · {member.grants.map((grant) => `${grant.folderName}: ${grant.permission}`).join(", ") || t("No folder access")}</small></span>
-                      {member.role === "owner" || cloudAuth?.workspace?.role !== "owner" ? <strong>{t(member.role)}</strong> : (
-                        <select className="select" aria-label={t("Role for {email}", { email: member.email })} value={member.role} disabled={teamBusy} onChange={(event) => void runTeamAction("role", { accountId: member.accountId, role: event.target.value })}>
-                          <option value="member">{t("member")}</option><option value="admin">{t("admin")}</option>
-                        </select>
-                      )}
-                      {member.role !== "owner" && (cloudAuth?.workspace?.role === "owner" || (cloudAuth?.workspace?.role === "admin" && member.role === "member")) && (
-                        <button className="btn xs" type="button" aria-label={t("Send password reset to {email}", { email: member.email })} disabled={teamBusy} onClick={() => void runTeamAction("reset-password", { accountId: member.accountId }, t("Password reset email sent to {email}", { email: member.email }))}>{t("Reset password")}</button>
-                      )}
-                    </div>
-                    {member.role === "member" && (cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin") && (
-                      <div className="team-grants">
-                        {team.folders.filter((folder) => !folder.archivedAt).map((folder) => {
-                          const permission = member.grants.find((grant) => grant.folderName === folder.name)?.permission ?? "";
-                          return <GrantControl key={folder.name} label={t("{folder} access for {email}", { folder: folder.name, email: member.email })} direct={permission} inherited={folderGrantPermission(team.folders, member.grants, folder.name, false)} busy={teamBusy} onChange={(permission) => void runTeamAction(permission ? "grant" : "remove-grant", { folderName: folder.name, accountId: member.accountId, permission })} />;
-                        })}
-                        <button className="btn xs danger" type="button" aria-label={t("Remove {email}", { email: member.email })} disabled={teamBusy} onClick={() => void runTeamAction("remove-member", { accountId: member.accountId }, t("Removed {email}", { email: member.email }))}>{t("Remove")}</button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {(cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin") && (
-                  <>
-                    <h3 className="settings-subhead">{t("Invitations")}</h3>
-                    <form className="team-code" onSubmit={(event) => { event.preventDefault(); void inviteTeamMember(); }}>
-                      <input className="input" type="email" aria-label={t("Invite email")} aria-describedby="invite-team-help" placeholder={t("Staff email address")} value={teamEmail} disabled={teamBusy} onChange={(event) => setTeamEmail(event.target.value)} />
-                      {cloudAuth?.workspace?.role === "owner" && <select className="select" aria-label={t("Invitation role")} value={teamRole} disabled={teamBusy} onChange={(event) => setTeamRole(event.target.value as "admin" | "member")}><option value="member">{t("Member")}</option><option value="admin">{t("Admin")}</option></select>}
-                      <button className="btn primary" type="submit" disabled={teamBusy || !teamEmail.trim()}>{t("Send invite")}</button>
-                    </form>
-                    <p className="hint" id="invite-team-help">{t("Invitations go to that exact verified email. New members see no folders until you grant access here.")}</p>
-                    {team?.invitations.filter((invite) => !invite.acceptedAt && !invite.revokedAt).map((invite) => {
-                      const statusCode = invite.expiresAt <= Date.now() ? "expired" : "pending";
-                      const status = t(statusCode === "expired" ? "Expired" : "Pending");
-                      return <div className="settings-row" key={invite.id}>
-                        <span>{invite.email}<small>{invite.role}</small></span>
-                        <span>
-                          <span className={`team-tag ${statusCode}`}>{status}</span>
-                          {(cloudAuth?.workspace?.role === "owner" || invite.role === "member") && <> <button className="btn xs" type="button" aria-label={t("Resend invitation to {email}", { email: invite.email })} disabled={teamBusy} onClick={() => void runTeamAction("resend", { id: invite.id }, t("Invitation resent"))}>{t("Resend")}</button> <button className="btn xs danger" type="button" aria-label={t("Revoke invitation to {email}", { email: invite.email })} disabled={teamBusy} onClick={() => void runTeamAction("revoke", { id: invite.id }, t("Invitation revoked"))}>{t("Revoke")}</button></>}
-                        </span>
-                      </div>;
-                    })}
-                  </>
-                )}
-                {teamErr && <p className="modal-err" role="alert">{t(teamErr)}</p>}
-                <h3 className="settings-subhead">{t("Join another workspace")}</h3>
-                <form className="team-code" onSubmit={(event) => { event.preventDefault(); void acceptInvitation(); }}>
-                  <input className="input" aria-label={t("Invitation code")} placeholder={t("Paste invitation code")} value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} />
-                  <button className="btn primary" type="submit" disabled={authBusy || !invitationCode.trim()}>{t("Accept")}</button>
-                </form>
-                <p className="hint">{t("Paste the code from your invitation email. It works only for the email you signed in with.")}</p>
-                {authNotice && <p className="hint" role="status">{t(authNotice)}</p>}
-                {authErr && <p className="modal-err" role="alert">{t(authErr)}</p>}
-              </>
-            ) : <p>{t("Local mode has no Cloud workspace.")}</p>}
-            </div>
-          </section>
-          
-            </>
-          )}
+
           {settingsTab === "advanced" && (
             <>
               <h2 className="sect-title">{t("Updates and diagnostics")}</h2>
@@ -4604,36 +3399,9 @@ function App() {
             </div>
             </div>
           </section>
-          
-{isCloudMode && (
-            <section className="settings-card diagnostics-section">
-              <header>
-                <Icon name="activity" className="sm" /><h2>{t("Recent diagnostics")}</h2>
-                <button className="btn xs" type="button" disabled={cloudEventsBusy} onClick={() => void loadCloudEvents()}>
-                  {cloudEventsBusy ? t("Loading…") : t("Refresh")}
-                </button>
-              </header>
-              <div className="card-body">
-              {cloudEventsErr && <div className="diagnostics-error" role="alert">{t(cloudEventsErr)}</div>}
-              {!cloudEventsErr && cloudEvents.length === 0 && (
-                <p>{cloudEventsBusy ? t("Loading recent Cloud events…") : t("No Cloud lifecycle events in this run.")}</p>
-              )}
-              {cloudEvents.length > 0 && (
-                <div className="diagnostics-list" role="log" aria-label={t("Recent Cloud diagnostics")}>
-                  {cloudEvents.map((event, index) => (
-                    <div className={`diagnostics-row${cloudDiagnosticFailed(event.type) ? " failed" : ""}`} key={`${event.timestamp}-${index}`}>
-                      <time dateTime={new Date(event.timestamp).toISOString()}>{new Date(event.timestamp).toLocaleTimeString()}</time>
-                      <span>{t(CLOUD_DIAGNOSTIC_LABELS[event.type])}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <p>{t("Diagnostics contain fixed lifecycle labels only. They exclude profile data and credentials.")}</p>
-              </div>
-            </section>
-          )}
-          {/* Logs are not a Cloud feature — a Local install needs them just as
-              much, so this card is the one part of Advanced that always shows. */}
+
+
+          {/* Logs and diagnostics stay on this computer. */}
           <section className="settings-card">
             <header><Icon name="logs" className="sm" /><h2>{t("Logs")}</h2></header>
             <div className="card-body">
@@ -4646,10 +3414,10 @@ function App() {
               {logDir && <p className="cardnote">{t("File")}: {logDir}</p>}
             </div>
           </section>
-          
+
             </>
           )}
-          {modeErr && <div className="modal-err" role="alert"><Icon name="alert" className="sm" />{t(modeErr)}</div>}
+
         </div>
         <footer className="pagefoot">
           <span className="spacer" />
@@ -4658,6 +3426,37 @@ function App() {
       </div>
       ) : null}
       </div>
+
+      {fingerprintView && (
+        <div className="modal-backdrop" onClick={() => { ++fingerprintRequest.current; setFingerprintView(null); }}>
+          <div className="modal fp-audit" role="dialog" aria-modal="true" aria-labelledby="fp-audit-title" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") { ++fingerprintRequest.current; setFingerprintView(null); } }}>
+            <div className="modal-head"><span id="fp-audit-title">{t("Fingerprint measurement")}</span><button autoFocus className="modal-close" type="button" aria-label={t("Close")} onClick={() => { ++fingerprintRequest.current; setFingerprintView(null); }}><Icon name="close" className="sm" /></button></div>
+            <div className="modal-body">
+              <p className="hint">{fingerprintView.profile.name} · {fingerprintView.profile.engine}</p>
+              {fingerprintView.error ? <p role="alert" className="modal-err">{t(fingerprintView.error)}</p> : !fingerprintView.audit ? <p className="hint" role="status">{t("Measuring in a temporary local page…")}</p> : <>
+                <p className="hint">{t("Measured values show what this browser exposes. Restart stability and differences between environments require separate tests.")}</p>
+                <div className="fp-audit-surfaces">
+                  {fingerprintView.audit.surfaces.map((item) => <section key={item.surface} className="fp-audit-surface">
+                    <div className="fp-audit-line"><b>{({ canvas: "Canvas", audio: "Audio", webgl: "WebGL", fonts: t("Fonts") })[item.surface]}</b><span className={item.measured ? "hint" : "fp-audit-missing"}>{t(item.measured ? "Measured" : "Incomplete measurement")}</span></div>
+                    <p className="hint">{t(item.implementation === "kernel-seeded" ? "Profile seed applied by the engine" : item.implementation === "native" ? "Native browser values" : "Managed by the browser engine")}</p>
+                    {item.repeatedRead !== "not-measured" && <p className={item.repeatedRead === "inconsistent" ? "fp-audit-missing" : "hint"}>{t(item.repeatedRead === "consistent" ? "Repeated reads are consistent" : "Repeated reads differ")}</p>}
+                    {item.integrity.filter((check) => check.result !== "not-measured").map((check) => <p key={check.name} className={check.result === "inconsistent" ? "fp-audit-missing" : "hint"}>{t(({ canvasWrites: "Canvas pixel round trip", audioWrites: "Audio buffer round trip", audioSilence: "Silent audio remains silent" })[check.name])} · {t(check.result === "consistent" ? "Consistent" : "Inconsistent")}</p>)}
+                    <details><summary>{t("Measurement details")}</summary><dl>{Object.entries(item.values).map(([field, value]) => <div key={field}><dt>{field}</dt><dd>{value}</dd></div>)}{item.missing.map((field) => <div key={field}><dt>{field}</dt><dd>{t("Unavailable")}</dd></div>)}</dl></details>
+                  </section>)}
+                </div>
+                <div className="fp-audit-diagnostics">
+                  {fingerprintView.audit.diagnostics.map((item) => <details key={item.name}>
+                    <summary><span>{t(({ identity: "Browser identity", locale: "Language and timezone", display: "Screen and input", hardware: "Hardware", webgl2: "WebGL 2", webgpu: "WebGPU", audio: "Audio properties", media: "Media devices", voices: "Speech voices", storage: "Storage quota", permissions: "Permissions" })[item.name])}</span><span className={item.measured ? "hint" : "fp-audit-missing"}>{t(item.measured ? "Measured" : "Unavailable")}</span></summary>
+                    {item.measured ? <pre>{JSON.stringify(item.value, null, 2)}</pre> : <p className="hint">{item.error || t("No measurement yet")}</p>}
+                  </details>)}
+                </div>
+                {fingerprintView.audit.capturedAt && <p className="hint">{new Date(fingerprintView.audit.capturedAt).toLocaleString()}</p>}
+              </>}
+            </div>
+            <div className="modal-foot"><button type="button" className="btn ghost" onClick={() => { ++fingerprintRequest.current; setFingerprintView(null); }}>{t("Close")}</button></div>
+          </div>
+        </div>
+      )}
 
       {(logView || logErr) && (
         <div className="modal-backdrop" onClick={() => { setLogView(null); setLogErr(null); }}>
@@ -4676,15 +3475,6 @@ function App() {
         </div>
       )}
 
-      {pendingMode && (
-        <ModeSwitchConfirmation
-          mode={pendingMode}
-          busy={modeBusy}
-          error={modeErr}
-          onConfirm={() => void confirmModeSwitch()}
-          onCancel={() => { if (!modeBusy) setPendingMode(null); }}
-        />
-      )}
 
       {pendingView && (
         <div className="modal-backdrop" onClick={() => { if (!pendingView.busy) setPendingView(null); }}>
@@ -4779,49 +3569,49 @@ function App() {
               <option value="">{t("Top level")}</option>
               {tree.filter((folder) => folder.name !== movingFolder && !folder.ancestors.includes(movingFolder)).map((folder) => <option key={folder.name} value={folder.name}>{folder.name}</option>)}
             </select></label>
-            {isCloudMode && <p className="hint">{t("Inherited access follows the new parent folder.")}</p>}
+
             {folderMoveErr && <div className="modal-err" role="alert">{folderMoveErr}</div>}
           </div>
           <div className="modal-foot"><button className="btn ghost" disabled={folderMoveBusy} onClick={() => setMovingFolder(null)}>{t("Cancel")}</button><button className="btn primary" disabled={folderMoveBusy} onClick={() => void commitFolderMove()}>{t("Move")}</button></div>
         </div>
       </div>}
 
-      {accessTarget && isCloudMode && canManageCloudFolders && <div className="modal-backdrop" onClick={() => { if (!teamBusy) setAccessTarget(null); }}>
-        <div className="modal mode-confirm" role="dialog" aria-modal="true" aria-labelledby="manage-access-title" onClick={(event) => event.stopPropagation()}>
-          <div className="modal-head" id="manage-access-title">{t("Manage access")} · {accessTarget.name}</div>
-          <div className="modal-body">
-            <p className="hint">{t("Owners and admins have access to all folders and profiles.")}</p>
-            <p className="hint">{accessTarget.kind === "folder" ? t("Folder access includes all subfolders. The strongest grant applies.") : t("Profile access shares only this profile and follows it when moved.")}</p>
-            {team?.members.filter((member) => member.role === "member").map((member) => {
-              const profile = accessTarget.kind === "profile";
-              const direct = profile ? member.profileGrants?.find((grant) => grant.profileId === accessTarget.id)?.permission ?? ""
-                : member.grants.find((grant) => grant.folderName === accessTarget.id)?.permission ?? "";
-              return <GrantControl key={member.accountId} label={member.email} direct={direct} inherited={folderGrantPermission(team.folders, member.grants, accessTarget.folder, profile)} busy={teamBusy} onChange={(permission) => void runTeamAction(profile ? permission ? "profile-grant" : "remove-profile-grant" : permission ? "grant" : "remove-grant", { ...(profile ? { profileId: accessTarget.id } : { folderName: accessTarget.id }), accountId: member.accountId, permission })} />;
-            })}
-            {team && !team.members.some((member) => member.role === "member") && <p>{t("Invite members in Settings → Team to share access.")}</p>}
-            {teamErr && <div className="modal-err" role="alert">{teamErr}</div>}
-          </div>
-          <div className="modal-foot"><button className="btn" disabled={teamBusy} onClick={() => setAccessTarget(null)}>{t("Close")}</button></div>
-        </div>
-      </div>}
+
+      {detailProfile && <ProfileDetailDrawer key={`${managementScope}:${detailProfile.id}`} profile={detailProfile} number={numbering.get(detailProfile.id)?.value ?? detailProfile.id}
+        browser={browserLabel(detailProfile.engine, detailProfile.chromiumRuntime)} canEdit={true}
+        busy={!!busy[detailProfile.id]} onClose={() => setDetailId(null)}
+        onEdit={() => { setDetailId(null); openEdit(detailProfile.id); }}
+        onToggle={() => void act(detailProfile.id, detailProfile.running ? closeProfile : openProfile)}
+        onCookies={() => { setDetailId(null); void openPendingCookies(detailProfile); }} />}
 
       {showCreate && (
-        /* Form dialog: a stray backdrop click must not discard typed input —
-           close via Cancel, the X, or Escape (the backdrop has no onClick). */
-        <div className="modal-backdrop">
-          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-profile-title" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head" id="create-profile-title">
-              <Icon name="plus" />{t("New profile")}
-              <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeCreate}><Icon name="close" className="sm" /></button>
+        <ProfileCreationDialog onCancel={closeCreate}>
+            <div className="modal-head">
+              <Icon name="plus" /><span id="create-profile-title">{t("New profile")}</span>
+              <button type="button" className="modal-close" aria-label={t("Close")} disabled={creating} onClick={closeCreate}><Icon name="close" className="sm" /></button>
             </div>
+            <div className="profile-create-layout">
             <div className="modal-body">
               {createErr && <div className="modal-err"><Icon name="alert" className="sm" />{createErr}</div>}
-              <div className="fld-row">
+              {createItems.length > 0 ? <ProfileCreationReceipt items={createItems} busy={creating} /> : <fieldset className="profile-create-fields" disabled={creating}>
+              <ProfileTemplateBar key={`templates:${managementScope}`} scope={managementScope} disabled={creating}
+                settings={{ engine: form.engine, chromiumRuntime: form.engine === "chromium" ? appMode?.chromiumRuntime ?? (form.chromiumRuntime || "cloakbrowser") : undefined, group: form.group, platform: form.platform, screen: form.screen, platformOs: form.platformOs }}
+                available={(settings) => (settings.engine !== "webkit" || !!appMode?.webkitAvailable) &&
+                  (!appMode?.legacyRemote || settings.chromiumRuntime !== "aliasmode") &&
+                  (!appMode?.chromiumRuntime || settings.engine !== "chromium" || settings.chromiumRuntime === appMode.chromiumRuntime) &&
+                  (true)}
+                onApply={(settings) => {
+                  resetCreateProxyCheck(); setProxyPaste(""); setProxyPasteOk(null); setCreateErr(null);
+                  setForm((current) => ({ ...BLANK_FORM, name: current.name, engine: settings.engine ?? "chromium", chromiumRuntime: settings.chromiumRuntime === "aliasmode" ? "aliasmode" : "", group: settings.group ?? "", platform: settings.platform ?? "", screen: settings.screen ?? "", platformOs: settings.platformOs ?? "" }));
+                }} />
+              <ProfileBatchOptions enabled={createBatch} count={createCount} pattern={createPattern} start={createStart} disabled={creating}
+                onEnabled={setCreateBatch} onCount={setCreateCount} onPattern={setCreatePattern} onStart={setCreateStart} />
+              {!createBatch && <div className="fld-row">
                 <label className="fld grow">
                   <span>{t("Name")}</span>
                   <input value={form.name} placeholder={t("auto if blank")} onChange={(e) => setF("name", e.target.value)} />
                 </label>
-                {!isCloudMode && (
+                {(
                   <label className="fld no">
                     <span>{t("Custom NO.")}</span>
                     <input
@@ -4833,11 +3623,11 @@ function App() {
                     />
                   </label>
                 )}
-              </div>
+              </div>}
               <div className="fld-row">
                 <label className="fld grow">
                   <span>{t("Folder")}</span>
-                  <GroupPicker value={form.group} onChange={(v) => setF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
+                  <GroupPicker value={form.group} onChange={(v) => setF("group", v)} groups={editableGroups} allowCreate={true} />
                 </label>
                 <label className="fld grow">
                   <span>{t("Platform")}</span>
@@ -4854,21 +3644,26 @@ function App() {
                     engine: "firefox", label: "Firefox",
                     path: "M8.824 7.287c.008 0 .004 0 0 0zm-2.8-1.4c.006 0 .003 0 0 0zm16.754 2.161c-.505-1.215-1.53-2.528-2.333-2.943.654 1.283 1.033 2.57 1.177 3.53l.002.02c-1.314-3.278-3.544-4.6-5.366-7.477-.091-.147-.184-.292-.273-.446a3.545 3.545 0 01-.13-.24 2.118 2.118 0 01-.172-.46.03.03 0 00-.027-.03.038.038 0 00-.021 0l-.006.001a.037.037 0 00-.01.005L15.624 0c-2.585 1.515-3.657 4.168-3.932 5.856a6.197 6.197 0 00-2.305.587.297.297 0 00-.147.37c.057.162.24.24.396.17a5.622 5.622 0 012.008-.523l.067-.005a5.847 5.847 0 011.957.222l.095.03a5.816 5.816 0 01.616.228c.08.036.16.073.238.112l.107.055a5.835 5.835 0 01.368.211 5.953 5.953 0 012.034 2.104c-.62-.437-1.733-.868-2.803-.681 4.183 2.09 3.06 9.292-2.737 9.02a5.164 5.164 0 01-1.513-.292 4.42 4.42 0 01-.538-.232c-1.42-.735-2.593-2.121-2.74-3.806 0 0 .537-2 3.845-2 .357 0 1.38-.998 1.398-1.287-.005-.095-2.029-.9-2.817-1.677-.422-.416-.622-.616-.8-.767a3.47 3.47 0 00-.301-.227 5.388 5.388 0 01-.032-2.842c-1.195.544-2.124 1.403-2.8 2.163h-.006c-.46-.584-.428-2.51-.402-2.913-.006-.025-.343.176-.389.206-.406.29-.787.616-1.136.974-.397.403-.76.839-1.085 1.303a9.816 9.816 0 00-1.562 3.52c-.003.013-.11.487-.19 1.073-.013.09-.026.181-.037.272a7.8 7.8 0 00-.069.667l-.002.034-.023.387-.001.06C.386 18.795 5.593 24 12.016 24c5.752 0 10.527-4.176 11.463-9.661.02-.149.035-.298.052-.448.232-1.994-.025-4.09-.753-5.844z",
                   },
-                ] as const).map(({ engine, label, path }) => {
+                  {
+                    engine: "webkit", label: "WebKit",
+                    path: "M12 0a12 12 0 1 0 0 24 12 12 0 0 0 0-24zm0 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm5.8 4.2-3.6 8-8 3.6 3.6-8 8-3.6zm-6.4 4.3-2.2 4.3 4.3-2.2-2.1-2.1z",
+                  },
+                ] as const).filter(({ engine }) => engine !== "webkit" || appMode?.webkitAvailable).map(({ engine, label, path }) => {
                   // The help text names the engine that this computer and this form create.
                   const runtime = browserLabel(engine, appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime);
                   return (
                   <div className="browser-option" key={engine}>
                     <label className="browser-card">
-                      <input type="radio" name="browser-engine" value={engine} checked={form.engine === engine} onChange={() => setF("engine", engine)} />
+                      <input type="radio" name="browser-engine" value={engine} checked={form.engine === engine} onChange={() => { setF("engine", engine); if (engine === "webkit") setF("platformOs", ""); }} />
                       <svg className="browser-logo" viewBox="0 0 24 24" aria-hidden="true"><path d={path} /></svg>
-                      <span>{label}</span>
+                      <span>{label}{engine === "webkit" && <small className="engine-experimental">{t("Experimental")}</small>}</span>
                     </label>
                     <button type="button" className="browser-info tip" data-tip={runtime} aria-label={`${label}: ${runtime}`}><Icon name="help" className="sm" /></button>
                   </div>
                   );
                 })}
               </div>
+              {form.engine === "webkit" && <p className="hint webkit-note">{t(WEBKIT_NOTE)}</p>}
               {form.engine === "chromium" && !appMode?.legacyRemote && !appMode?.chromiumRuntime && (
                 <label className="fld">
                   <span>{t("Chrome version")}</span>
@@ -4945,13 +3740,21 @@ function App() {
               </details>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
               <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
+              </fieldset>}
+            </div>
+            <ProfileCreateSummary browser={browserLabel(form.engine, appMode?.chromiumRuntime ?? form.chromiumRuntime)} screen={form.screen} platformOs={form.platformOs} group={form.group} hasProxy={createHasProxy} count={createBatch ? Number(createCount) : 1} />
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={closeCreate}>{t("Cancel")}</button>
-              <button className="btn primary" disabled={creating} onClick={submitCreate}>{creating ? t("Creating…") : t("Create profile")}</button>
+              {creating ? <><span className="management-note" role="status">{createStopping ? t("Finishing the current request…") : t("Each profile is created separately.")}</span><button className="btn" disabled={createStopping} onClick={() => { createStopRequested.current = true; setCreateStopping(true); }}>{t("Stop after this profile")}</button></> : createItems.length > 0 ? <>
+                <button className="btn ghost" onClick={closeCreate}>{t("Done")}</button>
+                {!createItems.some((item) => item.state === "created" || item.state === "uncertain") && <button className="btn" onClick={() => { setCreateItems([]); setCreateErr(null); }}>{t("Edit settings")}</button>}
+                {!createItems.some((item) => item.state === "uncertain") && <>
+                  {createItems.some((item) => item.state === "failed") && <button className="btn" onClick={() => void submitCreate(true, true)}>{t("Retry failed")}</button>}
+                  {createItems.some((item) => item.state === "queued") && <button className="btn primary" onClick={() => void submitCreate(true)}>{t("Continue remaining")}</button>}
+                </>}
+              </> : <><button className="btn ghost" onClick={closeCreate}>{t("Cancel")}</button><button className="btn primary" disabled={creating} onClick={() => void submitCreate()}>{createBatch ? t("Create {count} profiles", { count: Number(createCount) || 0 }) : t("Create profile")}</button></>}
             </div>
-          </div>
-        </div>
+        </ProfileCreationDialog>
       )}
 
       {editId && (
@@ -4970,14 +3773,12 @@ function App() {
               ) : (
                 <>
                   {editForm.proxyError && <div className="modal-err"><Icon name="alert" className="sm" />Stored proxy quarantined: {editForm.proxyError}. Replace it below or clear the field.</div>}
-                  {(editLive || (!isCloudMode && editRunning)) && (
+                  {((editRunning)) && (
                     <p className="hint" role="status">
-                      {editLive
-                        ? t("This browser is open. Changes save to this device now and sync to Cloud when it closes. Proxy and fingerprint changes apply at the next start.")
-                        : t("This browser is open. Changes save now. Proxy and fingerprint changes apply at the next start.")}
+                      {t("This browser is open. Changes save now. Proxy and fingerprint changes apply at the next start.")}
                     </p>
                   )}
-                  {!isCloudMode && editMobile && (
+                  {editMobile && (
                     <div className="persona-warning">
                       <strong><Icon name="warning" className="sm" />{t("Imported mobile persona cannot open safely")}</strong>
                       <span>
@@ -4997,7 +3798,7 @@ function App() {
                       <span>{t("Name")}</span>
                       <input value={editForm.name ?? ""} onChange={(e) => setEF("name", e.target.value)} />
                     </label>
-                    {!isCloudMode && (
+                    {(
                       <label className="fld no">
                         <span>{t("Custom NO.")}</span>
                         <input
@@ -5015,7 +3816,7 @@ function App() {
                     <label className="fld grow">
                       <span>{t("Folder")}</span>
                       {canEditGroup(profiles.find((profile) => profile.id === editId)?.group ?? "")
-                        ? <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
+                        ? <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={true} />
                         : <input value={editForm.group ?? ""} readOnly />}
                     </label>
                     <label className="fld grow">
@@ -5026,7 +3827,7 @@ function App() {
                   <label className="fld">
                     <span>{t("Browser")}</span>
                     <input value={editEngine ? browserLabel(editEngine, editChromiumRuntime) : ""} readOnly className="ro" />
-                    {editEngine && <small>{editEngine === "firefox"
+                    {editEngine && <small>{editEngine === "webkit" ? t(WEBKIT_NOTE) : editEngine === "firefox"
                       ? t("Native Firefox profile · no CDP, PDF, or Chrome extensions.")
                       : t("CDP, PDF, and Chrome extensions are available.")}</small>}
                     {editEngine === "chromium" && !editChromiumRuntime && <small>{t(CLOAKBROWSER_NOTE)}</small>}
@@ -5063,13 +3864,13 @@ function App() {
                     </button>
                   </div>
                   <ProxyCheckFeedback hasProxy={editHasProxy} state={editProxyCheck} />
-                  {!isCloudMode && !appMode?.legacyRemote && (
+                  {!appMode?.legacyRemote && (
                     <>
                       <div className="proxy-check-actions">
                         <button
                           type="button"
                           className="btn proxy-check-btn"
-                          disabled={timezoneBusy || editSaving || editProxyChanged || !!editForm.proxyError || editLive}
+                          disabled={timezoneBusy || editSaving || editProxyChanged || !!editForm.proxyError }
                           onClick={refreshEditedTimezone}
                         >
                           <Icon name="activity" className="sm" />
@@ -5093,7 +3894,7 @@ function App() {
                     <CopyField label={t("Email password")} value={editForm.emailPassword ?? ""} onChange={(value) => setEF("emailPassword", value)} />
                   </div>
                   <CopyField label={t("2FA secret")} value={editForm.twofa ?? ""} onChange={(value) => setEF("twofa", value)} />
-                  {!isCloudMode && editTotp && (
+                  {editTotp && (
                     <div className="authrow">
                       <span className="authlabel">{t("Authenticator")}</span>
                       <span className="authcode">{editTotp.code.slice(0, 3)} {editTotp.code.slice(3)}</span>
@@ -5148,7 +3949,7 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <Icon name="fileImport" />Import profiles
+              <Icon name="fileImport" />{t("Import profiles")}
               <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeBulk}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
@@ -5239,8 +4040,8 @@ function App() {
 
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>{isCloudMode ? t("Destination folder") : t("Assign to group")}</span>
-                  <GroupPicker value={bulkGroup} onChange={setBulkGroup} groups={isCloudMode ? editableGroups : existingGroups} allowCreate={!isCloudMode} />
+                  <span>{t("Assign to group")}</span>
+                  <GroupPicker value={bulkGroup} onChange={setBulkGroup} groups={existingGroups} allowCreate={true} />
                 </label>
                 <label className="fld grow">
                   <span>{t("Platform")}</span>
@@ -5268,7 +4069,7 @@ function App() {
               </button>
               <span className="spacer" />
               <button className="btn ghost" onClick={closeBulk}>{t("Cancel")}</button>
-              <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim()) || (isCloudMode && !bulkGroup)} onClick={submitBulk}>
+              <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim()) || (false)} onClick={submitBulk}>
                 <Icon name="fileImport" className="sm" />{bulkBusy ? t("Importing…") : t("Import profiles")}
               </button>
             </div>
@@ -5288,9 +4089,9 @@ function App() {
               <ol className="steps">
                 <li><b>{t("Export")}</b> {t("the profiles you want to change — that gives you a file with each profile's")} — that gives you a file with each profile's <code>id</code> {t("(how rows are matched).")}</li>
                 <li><b>{t("Edit")}</b> {t("the columns you want (name, username, password, 2FA, proxy…). Keep the")} <code>id</code> {t("column; delete any column you don't want to touch.")}</li>
-                {!isCloudMode && <li>{t("Add a")} <code>custom_no</code> {t("column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.")}</li>}
+                {<li>{t("Add a")} <code>custom_no</code> {t("column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.")}</li>}
                 <li><b>{t("Re-upload")}</b> {t("the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies &amp; fingerprints are preserved — editing a")} <code>cookie</code> or <code>ua</code> {t("column has no effect.")}</li>
-                {isCloudMode && <li>{t("Close profiles before updating. Each Cloud profile saves separately; successful updates remain saved if other profiles fail.")}</li>}
+
               </ol>
               <div className="updexport">
                 {selected.size > 0 ? (
@@ -5341,7 +4142,7 @@ function App() {
         onClose={() => setScriptRunOpen(false)}
       />
     </div>
-    </ProxyStoreContext.Provider>
+    </>
   );
 }
 

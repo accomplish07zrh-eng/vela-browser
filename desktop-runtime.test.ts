@@ -66,15 +66,6 @@ test("desktop control gracefully shuts down when the parent stdin pipe closes", 
   expect(source).toContain('process.stdin.once("close", shutdown);');
 });
 
-test("desktop Cloud automation API receives the shared Cloud browser lifecycle", () => {
-  const source = readFileSync(join(import.meta.dir, "cli.ts"), "utf8");
-  const cloudStart = source.indexOf('if (configuredMode.mode === "cloud")');
-  const automationStart = source.indexOf("serveDesktopAutomationApi({", cloudStart);
-  const automationEnd = source.indexOf("})", automationStart);
-  const automationSetup = source.slice(automationStart, automationEnd);
-  expect(automationSetup).toContain("cloudBrowser,");
-});
-
 test("desktop credential bridge waits for a nonce-bound parent acknowledgement", async () => {
   const output: string[] = [];
   const bridge = new DesktopCredentialBridge(NONCE, (line) => { output.push(line); });
@@ -137,26 +128,6 @@ test("desktop credential bridge clears refresh and device credentials", async ()
   }));
   await cleared;
   expect(output.map((line) => JSON.parse(line).key)).toEqual(["refresh_token", "device_credential"]);
-  expect(output.join("\n")).not.toContain("queue_encryption_key");
-});
-
-test("desktop credential bridge attempts both Cloud credential deletes after one rejection", async () => {
-  const output: string[] = [];
-  const bridge = new DesktopCredentialBridge(NONCE, (line) => { output.push(line); });
-  const cleared = bridge.clearCloudSessionCredentials();
-  expect(output).toHaveLength(2);
-  const requests = output.map((line) => JSON.parse(line) as { request: number; key: string });
-  for (const request of requests) {
-    bridge.handleLine(JSON.stringify({
-      protocol: DESKTOP_PROTOCOL,
-      event: "credential-result",
-      nonce: NONCE,
-      request: request.request,
-      ok: request.key === "device_credential",
-    }));
-  }
-  await expect(cleared).rejects.toThrow("could not clear Cloud credentials");
-  expect(requests.map((request) => request.key)).toEqual(["refresh_token", "device_credential"]);
   expect(output.join("\n")).not.toContain("queue_encryption_key");
 });
 

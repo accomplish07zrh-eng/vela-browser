@@ -42,6 +42,17 @@ export interface FingerprintSample {
   webglRenderer?: string;
   canvasHash?: string;
   audioHash?: string;
+  /** Versioned readback probes; these do not change any browser API. */
+  canvasPixelsHash?: string;
+  webglHash?: string;
+  fontsHash?: string;
+  textMetricsHash?: string;
+  audioSampleHash?: string;
+  /** Opt-in QA evidence; never persisted as profile identity. */
+  fontDetails?: { visible: string[]; baseWidths: number[]; widths: Record<string, number[]>; metrics: (string | number)[][] };
+  consistency?: { canvas?: boolean; canvasWrites?: boolean; audio?: boolean; audioWrites?: boolean; audioSilence?: boolean; webgl?: boolean; fonts?: boolean };
+  /** Observed capabilities and native values, not identity inputs or support promises. */
+  details?: Record<string, unknown>;
   errors?: Record<string, string>;
 }
 
@@ -79,7 +90,9 @@ export interface Analysis {
   okCount: number;
   proxy: { ok: string[]; bypassed: string[]; matchesConfiguredHost: string[]; noEgress: string[]; inconclusive: string[] };
   webrtcLeaks: string[];
-  fingerprintCollisions: { canvas: Collision[]; audio: Collision[]; webgl: Collision[] };
+  fingerprintCollisions: { canvas: Collision[]; audio: Collision[]; webgl: Collision[]; fonts: Collision[] };
+  fingerprintCoverage: { profileId: string; missing: string[] }[];
+  fingerprintChanges: { profileId: string; field: string; before: string; after: string }[];
   uaInconsistencies: { profileId: string; reason: string }[];
   unstableFingerprints: string[];
   login: { loggedIn: string[]; loggedOut: string[]; unknown: string[] };
@@ -122,7 +135,9 @@ export function analyze(profiles: ProfileReport[], baselineRealIp?: string): Ana
     okCount: profiles.filter((p) => p.ok).length,
     proxy: { ok: [], bypassed: [], matchesConfiguredHost: [], noEgress: [], inconclusive: [] },
     webrtcLeaks: [],
-    fingerprintCollisions: { canvas: [], audio: [], webgl: [] },
+    fingerprintCollisions: { canvas: [], audio: [], webgl: [], fonts: [] },
+    fingerprintCoverage: [],
+    fingerprintChanges: [],
     uaInconsistencies: [],
     unstableFingerprints: [],
     login: { loggedIn: [], loggedOut: [], unknown: [] },
@@ -175,11 +190,19 @@ export function analyze(profiles: ProfileReport[], baselineRealIp?: string): Ana
     else if (p.login?.loggedOut) a.login.loggedOut.push(p.profileId);
     else a.login.unknown.push(p.profileId);
 
-    // Fingerprint stability across relaunch (same profile must look identical).
+    const surfaces = ["canvasHash", "canvasPixelsHash", "audioHash", "audioSampleHash", "webglHash", "fontsHash", "textMetricsHash"] as const;
+    const missing = surfaces.filter((field) => !fp?.[field]);
+    if (missing.length) a.fingerprintCoverage.push({ profileId: p.profileId, missing });
+
+    // A previously measurable surface disappearing is also a restart change.
     if (p.fingerprintRelaunch && fp) {
-      if (fp.canvasHash && p.fingerprintRelaunch.canvasHash && fp.canvasHash !== p.fingerprintRelaunch.canvasHash) {
-        a.unstableFingerprints.push(p.profileId);
+      for (const field of surfaces) {
+        const before = fp[field], after = p.fingerprintRelaunch[field];
+        if (before && before !== after) {
+          a.fingerprintChanges.push({ profileId: p.profileId, field, before, after: after ?? "unavailable" });
+        }
       }
+      if (a.fingerprintChanges.some((change) => change.profileId === p.profileId)) a.unstableFingerprints.push(p.profileId);
     }
   }
 
@@ -187,8 +210,9 @@ export function analyze(profiles: ProfileReport[], baselineRealIp?: string): Ana
   a.fingerprintCollisions.canvas = dupes(profiles.map((p) => ({ profileId: p.profileId, value: p.fingerprint?.canvasHash })));
   a.fingerprintCollisions.audio = dupes(profiles.map((p) => ({ profileId: p.profileId, value: p.fingerprint?.audioHash })));
   a.fingerprintCollisions.webgl = dupes(
-    profiles.map((p) => ({ profileId: p.profileId, value: p.fingerprint?.webglRenderer })),
+    profiles.map((p) => ({ profileId: p.profileId, value: p.fingerprint?.webglHash })),
   );
+  a.fingerprintCollisions.fonts = dupes(profiles.map((p) => ({ profileId: p.profileId, value: p.fingerprint?.fontsHash })));
 
   // Verdicts: plain-language pass/fail lines for the summary.
   const v = a.verdicts;
@@ -200,7 +224,12 @@ export function analyze(profiles: ProfileReport[], baselineRealIp?: string): Ana
   if (a.webrtcLeaks.length) v.push(`❌ WebRTC leaks real IP on: ${a.webrtcLeaks.join(", ")}`);
   else v.push(`✅ no WebRTC real-IP leak detected`);
   if (a.fingerprintCollisions.canvas.length) v.push(`❌ canvas fingerprint COLLISION across profiles: ${a.fingerprintCollisions.canvas.map((c) => c.profiles.join("+")).join("; ")}`);
-  else v.push(`✅ canvas fingerprints unique across profiles`);
+  else {
+    const canvasMeasured = profiles.filter((p) => p.fingerprint?.canvasHash).length;
+    if (canvasMeasured >= 2 && canvasMeasured === profiles.length) v.push(`✅ canvas fingerprints unique across profiles`);
+    else v.push(`⚠️  canvas uniqueness not established (${canvasMeasured}/${profiles.length} measured; at least two required)`);
+  }
+  if (a.fingerprintCoverage.length) v.push(`⚠️  fingerprint coverage incomplete on ${a.fingerprintCoverage.length} profile(s); unavailable surfaces are not a pass`);
   if (a.unstableFingerprints.length) v.push(`❌ fingerprint changed across relaunch on: ${a.unstableFingerprints.join(", ")}`);
   if (a.uaInconsistencies.length) v.push(`⚠️  UA/UA-CH mismatch on ${a.uaInconsistencies.length} profile(s)`);
   const screensCompared = profiles.filter((p) => p.fingerprint?.screen && p.screenConfigured).length;
@@ -215,10 +244,15 @@ export function analyze(profiles: ProfileReport[], baselineRealIp?: string): Ana
 // In-browser probes (serialized to the page; must be self-contained).
 // ---------------------------------------------------------------------------
 
-export async function fingerprintProbe(): Promise<FingerprintSample> {
+export async function fingerprintProbe(options: { details?: boolean } = {}): Promise<FingerprintSample> {
   const out: FingerprintSample = { errors: {} };
   const err = (k: string, e: unknown) => {
     out.errors![k] = e instanceof Error ? e.message : String(e);
+  };
+  const createCanvas = () => {
+    if (typeof document !== "undefined") return document.createElement("canvas");
+    if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(300, 150) as unknown as HTMLCanvasElement;
+    throw new Error("Canvas unavailable in this context");
   };
   try {
     out.userAgent = navigator.userAgent;
@@ -228,7 +262,7 @@ export async function fingerprintProbe(): Promise<FingerprintSample> {
     out.hardwareConcurrency = navigator.hardwareConcurrency;
     out.deviceMemory = (navigator as any).deviceMemory;
     out.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    out.screen = {
+    if (typeof screen !== "undefined") out.screen = {
       width: screen.width,
       height: screen.height,
       availWidth: screen.availWidth,
@@ -255,7 +289,7 @@ export async function fingerprintProbe(): Promise<FingerprintSample> {
     err("uaData", e);
   }
   try {
-    const c = document.createElement("canvas");
+    const c = createCanvas();
     const gl = (c.getContext("webgl") || c.getContext("experimental-webgl")) as WebGLRenderingContext | null;
     if (gl) {
       const dbg = gl.getExtension("WEBGL_debug_renderer_info");
@@ -263,7 +297,7 @@ export async function fingerprintProbe(): Promise<FingerprintSample> {
         out.webglVendor = String(gl.getParameter((dbg as any).UNMASKED_VENDOR_WEBGL));
         out.webglRenderer = String(gl.getParameter((dbg as any).UNMASKED_RENDERER_WEBGL));
       }
-    }
+    } else throw new Error("WebGL unavailable");
   } catch (e) {
     err("webgl", e);
   }
@@ -272,7 +306,7 @@ export async function fingerprintProbe(): Promise<FingerprintSample> {
     return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
   };
   try {
-    const c = document.createElement("canvas");
+    const c = createCanvas();
     c.width = 240;
     c.height = 60;
     const ctx = c.getContext("2d")!;
@@ -282,12 +316,32 @@ export async function fingerprintProbe(): Promise<FingerprintSample> {
     ctx.fillRect(10, 10, 100, 30);
     ctx.fillStyle = "#069";
     ctx.fillText("Cloak fingerprint \u{1F3A8}", 2, 15);
-    out.canvasHash = await sha(c.toDataURL());
+    const url = typeof c.toDataURL === "function" ? c.toDataURL() : undefined;
+    if (url !== undefined) out.canvasHash = await sha(url);
+    const pixels = ctx.getImageData(0, 0, c.width, c.height).data;
+    const repeatedPixels = ctx.getImageData(0, 0, c.width, c.height).data;
+    out.canvasPixelsHash = await sha(`canvas-pixels-v1:${Array.from(pixels).join(",")}`);
+    out.consistency = { canvas: (url === undefined || c.toDataURL() === url)
+      && pixels.every((byte, index) => byte === repeatedPixels[index]) };
+    const written = createCanvas(); written.width = written.height = 32;
+    const writeContext = written.getContext("2d")!;
+    writeContext.fillText("Existing drawing", 0, 16);
+    const image = writeContext.createImageData(32, 32);
+    for (let index = 0; index < image.data.length; index += 4) {
+      image.data[index] = index % 8 ? 255 : 0;
+      image.data[index + 1] = index % 8 ? 17 : 0;
+      image.data[index + 2] = index % 8 ? 131 : 0;
+      image.data[index + 3] = index % 8 ? 255 : 0;
+    }
+    writeContext.putImageData(image, 0, 0);
+    const readback = writeContext.getImageData(0, 0, 32, 32).data;
+    out.consistency.canvasWrites = image.data.every((byte, index) => byte === readback[index]);
   } catch (e) {
     err("canvas", e);
   }
   try {
-    const Ctx = (window as any).OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    const Ctx = (globalThis as any).OfflineAudioContext || (globalThis as any).webkitOfflineAudioContext;
+    if (!Ctx) throw new Error("OfflineAudioContext unavailable in this context");
     const ac = new Ctx(1, 5000, 44100);
     const osc = ac.createOscillator();
     osc.type = "triangle";
@@ -296,14 +350,168 @@ export async function fingerprintProbe(): Promise<FingerprintSample> {
     osc.connect(comp);
     comp.connect(ac.destination);
     osc.start(0);
-    const buf: AudioBuffer = await ac.startRendering();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const buf: AudioBuffer = await Promise.race([
+      ac.startRendering(),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("audio rendering timed out")), 3000); }),
+    ]).finally(() => clearTimeout(timer));
     const data = buf.getChannelData(0).slice(0, 1000);
     let sum = 0;
     for (const x of data) sum += Math.abs(x);
     out.audioHash = await sha(String(sum));
+    out.audioSampleHash = await sha(`audio-samples-v1:${Array.from(data).join(",")}`);
+    const copied = new Float32Array(1000);
+    buf.copyFromChannel(copied, 0);
+    out.consistency = { ...out.consistency, audio: data.every((sample, index) => Object.is(sample, copied[index])) };
+    const exact: AudioBuffer = ac.createBuffer(1, 128, 44100);
+    const values = new Float32Array(128).fill(0.25); values[0] = -0.5; values[127] = 1;
+    exact.copyToChannel(values, 0);
+    const copiedExact = new Float32Array(128); exact.copyFromChannel(copiedExact, 0);
+    out.consistency.audioWrites = exact.getChannelData(0).every((sample, index) => sample === values[index])
+      && copiedExact.every((sample, index) => sample === values[index]);
+    const silence: AudioBuffer = ac.createBuffer(1, 128, 44100);
+    out.consistency.audioSilence = silence.getChannelData(0).every((sample) => sample === 0);
+    out.details = { ...out.details, audio: { sampleRate: buf.sampleRate, channels: buf.numberOfChannels, length: buf.length } };
   } catch (e) {
     err("audio", e);
   }
+  try {
+    const canvas = createCanvas();
+    canvas.width = canvas.height = 64;
+    const gl = canvas.getContext("webgl", { antialias: false, preserveDrawingBuffer: true });
+    if (!gl) throw new Error("WebGL readback unavailable");
+    try {
+      const compile = (type: number, source: string) => {
+        const shader = gl.createShader(type)!;
+        gl.shaderSource(shader, source); gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error("WebGL shader compilation failed");
+        return shader;
+      };
+      const program = gl.createProgram()!;
+      gl.attachShader(program, compile(gl.VERTEX_SHADER, "attribute vec2 p;varying vec2 v;void main(){v=p;gl_Position=vec4(p,0.,1.);}"));
+      gl.attachShader(program, compile(gl.FRAGMENT_SHADER, "precision highp float;varying vec2 v;void main(){gl_FragColor=vec4(sin(v.x*7.)*.4+.5,cos(v.y*11.)*.4+.5,v.x*v.y*.3+.5,1.);}"));
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error("WebGL program link failed");
+      gl.useProgram(program);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 0.125, 1]), gl.STATIC_DRAW);
+      const position = gl.getAttribLocation(program, "p");
+      gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+      gl.viewport(0, 0, 64, 64); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const pixels = new Uint8Array(64 * 64 * 4);
+      gl.readPixels(0, 0, 64, 64, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      if (gl.getError() !== gl.NO_ERROR || !pixels.some((value) => value !== 0)) throw new Error("WebGL readback failed");
+      out.webglHash = await sha(`webgl-image-v1:${Array.from(pixels).join(",")}`);
+      const repeated = new Uint8Array(pixels.length);
+      gl.readPixels(0, 0, 64, 64, gl.RGBA, gl.UNSIGNED_BYTE, repeated);
+      out.consistency = { ...out.consistency, webgl: pixels.every((byte, index) => byte === repeated[index]) };
+    } finally { gl.getExtension("WEBGL_lose_context")?.loseContext(); }
+  } catch (e) { err("webglImage", e); }
+  try {
+    const ctx = createCanvas().getContext("2d")!;
+    const text = "Vela WmIl 0123 中文 العربية";
+    const families = ["Arial", "Arial Black", "Calibri", "Cambria", "Candara", "Consolas", "Courier New", "Georgia", "Helvetica", "Helvetica Neue", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana", "Menlo", "Monaco", "PingFang SC", "Microsoft YaHei", "SimSun", "Noto Sans", "Ubuntu", "DejaVu Sans"];
+    const bases = ["monospace", "sans-serif", "serif"];
+    const measure = (font: string) => { ctx.font = `19px ${font}`; return ctx.measureText(text).width; };
+    const widths = bases.map(measure);
+    const familyWidths = Object.fromEntries(families.map((family) => [family, bases.map((base) => measure(`"${family}",${base}`))]));
+    const visible = families.filter((family) => familyWidths[family]!.some((width, index) => width !== widths[index]));
+    out.fontsHash = await sha(`font-set-v1:${visible.join("|")}`);
+    const metrics = [...bases, ...visible].map((family) => {
+      ctx.font = `19px ${bases.includes(family) ? family : `"${family}"`}`;
+      const value = ctx.measureText(text);
+      return [family, value.width, value.actualBoundingBoxAscent, value.actualBoundingBoxDescent, value.actualBoundingBoxLeft, value.actualBoundingBoxRight];
+    });
+    out.textMetricsHash = await sha(`font-metrics-v1:${JSON.stringify(metrics)}`);
+    if (options.details) out.fontDetails = { visible, baseWidths: widths, widths: familyWidths, metrics };
+    const repeatedWidths = bases.map(measure);
+    const repeatedFamilies = Object.fromEntries(families.map((family) => [family, bases.map((base) => measure(`"${family}",${base}`))]));
+    out.consistency = { ...out.consistency, fonts: widths.every((width, index) => width === repeatedWidths[index])
+      && families.every((family) => familyWidths[family]!.every((width, index) => width === repeatedFamilies[family]![index])) };
+  } catch (e) { err("fonts", e); }
+  // These calls inspect existing values only. They never request device/location
+  // permission, change a preference, enumerate account data or contact a service.
+  const inspect = async (name: string, collect: () => unknown | Promise<unknown>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const value = await Promise.race([
+        Promise.resolve().then(collect),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("measurement timed out")), 3000); }),
+      ]);
+      out.details = { ...out.details, [name]: value };
+    } catch (error) { err(name, error); }
+    finally { clearTimeout(timer); }
+  };
+  await Promise.all([
+    inspect("identity", async () => {
+      const nav = navigator as any;
+      const uaData = nav.userAgentData;
+      return { userAgent: nav.userAgent, platform: nav.platform, vendor: nav.vendor, oscpu: nav.oscpu,
+        webdriver: nav.webdriver, maxTouchPoints: nav.maxTouchPoints, pdfViewerEnabled: nav.pdfViewerEnabled,
+        cookieEnabled: nav.cookieEnabled, doNotTrack: nav.doNotTrack,
+        ...(uaData ? { clientHints: await uaData.getHighEntropyValues(["architecture", "bitness", "model", "mobile", "platform", "platformVersion", "fullVersionList", "wow64"]) } : {}) };
+    }),
+    inspect("locale", () => ({ ...Intl.DateTimeFormat().resolvedOptions(),
+      language: navigator.language, languages: [...navigator.languages],
+      winterOffset: new Date("2026-01-15T12:00:00Z").getTimezoneOffset(), summerOffset: new Date("2026-07-15T12:00:00Z").getTimezoneOffset(),
+      number: new Intl.NumberFormat().format(1234567.89) })),
+    inspect("hardware", () => ({ cores: navigator.hardwareConcurrency, memory: (navigator as any).deviceMemory })),
+    inspect("display", () => {
+      if (typeof screen === "undefined" || typeof matchMedia !== "function") throw new Error("Screen unavailable in this context");
+      const queries = ["(pointer:fine)", "(pointer:coarse)", "(hover:hover)", "(any-pointer:coarse)", "(any-hover:hover)", "(color-gamut:p3)", "(prefers-color-scheme:dark)", "(prefers-reduced-motion:reduce)"];
+      return { ...out.screen, pixelDepth: screen.pixelDepth, viewport: [innerWidth, innerHeight], outer: [outerWidth, outerHeight],
+        orientation: screen.orientation?.type, queries: Object.fromEntries(queries.map((query) => [query, matchMedia(query).matches])) };
+    }),
+    inspect("webgl2", () => {
+      const gl = createCanvas().getContext("webgl2") as WebGL2RenderingContext | null;
+      if (!gl) throw new Error("WebGL2 unavailable");
+      try {
+        const parameters = ["MAX_TEXTURE_SIZE", "MAX_CUBE_MAP_TEXTURE_SIZE", "MAX_RENDERBUFFER_SIZE", "MAX_VERTEX_ATTRIBS", "MAX_VERTEX_UNIFORM_VECTORS", "MAX_FRAGMENT_UNIFORM_VECTORS", "MAX_VARYING_VECTORS", "MAX_3D_TEXTURE_SIZE", "MAX_ARRAY_TEXTURE_LAYERS", "MAX_UNIFORM_BUFFER_BINDINGS", "MAX_SAMPLES"];
+        const precision = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
+        return { parameters: Object.fromEntries(parameters.map((name) => [name, gl.getParameter((gl as any)[name])])),
+          extensions: (gl.getSupportedExtensions() ?? []).sort(), precision: precision && { rangeMin: precision.rangeMin, rangeMax: precision.rangeMax, precision: precision.precision } };
+      } finally { gl.getExtension("WEBGL_lose_context")?.loseContext(); }
+    }),
+    inspect("webgpu", async () => {
+      const gpu = (navigator as any).gpu;
+      if (!gpu) throw new Error("WebGPU unavailable");
+      const adapter = await gpu.requestAdapter();
+      if (!adapter) throw new Error("No WebGPU adapter available");
+      const info = adapter.info ?? (typeof adapter.requestAdapterInfo === "function" ? await adapter.requestAdapterInfo() : {});
+      const names = ["maxTextureDimension1D", "maxTextureDimension2D", "maxTextureDimension3D", "maxTextureArrayLayers", "maxBindGroups", "maxBufferSize", "maxStorageBufferBindingSize", "maxUniformBufferBindingSize", "maxComputeWorkgroupStorageSize", "maxComputeInvocationsPerWorkgroup", "maxComputeWorkgroupSizeX", "maxComputeWorkgroupSizeY", "maxComputeWorkgroupSizeZ"];
+      return { vendor: info.vendor, architecture: info.architecture, device: info.device, description: info.description,
+        isFallbackAdapter: adapter.isFallbackAdapter ?? info.isFallbackAdapter, features: [...adapter.features].sort(),
+        limits: Object.fromEntries(names.map((name) => [name, adapter.limits[name]])) };
+    }),
+    inspect("media", async () => {
+      if (!navigator.mediaDevices?.enumerateDevices) throw new Error("Media device enumeration unavailable");
+      return Promise.all((await navigator.mediaDevices.enumerateDevices()).map(async (device) => ({
+        kind: device.kind, deviceId: device.deviceId ? await sha(device.deviceId) : "", groupId: device.groupId ? await sha(device.groupId) : "", labelled: !!device.label,
+      })));
+    }),
+    inspect("voices", async () => {
+      const speech = (globalThis as any).speechSynthesis as SpeechSynthesis | undefined;
+      if (!speech) throw new Error("Speech synthesis unavailable in this context");
+      const voices = () => speech.getVoices().map((voice) => ({ name: voice.name, lang: voice.lang, local: voice.localService, default: voice.default }));
+      if (voices().length) return voices();
+      return new Promise<unknown>((resolve) => {
+        const finish = () => { clearTimeout(timer); speech.removeEventListener("voiceschanged", finish); resolve(voices()); };
+        const timer = setTimeout(finish, 1000); speech.addEventListener("voiceschanged", finish, { once: true });
+      });
+    }),
+    inspect("storage", async () => {
+      if (!navigator.storage?.estimate) throw new Error("Storage estimation unavailable");
+      return { quota: (await navigator.storage.estimate()).quota, persisted: typeof navigator.storage.persisted === "function" ? await navigator.storage.persisted() : undefined };
+    }),
+    inspect("permissions", async () => {
+      if (!navigator.permissions?.query) throw new Error("Permission queries unavailable");
+      return Object.fromEntries(await Promise.all(["geolocation", "notifications", "camera", "microphone"].map(async (name) => {
+        try { return [name, (await navigator.permissions.query({ name: name as PermissionName })).state]; }
+        catch { return [name, "unavailable"]; }
+      })));
+    }),
+  ]);
   return out;
 }
 

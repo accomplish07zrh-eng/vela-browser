@@ -12,9 +12,54 @@ import {
   runPlaywrightWorker,
   verifyPlaywrightRuntime,
 } from "./playwright-runtime.ts";
-import { captureSession, operatePersistentContext, restoreSession } from "./playwright-worker.mjs";
+import { captureSession, fingerprintDocument, operatePersistentContext, restoreSession } from "./playwright-worker.mjs";
 
 const PACKAGED_NODE = process.platform === "win32" ? "node.exe" : "node";
+
+test("fingerprint document executes TypedArray probes in its own realm and contains script delimiters", async () => {
+  const output = { textContent: "", dataset: {} as Record<string, string> };
+  const expression = `({bytes:Array.from(new Uint8Array([7,11])),text:'</script><script>throw 1</script>'})`;
+  const html = fingerprintDocument(expression);
+  expect(html.match(/<script>/g)).toHaveLength(1);
+  expect(html.match(/<\/script>/g)).toHaveLength(1);
+  const program = html.match(/<script>([\s\S]*)<\/script>/)![1]!;
+  await runInNewContext(program, { document: { getElementById: () => output } });
+  expect(output.dataset.ready).toBe("true");
+  expect(JSON.parse(output.textContent)).toEqual({ value: { bytes: [7, 11], text: "</script><script>throw 1</script>" } });
+});
+
+test("persistent fingerprint capture never evaluates the probe across privileged Xray wrappers", async () => {
+  for (const expression of ["({canvas:'real-page-result'})", "Promise.reject(new Error('probe failed'))"]) {
+    let currentUrl = "about:blank";
+    let handler: any;
+    let closed = false;
+    let unrouted = false;
+    const output = { textContent: "", dataset: {} as Record<string, string> };
+    const page = {
+      url: () => currentUrl,
+      route: async (_pattern: string, fn: any) => { handler = fn; },
+      unroute: async () => { unrouted = true; },
+      goto: async (url: string) => {
+        currentUrl = url;
+        let aborted = false;
+        await handler({ request: () => ({ url: () => "https://external.invalid/" }), abort: () => { aborted = true; } });
+        expect(aborted).toBe(true);
+        await handler({ request: () => ({ url: () => url }), fulfill: async ({ body }: { body: string }) => {
+          await runInNewContext(body.match(/<script>([\s\S]*)<\/script>/)![1]!, { document: { getElementById: () => output } });
+        } });
+      },
+      evaluate: async () => { throw new Error("privileged evaluation is forbidden"); },
+      locator: () => ({ textContent: async () => { expect(output.dataset.ready).toBe("true"); return output.textContent; } }),
+      close: async () => { closed = true; },
+    };
+    const context = { pages: () => [], newPage: async () => page };
+    const capture = operatePersistentContext({}, context, "page", { kind: "fingerprint", fingerprintScript: expression });
+    if (expression.includes("reject")) await expect(capture).rejects.toThrow("probe failed");
+    else expect(await capture).toEqual({ canvas: "real-page-result" });
+    expect(closed).toBe(true);
+    expect(unrouted).toBe(true);
+  }
+});
 
 /** Bun started under the name `node` drops process.argv[1] after --eval, so this Node is a wrapper script. */
 async function fakePackagedNode(root: string): Promise<void> {
@@ -330,7 +375,7 @@ test("source worker loads pinned dependencies under Node from PATH", async () =>
   const error = await runPlaywrightWorker("page", {}, { timeoutMs: 10_000 })
     .then(() => null, (failure) => failure);
   expect(error).toMatchObject({ code: "invalid_request" });
-});
+}, 15_000);
 
 bunAsNodeTest("importing the worker has no stdin or stdout side effects", async () => {
   const worker = pathToFileURL(join(import.meta.dir, "playwright-worker.mjs")).href;

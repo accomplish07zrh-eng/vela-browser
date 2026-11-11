@@ -10,7 +10,7 @@ export function buildAgentBootstrapManifest(options: {
   const installer = resolve(options.installer);
   const bytes = readFileSync(installer);
   const releaseBase = options.releaseBase.replace(/\/$/, "");
-  if (!/^https:\/\/github\.com\/aliasmode\/aliasmode\/releases\/download\/[^/]+$/.test(releaseBase)) {
+  if (!/^https:\/\/github\.com\/accomplish07zrh-eng\/vela-browser\/releases\/download\/[^/]+$/.test(releaseBase)) {
     throw new Error("release base must be an exact Vela Browser GitHub Release URL");
   }
   return {

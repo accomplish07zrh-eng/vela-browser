@@ -1,4 +1,4 @@
-import type { PortableProfile, PortableProfileV1, PortableProfileV2, PortableProfileV3, PortableProfileV4, PortableSessionV1 } from "./contracts/cloud-v1.ts";
+import type { PortableProfile, PortableProfileV1, PortableProfileV2, PortableProfileV3, PortableProfileV4, PortableProfileV5, PortableSessionV1 } from "./contracts/cloud-v1.ts";
 import type { ChromiumRuntime, FirefoxProfileConfig, Profile, ProfileHardware } from "./types.ts";
 import { normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
 import { normalizeProfileHardware } from "./fingerprint.ts";
@@ -22,10 +22,10 @@ export function encodePortableProfile(
   profile: Profile & { engine: "firefox"; firefox: FirefoxProfileConfig },
   sessionBundle?: string,
 ): PortableProfileV2;
-export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfileV1 | PortableProfileV3 | PortableProfileV4;
+export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfileV1 | PortableProfileV3 | PortableProfileV4 | PortableProfileV5;
 export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfile {
   assertValidProfile(profile);
-  const engine = normalizeProfileEngine(profile.engine, profile.firefox);
+  const engine = normalizeProfileEngine(profile.engine, profile.firefox, profile.webkit);
   let session: PortableSessionV1;
   if (sessionBundle === undefined) {
     session = portableSession({ cookies: profile.cookies });
@@ -64,6 +64,7 @@ export function encodePortableProfile(profile: Profile, sessionBundle?: string):
     ...(profile.platformOs ? { platformOs: profile.platformOs } : {}),
   };
 
+  if (engine.engine === "webkit") return { schemaVersion: 5, profile: { ...portableProfile, engine: "webkit", webkit: engine.webkit! }, session };
   const hardware = normalizeProfileHardware(profile.hardware);
   if (engine.engine === "firefox") {
     return {
@@ -91,6 +92,7 @@ export function decodePortableProfile(payload: PortableProfile): {
   const portableProfile = payload.profile as PortableProfileV1["profile"] & {
     engine?: unknown;
     firefox?: unknown;
+    webkit?: unknown;
     chromiumRuntime?: unknown;
     hardware?: unknown;
     timezoneManual?: unknown;
@@ -109,7 +111,7 @@ export function decodePortableProfile(payload: PortableProfile): {
     throw new Error("unsupported portable profile payload");
   }
   if (payload.schemaVersion === 1 || payload.schemaVersion === 3 || payload.schemaVersion === 4) {
-    if (portableProfile.engine !== undefined || portableProfile.firefox !== undefined) {
+    if (portableProfile.engine !== undefined || portableProfile.firefox !== undefined || portableProfile.webkit !== undefined) {
       throw new Error("portable Chromium profile cannot include a Firefox config");
     }
     engine = normalizeProfileEngine(undefined, undefined);
@@ -119,7 +121,10 @@ export function decodePortableProfile(payload: PortableProfile): {
     if (payload.schemaVersion !== carried) throw new Error("unsupported portable profile payload");
   } else if (payload.schemaVersion === 2) {
     if (portableProfile.engine !== "firefox") throw new Error("unsupported portable profile payload");
-    engine = normalizeProfileEngine(portableProfile.engine, portableProfile.firefox);
+    engine = normalizeProfileEngine(portableProfile.engine, portableProfile.firefox, portableProfile.webkit);
+  } else if (payload.schemaVersion === 5) {
+    if (portableProfile.engine !== "webkit" || portableProfile.chromiumRuntime !== undefined) throw new Error("unsupported portable profile payload");
+    engine = normalizeProfileEngine(portableProfile.engine, portableProfile.firefox, portableProfile.webkit);
   } else {
     throw new Error("unsupported portable profile payload");
   }
@@ -131,6 +136,7 @@ export function decodePortableProfile(payload: PortableProfile): {
     ...(chromiumRuntime ? { chromiumRuntime } : {}),
     ...(hardware ? { hardware } : {}),
     ...(engine.firefox ? { firefox: engine.firefox } : {}),
+    ...(engine.webkit ? { webkit: engine.webkit } : {}),
     accId: portableProfile.accId,
     name: portableProfile.name,
     group: portableProfile.group,

@@ -16,7 +16,7 @@ type CloudProfileEditorStore = Pick<ProfileStore, "getLaunch">;
 
 export interface CloudProfileEditView {
   id: string;
-  engine?: "chromium" | "firefox";
+  engine?: "chromium" | "firefox" | "webkit";
   chromiumRuntime?: "aliasmode";
   name: string;
   group: string;
@@ -66,7 +66,7 @@ function editView(profile: Profile, expectedVersion: number): CloudProfileEditVi
   const conversion = isMobileUserAgent(profile.ua) ? convertMobilePersonaToDesktop(profile) : null;
   return {
     id: profile.id,
-    ...(profile.engine === "firefox" ? { engine: "firefox" as const } : {}),
+    ...(profile.engine === "firefox" || profile.engine === "webkit" ? { engine: profile.engine } : {}),
     ...(profile.chromiumRuntime ? { chromiumRuntime: profile.chromiumRuntime } : {}),
     name: profile.name,
     group: profile.group,
@@ -122,10 +122,12 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
     }
     profile.screenWidth = resolution.width;
     profile.screenHeight = resolution.height;
+    if (profile.webkit) profile.webkit = { ...profile.webkit, viewport: { width: Math.min(profile.webkit.viewport.width, resolution.width), height: Math.min(profile.webkit.viewport.height, resolution.height) } };
   }
+  if (profile.engine === "webkit" && ("cores" in set || "fingerprintSeed" in set)) throw new Error("WebKit does not support hardware or seed fingerprint overrides");
   if ("platformOs" in set) {
     const platformOs = parseStrictPlatformOs(set.platformOs);
-    if (profile.engine === "firefox" && platformOs !== (profile.platformOs ?? "")) {
+    if (profile.engine !== "chromium" && !!profile.engine && platformOs !== (profile.platformOs ?? "")) {
       throw new CloudProfileEditorError("Firefox operating system cannot be changed", 400);
     }
     profile.platformOs = platformOs;
@@ -159,7 +161,7 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
   }
   if ("extensions" in set) {
     const extensions = Array.isArray(set.extensions) ? set.extensions.map(String) : [];
-    if (profile.engine === "firefox" && extensions.length) {
+    if (profile.engine !== "chromium" && !!profile.engine && extensions.length) {
       throw new CloudProfileEditorError("Chrome extensions are not supported by Firefox profiles", 400);
     }
     profile.extensions = extensions;

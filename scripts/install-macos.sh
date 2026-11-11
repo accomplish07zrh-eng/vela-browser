@@ -4,7 +4,7 @@
 # --agent-setup also connects installed AI agent clients and prints the helper's JSON result.
 set -euo pipefail
 
-repo="https://github.com/aliasmode/aliasmode"
+repo="https://github.com/accomplish07zrh-eng/vela-browser"
 # A local file:// base lets the build pipeline test an unpublished release.
 base="${ALIASMODE_RELEASE_BASE:-$repo/releases/download}"
 version=""
@@ -33,7 +33,7 @@ fi
 
 if [[ -z "$version" ]]; then
   # The newest release that has a build for this Mac; the API lists releases newest first.
-  version="$(curl -fsSL "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=20" \
+  version="$(curl -fsSL "https://api.github.com/repos/accomplish07zrh-eng/vela-browser/releases?per_page=20" \
     | grep -o "Vela Browser_[^\"/]*_${build}\.app\.tar\.gz" | head -n 1 \
     | sed -e 's/^Vela Browser_//' -e "s/_${build}\.app\.tar\.gz\$//")" || true
   [[ -n "$version" ]] || fail "no macOS release for this Mac was found"

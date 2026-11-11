@@ -11,7 +11,7 @@ export interface FirefoxProcessIdentity {
   helperBinaryPaths?: readonly string[];
 }
 
-function commandArgs(line: string): string[] {
+export function commandArgs(line: string): string[] {
   const args: string[] = [];
   let value = "";
   let quoted = false;

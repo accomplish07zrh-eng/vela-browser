@@ -49,11 +49,17 @@ import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "
 import { assertSafeProfileId } from "./profile-id.ts";
 import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
+import { fingerprintAudit, type FingerprintAudit } from "./fingerprint-audit.ts";
 import type { FingerprintSample } from "./diagnose.ts";
 import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
 import { applySessionToEndpoint, bundleTabUrls, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError, telegramHomeClient } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, FirefoxOwnerError, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
+import { callWebKitOwner, closeWebKitOwner, webkitEndpoint, WebKitOwnerError, forgetWebKitOwner, reserveWebKitOwner, startWebKitOwner } from "./webkit-runtime.ts";
+import { matchWebKitProcesses } from "./webkit-lifecycle.ts";
+import { ensureWebKit, WEBKIT_EXECUTABLE_SHA256 } from "./webkit-install.ts";
+import { WEBKIT_REVISION, WEBKIT_RUNTIME_VERSION, WEBKIT_PLAYWRIGHT_VERSION, webkitSupported } from "./webkit-config.ts";
+import { readWebKitSessionCookies, WEBKIT_SESSION_FILE } from "./webkit-session.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -95,7 +101,8 @@ function webRtcPolicy(profile: Profile): string {
 
 function needsProxyRelay(profile: Profile): boolean {
   return !!profile.proxy && (
-    profile.proxy.type === "socks5"
+    profile.engine === "webkit"
+    || profile.proxy.type === "socks5"
     || (profile.proxy.type === "http" && !!profile.proxy.user)
   );
 }
@@ -238,10 +245,13 @@ function firefoxHelperBinaryPaths(binaryPath: string): string[] {
 }
 
 /** Which pinned executable a profile launches. */
-type BinaryKind = "chromium" | "firefox" | "aliasmode";
+type BinaryKind = "chromium" | "firefox" | "webkit" | "aliasmode";
+function isContextEngine(engine: unknown): boolean { return engine === "firefox" || engine === "webkit"; }
+function contextOwner(launch: LaunchInfo) { return launch.engine === "webkit" ? launch.webkitOwner : launch.firefoxOwner; }
+function contextEndpoint(launch: LaunchInfo, owner: FirefoxOwner) { return launch.engine === "webkit" ? webkitEndpoint(owner) : firefoxEndpoint(owner); }
 
 function binaryKind(profile: Profile): BinaryKind {
-  return profile.engine === "firefox" ? "firefox" : profile.chromiumRuntime ?? "chromium";
+  return isContextEngine(profile.engine) ? profile.engine as "firefox" | "webkit" : profile.chromiumRuntime ?? "chromium";
 }
 
 export type BrowserLaunchFailure =
@@ -255,6 +265,11 @@ export type BrowserLaunchFailure =
 
 const PREFLIGHT_GUIDANCE = {
   chromium_setup: "Chrome runtime approval is missing or invalid. Run bun cli.ts setup, then restart Vela Browser.",
+  webkit_configuration: "The saved WebKit configuration does not match this pinned runtime.",
+  webkit_host: "WebKit currently requires Windows x64.",
+  webkit_extensions: "WebKit does not support Chrome extensions or hardware fingerprint overrides.",
+  webkit_arguments: "WebKit profiles cannot use Chromium launch arguments.",
+  webkit_download: "WebKit could not be downloaded or verified. Check your connection and retry.",
   firefox_setup: "Firefox runtime approval is missing or invalid. Run bun cli.ts setup, then restart Vela Browser.",
   proxy_invalid: "Saved proxy settings are invalid. Edit or clear this profile's proxy.",
   proxy_https_auth: "Authenticated HTTPS proxies are unsupported. Use HTTP or SOCKS5.",
@@ -275,6 +290,7 @@ const PREFLIGHT_GUIDANCE = {
   profile_changed: "This profile's settings changed while it was opening. Open it again.",
   browser_unresponsive: "This profile's browser is still running but does not answer. Close the profile in Vela Browser, then open it again.",
   firefox_unresponsive: "The Firefox browser stopped answering while the profile was opening. Open the profile again.",
+  webkit_unresponsive: "The WebKit browser stopped answering while the profile was opening. Open the profile again.",
   unexpected: "Vela Browser could not open this profile because of an unexpected error. The app log names it in the line \"rejected before launch\".",
   cookie_key_unreadable: "Vela Browser did not open this profile. This Windows account cannot read its saved cookies " +
     "(they were saved on another computer or Windows account, or before a Windows password reset), and opening it would delete them. " +
@@ -366,7 +382,7 @@ export type CookieSetter = (ws: string, cookies: CookieRecord[]) => Promise<void
  * the next start; the running browser and its identity checks keep the launched values.
  */
 export const LAUNCH_PERSONA_KEYS = [
-  "engine", "chromiumRuntime", "firefox", "hardware", "ua", "platformOs", "platform", "proxy", "proxyError",
+  "engine", "chromiumRuntime", "firefox", "webkit", "hardware", "ua", "platformOs", "platform", "proxy", "proxyError",
   "timezone", "locale", "screenWidth", "screenHeight", "displayScale", "fingerprintSeed", "extensions",
 ] as const satisfies readonly (keyof LaunchPersona)[];
 
@@ -528,6 +544,8 @@ export interface LauncherOptions {
   expectedBinarySha256?: string;
   firefoxBinaryPath?: string;
   expectedFirefoxBinarySha256?: string;
+  ensureWebKit?: (root: string) => Promise<string>;
+  webkitRuntime?: LauncherOptions["firefoxRuntime"];
   /** Install root for the downloaded Chromium 155 beta. Defaults beside dataRoot. */
   chromiumRuntimeRoot?: string;
   /** Injectable Chromium 155 installer for tests. Returns chrome.exe. */
@@ -921,6 +939,9 @@ export class Launcher {
   /** Packs whose background download failed in this run; a launch still retries them. */
   private fontPackPrefetchFailed = new Set<string>();
   private fontPacksPruned = false;
+  private ensureWebKitFn: (root: string) => Promise<string>;
+  private webkitRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
+  private contextRuntime(launch: LaunchInfo) { return launch.engine === "webkit" ? this.webkitRuntime : this.firefoxRuntime; }
   private firefoxRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
   private unsafeDisableIdentityGates: boolean;
   private verifiedBinaryCache?: { key: string; path: string; sha256: string };
@@ -942,6 +963,7 @@ export class Launcher {
   private setCookiesFn: CookieSetter;
   private ensureSearchProviderFn?: SearchProviderEnsurer;
   private captureFingerprintFn: (ws: string) => Promise<FingerprintSample | null>;
+  private fingerprintAudits = new Map<string, Promise<FingerprintAudit>>();
   private lookupExitLocationFn?: (proxy: ProxySpec) => Promise<ExitLocation | null>;
   private readSessionFn: typeof readSessionInSubprocess;
   private applySessionFn: typeof applySessionToEndpoint;
@@ -1029,8 +1051,10 @@ export class Launcher {
     this.firefoxRuntime = opts.firefoxRuntime ?? {
       reserve: reserveFirefoxOwner, start: startFirefoxOwner, call: callFirefoxOwner, close: closeFirefoxOwner,
     };
+    this.ensureWebKitFn = opts.ensureWebKit ?? ((root) => ensureWebKit(root, {}, this.hostPlatform, this.hostArch));
+    this.webkitRuntime = opts.webkitRuntime ?? { reserve: reserveWebKitOwner, start: startWebKitOwner, call: callWebKitOwner, close: closeWebKitOwner };
     for (const launch of this.store.listLaunches()) {
-      if (launch.engine === "firefox" && launch.firefoxOwner) firefoxEndpoint(launch.firefoxOwner);
+      if (isContextEngine(launch.engine) && contextOwner(launch)) contextEndpoint(launch, contextOwner(launch)!);
     }
     this.dataRoot = opts.dataRoot ?? DEFAULT_DATA_ROOT;
     this.chromiumRuntimeRoot = opts.chromiumRuntimeRoot ?? join(dirname(resolve(this.dataRoot)), "runtimes");
@@ -1233,6 +1257,7 @@ export class Launcher {
 
   /** Validate the deployment pin without reading the configured binary. */
   private approvedBinarySha256(engine: BinaryKind = "chromium"): string {
+    if (engine === "webkit") return WEBKIT_EXECUTABLE_SHA256;
     if (engine === "aliasmode") return ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
     if (engine === "chromium" && this.downloadsCloakBrowser()) {
       return cloakBrowserExecutableSha256(this.hostPlatform, this.hostArch)!;
@@ -1251,7 +1276,10 @@ export class Launcher {
   private async verifyConfiguredBinary(forceHash = false, engine: BinaryKind = "chromium"): Promise<{ path: string; sha256: string }> {
     const expected = this.approvedBinarySha256(engine);
     let binaryPath = engine === "firefox" ? this.firefoxBinaryPath : this.binaryPath;
-    if (engine === "aliasmode") {
+    if (engine === "webkit") {
+      try { binaryPath = await this.ensureWebKitFn(this.chromiumRuntimeRoot); }
+      catch (error) { this.log(`WebKit install failed: ${error instanceof Error ? error.message : error}`); throw new BrowserLaunchError("preflight", "webkit_download"); }
+    } else if (engine === "aliasmode") {
       try {
         binaryPath = await this.ensureAliasmodeChromiumFn(this.chromiumRuntimeRoot);
       } catch (error) {
@@ -1332,6 +1360,7 @@ export class Launcher {
     const serialized = JSON.stringify({
       schema: 2,
       ...(profile.engine === "firefox" ? { engine: "firefox", firefox: profile.firefox } : {}),
+      ...(profile.engine === "webkit" ? { engine: "webkit", webkit: profile.webkit } : {}),
       binarySha256,
       host: [this.hostPlatform, this.hostArch],
       headless,
@@ -1382,6 +1411,12 @@ export class Launcher {
   }
 
   private assertHostCompatibility(profile: Profile): void {
+    if (profile.engine === "webkit") {
+      if (!profile.webkit || profile.webkit.revision !== WEBKIT_REVISION || profile.webkit.runtimeVersion !== WEBKIT_RUNTIME_VERSION || profile.webkit.playwrightVersion !== WEBKIT_PLAYWRIGHT_VERSION) throw new BrowserLaunchError("preflight", "webkit_configuration");
+      if (!webkitSupported(this.hostPlatform, this.hostArch)) throw new BrowserLaunchError("preflight", "webkit_host");
+      if (profile.extensions?.length || profile.hardware) throw new BrowserLaunchError("preflight", "webkit_extensions");
+      return;
+    }
     if (profile.engine === "firefox") {
       if (!profile.firefox || profile.firefox.version !== 1 || profile.firefox.runtimeVersion !== FIREFOX_RUNTIME_VERSION) {
         throw new BrowserLaunchError("preflight", "firefox_configuration");
@@ -1582,6 +1617,7 @@ export class Launcher {
       profile.engine,
       profile.firefox,
       launch.firefoxOwner?.generation,
+      profile.webkit, launch.webkitOwner?.generation,
       profile.ua,
       profile.proxy,
       profile.proxyError ?? null,
@@ -1679,7 +1715,7 @@ export class Launcher {
     if (!pending.length) return;
     const current = pending.filter(cookieIsCurrent);
     try {
-      if (current.length) await this.setCookiesFn(ws, cookiesForEngine(current, this.store.getProfile(profileId)?.engine === "firefox" ? "firefox" : "chromium"));
+      if (current.length) await this.setCookiesFn(ws, cookiesForEngine(current, this.store.getProfile(profileId)?.engine ?? "chromium"));
       this.store.clearPendingCookies(profileId, pending);
       this.log(`${profileId}: set ${current.length} cookie(s) added while it was closed`);
     } catch (err) {
@@ -1832,7 +1868,7 @@ export class Launcher {
         // The message stays in the log; the user sees which kind of refusal it was.
         const normalized = new BrowserLaunchError("preflight", error instanceof LaunchRefusal
           ? error.reason
-          : error instanceof FirefoxOwnerError ? "firefox_unresponsive" : "unexpected");
+          : error instanceof FirefoxOwnerError ? "firefox_unresponsive" : error instanceof WebKitOwnerError ? "webkit_unresponsive" : "unexpected");
         const retained = this.failedStartGeneration(error);
         if (retained) this.rememberFailedStartGeneration(normalized, retained);
         throw normalized;
@@ -1878,11 +1914,11 @@ export class Launcher {
     try {
       // A running browser is checked with the identity it was launched with; saved edits wait for its next start.
       const checked = launchedProfile(profile, this.store.getLaunch(profileId));
-      if (checked.proxy?.type === "https" && checked.proxy.user) {
+      if (checked.proxy?.type === "https" && checked.proxy.user && checked.engine !== "webkit") {
         throw new BrowserLaunchError("preflight", "proxy_https_auth");
       }
       this.assertHostCompatibility(checked);
-      if (profile.engine === "firefox" && chromeArgs.length) throw new BrowserLaunchError("preflight", "firefox_arguments");
+      if (isContextEngine(profile.engine) && chromeArgs.length) throw new BrowserLaunchError("preflight", profile.engine === "webkit" ? "webkit_arguments" : "firefox_arguments");
       approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
     } catch (error) {
       return await this.rejectUnsafeExistingLaunch(profileId, "host/persona verification", error);
@@ -1955,7 +1991,7 @@ export class Launcher {
           // Exact scan proved the recorded launch is gone; continue to a fresh
           // allocation (the unrelated responding port remains OS-reserved).
         } else if (
-          profile.engine !== "firefox"
+          !isContextEngine(profile.engine)
           && !headless
           && !trackedProc
           && existing.searchBootstrapRevision !== SEARCH_PROVIDER_BOOTSTRAP_REVISION
@@ -2008,7 +2044,7 @@ export class Launcher {
           }
           let nativeSessionRestored = false;
           // Tracked pages, not hasPages: a browser whose only tabs crashed still gets its tabs back on Open.
-          if (profile.engine === "firefox" && !await this.firefoxStatus(existing).then((status) => status.pageTargets.length > 0, () => true)) {
+          if (isContextEngine(profile.engine) && !await this.contextStatus(existing).then((status) => status.pageTargets.length > 0, () => true)) {
             const tabs = opts.restoreLastSession === false ? [] : this.closedFirefoxTabs(profileId, existing) ?? [];
             await this.navigate(currentWs, startupUrls.length ? startupUrls : tabs, true).catch((error) => {
               this.log(`${profileId}: not every page loaded (continuing): ${error instanceof Error ? error.message : error}`);
@@ -2071,7 +2107,7 @@ export class Launcher {
       profile = current!;
       profileSnapshot = JSON.stringify(profile);
       // The checks above saw the identity of the browser that ran; this launch uses the saved one.
-      if (profile.proxy?.type === "https" && profile.proxy.user) {
+      if (profile.proxy?.type === "https" && profile.proxy.user && profile.engine !== "webkit") {
         throw new BrowserLaunchError("preflight", "proxy_https_auth");
       }
       this.assertHostCompatibility(profile);
@@ -2094,6 +2130,7 @@ export class Launcher {
       profileSnapshot = JSON.stringify(profile);
       this.log(`profile ${profileId} timezone set to ${exit.timezone} from its proxy exit`);
     }
+    if (profile.engine === "webkit") return this.startFreshWebKit(profile, startupUrls, opts, pendingSession);
     if (profile.engine === "firefox") {
       return this.startFreshFirefox(profile, startupUrls, opts, pendingSession, exit);
     }
@@ -2604,6 +2641,108 @@ export class Launcher {
     }
   }
 
+  private async startFreshWebKit(profile: Profile, startupUrls: string[], opts: LaunchStartOptions, pendingSession: string | null): Promise<LaunchStartResult> {
+    const profileId = profile.id, headless = opts.headless ?? this.headless;
+    let snapshot = JSON.stringify(profile);
+    const binary = await this.verifyConfiguredBinary(true, "webkit");
+    await this.cacheClears.get(profileId);
+    const userDataDir = this.userDataDir(profileId);
+    const runtime = resolvePlaywrightRuntime();
+    const ownerBinaryPath = this.unsafeDisableIdentityGates ? runtime.nodeExecutable
+      : realpathSync(Bun.which(runtime.nodeExecutable, { PATH: process.env.PATH }) ?? runtime.nodeExecutable);
+    const reservation = await this.webkitRuntime.reserve();
+    const owner: FirefoxOwner = { ...reservation, pid: 0, browserPid: 0 };
+    const port = Number(new URL(owner.endpoint).port);
+    const launch: LaunchInfo = {
+      profileId, engine: "webkit", pid: 0, debugPort: port, ws: webkitEndpoint(owner),
+      startedAt: Date.now(), webkitOwner: owner, ownerBinaryPath,
+      binaryPath: binary.path, binarySha256: binary.sha256, userDataDir, headless,
+      personaDigest: this.launchPersonaDigest(profile, binary.sha256, headless), persona: launchPersona(profile),
+      sessionBaseVersion: opts.sessionBaseVersion,
+    };
+    if (existsSync(userDataDir)) {
+      const processes = await this.contextProcesses(launch);
+      if (!processes || processes.browsers.length || processes.owners.length) {
+        forgetWebKitOwner(owner); throw new BrowserLaunchError("profile_directory");
+      }
+    }
+    const savedTabs = !pendingSession && opts.restoreLastSession !== false
+      ? this.closedFirefoxTabs(profileId) ?? bundleTabUrls(this.store.getSessionBundle(profileId) ?? "") : [];
+    const nativeCookies = !pendingSession && opts.restoreLastSession !== false
+      ? readWebKitSessionCookies(userDataDir, profileId) : null;
+    let nativeSessionLoaded = nativeCookies !== null;
+    mkdirSync(userDataDir, { recursive: true });
+    let reserved = false;
+    try {
+      // Route every proxied WebKit environment through its own loopback relay, including SOCKS
+      // authentication. A failed relay fails requests instead of reverting to the direct route.
+      if (profile.proxy) {
+        const proxy = profile.proxy;
+        const relay = await startProxyRelay({ type: proxy.type,
+          host: proxy.host, port: Number(proxy.port), user: proxy.user, pass: proxy.pass,
+        }, {});
+        this.closeRelay(profileId); this.relays.set(profileId, relay); launch.relayPort = relay.port;
+      }
+      this.requireUnchangedProfile(profileId, snapshot, "WebKit spawn");
+      this.store.recordLaunch(launch); reserved = true; this.liveReserved.add(port);
+      const config = profile.webkit!;
+      const running = await this.webkitRuntime.start({
+        profileId, executablePath: binary.path, executableSha256: binary.sha256, userDataDir,
+        config: { viewport: config.viewport, deviceScaleFactor: config.deviceScaleFactor,
+          locale: profile.locale!, timezoneId: profile.timezone || "UTC", userAgent: profile.ua,
+          screen: { width: profile.screenWidth, height: profile.screenHeight } },
+        ...(launch.relayPort ? { proxy: { server: `http://127.0.0.1:${launch.relayPort}` } } : {}), headless,
+        sessionGeneration: `${port}:${launch.startedAt}`, timeoutMs: this.cdpReadyTimeoutMs,
+      }, {
+        reservation,
+        onSpawn: (spawned) => { launch.webkitOwner = { ...owner, ...spawned }; this.store.recordLaunch(launch); },
+        onReady: (ready) => { launch.webkitOwner = ready; launch.pid = ready.browserPid; launch.ws = webkitEndpoint(ready); this.store.recordLaunch(launch); },
+      });
+      launch.webkitOwner = running; launch.pid = running.browserPid; launch.ws = webkitEndpoint(running); this.store.recordLaunch(launch);
+      profile = this.requireUnchangedProfile(profileId, snapshot, "WebKit startup");
+      await this.contextStatus(launch);
+      const captured = await recordCapture({ profile, capture: () => this.captureFingerprintFn(launch.ws),
+        save: (id, observed, verdict) => this.store.saveObservedFingerprint(id, observed, verdict),
+        log: (msg) => this.log(msg), webrtc: "unavailable",
+      });
+      if (captured) { profile = this.store.getProfile(profileId)!; snapshot = JSON.stringify(profile); }
+      if (nativeCookies?.length) {
+        await this.addNativeSessionCookiesFn(launch.ws, nativeCookies).catch(() => {
+          nativeSessionLoaded = false;
+          this.log(`${profileId}: session cookies from the last WebKit session could not be restored`);
+        });
+      }
+      // Consume the snapshot once. A later native close or crash must never
+      // resurrect an older login after the user has logged out.
+      rmSync(join(userDataDir, WEBKIT_SESSION_FILE), { force: true });
+      if (pendingSession) {
+        const home = platformHomeUrl(profile.platform, telegramHomeClient(pendingSession));
+        const urls = (opts.autoNavigate ?? true) ? startupUrls.length ? startupUrls : !bundleTabUrls(pendingSession).length && home ? [home] : [] : [];
+        await this.applySessionFn(launch.ws, pendingSession, urls);
+      }
+      await this.applyPendingCookies(profileId, launch.ws);
+      const cookies = cookiesForEngine(profile.cookies.filter(cookieIsCurrent), "webkit");
+      if (cookies.length) await this.ensureCookiesFn(launch.ws, cookies);
+      if (!pendingSession && (opts.autoNavigate ?? true)) {
+        const home = platformHomeUrl(profile.platform);
+        await this.navigate(launch.ws, startupUrls.length ? startupUrls : savedTabs.length ? savedTabs : home ? [home] : [], true)
+          .catch(() => this.log(`${profileId}: WebKit startup navigation failed; open the site manually`));
+      }
+      this.requireUnchangedProfile(profileId, snapshot, "WebKit launch commit");
+      this.markIdentityCertified(profileId);
+      if (pendingSession) this.store.markSessionRestored(profileId, pendingSession);
+      return { ws: launch.ws, port,
+        nativeSessionRestored: !pendingSession && (opts.autoNavigate ?? true) && !startupUrls.length && savedTabs.length > 0,
+        ...(nativeSessionLoaded ? { nativeSessionLoaded: true } : {}),
+      };
+    } catch (error) {
+      if (reserved) {
+        if (!await this.doStop(profileId, launch).catch(() => false)) this.rememberFailedStartGeneration(error, launch);
+      } else { this.closeRelay(profileId); forgetWebKitOwner(owner); }
+      throw error;
+    }
+  }
+
   private async startFreshFirefox(
     profile: Profile,
     startupUrls: string[],
@@ -2640,7 +2779,7 @@ export class Launcher {
       sessionBaseVersion: opts.sessionBaseVersion,
     };
     if (existsSync(userDataDir)) {
-      const processes = await this.firefoxProcesses(launch);
+      const processes = await this.contextProcesses(launch);
       if (!processes || processes.browsers.length || processes.owners.length) {
         forgetFirefoxOwner(owner);
         throw new BrowserLaunchError("profile_directory");
@@ -2673,7 +2812,7 @@ export class Launcher {
       if (needsProxyRelay(profile)) {
         const proxy = profile.proxy!;
         const relay = await startProxyRelay({
-          type: proxy.type === "socks5" ? "socks5" : "http",
+          type: proxy.type,
           host: proxy.host, port: Number(proxy.port), user: proxy.user, pass: proxy.pass,
         }, {});
         this.closeRelay(profileId);
@@ -2725,12 +2864,12 @@ export class Launcher {
       launch.ws = firefoxEndpoint(running);
       this.store.recordLaunch(launch);
       profile = this.requireUnchangedProfile(profileId, snapshot, "Firefox startup");
-      let startupStatus = await this.firefoxStatus(launch);
+      let startupStatus = await this.contextStatus(launch);
       const restoreDeadline = Date.now() + 3_000;
       while (restoreLastSession && !startupStatus.pageTargets.some((target) => canonicalUserPageUrl(target.url))
         && Date.now() < restoreDeadline) {
         await sleep(50);
-        startupStatus = await this.firefoxStatus(launch);
+        startupStatus = await this.contextStatus(launch);
       }
       let nativeSessionRestored = restoreLastSession && startupStatus.pageTargets.some((target) => canonicalUserPageUrl(target.url));
       // The capture comes before the tabs: it can then use the empty first window, and no extra
@@ -2799,39 +2938,43 @@ export class Launcher {
     }
   }
 
-  private async firefoxStatus(launch: LaunchInfo): Promise<{
+  private async contextStatus(launch: LaunchInfo): Promise<{
     generation: string; directory: string; executablePath: string;
     browserPid: number; pid: number; profileId: string;
     hasPages: boolean; pageTargets: Array<{ id: string; url: string }>;
   }> {
-    if (!launch.firefoxOwner) throw new Error("Firefox owner is missing");
-    const status = await this.firefoxRuntime.call<any>(launch.firefoxOwner, "status", {}, { timeoutMs: 800 });
-    if (status.generation !== launch.firefoxOwner.generation || status.profileId !== launch.profileId
+    const owner = contextOwner(launch);
+    if (!owner) throw new Error(`${launch.engine} owner is missing`);
+    const status = await this.contextRuntime(launch).call<any>(owner, "status", {}, { timeoutMs: 800 });
+    if (status.generation !== owner.generation || status.profileId !== launch.profileId
       || status.directory !== launch.userDataDir || status.executablePath !== launch.binaryPath
       || !Number.isInteger(status.browserPid) || status.browserPid <= 0
       || !Number.isInteger(status.pid) || status.pid <= 0
-      || (launch.firefoxOwner.pid > 0 && status.pid !== launch.firefoxOwner.pid)
+      || (owner.pid > 0 && status.pid !== owner.pid)
       || (launch.pid > 0 && status.browserPid !== launch.pid)) {
-      throw new Error("Firefox owner identity does not match the launch");
+      throw new Error(`${launch.engine} owner identity does not match the launch`);
     }
-    if (!this.launchGenerationMatches(launch.profileId, launch)) throw new Error("Firefox launch generation changed");
+    if (!this.launchGenerationMatches(launch.profileId, launch)) throw new Error(`${launch.engine} launch generation changed`);
     if (launch.pid <= 0) {
       const current = this.store.getLaunch(launch.profileId)!;
-      const owner = { ...launch.firefoxOwner, pid: status.pid, browserPid: status.browserPid };
-      this.store.recordLaunch({ ...current, pid: status.browserPid, firefoxOwner: owner });
-      firefoxEndpoint(owner);
+      const recovered = { ...owner, pid: status.pid, browserPid: status.browserPid };
+      this.store.recordLaunch({ ...current, pid: status.browserPid, ...(launch.engine === "webkit" ? { webkitOwner: recovered } : { firefoxOwner: recovered }) });
+      contextEndpoint(launch, recovered);
     }
     return status;
   }
 
-  private async firefoxProcesses(launch: LaunchInfo): Promise<{ browsers: number[]; owners: number[] } | null> {
-    if (!launch.binaryPath || !launch.userDataDir || !launch.ownerBinaryPath || !launch.firefoxOwner) return null;
+  private async contextProcesses(launch: LaunchInfo): Promise<{ browsers: number[]; owners: number[] } | null> {
+    if (!launch.binaryPath || !launch.userDataDir || !launch.ownerBinaryPath || !contextOwner(launch)) return null;
     const snapshot = process.platform === "darwin" && this.readProcessSnapshotFn === readHostProcessSnapshot
       ? await readDarwinFirefoxProcessSnapshot()
       : await this.readProcessSnapshotFn?.();
+    if (launch.engine === "webkit") return snapshot ? matchWebKitProcesses({
+      binaryPath: launch.binaryPath, userDataDir: launch.userDataDir, ownerBinaryPath: launch.ownerBinaryPath, generation: contextOwner(launch)!.generation, browserPid: launch.pid,
+    }, snapshot) : null;
     return snapshot ? matchFirefoxProcesses({
       binaryPath: launch.binaryPath, userDataDir: launch.userDataDir,
-      ownerBinaryPath: launch.ownerBinaryPath, generation: launch.firefoxOwner.generation,
+      ownerBinaryPath: launch.ownerBinaryPath, generation: contextOwner(launch)!.generation,
       helperBinaryPaths: firefoxHelperBinaryPaths(launch.binaryPath),
     }, snapshot, this.hostPlatform === "win32") : null;
   }
@@ -2852,8 +2995,8 @@ export class Launcher {
   ): Promise<LaunchLiveness> {
     const cdpWs = await this.probeLaunchCdp(launch);
     const cdpAlive = cdpWs !== null;
-    if (launch.engine === "firefox") {
-      const processes = await this.firefoxProcesses(launch);
+    if (isContextEngine(launch.engine)) {
+      const processes = await this.contextProcesses(launch);
       const ownedPids = processes ? [...processes.browsers, ...processes.owners] : [];
       return {
         cdpAlive, cdpWs, pid: processes?.browsers[0] ?? launch.pid, ownedPids,
@@ -3196,6 +3339,7 @@ export class Launcher {
     this.store.clearLaunch(profileId);
     this.windowFits.get(profileId)?.stop();
     if (launch.firefoxOwner) forgetFirefoxOwner(launch.firefoxOwner);
+    if (launch.webkitOwner) forgetWebKitOwner(launch.webkitOwner);
     this.autofill?.retire(profileId, launch);
     this.liveReserved.delete(launch.debugPort);
     this.closeRelay(profileId);
@@ -3211,8 +3355,8 @@ export class Launcher {
   }
 
   private async exactOwnedPids(profileId: string, launch: LaunchInfo): Promise<number[] | null> {
-    if (launch.engine === "firefox") {
-      const processes = await this.firefoxProcesses(launch);
+    if (isContextEngine(launch.engine)) {
+      const processes = await this.contextProcesses(launch);
       return processes ? [...processes.browsers, ...processes.owners] : null;
     }
     if (this.skipDefaultOwnedBrowserScan) {
@@ -3423,7 +3567,7 @@ export class Launcher {
   }
 
   private async confirmPersistedLaunchStopped(profileId: string, launch: LaunchInfo): Promise<boolean> {
-    if (launch.engine === "firefox") return this.confirmLaunchStopped(profileId, launch);
+    if (isContextEngine(launch.engine)) return this.confirmLaunchStopped(profileId, launch);
     if (this.hostPlatform !== "linux" || !this.readProcessSnapshotFn) return true;
     const proof = this.persistedGroupProof(launch);
     return !!proof && await this.confirmLaunchStopped(profileId, launch, proof);
@@ -3458,7 +3602,7 @@ export class Launcher {
     try {
       relay = await startProxyRelay(
         {
-          type: profile.proxy!.type === "socks5" ? "socks5" : "http",
+          type: profile.proxy!.type,
           host: profile.proxy!.host,
           port: Number(profile.proxy!.port),
           user: profile.proxy!.user,
@@ -3466,7 +3610,8 @@ export class Launcher {
         },
         { port: launch.relayPort },
       );
-    } catch {
+    } catch (error) {
+      this.log(`proxy relay rebind failed for ${profile.id}: ${(error as { code?: string })?.code ?? "unavailable"}`);
       throw new BrowserLaunchError("relay_setup");
     }
     const current = this.store.getLaunch(profile.id);
@@ -3567,14 +3712,14 @@ export class Launcher {
       // the exact owner and launch, even when native window close leaves the host
       // scan inconclusive. Final disappearance and force-kill checks stay exact.
       const wasAlive = initial?.cdpAlive === true && initial.cdpWs === launch?.ws && (
-        initial.process === "alive" || (launch?.engine === "firefox" && !!launch.firefoxOwner)
+        initial.process === "alive" || (isContextEngine(launch?.engine) && !!launch && !!contextOwner(launch))
       );
       const hasLinuxTreeProof = !requiresLinuxProof || !!linuxProof;
       if (wasAlive && hasLinuxTreeProof && launch?.ws) {
         if (!this.launchGenerationMatches(profileId, launch)) return false;
         try {
-          const closed = launch.engine === "firefox" && launch.firefoxOwner
-            ? await this.firefoxRuntime.close(launch.firefoxOwner, { timeoutMs: this.gracefulStopMs }).then(() => true)
+          const closed = isContextEngine(launch.engine) && contextOwner(launch)
+            ? await this.contextRuntime(launch).close(contextOwner(launch)!, { timeoutMs: this.gracefulStopMs }).then(() => true)
             : await this.browserCloseFn(launch.ws, this.gracefulStopMs);
           if (closed) {
             if (await this.confirmLaunchStopped(profileId, launch, linuxProof ?? undefined, true)) {
@@ -3613,7 +3758,7 @@ export class Launcher {
             teardownConfirmed = await this.confirmLaunchStopped(profileId, launch, undefined, true);
           }
         } else if (forceState.process === "dead") {
-          if (requiresLinuxProof && !linuxProof && launch.engine !== "firefox") {
+          if (requiresLinuxProof && !linuxProof && !isContextEngine(launch.engine)) {
             this.log(`stop ${profileId}: pre-patch Linux tree cannot be anchored after its root disappeared; retaining ownership`);
           } else {
             teardownConfirmed = await this.confirmLaunchStopped(profileId, launch, linuxProof ?? undefined);
@@ -3654,7 +3799,7 @@ export class Launcher {
     const launch = this.store.getLaunch(profileId);
     if (!launch) return false;
     try {
-      if (launch.engine === "firefox") return (await this.firefoxStatus(launch)).hasPages;
+      if (isContextEngine(launch.engine)) return (await this.contextStatus(launch)).hasPages;
       const response = await this.fetchFn(`http://127.0.0.1:${launch.debugPort}/json/list`);
       if (!response.ok) return true;
       const targets = await response.json() as Array<{ type?: unknown }>;
@@ -3671,6 +3816,7 @@ export class Launcher {
 
   browserStorageWatchPaths(profileId: string): string[] {
     const root = this.store.getLaunch(profileId)?.userDataDir ?? this.userDataDir(profileId);
+    if (this.store.getProfile(profileId)?.engine === "webkit") return [root];
     if (this.store.getProfile(profileId)?.engine === "firefox") return [join(root, "storage", "default")];
     return [
       join(root, "Default", "Network"),
@@ -3707,7 +3853,7 @@ export class Launcher {
 
   /** Native-close URLs; Cloud capture accepts only the exact launch generation. */
   closedFirefoxTabs(profileId: string, launch?: { debugPort: number | null; startedAt: number | null }): string[] | undefined {
-    if (this.store.getProfile(profileId)?.engine !== "firefox") return undefined;
+    if (!isContextEngine(this.store.getProfile(profileId)?.engine)) return undefined;
     try {
       const saved = JSON.parse(readFileSync(join(this.userDataDir(profileId), "aliasmode-session-tabs.json"), "utf8"));
       if (typeof saved.generation !== "string" || !Array.isArray(saved.tabs) || saved.tabs.some((url: unknown) => typeof url !== "string")) return undefined;
@@ -3716,6 +3862,42 @@ export class Launcher {
     } catch {
       return undefined;
     }
+  }
+
+  /** Measure only an existing certified generation, using a temporary local page. */
+  async refreshFingerprint(profileId: string): Promise<FingerprintAudit> {
+    const pending = this.fingerprintAudits.get(profileId);
+    if (pending) return pending;
+    const operation = this.refreshFingerprintGeneration(profileId);
+    this.fingerprintAudits.set(profileId, operation);
+    try { return await operation; }
+    finally { if (this.fingerprintAudits.get(profileId) === operation) this.fingerprintAudits.delete(profileId); }
+  }
+
+  private async refreshFingerprintGeneration(profileId: string): Promise<FingerprintAudit> {
+    const launch = this.store.getLaunch(profileId);
+    const profile = this.store.getProfile(profileId);
+    if (!launch || !profile) throw new Error("profile browser is not open");
+    const unchanged = () => {
+      const current = this.store.getProfile(profileId);
+      return !!current && this.launchGenerationMatches(profileId, launch)
+        && this.store.getLaunch(profileId)?.ws === launch.ws
+        && !this.startsInFlight.has(profileId) && !this.stopsInFlight.has(profileId)
+        && !launchIdentityChanged(current, launch);
+    };
+    if (!unchanged() || !await this.certifiedActive(profileId) || !unchanged()) throw new Error("profile browser identity changed; reopen it before measuring");
+    const sample = await this.captureFingerprintFn(launch.ws);
+    if (!sample || !unchanged() || !await this.certifiedActive(profileId) || !unchanged()) throw new Error("fingerprint capture is unavailable or its browser generation changed");
+    const captured = await recordCapture({
+      profile: this.store.getProfile(profileId)!, capture: async () => sample,
+      save: (id, observed, verdict) => {
+        if (!unchanged()) throw new Error("browser generation changed");
+        this.store.saveObservedFingerprint(id, observed, verdict);
+      },
+      log: this.log,
+    });
+    if (!captured) throw new Error("fingerprint capture could not be stored");
+    return fingerprintAudit(this.store.getProfile(profileId)!);
   }
 
   /** Best-effort Local export/managed-close snapshot. Never opens a browser. */
@@ -3833,7 +4015,7 @@ export class Launcher {
     const launch = this.store.getLaunch(profileId);
     if (!launch) throw new Error(`cannot verify survivor ${profileId}: launch record is missing`);
     if (
-      launch.engine !== "firefox"
+      !isContextEngine(launch.engine)
       && launch.headless !== true
       && !this.procs.has(profileId)
       && launch.searchBootstrapRevision !== SEARCH_PROVIDER_BOOTSTRAP_REVISION
@@ -3879,7 +4061,7 @@ export class Launcher {
       if (!launch || `${launch.debugPort}:${launch.startedAt}` !== generation) return null;
       this.assertStoredLaunchPersona(profile, launch, approvedBinarySha256);
       if (
-        launch.engine !== "firefox"
+        !isContextEngine(launch.engine)
         && launch.headless !== true
         && !this.procs.has(profileId)
         && launch.searchBootstrapRevision !== SEARCH_PROVIDER_BOOTSTRAP_REVISION
@@ -4055,8 +4237,8 @@ export class Launcher {
   }
 
   private async probeLaunchCdp(launch: LaunchInfo): Promise<string | null> {
-    if (launch.engine === "firefox") {
-      try { await this.firefoxStatus(launch); return launch.ws; } catch { return null; }
+    if (isContextEngine(launch.engine)) {
+      try { await this.contextStatus(launch); return launch.ws; } catch { return null; }
     }
     try {
       const res = await this.fetchFn(`http://127.0.0.1:${launch.debugPort}/json/version`);
@@ -4082,8 +4264,8 @@ export class Launcher {
   async diagnoseCdp(profileId: string): Promise<string> {
     const launch = this.store.getLaunch(profileId);
     if (!launch) return "no launch record";
-    if (launch.engine === "firefox") {
-      return `engine=firefox pid=${launch.pid} owner=${await this.probeLaunchCdp(launch) ? "reachable" : "unreachable"}`;
+    if (isContextEngine(launch.engine)) {
+      return `engine=${launch.engine} pid=${launch.pid} owner=${await this.probeLaunchCdp(launch) ? "reachable" : "unreachable"}`;
     }
     const parts: string[] = [`pid=${launch.pid}`, `port=${launch.debugPort}`];
     try {
@@ -4118,9 +4300,9 @@ export class Launcher {
   async bringToFront(profileId: string): Promise<void> {
     const launch = this.store.getLaunch(profileId);
     if (!launch) throw new Error("profile is not running");
-    if (launch.engine === "firefox" && launch.firefoxOwner) {
-      await this.firefoxStatus(launch);
-      await this.firefoxRuntime.call(launch.firefoxOwner, "bring-to-front", {});
+    if (isContextEngine(launch.engine) && contextOwner(launch)) {
+      await this.contextStatus(launch);
+      await this.contextRuntime(launch).call(contextOwner(launch)!, "bring-to-front", {});
       return;
     }
     await raiseWindow(launch.ws);
@@ -4136,11 +4318,13 @@ export class Launcher {
    * deleting them under a running Chrome risks corruption. Never throws.
    */
   async clearCache(profileId: string): Promise<{ cleared: boolean }> {
+    if (this.store.getProfile(profileId)?.engine === "webkit") return this.clearCacheDirs(profileId, ["Cache"], "clear WebKit HTTP cache");
     const dirs = this.store.getProfile(profileId)?.engine === "firefox" ? FIREFOX_CACHE_DIRS : CACHE_DIRS;
     return this.clearCacheDirs(profileId, dirs, "clearCache");
   }
 
   private clearPostStopCache(profileId: string, binaryPath?: string): void {
+    if (this.store.getProfile(profileId)?.engine === "webkit") return; // Preserve WebKit storage until its rebuildable cache paths are verified.
     const firefox = this.store.getProfile(profileId)?.engine === "firefox";
     const dirs = firefox ? FIREFOX_POST_STOP_CACHE_DIRS : POST_STOP_CACHE_DIRS;
     const componentsDir = binaryPath ? chromiumComponentsDir(binaryPath, this.hostPlatform) : null;
@@ -4846,7 +5030,7 @@ export function readWindowsProcessSnapshotNative(): HostProcessSnapshot {
 export async function readWindowsProcessSnapshotWmi(): Promise<HostProcessSnapshot | null> {
   try {
     const script = [
-      "Get-CimInstance -Query 'SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process' -OperationTimeoutSec 50 -ErrorAction Stop",
+      "Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process' -OperationTimeoutSec 50 -ErrorAction Stop",
       "ConvertTo-Json -Compress",
     ].join(" | ");
     // The full path also works when PATH has no PowerShell folder.
@@ -4872,6 +5056,7 @@ export async function readWindowsProcessSnapshotWmi(): Promise<HostProcessSnapsh
       if (!Number.isFinite(pid) || pid <= 0) continue;
       records.push({
         pid,
+        parentPid: Number.isSafeInteger(Number(row.ParentProcessId)) ? Number(row.ParentProcessId) : undefined,
         processName: typeof row?.Name === "string" && row.Name ? row.Name : undefined,
         executablePath: typeof row?.ExecutablePath === "string" && row.ExecutablePath ? row.ExecutablePath : null,
         commandLine: typeof row?.CommandLine === "string" ? row.CommandLine : "",

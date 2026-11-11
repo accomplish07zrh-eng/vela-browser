@@ -84,10 +84,10 @@ export const ALIASMODE_CHROMIUM_WEBRTC_IP = WINDOWS_BUILD.webRtcIp;
 export const ALIASMODE_CHROMIUM_KEEP_ALIVE = WINDOWS_BUILD.keepAlive;
 
 /** One downloadable, hash-pinned browser runtime under the runtimes root. */
-interface PinnedRuntime {
+export interface PinnedRuntime {
   label: string;
   /** The profiles that wait for it, as the dashboard matches a download to its rows. */
-  runtime: "aliasmode" | "cloakbrowser";
+  runtime: "aliasmode" | "cloakbrowser" | "webkit";
   dir: string;
   url: string;
   archiveSha256: string;
@@ -458,7 +458,7 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
 const installing = new Map<string, Promise<string>>();
 
 /** Install a pinned runtime once at a time and return its executable. */
-function ensure(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps, platform: NodeJS.Platform): Promise<string> {
+export function ensurePinnedRuntime(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps, platform: NodeJS.Platform): Promise<string> {
   const key = `${root}\0${spec.dir}`;
   let pending = installing.get(key);
   if (!pending) {
@@ -470,14 +470,14 @@ function ensure(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps, 
 
 /** Install the pinned Chromium 155 runtime and return its executable. */
 export function ensureAliasmodeChromium(root: string, deps: AliasmodeChromiumDeps = {}, platform = process.platform): Promise<string> {
-  return ensure(chromium155(platform), root, deps, platform);
+  return ensurePinnedRuntime(chromium155(platform), root, deps, platform);
 }
 
 /** Install the pinned CloakBrowser build of this computer and return its executable. */
 export function ensureCloakBrowser(root: string, platform = process.platform, arch: string = process.arch, deps: AliasmodeChromiumDeps = {}): Promise<string> {
   const spec = cloakBrowser(platform, arch);
   if (!spec) return Promise.reject(new Error(`CloakBrowser does not run on ${platform} ${arch}`));
-  return ensure(spec, root, deps, platform);
+  return ensurePinnedRuntime(spec, root, deps, platform);
 }
 
 function within(directory: string, path: string): boolean {

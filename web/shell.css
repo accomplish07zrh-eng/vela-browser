@@ -1,0 +1,368 @@
+/*
+ * The wall shell. The live viewports fill the window and are the only home
+ * screen; navigation is a dock floating over them, and every other section is
+ * a sheet of paper that rises over the wall. The wall follows the theme: paper
+ * white by default, a dark stage in the dark theme.
+ */
+
+/* ── Shell palette ── */
+.app {
+  --stage: #f6f3ed; --stage-glow: #fdfcf9; --stage-edge: #ece7dd;
+  --stage-ink: #1a1814; --ink-rgb: 26, 24, 20;
+  --gold: #9a7424; --gold-soft: rgba(154,116,36,.12);
+  --cta: #1a1814; --cta-hover: #39342c; --cta-ink: #faf8f5;
+  --glass: rgba(253,251,247,.78); --glass-heavy: rgba(253,251,247,.9);
+  --sh-rgb: 43, 35, 23; --sh-k: .34;
+  --frame: #fff; --dim: .38; --scrim: rgba(92, 82, 66, .16);
+  --sheet-shadow: 0 -1px 0 rgba(255,255,255,.7), 0 -24px 70px rgba(43,35,23,.16);
+}
+:root[data-theme="dark"] .app {
+  --stage: #12110f; --stage-glow: #211e19; --stage-edge: #0d0c0a;
+  --stage-ink: #efe9df; --ink-rgb: 239, 233, 223;
+  --gold: #e6c98f; --gold-soft: rgba(230,201,143,.14);
+  --cta: #e6c98f; --cta-hover: #f0d8a6; --cta-ink: #17140d;
+  --glass: rgba(28,26,23,.72); --glass-heavy: rgba(28,26,23,.88);
+  --sh-rgb: 0, 0, 0; --sh-k: 1;
+  --frame: #1b1916; --dim: .42; --scrim: rgba(8, 7, 6, .62);
+  --sheet-shadow: 0 -1px 0 rgba(255,255,255,.06), 0 -28px 90px rgba(0,0,0,.55);
+}
+.app { --glass-line: rgba(var(--ink-rgb), .1); --hover: rgba(var(--ink-rgb), .06); --pressed: rgba(var(--ink-rgb), .1);
+  --drop: 0 1px 0 rgba(255,255,255,.06) inset, 0 18px 50px rgba(var(--sh-rgb), calc(.5 * var(--sh-k))); }
+
+/* ── Frame ── */
+.app { display: block; max-width: none; margin: 0; border: 0; background: var(--stage); }
+.app .wall {
+  position: absolute; inset: 0; overflow: hidden; color: var(--stage-ink);
+  background: radial-gradient(120% 90% at 50% -10%, var(--stage-glow) 0%, var(--stage) 48%, var(--stage-edge) 100%);
+  transition: transform 520ms var(--spring-layout);
+  transform-origin: 50% 0;
+}
+/* A sheet dims the wall with a scrim. Fading one layer is free; filtering twelve live pages is not. */
+.app .wall::after { content: ""; position: absolute; inset: 0; z-index: 30; pointer-events: none; background: var(--scrim); opacity: 0; transition: opacity 520ms var(--spring-layout); }
+.app:not([data-view="workbench"]) .wall { transform: scale(.985); }
+.app:not([data-view="workbench"]) .wall::after { opacity: 1; }
+
+/* ── Sheets: every section except the wall ── */
+.app .main {
+  position: absolute; inset: 64px 0 0; z-index: 10; min-width: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+  padding-bottom: 92px;
+  background: var(--bg); border-radius: 22px 22px 0 0;
+  box-shadow: var(--sheet-shadow);
+  animation: sheet-rise 520ms var(--spring-layout);
+}
+@keyframes sheet-rise { from { transform: translateY(48px); opacity: 0; } to { transform: none; opacity: 1; } }
+.app .main .pagehead { height: 84px; min-height: 84px; padding: 24px 32px 12px; }
+.app .main .pagehead h1 { font: 500 30px/40px var(--font-title); letter-spacing: 0; }
+.app .main .workspace:not(.proxy-page) { width: calc(100% - 64px); margin-left: 32px; margin-right: 32px; }
+
+/* On the wall the page head is only the floating actions in the corner. */
+.app[data-view="workbench"] .main {
+  inset: 0 0 auto; height: 64px; padding: 0; overflow: visible; pointer-events: none;
+  background: none; border-radius: 0; box-shadow: none; animation: none;
+}
+.app[data-view="workbench"] .main > :not(.pagehead) { display: none; }
+.app[data-view="workbench"] .main .pagehead { height: 64px; min-height: 64px; padding: 0 20px 0 0; }
+.app[data-view="workbench"] .main .pagehead h1, .app[data-view="workbench"] .main .pagehead .pagesub { display: none; }
+.app[data-view="workbench"] .main .headactions { pointer-events: auto; }
+
+/* ── Dock: the old sidebar, laid along the bottom edge ── */
+.app .sidebar.dock {
+  position: absolute; inset: 0; z-index: 40; width: auto; flex: none; padding: 0 16px 22px;
+  display: flex; flex-direction: row; align-items: flex-end; justify-content: center; gap: 10px;
+  background: none; pointer-events: none; transition: none;
+}
+.app .sidebar.dock > * { pointer-events: auto; }
+.app .sidebar.dock .rail-toggle { display: none; }
+
+.app .sidebar.dock .brandrow {
+  position: absolute; top: 0; left: 28px; height: 64px; flex: none; padding: 0;
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+}
+.app .sidebar.dock .brand { position: static; flex: none; height: auto; overflow: visible; font-size: 24px; line-height: 64px; color: var(--stage-ink); }
+.app .sidebar.dock .brand .alias-loop { display: none; }
+.app .sidebar.dock .brandlabel { opacity: 1; transform: none; }
+.app .sidebar.dock .brandrow .appversion {
+  position: static; max-width: none; opacity: 1; padding: 2px 6px; border-radius: 999px;
+  font: 500 10px/14px var(--font); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--gold); background: var(--gold-soft);
+}
+
+.app .sidebar.dock .sidenav, .app .sidebar.dock .sidefoot > .navitem, .app .sidebar.dock .newrow {
+  background: var(--glass); border: 1px solid var(--glass-line); border-radius: 999px;
+  backdrop-filter: blur(22px) saturate(1.3); -webkit-backdrop-filter: blur(22px) saturate(1.3);
+  box-shadow: var(--drop);
+}
+.app .sidebar.dock .sidenav { order: 1; flex: 0 1 auto; flex-direction: row; align-items: center; gap: 2px; padding: 5px; overflow: visible; min-width: 0; }
+.app .sidebar.dock .sidenav .navrow { display: contents; }
+.app .sidebar.dock .sidefoot { order: 2; flex: none; display: block; margin: 0; padding: 0; background: none; border: 0; border-radius: 0; box-shadow: none; backdrop-filter: none; }
+.app .sidebar.dock .newrow { order: 3; flex: none; position: relative; display: flex; align-items: center; gap: 2px; height: auto; padding: 5px; }
+
+.app .sidebar.dock .navitem {
+  position: relative; width: auto; height: 42px; min-height: 42px; padding: 0 12px; gap: 0; justify-content: center;
+  border-radius: 999px; color: var(--muted); font: 500 13px/20px var(--font); white-space: nowrap;
+}
+.app .sidebar.dock .sidefoot > .navitem { height: 54px; min-height: 54px; width: 54px; padding: 0; }
+.app .sidebar.dock .navitem .icon { width: 18px; height: 18px; color: currentColor; }
+.app .sidebar.dock .navitem:hover:not(:disabled) { color: var(--stage-ink); background: var(--hover); }
+.app .sidebar.dock .navitem.active, .app .sidebar.dock .navitem.active:hover, .app .sidebar.dock .navitem.open {
+  color: var(--stage-ink); background: var(--pressed); box-shadow: none; font-weight: 500;
+}
+.app .sidebar.dock .navitem.active .icon { color: var(--gold); }
+/* Only the section you are in spells out its name. */
+.app .sidebar.dock .navitem .navlabel { max-width: 0; margin: 0; opacity: 0; transform: none; transition: max-width 420ms var(--spring-layout), margin 420ms var(--spring-layout), opacity 180ms var(--spring-control); }
+.app .sidebar.dock .navitem.active .navlabel { max-width: 180px; margin-left: 8px; opacity: 1; }
+.app .sidebar.dock .navitem .cnt { display: none; }
+.app .sidebar.dock .navitem.dock-groups .cnt {
+  display: block; max-width: 96px; min-width: 0; margin-left: 8px; padding: 0 8px; opacity: 1; overflow: hidden; text-overflow: ellipsis;
+  border-radius: 999px; font: 500 11px/20px var(--font); color: var(--cta-ink); background: var(--cta);
+}
+
+.app .sidebar.dock .newrow .newbtn, .app .sidebar.dock .newrow .importbtn { position: relative; top: auto; left: auto; right: auto; flex: none; height: 42px; border-radius: 999px; overflow: visible; transition: background-color 100ms var(--spring-control), transform 220ms var(--spring-control); }
+.app .sidebar.dock .newrow .newbtn { width: auto; padding: 0 18px 0 14px; gap: 8px; color: var(--cta-ink); background: var(--cta); font: 600 13px/20px var(--font); }
+.app .sidebar.dock .newrow .newbtn .icon { color: currentColor; }
+.app .sidebar.dock .newrow .newbtn:hover { background: var(--cta-hover); }
+.app .sidebar.dock .newrow .newbtn .navlabel { max-width: none; opacity: 1; transform: none; }
+.app .sidebar.dock .newrow .importbtn { width: 42px; padding: 0; color: var(--muted); background: transparent; border: 0; }
+.app .sidebar.dock .newrow .importbtn:hover { color: var(--stage-ink); background: var(--hover); }
+
+/* Names appear above the dock on hover. */
+.app .sidebar.dock .navitem[data-tip]::after, .app .sidebar.dock .newrow .importbtn[data-tip]::after {
+  content: attr(data-tip); position: absolute; left: 50%; top: auto; bottom: calc(100% + 14px); z-index: 45;
+  padding: 5px 10px; border-radius: 8px; white-space: nowrap; pointer-events: none;
+  font: 500 12px/16px var(--font); color: var(--stage); background: var(--stage-ink); box-shadow: 0 8px 24px rgba(var(--sh-rgb), .3);
+  opacity: 0; transform: translate(-50%, 4px); transition: opacity 120ms var(--spring-control) 250ms, transform 220ms var(--spring-control) 250ms;
+}
+.app .sidebar.dock .navitem[data-tip]:hover::after, .app .sidebar.dock .newrow .importbtn[data-tip]:hover::after { opacity: 1; transform: translate(-50%, 0); }
+.app .sidebar.dock .navitem.active[data-tip]::after, .app .sidebar.dock .navitem.open[data-tip]::after, .app .sidebar.dock .tip::before { display: none; }
+
+/* Groups open as a panel standing on the dock. */
+.app .sidebar.dock .sidesection {
+  position: absolute; left: 50%; bottom: 92px; z-index: 44; width: min(340px, calc(100vw - 32px)); max-height: min(520px, calc(100vh - 200px));
+  flex: none; margin: 0; padding: 12px; gap: 4px; overflow: auto; scrollbar-width: thin;
+  background: var(--glass-heavy); border: 1px solid var(--glass-line); border-radius: 20px;
+  backdrop-filter: blur(26px) saturate(1.3); -webkit-backdrop-filter: blur(26px) saturate(1.3);
+  box-shadow: 0 1px 0 rgba(255,255,255,.06) inset, 0 30px 80px rgba(var(--sh-rgb), calc(.6 * var(--sh-k)));
+  opacity: 0; visibility: hidden; transform: translate(-50%, 12px) scale(.98); transform-origin: 50% 100%;
+  transition: opacity 180ms var(--spring-control), transform 320ms var(--spring-layout), visibility 320ms;
+}
+.app .sidebar.dock .sidesection.open { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+.app .sidebar.dock .sidesection .sidehead { padding: 4px 8px 8px; }
+
+/* Colophon: project links rest in the corner of the wall. */
+.app .sidebar.dock .sidecredit { position: absolute; left: 24px; bottom: 30px; display: flex; margin: 0; padding: 0; border: 0; opacity: .5; transition: opacity 180ms var(--spring-control); }
+.app .sidebar.dock .sidecredit:hover { opacity: 1; }
+.app .sidebar.dock .sidecredit .footer-mark { display: none; }
+.app .sidebar.dock .projectlink { color: var(--stage-ink); }
+.app:not([data-view="workbench"]) .sidebar.dock .sidecredit { display: none; }
+
+/* ── The wall itself ── */
+.app .wall .workbench { position: absolute; inset: 0; margin: 0; display: block; }
+.app .wall .workbench-toolbar { position: absolute; top: 14px; left: 232px; right: 232px; z-index: 6; height: 36px; padding: 0; gap: 10px; transition: opacity 220ms var(--spring-control); }
+.app:not([data-view="workbench"]) .wall .workbench-toolbar, .app:not([data-view="workbench"]) .wall .workbench-navigation { opacity: 0; }
+.app .wall .workbench-toolbar .select { min-width: 0; width: auto; max-width: 180px; font: 500 13px/20px var(--font); }
+.app .wall .workbench-search { max-width: 200px; }
+.app .wall .workbench-count { color: var(--muted); font-size: 12px; letter-spacing: .04em; }
+.app .wall .workbench-toolbar .iconbtn { border-radius: 999px; }
+.app .wall .workbench-toolbar .iconbtn:hover { color: var(--stage-ink); background: var(--hover); }
+.app .wall .workbench-toolbar .iconbtn.on, .app .wall .workbench-toolbar .iconbtn[aria-pressed="true"] { color: var(--gold); background: var(--gold-soft); }
+
+.app .wall .workbench-stage { position: absolute; inset: 64px 0 118px; }
+.app .wall .workbench-scroll { position: absolute; inset: 0; border-radius: 0; }
+/* The lanes fade out at both edges. A mask on the moving layer would re-rasterise the whole wall every frame,
+   so two still strips repaint the wall's own background over the cards instead. */
+.app .wall .workbench-scroll.ring, .app .wall .workbench-scroll.focused { mask-image: none; }
+.app .wall .workbench-stage::before, .app .wall .workbench-stage::after {
+  content: ""; position: absolute; top: 0; bottom: 0; z-index: 3; width: 96px; pointer-events: none;
+  background: radial-gradient(120% 90% at 50% -10%, var(--stage-glow) 0%, var(--stage) 48%, var(--stage-edge) 100%) fixed;
+  transition: opacity 320ms var(--spring-layout);
+}
+.app .wall .workbench-stage::before { left: 0; mask-image: linear-gradient(to right, #000 8px, transparent); }
+.app .wall .workbench-stage::after { right: 0; mask-image: linear-gradient(to left, #000 8px, transparent); }
+.app .wall .workbench-stage:has(.workbench-scroll.grid)::before, .app .wall .workbench-stage:has(.workbench-scroll.grid)::after,
+.app .wall .workbench-stage:has(.workbench-scroll.focused)::before, .app .wall .workbench-stage:has(.workbench-scroll.focused)::after { opacity: 0; }
+.app .wall .workbench-scroll:focus-visible { outline: 0; }
+
+.app .wall .workbench-lanes { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+.app .wall .workbench-lane {
+  position: absolute; left: 0; width: 72px; padding: 0 0 0 10px; pointer-events: auto; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  color: rgba(var(--ink-rgb), .42); background: none; border: 0; border-radius: 0;
+  transition: color 180ms var(--spring-control), top 420ms var(--spring-layout), height 420ms var(--spring-layout);
+}
+.app .wall .workbench-lane span { writing-mode: vertical-rl; font: 500 20px/1 var(--font-title); letter-spacing: .2em; max-height: calc(100% - 36px); overflow: hidden; white-space: nowrap; }
+.app .wall .workbench-lane:not(:lang(zh)) span { letter-spacing: .06em; }
+.app .wall .workbench-lane small { font: 500 10px/1 var(--font); letter-spacing: .12em; color: var(--faint); }
+.app .wall .workbench-lane:hover, .app .wall .workbench-lane.active { color: var(--stage-ink); }
+.app .wall .workbench-lane.active small { color: var(--gold); }
+.app .wall .workbench-lane:active { transform: none; }
+
+.app .wall .workbench-navigation { position: absolute; left: 0; right: 0; bottom: 84px; min-height: 28px; padding: 0 28px; transition: opacity 220ms var(--spring-control); }
+.app .wall .workbench-gesture { left: 28px; color: var(--faint); letter-spacing: .02em; }
+.app .wall .workbench-ring-preview { bottom: 36px; }
+.app .wall .workbench-sync, .app .wall .workbench-error {
+  position: absolute; top: 62px; left: 50%; z-index: 7; margin: 0; padding: 6px 8px 6px 14px; transform: translateX(-50%);
+  max-width: calc(100% - 64px); border-radius: 999px; background: var(--glass-heavy); border: 1px solid var(--glass-line);
+  backdrop-filter: blur(20px); box-shadow: var(--drop);
+}
+.app .wall .workbench-sync { color: var(--gold); border-color: var(--gold-soft); }
+.app .wall .workbench-error { color: var(--status-error); border-color: var(--danger-line); }
+.app .wall .workbench-batch { bottom: 76px; z-index: 12; border-radius: 999px; padding: 6px 8px 6px 14px; background: var(--glass-heavy); border: 1px solid var(--glass-line); backdrop-filter: blur(22px); box-shadow: var(--drop); }
+.app .wall .workbench-batch .btn { border-radius: 999px; }
+.app .wall .workbench-marquee { border-color: var(--gold); background: var(--gold-soft); }
+
+.app .wall .workbench-empty h2 { font: 400 44px/56px var(--font-title); color: var(--stage-ink); letter-spacing: .02em; }
+.app .wall .workbench-empty p { font-size: 14px; line-height: 24px; color: var(--muted); }
+.app .wall .workbench-empty > svg { width: 28px; height: 28px; color: var(--gold); opacity: .8; }
+.app .wall .workbench-empty .btn.primary { height: 44px; padding: 0 22px; border-radius: 999px; color: var(--cta-ink); background: var(--cta); }
+
+/* ── Viewports: a framed picture, not a card ── */
+.app .wall .browser-viewport { background: none; border: 0; border-radius: 0; box-shadow: none; overflow: visible; contain: layout style; }
+.app .wall .browser-viewport:hover, .app .wall .browser-viewport.selected, .app .wall .browser-viewport.master, .app .wall .browser-viewport.expanded { box-shadow: none; border: 0; }
+.app .wall .browser-viewport:focus-visible { outline: 0; }
+.app .wall .viewport-surface {
+  --rest: 0 22px 44px -22px rgba(var(--sh-rgb), calc(.8 * var(--sh-k)));
+  --lift: 0 34px 70px -24px rgba(var(--sh-rgb), calc(.95 * var(--sh-k)));
+  inset: 0 0 32px; border-radius: 10px; background: var(--frame);
+  box-shadow: 0 0 0 1px rgba(var(--ink-rgb), .08), var(--rest);
+  transition: transform 320ms var(--spring-layout), box-shadow 220ms var(--spring-control), opacity 420ms var(--spring-layout);
+}
+.app .wall .viewport-surface img { opacity: 1; }
+.app .wall .browser-viewport:hover .viewport-surface { transform: translateY(-4px) scale(1.012); box-shadow: 0 0 0 1px rgba(var(--ink-rgb), .2), var(--lift); }
+.app .wall .browser-viewport:focus-visible .viewport-surface { box-shadow: 0 0 0 2px var(--gold), var(--rest); }
+.app .wall .browser-viewport[data-dim] .viewport-surface { opacity: var(--dim); }
+.app .wall .browser-viewport[data-dim]:hover .viewport-surface { opacity: 1; }
+.app .wall .browser-viewport[data-dim] .viewport-footer { opacity: .5; }
+.app .wall .browser-viewport.selected .viewport-surface { box-shadow: 0 0 0 2px var(--stage-ink), var(--lift); }
+.app .wall .browser-viewport.master .viewport-surface { box-shadow: 0 0 0 2px var(--gold), 0 0 44px -6px var(--gold), var(--lift); }
+.app .wall .browser-viewport[data-status="proxy-error"] .viewport-surface { box-shadow: 0 0 0 2px var(--status-warning), 0 0 40px -8px var(--status-warning), var(--rest); }
+.app .wall .browser-viewport[data-status="disconnected"] .viewport-surface { filter: none; opacity: 1; box-shadow: 0 0 0 2px var(--status-error), 0 0 40px -8px var(--status-error), var(--rest); }
+.app .wall .browser-viewport[data-status="disconnected"] .viewport-surface img { filter: grayscale(1) opacity(.5); }
+.app .wall .browser-viewport.expanded .viewport-surface, .app .wall .browser-viewport.expanded:hover .viewport-surface { transform: none; border-radius: 14px; box-shadow: 0 0 0 1px rgba(var(--ink-rgb), .16), 0 60px 140px -30px rgba(var(--sh-rgb), calc(1.4 * var(--sh-k))); }
+.app .wall .browser-viewport.obscured { opacity: .18; filter: blur(6px) saturate(.6); }
+
+.app .wall .viewport-footer { height: 32px; padding: 0 4px; gap: 8px; background: none; border: 0; color: var(--muted); font: 400 12px/16px var(--font); transition: opacity 320ms var(--spring-layout); }
+.app .wall .viewport-footer::before { display: none; }
+.app .wall .viewport-number { order: -1; color: var(--stage-ink); font-weight: 600; letter-spacing: .04em; }
+.app .wall .viewport-dot { order: -2; width: 6px; height: 6px; flex: 0 0 6px; }
+.app .wall .viewport-dot.running { box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-running) 20%, transparent); }
+.app .wall .viewport-dot.proxy-error { box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-warning) 22%, transparent); }
+.app .wall .viewport-dot.disconnected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-error) 22%, transparent); }
+.app .wall .viewport-name { color: var(--ink-soft); font-weight: 400; }
+.app .wall .viewport-controls { right: 10px; top: 10px; padding: 4px; gap: 2px; border-radius: 999px; background: rgba(18,17,15,.8); border: 1px solid rgba(239,233,223,.12); backdrop-filter: blur(16px); }
+.app .wall .viewport-controls button { width: 28px; height: 28px; border-radius: 999px; }
+.app .wall .viewport-controls button[aria-pressed="true"] { color: #e6c98f; }
+.app .wall .viewport-tabs { top: 50px; background: var(--glass-heavy); border: 1px solid var(--glass-line); border-radius: 12px; backdrop-filter: blur(18px); }
+.app .wall .viewport-message { inset: 0 0 32px; border-radius: 10px; background: var(--surface-sunken); color: var(--muted); }
+.app .wall .viewport-skeleton i { background: linear-gradient(100deg, rgba(var(--ink-rgb), .05) 30%, rgba(var(--ink-rgb), .14) 50%, rgba(var(--ink-rgb), .05) 70%); background-size: 220% 100%; animation: wall-shimmer 1.6s linear infinite; }
+@keyframes wall-shimmer { from { background-position: 120% 0; } to { background-position: -100% 0; } }
+.app .wall .workbench-ring-dot span { opacity: .7; }
+.app .wall .workbench-ring-dot[data-visible="true"] span { opacity: 1; }
+
+/* ── Layering: dialogs open from anywhere, including the wall, and sit above the dock ── */
+.app .sidebar.dock { z-index: 20; }
+.app .main:has(.modal-backdrop, .workbench-batch-backdrop) { z-index: 60; }
+.app[data-view="workbench"] .main > .modal-backdrop { display: flex; pointer-events: auto; }
+.modal-backdrop { backdrop-filter: blur(10px) saturate(120%); -webkit-backdrop-filter: blur(10px) saturate(120%); background: rgba(var(--sh-rgb, 43, 35, 23), .22); animation: fade-in 180ms var(--spring-control); }
+.modal { border-radius: 20px; box-shadow: var(--sh-modal); animation: modal-arrive 420ms var(--spring-layout); }
+@keyframes modal-arrive { from { opacity: 0; transform: translateY(16px) scale(.98); } to { opacity: 1; transform: none; } }
+
+/* ── The way back: the strip of wall above a sheet is a handle ── */
+.app .sheet-dismiss {
+  position: absolute; inset: 0 0 auto 220px; z-index: 11; height: 64px; padding: 0; border: 0; background: none; cursor: pointer;
+  display: grid; place-items: end center;
+}
+.app .sheet-dismiss span { width: 44px; height: 5px; margin-bottom: 9px; border-radius: 999px; background: rgba(var(--ink-rgb), .22); transition: width 320ms var(--spring-layout), background-color 180ms var(--spring-control); }
+.app .sheet-dismiss:hover span, .app .sheet-dismiss:focus-visible span { width: 72px; background: rgba(var(--ink-rgb), .5); }
+.app .sheet-dismiss:active { transform: none; }
+.app .sheet-dismiss:focus-visible { outline: 0; }
+.app .main { transition: transform 320ms var(--spring-layout); }
+.app .sheet-dismiss:hover + .main { transform: translateY(6px); }
+
+/* ── Motion: things arrive, they do not appear ── */
+.app .main > :not(.pagehead):not(.modal-backdrop) { animation: sheet-content 420ms var(--spring-layout) backwards; }
+.app .main .pagehead h1 { animation: sheet-content 360ms var(--spring-layout) backwards; }
+@keyframes sheet-content { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.app .sidebar.dock .sidenav, .app .sidebar.dock .sidefoot, .app .sidebar.dock .newrow { animation: dock-rise 620ms var(--spring-layout) backwards; }
+.app .sidebar.dock .sidefoot { animation-delay: 60ms; }
+.app .sidebar.dock .newrow { animation-delay: 120ms; }
+@keyframes dock-rise { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
+.app .sidebar.dock .brandrow { animation: fade-in 620ms var(--spring-control) backwards; }
+.app .sidebar.dock .navitem .icon { transition: transform 320ms var(--spring-layout), color 140ms var(--spring-control); }
+.app .sidebar.dock .navitem:hover:not(.active) .icon { transform: translateY(-2px); }
+.app .sidebar.dock .navitem:active:not(:disabled) { transform: scale(.94); }
+.app .sidebar.dock .newrow .newbtn .icon { transition: transform 420ms var(--spring-layout); }
+.app .sidebar.dock .newrow .newbtn:hover .icon { transform: rotate(90deg); }
+.app .sidebar.dock .navitem:focus-visible, .app .sidebar.dock .newrow .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+/* The settings button stretches to fit its name when it is the open section. */
+.app .sidebar.dock .sidefoot > .navitem { min-width: 54px; width: auto; padding: 0 18px; transition: padding 320ms var(--spring-layout); }
+.app .sidebar.dock .sidefoot > .navitem.active { padding: 0 20px; }
+
+.app .wall .workbench-lane { animation: lane-arrive 620ms var(--spring-layout) backwards; }
+.app .wall .workbench-lane:nth-child(2) { animation-delay: 80ms; }
+.app .wall .workbench-lane:nth-child(3) { animation-delay: 160ms; }
+.app .wall .workbench-lane:nth-child(4) { animation-delay: 240ms; }
+@keyframes lane-arrive { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
+.app .wall .workbench-lane span { transition: letter-spacing 420ms var(--spring-layout); }
+.app .wall .workbench-lane:hover span { letter-spacing: .28em; }
+.app .wall .workbench-batch { animation: pill-rise 420ms var(--spring-layout); }
+.app .wall .workbench-sync, .app .wall .workbench-error { animation: pill-drop 420ms var(--spring-layout); }
+@keyframes pill-rise { from { opacity: 0; transform: translate(-50%, 14px) scale(.96); } to { opacity: 1; transform: translateX(-50%); } }
+@keyframes pill-drop { from { opacity: 0; transform: translate(-50%, -10px) scale(.96); } to { opacity: 1; transform: translateX(-50%); } }
+.app .wall .workbench-toolbar .iconbtn svg { transition: transform 320ms var(--spring-layout); }
+.app .wall .workbench-toolbar .iconbtn:hover:not(:disabled) svg { transform: scale(1.12); }
+.app .wall .workbench-toolbar .iconbtn:active:not(:disabled) { transform: scale(.9); }
+.app .wall .viewport-controls button { transition: background-color 100ms var(--spring-control), transform 220ms var(--spring-control); }
+.app .wall .viewport-controls button:hover { transform: scale(1.1); }
+.app .wall .viewport-controls button:active { transform: scale(.9); }
+.app .wall .workbench-ring-dot span { transition: width 320ms var(--spring-layout), opacity 200ms var(--spring-control), transform 220ms var(--spring-control); }
+.app .wall .workbench-ring-dot:hover span { transform: scaleY(1.8); }
+/* The running dot breathes on its own layer: only transform and opacity change, so the card is never repainted. */
+.app .wall .viewport-dot.running { position: relative; box-shadow: none; }
+.app .wall .viewport-dot.running::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; background: var(--status-running); opacity: 0; will-change: transform, opacity; animation: status-ping 2.8s cubic-bezier(.2, .6, .3, 1) infinite; }
+@keyframes status-ping { 0% { opacity: .38; transform: scale(.55); } 70%, 100% { opacity: 0; transform: scale(1.9); } }
+.app .wall .browser-viewport.selected .viewport-number { color: var(--gold); }
+
+/* ── Smoothness: keep moving things on their own layers and off the main thread ── */
+.app .wall .browser-viewport { backface-visibility: hidden; }
+.app .wall .viewport-surface img { image-rendering: auto; backface-visibility: hidden; }
+.app .wall .workbench[data-moving="true"] .viewport-surface { transition: none; }
+.app .wall .workbench[data-moving="true"] .browser-viewport:hover .viewport-surface { transform: none; }
+.app .wall .workbench-scroll.moving { cursor: grabbing; user-select: none; }
+.app .main .workspace, .app .main .tablewrap, .app .sidebar.dock .sidesection { overscroll-behavior: contain; }
+
+/* ── Details ── */
+.app .wall .workbench-search { border-radius: 999px; transition: background-color 180ms var(--spring-control), max-width 420ms var(--spring-layout); }
+.app .wall .workbench-search:focus-within { max-width: 280px; background: var(--hover); }
+.app .wall .workbench-search-results { border-radius: 16px; background: var(--glass-heavy); backdrop-filter: blur(22px); border: 1px solid var(--glass-line); box-shadow: var(--drop); animation: modal-arrive 320ms var(--spring-layout); }
+.app .wall .workbench-count { padding-left: 4px; }
+.app .wall .workbench-ring-preview { border-radius: 14px; box-shadow: var(--drop); animation: modal-arrive 220ms var(--spring-control); }
+.app .main .pagehead .headactions .iconbtn { border-radius: 999px; transition: background-color 100ms var(--spring-control), transform 220ms var(--spring-control); }
+.app .main .pagehead .headactions .iconbtn:hover { background: var(--field-bg); }
+.app .main .pagehead .headactions .iconbtn:active { transform: scale(.92); }
+.popover { border-radius: 14px; animation: modal-arrive 220ms var(--spring-control); transform-origin: 50% 0; }
+.pop-item { border-radius: 8px; }
+
+@media (max-width: 1100px) {
+  .app .wall .workbench-count, .app .wall .workbench-gesture { display: none; }
+}
+@media (max-width: 900px) {
+  .app .sidebar.dock .brandrow .appversion { display: none; }
+  .app .wall .workbench-toolbar { left: 196px; right: 72px; }
+}
+@media (max-width: 760px) {
+  .app .sidebar.dock { gap: 6px; padding: 0 8px 14px; }
+  .app .sidebar.dock .navitem { padding: 0 9px; }
+  .app .sidebar.dock .navitem.active .navlabel, .app .sidebar.dock .newrow .newbtn .navlabel { max-width: 0; margin: 0; opacity: 0; }
+  .app .sidebar.dock .newrow .newbtn { padding: 0 12px; gap: 0; }
+  .app .wall .workbench-toolbar { top: 60px; left: 12px; right: 12px; }
+  .app .wall .workbench-stage { top: 104px; }
+  .app .main .pagehead { padding-left: 16px; padding-right: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app .main { animation: none; }
+  .app .sheet-dismiss:hover + .main { transform: none; }
+  .app .wall .viewport-dot.running::after { animation: none; }
+  .app .wall .browser-viewport:hover .viewport-surface { transform: none; }
+  .app .wall .viewport-skeleton i { animation: none; }
+}

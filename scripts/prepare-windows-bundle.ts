@@ -138,8 +138,20 @@ async function installFirefoxRuntime(
 }
 
 export const WINDOWS_SIDECAR_TARGET = "bun-windows-x64-baseline";
+export const WINDOWS_MIN_BUN_VERSION = "1.4.1";
+
+export function assertWindowsSidecarBunVersion(version = Bun.version): void {
+  // Older Windows Bun runtimes leak listening sockets into spawned owners.
+  // The relay then cannot bind its saved port after the manager exits.
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  const parts = match?.slice(1).map(Number);
+  if (!parts || parts[0]! < 1 || (parts[0] === 1 && (parts[1]! < 4 || (parts[1] === 4 && parts[2]! < 1)))) {
+    throw new Error(`Windows sidecar requires Bun ${WINDOWS_MIN_BUN_VERSION} or newer for isolated proxy recovery`);
+  }
+}
 
 export async function compileSidecar(cwd: string, output: string, target = WINDOWS_SIDECAR_TARGET): Promise<void> {
+  if (target.startsWith("bun-windows-")) assertWindowsSidecarBunVersion();
   const child = Bun.spawn([
     process.execPath,
     "build",
@@ -163,6 +175,7 @@ const AGENT_PACKAGE_VERSIONS: Record<string, string> = {
   "@playwright/mcp": "0.0.56",
   "playwright": "1.58.0-alpha-2026-01-16",
   "playwright-core": "1.58.2",
+  "playwright-webkit-core": "1.65.0",
 };
 
 function packageDirectory(root: string, name: string): string {
@@ -205,7 +218,9 @@ function copyRuntimePackage(
 export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
   cpSync(join(cwd, "playwright-worker.mjs"), join(playwrightRoot, "worker.mjs"));
   cpSync(join(cwd, "playwright-worker.mjs"), join(playwrightRoot, "playwright-worker.mjs"));
+  cpSync(join(cwd, "webkit-worker.mjs"), join(playwrightRoot, "webkit-worker.mjs"));
   cpSync(join(cwd, "firefox-worker.mjs"), join(playwrightRoot, "firefox-worker.mjs"));
+  cpSync(join(cwd, "workbench-firefox.mjs"), join(playwrightRoot, "workbench-firefox.mjs"));
 
   const agentRoot = join(playwrightRoot, "agent");
   mkdirSync(agentRoot, { recursive: true });
@@ -222,6 +237,7 @@ export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
   const copied = new Set<string>();
   for (const dependency of [
     "playwright-core",
+    "playwright-webkit-core",
     "ws",
     "@modelcontextprotocol/sdk",
     "@playwright/mcp",
@@ -238,6 +254,7 @@ export async function prepareWindowsBundle(
   if ((options.platform ?? process.platform) !== "win32" || (options.arch ?? process.arch) !== "x64") {
     throw new Error("desktop bundle preparation requires Windows x64");
   }
+  if (!options.compileSidecar) assertWindowsSidecarBunVersion();
 
   const tauri = join(cwd, "src-tauri");
   const generated = join(tauri, "generated");

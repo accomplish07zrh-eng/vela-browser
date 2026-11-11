@@ -14,30 +14,21 @@ import type { ProfileStore } from "./store.ts";
 import type { AutomationHealthStatus } from "./remote-types.ts";
 import type { RemoteCoordinator } from "./remote.ts";
 import type { AppConfigStore } from "./app-config.ts";
-import type { CloudAuthRuntime } from "./cloud-auth.ts";
-import type { CloudConnectionRuntime } from "./cloud-connection.ts";
-import type {
-  CloudBrowserCloseResult,
-  CloudBrowserLifecycle,
-} from "./cloud-browser.ts";
-import type { StoreEventType } from "./contracts/cloud-v1.ts";
-import type { McpTunnelLifecycle } from "./mcp-tunnel.ts";
-import { normalizeCloudDiagnostics } from "./cloud-diagnostics.ts";
 import { CloudApiError, CloudRequestError } from "./cloud-client.ts";
-import { EmailVerificationRequiredError, SupabaseAuthRequestError } from "./supabase-auth.ts";
-import {
-  CloudProfileEditor,
-  cloudProfileEditorErrorStatus,
-} from "./cloud-profile-editor.ts";
-import type { PendingSyncRuntime } from "./pending-sync.ts";
 import type { StatePaths } from "./paths.ts";
 import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleTrashRequest } from "./trash.ts";
-import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
+import {
+  importInbox,
+  importBuffers,
+  ProfileImportError,
+  type ImportOverrides,
+} from "./inbox.ts";
 import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { buildNewProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
+import { webkitSupported } from "./webkit-config.ts";
 import { firefoxGraphicsRenderer } from "./firefox-config.ts";
 import { attachTimezones, lookupExitLocation, type FetchLike } from "./geoip.ts";
 import { localeForCountry, localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
@@ -52,10 +43,10 @@ import {
   removeExtensionFiles,
   type ExtensionFetch,
 } from "./extensions.ts";
-import { decodePortableProfile } from "./portable-profile.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
 import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent } from "./fingerprint.ts";
+import { fingerprintAudit } from "./fingerprint-audit.ts";
 import { setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
 import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
@@ -63,7 +54,6 @@ import { validAgentAuthorization } from "./agent-control.ts";
 import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
 import type { PythonRuntime } from "./python-runtime.ts";
 import { runtimeDownloads } from "./runtime-download.ts";
-import { loadServices } from "./services-directory.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -77,7 +67,7 @@ export interface UiProfile {
   id: string;
   name: string;
   /** Browser family. Legacy profiles without a value are Chromium. */
-  engine: "chromium" | "firefox";
+  engine: "chromium" | "firefox" | "webkit";
   /** Present only for the opt-in Chromium 155 beta. */
   chromiumRuntime?: ChromiumRuntime;
   group: string;
@@ -121,9 +111,9 @@ export interface UiProfile {
   fpCapturedAt: string;
 }
 
-function profileEngine(profile: unknown): "chromium" | "firefox" {
-  return typeof profile === "object" && profile !== null && "engine" in profile && profile.engine === "firefox"
-    ? "firefox"
+function profileEngine(profile: unknown): "chromium" | "firefox" | "webkit" {
+  return typeof profile === "object" && profile !== null && "engine" in profile && (profile.engine === "firefox" || profile.engine === "webkit")
+    ? profile.engine
     : "chromium";
 }
 
@@ -134,7 +124,7 @@ function openResponse(
   const engine = profileEngine(profile);
   return Response.json({
     ok: true,
-    ...(engine === "firefox"
+    ...(engine === "firefox" || engine === "webkit"
       ? { engine, capabilities: { cdp: false, pdf: false, chromeExtensions: false } }
       : { port: result.port }),
     ...(result.warning === undefined ? {} : { warning: result.warning }),
@@ -202,114 +192,6 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
  */
 export const LOW_DISK_SPACE_BYTES = 5 * 1024 ** 3;
 
-type CloudRestoreStage = "auth_refresh" | "cloud_status" | "lifecycle_resume";
-type CloudRestoreCategory = "network" | "service" | "authentication";
-
-interface CloudRestoreFailure {
-  ok: false;
-  error: string;
-  stage: CloudRestoreStage;
-  retryable: boolean;
-  category: CloudRestoreCategory;
-  code: string;
-}
-
-const PERMANENT_CLOUD_SESSION_ERRORS = new Set([
-  "authentication_required",
-  "email_not_verified",
-  "device_revoked",
-  "membership_revoked",
-]);
-
-function retryableHttpStatus(status: number): boolean {
-  return status === 408 || status === 425 || status === 429 || (status >= 500 && status < 600);
-}
-
-function cloudRestoreFailure(error: unknown, stage: CloudRestoreStage): CloudRestoreFailure {
-  if (error instanceof EmailVerificationRequiredError) {
-    return {
-      ok: false,
-      error: "Saved Cloud session is no longer valid. Sign in again.",
-      stage,
-      retryable: false,
-      category: "authentication",
-      code: "email_not_verified",
-    };
-  }
-  if (error instanceof SupabaseAuthRequestError) {
-    if (!error.failure.retryable) {
-      return {
-        ok: false,
-        error: "Saved Cloud session is no longer valid. Sign in again.",
-        stage,
-        retryable: false,
-        category: "authentication",
-        code: "authentication_invalid",
-      };
-    }
-    const network = error.failure.kind !== "http";
-    return {
-      ok: false,
-      error: "Saved Cloud session could not be restored. Try again when the connection is available.",
-      stage,
-      retryable: true,
-      category: network ? "network" : "service",
-      code: network ? "network_unavailable" : "service_unavailable",
-    };
-  }
-  if (error instanceof CloudRequestError) {
-    return {
-      ok: false,
-      error: "Saved Cloud session could not be restored. Try again when the connection is available.",
-      stage,
-      retryable: true,
-      category: "network",
-      code: "network_unavailable",
-    };
-  }
-  if (
-    error instanceof CloudApiError
-    && (error.status === 401 || PERMANENT_CLOUD_SESSION_ERRORS.has(error.code))
-  ) {
-    return {
-      ok: false,
-      error: "Saved Cloud session is no longer valid. Sign in again.",
-      stage,
-      retryable: false,
-      category: "authentication",
-      code: PERMANENT_CLOUD_SESSION_ERRORS.has(error.code) ? error.code : "authentication_invalid",
-    };
-  }
-  if (
-    error instanceof CloudApiError
-    && (retryableHttpStatus(error.status) || error.code === "rate_limited" || error.code === "internal_error")
-  ) {
-    return {
-      ok: false,
-      error: "Saved Cloud session could not be restored. Try again when the connection is available.",
-      stage,
-      retryable: true,
-      category: "service",
-      code: "service_unavailable",
-    };
-  }
-  return {
-    ok: false,
-    error: "Saved Cloud session could not be restored. Try again when the connection is available.",
-    stage,
-    retryable: true,
-    category: "service",
-    code: "response_invalid",
-  };
-}
-
-const STORE_EVENT_TYPES = new Set<unknown>(["entry_click", "store_view", "pay_click"] satisfies StoreEventType[]);
-
-/** A store placement slug such as `sidebar-cart`, or null. */
-function storeSrc(value: unknown): string | null {
-  return typeof value === "string" && /^[a-z0-9-]{1,64}$/.test(value) ? value : null;
-}
-
 function rejectUntrustedJsonMutation(req: Request): Response | null {
   if (!req.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return Response.json({ ok: false, error: "application/json is required" }, { status: 415 });
@@ -357,39 +239,6 @@ function singleCookie(body: Record<string, unknown>): CookieRecord | string {
     secure: true,
     sameSite: "Lax",
   };
-}
-
-function cloudCloseResponse(result: CloudBrowserCloseResult): Response {
-  if (!result.closed) {
-    return Response.json(
-      { ok: false, error: "browser teardown unconfirmed" },
-      { status: 500 },
-    );
-  }
-  // The dashboard shows its own translated notice for this case. A conflict keeps its message.
-  if (result.captureFailed && result.sync !== "conflict") {
-    return Response.json({
-      ok: true,
-      sync: result.sync,
-      captureFailed: true,
-      warning: "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.",
-    });
-  }
-  if (result.sync === "pending") {
-    return Response.json({
-      ok: true,
-      sync: result.sync,
-      warning: "Browser closed. Saving this profile to Cloud will retry automatically.",
-    });
-  }
-  if (result.sync === "conflict") {
-    return Response.json({
-      ok: true,
-      sync: result.sync,
-      warning: "Browser closed, but Cloud could not accept the saved session. The encrypted snapshot remains on this device.",
-    });
-  }
-  return Response.json({ ok: true, sync: result.sync });
 }
 
 function noStoreJson(body: unknown, status = 200): Response {
@@ -541,10 +390,12 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
     }
     p.screenWidth = r.width;
     p.screenHeight = r.height;
+    if (p.webkit) p.webkit = { ...p.webkit, viewport: { width: Math.min(p.webkit.viewport.width, r.width), height: Math.min(p.webkit.viewport.height, r.height) } };
   }
+  if (p.engine === "webkit" && ("cores" in set || "fingerprintSeed" in set)) throw new Error("WebKit does not support hardware or seed fingerprint overrides");
   if ("platformOs" in set) {
     const platformOs = parseStrictPlatformOs(set.platformOs);
-    if (profileEngine(p) === "firefox" && platformOs !== (p.platformOs ?? "")) {
+    if (profileEngine(p) !== "chromium" && platformOs !== (p.platformOs ?? "")) {
       throw new Error("Firefox operating system cannot be changed");
     }
     p.platformOs = platformOs;
@@ -577,7 +428,7 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
   }
   if ("extensions" in set) {
     const extensions = Array.isArray(set.extensions) ? set.extensions.map(String) : [];
-    if (profileEngine(p) === "firefox" && extensions.length > 0) {
+    if (profileEngine(p) !== "chromium" && extensions.length > 0) {
       throw new Error("Chrome extensions are unavailable for Firefox profiles");
     }
     p.extensions = extensions;
@@ -591,35 +442,28 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
   return proxyChanged;
 }
 
-function legalAcceptanceIsCurrent(legal: {
-  current: { terms: string; privacy: string; acceptableUse: string };
-  accepted: { terms: string; privacy: string; acceptableUse: string } | null;
-}): boolean {
-  return !!legal.accepted &&
-    legal.accepted.terms === legal.current.terms &&
-    legal.accepted.privacy === legal.current.privacy &&
-    legal.accepted.acceptableUse === legal.current.acceptableUse;
-}
-
 export interface UiRuntimeOptions {
+  /** @deprecated Account runtimes are retired; production entry points ignore these fields. */
+  cloudAuth?: import("./cloud-auth.ts").CloudAuthRuntime;
+  cloudConnection?: import("./cloud-connection.ts").CloudConnectionRuntime;
+  cloudBrowser?: import("./cloud-browser.ts").CloudBrowserLifecycle;
+  pendingSync?: import("./pending-sync.ts").PendingSyncRuntime;
+  mcpTunnel?: import("./mcp-tunnel.ts").McpTunnelLifecycle;
+  defaultCloudUrl?: string;
+
   scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime };
   appConfig?: AppConfigStore;
   paths?: StatePaths;
-  defaultCloudUrl?: string;
-  cloudAuth?: CloudAuthRuntime;
-  cloudConnection?: CloudConnectionRuntime;
-  pendingSync?: PendingSyncRuntime;
-  cloudBrowser?: CloudBrowserLifecycle;
-  mcpTunnel?: McpTunnelLifecycle;
+
+
   health?: UiHealthMetadata | null;
   timezoneFetch?: FetchLike;
   proxyCheck?: (proxy: ProxySpec) => Promise<ProxyCheckResult>;
   extensionFetch?: ExtensionFetch;
-  servicesFetch?: typeof fetch;
   /** Sets cookies in an open browser. Defaults to Playwright's addCookies. */
   setCookies?: (ws: string, cookies: CookieRecord[]) => Promise<void>;
   /** Mode whose runtimes were wired when this process started. */
-  runtimeMode?: "unconfigured" | "local" | "cloud";
+  runtimeMode?: "local";
 }
 
 /**
@@ -635,6 +479,11 @@ export async function handleUiRequest(
 ): Promise<Response | null> {
   const { pathname } = new URL(req.url);
   if (!pathname.startsWith("/ui/api/")) return null;
+
+  // Retired account endpoints cannot restore a session or contact a Cloud service.
+  if (/^\/ui\/api\/cloud(?:[-/]|$)/.test(pathname) || (pathname === "/ui/api/app-mode" && req.method !== "GET") || /^\/ui\/api\/scripts\/[^/]+\/publication$/.test(pathname) || /^\/ui\/api\/profiles\/[^/]+\/restore-session$/.test(pathname)) {
+    return noStoreJson({ ok: false, code: "accounts_removed", error: "Accounts and Cloud mode have been removed from Vela Browser" }, 410);
+  }
 
   if (pathname === "/ui/api/scripts" || pathname.startsWith("/ui/api/scripts/")) {
     const scripts = options.scripts;
@@ -768,7 +617,7 @@ export async function handleUiRequest(
       ...(options.runtimeMode ? { restartRequired: config.mode !== options.runtimeMode } : {}),
       ...(hostChromiumRuntime() ? { chromiumRuntime: hostChromiumRuntime() } : {}),
       ...(!remote && supportsChromium155Host(process.platform, process.arch) ? { defaultChromiumRuntime: "aliasmode" } : {}),
-      ...(!remote ? { defaultEngine: defaultProfileEngine() } : {}),
+      ...(!remote ? { defaultEngine: defaultProfileEngine(), webkitAvailable: webkitSupported() } : {}),
     });
   }
 
@@ -787,28 +636,6 @@ export async function handleUiRequest(
       return noStoreJson({ ok: false, error: "Could not save language preference" }, 500);
     }
     return noStoreJson({ ok: true, language });
-  }
-
-  // The Services page asks for its list only when it opens.
-  if (pathname === "/ui/api/services" && req.method === "GET") {
-    return noStoreJson(await loadServices(options.servicesFetch));
-  }
-
-  if (pathname === "/ui/api/services/visibility" && req.method === "POST") {
-    const rejected = rejectUntrustedJsonMutation(req);
-    if (rejected) return rejected;
-    if (!options.appConfig) return noStoreJson({ ok: false, error: "app configuration is unavailable" }, 503);
-    const body = (await req.json().catch(() => ({}))) as { hidden?: unknown };
-    if (typeof body.hidden !== "boolean") return noStoreJson({ ok: false, error: "hidden must be true or false" }, 400);
-    const config = options.appConfig.write({ ...options.appConfig.read(), servicesHidden: body.hidden });
-    return noStoreJson({ ok: true, hidden: config.servicesHidden === true });
-  }
-
-  if (pathname === "/ui/api/cloud-events" && req.method === "GET") {
-    return Response.json(
-      { events: normalizeCloudDiagnostics(options.cloudBrowser?.diagnostics?.() ?? []) },
-      { headers: { "Cache-Control": "no-store" } },
-    );
   }
 
   // Browser runtimes downloading now, so the dashboard can show their progress.
@@ -844,500 +671,12 @@ export async function handleUiRequest(
     }
   }
 
-  if (pathname === "/ui/api/app-mode" && req.method === "POST") {
-    if (!options.appConfig) return Response.json({ ok: false, error: "app configuration is unavailable" }, { status: 503 });
-    const rejected = rejectUntrustedJsonMutation(req);
-    if (rejected) return rejected;
-    try {
-      const body = await req.json() as { mode?: unknown };
-      if (body.mode !== "local" && body.mode !== "cloud") {
-        return Response.json({ ok: false, error: "mode must be local or cloud" }, { status: 400 });
-      }
-      const cloudUrl = options.defaultCloudUrl;
-      if (body.mode === "cloud" && !cloudUrl) {
-        return Response.json(
-          { ok: false, error: "Vela Cloud is not configured in this build" },
-          { status: 503 },
-        );
-      }
-      const config = options.appConfig.setMode(body.mode, cloudUrl);
-      return Response.json({
-        ok: true,
-        config,
-        restartRequired: options.runtimeMode ? config.mode !== options.runtimeMode : true,
-      });
-    } catch (error) {
-      return Response.json({ ok: false, error: msg(error) }, { status: 400 });
-    }
-  }
-
-  if (pathname === "/ui/api/cloud-auth" && req.method === "GET") {
-    if (!options.cloudAuth) {
-      return Response.json({ ok: false, error: "Vela Cloud authentication is unavailable" }, { status: 503 });
-    }
-    const state = options.cloudAuth.state();
-    if (!state.authenticated || !options.cloudConnection?.accountId()) {
-      return Response.json({ ok: true, ...state });
-    }
-    try {
-      const status = await options.cloudConnection.client.status();
-      return Response.json({ ok: true, ...state, workspace: status.workspace, legal: status.legal });
-    } catch (error) {
-      return Response.json({ ok: false, error: msg(error) }, { status: 400 });
-    }
-  }
-
-  if (pathname.startsWith("/ui/api/cloud-auth/") && req.method === "POST") {
-    if (!options.cloudAuth) {
-      return Response.json({ ok: false, error: "Vela Cloud authentication is unavailable" }, { status: 503 });
-    }
-    const rejected = rejectUntrustedJsonMutation(req);
-    if (rejected) return rejected;
-    const exitsAccount = pathname === "/ui/api/cloud-auth/signout" ||
-      pathname === "/ui/api/cloud-auth/forget";
-    const finishAccountExit = exitsAccount ? options.cloudAuth.beginExit() : undefined;
-    const resumeScripts = exitsAccount ? options.scripts?.runner.pause() : undefined;
-    const authTransition = exitsAccount ? undefined : await options.cloudAuth.acquireTransition();
-    const transitionCurrent = () => !authTransition || options.cloudAuth!.isTransitionCurrent(authTransition);
-    try {
-      if (!transitionCurrent()) {
-        return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-      }
-      const body = await req.json() as {
-        email?: unknown;
-        password?: unknown;
-        refreshToken?: unknown;
-        deviceId?: unknown;
-        deviceCredential?: unknown;
-        queueKey?: unknown;
-        resumeLifecycle?: unknown;
-        code?: unknown;
-      };
-      if (exitsAccount) await options.scripts?.runner.stop();
-      if (pathname === "/ui/api/cloud-auth/signup") {
-        if (typeof body.email !== "string" || typeof body.password !== "string") {
-          return Response.json({ ok: false, error: "email and password are required" }, { status: 400 });
-        }
-        const result = await options.cloudAuth.signUp(body.email, body.password);
-        return Response.json({
-          ok: true,
-          verificationRequired: result.verificationRequired,
-          user: { id: result.user.id, email: result.user.email },
-        });
-      }
-      if (pathname === "/ui/api/cloud-auth/resend-signup") {
-        if (typeof body.email !== "string" || !body.email) {
-          return Response.json({ ok: false, error: "email is required" }, { status: 400 });
-        }
-        await options.cloudAuth.resendSignUpConfirmation(body.email);
-        return Response.json({ ok: true });
-      }
-      if (pathname === "/ui/api/cloud-auth/verify-signup") {
-        if (typeof body.email !== "string" || !body.email || typeof body.code !== "string" || !/^\d{6}$/.test(body.code)) {
-          return Response.json({ ok: false, error: "Enter the 6-digit code from the email." }, { status: 400 });
-        }
-        try {
-          await options.cloudAuth.verifySignUpCode(body.email, body.code);
-        } catch (error) {
-          // Auth answers a wrong or expired code with 403 otp_expired.
-          if (error instanceof SupabaseAuthRequestError && error.failure.kind === "http" && (error.failure.status === 403 || error.failure.code === "otp_expired")) {
-            return Response.json({ ok: false, error: "The code is wrong or has expired.", code: "otp_invalid" }, { status: 400 });
-          }
-          throw error;
-        }
-        return Response.json({ ok: true });
-      }
-      if (pathname === "/ui/api/cloud-auth/forgot-password") {
-        if (typeof body.email !== "string" || !body.email) {
-          return Response.json({ ok: false, error: "email is required" }, { status: 400 });
-        }
-        try {
-          await options.cloudAuth.requestPasswordReset(body.email);
-        } catch (error) {
-          // Auth throttles repeat reset emails per address; keep the reply neutral.
-          if (!(error instanceof SupabaseAuthRequestError && error.failure.kind === "http" && error.failure.status === 429)) throw error;
-        }
-        return Response.json({ ok: true });
-      }
-      if (pathname === "/ui/api/cloud-auth/signin") {
-        if (typeof body.email !== "string" || typeof body.password !== "string") {
-          return Response.json({ ok: false, error: "email and password are required" }, { status: 400 });
-        }
-        if (!options.cloudConnection || !options.pendingSync) {
-          return Response.json({ ok: false, error: "Vela Cloud connection is unavailable" }, { status: 503 });
-        }
-        if (!options.cloudAuth.canSignIn()) {
-          return Response.json(
-            { ok: false, error: "Sign out before signing in to another Cloud account" },
-            { status: 409 },
-          );
-        }
-        if (body.queueKey !== undefined && (typeof body.queueKey !== "string" || !body.queueKey)) {
-          return Response.json({ ok: false, error: "stored queue encryption key is invalid" }, { status: 400 });
-        }
-        const activeQueue = options.pendingSync.queue();
-        const pending = activeQueue
-          ? { queue: activeQueue, createdKey: undefined }
-          : options.pendingSync.hasStoredState() || body.queueKey
-            ? options.pendingSync.initialize(body.queueKey as string | undefined)
-            : undefined;
-        try {
-          const result = await options.cloudAuth.signIn(body.email, body.password);
-          if (!transitionCurrent()) {
-            return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-          }
-          const bootstrap = await options.cloudConnection.bootstrap(transitionCurrent);
-          if (!transitionCurrent()) {
-            return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-          }
-          const initialized = pending ?? options.pendingSync.initialize();
-          if (legalAcceptanceIsCurrent(bootstrap.legal)) {
-            await options.cloudBrowser?.resumeAfterAuthentication(transitionCurrent);
-          } else {
-            await options.cloudBrowser?.secureAfterAuthentication(transitionCurrent);
-          }
-          if (!transitionCurrent()) {
-            return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-          }
-          options.mcpTunnel?.refresh();
-          return Response.json({
-            ok: true,
-            authenticated: true,
-            refreshToken: result.refreshToken,
-            deviceId: bootstrap.device.id,
-            deviceCredential: bootstrap.deviceCredential,
-            ...(initialized.createdKey ? { queueKey: initialized.createdKey } : {}),
-            ...(options.pendingSync.persistsQueueKey() ? { queueKeyPersisted: true } : {}),
-            expiresAt: result.expiresAt,
-            legal: bootstrap.legal,
-            workspace: bootstrap.workspace,
-            user: { id: result.user?.id, email: result.user?.email },
-          });
-        } catch (error) {
-          if (!transitionCurrent()) {
-            return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-          }
-          await options.mcpTunnel?.disconnect();
-          options.pendingSync.close();
-          options.cloudAuth.clear();
-          options.cloudConnection.clearDevice();
-          throw error;
-        }
-      }
-      if (pathname === "/ui/api/cloud-auth/restore") {
-        if (typeof body.refreshToken !== "string" || !body.refreshToken) {
-          return Response.json({ ok: false, error: "refresh token is required" }, { status: 400 });
-        }
-        if (!options.cloudConnection || typeof body.deviceCredential !== "string" || !body.deviceCredential) {
-          return Response.json({ ok: false, error: "stored device credential is required" }, { status: 400 });
-        }
-        if (!options.pendingSync || typeof body.queueKey !== "string" || !body.queueKey) {
-          return Response.json({ ok: false, error: "stored queue encryption key is required" }, { status: 400 });
-        }
-        if (!options.cloudAuth.canRestore(body.refreshToken)) {
-          return Response.json(
-            { ok: false, error: "Sign out before restoring another Cloud account" },
-            { status: 409 },
-          );
-        }
-        if (body.resumeLifecycle !== undefined && typeof body.resumeLifecycle !== "boolean") {
-          return Response.json({ ok: false, error: "resumeLifecycle must be boolean" }, { status: 400 });
-        }
-        let stage: CloudRestoreStage = "auth_refresh";
-        try {
-          const queueWasInitialized = !!options.pendingSync.queue();
-          if (!queueWasInitialized) options.pendingSync.initialize(body.queueKey);
-          const priorAccountId = options.cloudConnection.accountId();
-          const result = await options.cloudAuth.restore(body.refreshToken);
-          if (!transitionCurrent()) {
-            return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-          }
-          stage = "cloud_status";
-          options.cloudConnection.restoreCredential(body.deviceCredential);
-          const status = await options.cloudConnection.client.status();
-          if (!transitionCurrent()) {
-            return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-          }
-          options.cloudConnection.restoreAccount(status.account.id);
-          options.cloudConnection.restoreDevice(status.device.id, body.deviceCredential);
-          stage = "lifecycle_resume";
-          if (
-            legalAcceptanceIsCurrent(status.legal) &&
-            (body.resumeLifecycle === true || !queueWasInitialized || (priorAccountId && priorAccountId !== status.account.id))
-          ) {
-            await options.cloudBrowser?.resumeAfterAuthentication(transitionCurrent);
-          } else {
-            await options.cloudBrowser?.secureAfterAuthentication(transitionCurrent);
-          }
-          if (!transitionCurrent()) {
-            return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-          }
-          options.mcpTunnel?.refresh();
-          return Response.json({
-            ok: true,
-            authenticated: true,
-            refreshToken: result.refreshToken,
-            deviceId: status.device.id,
-            expiresAt: result.expiresAt,
-            legal: status.legal,
-            workspace: status.workspace,
-            user: { id: result.user?.id, email: result.user?.email },
-          });
-        } catch (error) {
-          if (!transitionCurrent()) {
-            return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-          }
-          const failure = cloudRestoreFailure(error, stage);
-          if (!failure.retryable) {
-            await options.mcpTunnel?.disconnect();
-            options.pendingSync.close();
-            options.cloudConnection.clearDevice();
-            await options.cloudAuth.clearStoredSession().catch(() => {});
-          }
-          return Response.json(failure, { status: failure.retryable ? 503 : 401 });
-        }
-      }
-      if (pathname === "/ui/api/cloud-auth/accept-invitation") {
-        if (!options.cloudConnection || typeof body.code !== "string" || !body.code.trim()) {
-          return Response.json({ ok: false, error: "invitation code is required" }, { status: 400 });
-        }
-        return Response.json(await options.cloudConnection.client.acceptInvitation(body.code.trim()));
-      }
-      if (pathname === "/ui/api/cloud-auth/accept-legal") {
-        if (!options.cloudConnection) {
-          return Response.json({ ok: false, error: "Vela Cloud connection is unavailable" }, { status: 503 });
-        }
-        const status = await options.cloudConnection.client.status();
-        if (!transitionCurrent()) {
-          return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-        }
-        const accepted = await options.cloudConnection.client.acceptLegal({ versions: status.legal.current });
-        if (!transitionCurrent()) {
-          return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-        }
-        await options.cloudBrowser?.resumeAfterAuthentication(transitionCurrent);
-        if (!transitionCurrent()) {
-          return Response.json({ ok: false, error: "Cloud authentication was cancelled" }, { status: 409 });
-        }
-        options.mcpTunnel?.refresh();
-        return Response.json({
-          ok: true,
-          legal: { current: status.legal.current, accepted: accepted.accepted },
-        });
-      }
-      if (pathname === "/ui/api/cloud-auth/forget") {
-        await options.mcpTunnel?.disconnect();
-        if (options.cloudBrowser && !await options.cloudBrowser.releaseAll()) {
-          options.mcpTunnel?.refresh();
-          return Response.json(
-            { ok: false, error: "Cloud browsers could not be closed safely" },
-            { status: 409 },
-          );
-        }
-        options.pendingSync?.close();
-        options.cloudConnection?.clearDevice();
-        await options.cloudAuth.clearStoredSession();
-        return Response.json({ ok: true });
-      }
-      if (pathname === "/ui/api/cloud-auth/signout") {
-        await options.mcpTunnel?.disconnect();
-        if (options.cloudBrowser && !await options.cloudBrowser.releaseAll()) {
-          options.mcpTunnel?.refresh();
-          return Response.json(
-            { ok: false, error: "Cloud browsers could not be closed safely" },
-            { status: 409 },
-          );
-        }
-        options.pendingSync?.close();
-        options.cloudConnection?.clearDevice();
-        await options.cloudAuth.signOut();
-        return Response.json({ ok: true });
-      }
-      return Response.json({ ok: false, error: "unknown Cloud auth action" }, { status: 404 });
-    } catch (error) {
-      // Auth error codes such as email_not_confirmed let the dashboard pick the next step.
-      const code = error instanceof SupabaseAuthRequestError && error.failure.kind === "http" ? error.failure.code : undefined;
-      return Response.json({ ok: false, error: msg(error), ...(code ? { code } : {}) }, { status: 400 });
-    } finally {
-      authTransition?.release();
-      finishAccountExit?.();
-      resumeScripts?.();
-    }
-  }
-
-  if (pathname === "/ui/api/cloud-connector" && req.method === "POST") {
-    if (!options.cloudConnection) {
-      return noStoreJson({ ok: false, error: "Vela Cloud connection is unavailable" }, 503);
-    }
-    if (!options.cloudConnection.accountId() || !options.cloudConnection.deviceId()) {
-      return noStoreJson({ ok: false, error: "Vela Cloud authentication is required" }, 401);
-    }
-    const rejected = rejectUntrustedJsonMutation(req);
-    if (rejected) {
-      rejected.headers.set("Cache-Control", "no-store");
-      return rejected;
-    }
-    try {
-      const body = await req.json() as { action?: unknown; connectorId?: unknown };
-      const cloud = options.cloudConnection.client;
-      if (body.action === "create") {
-        const created = await cloud.createMcpConnector("Vela Browser Settings");
-        return noStoreJson({
-          ok: true,
-          state: "active",
-          connectorId: created.connector.id,
-          deviceId: created.connector.deviceId,
-          url: cloud.remoteMcpUrl(created.connector.deviceId),
-          token: created.token,
-        });
-      }
-      if (body.action !== "status" && body.action !== "revoke") {
-        return noStoreJson({ ok: false, error: "unknown Cloud connector action" }, 400);
-      }
-      if (typeof body.connectorId !== "string" || !body.connectorId) {
-        return noStoreJson({ ok: false, error: "connectorId is required" }, 400);
-      }
-      const listed = await cloud.listMcpConnectors();
-      const connector = listed.connectors.find((candidate) => candidate.id === body.connectorId);
-      if (body.action === "status") {
-        return noStoreJson({
-          ok: true,
-          state: !connector ? "missing" : connector.revokedAt === null ? "active" : "revoked",
-          url: cloud.remoteMcpUrl(options.cloudConnection.deviceId()!),
-        });
-      }
-      if (connector && connector.revokedAt === null) {
-        await cloud.revokeMcpConnector(connector.id);
-      }
-      return noStoreJson({ ok: true, state: "disabled" });
-    } catch (error) {
-      const status = error instanceof CloudApiError
-        ? error.status
-        : error instanceof CloudRequestError ? 502 : 400;
-      return noStoreJson({ ok: false, error: msg(error) }, status);
-    }
-  }
-
-  if (pathname === "/ui/api/cloud-workspace" && (req.method === "GET" || req.method === "POST")) {
-    if (!options.cloudConnection) return Response.json({ ok: false, error: "Vela Cloud connection is unavailable" }, { status: 503 });
-    try {
-      const cloud = options.cloudConnection.client;
-      if (req.method === "GET") {
-        const [status, folders, members] = await Promise.all([
-          cloud.status(), cloud.listFolders(), cloud.listMembers(),
-        ]);
-        const invitations = status.workspace.role === "member"
-          ? { invitations: [] }
-          : await cloud.listInvitations();
-        return Response.json({ ok: true, folders: folders.folders, members: members.members, invitations: invitations.invitations });
-      }
-      const rejected = rejectUntrustedJsonMutation(req);
-      if (rejected) return rejected;
-      const body = await req.json() as Record<string, unknown>;
-      const action = String(body.action ?? "");
-      if (action === "invite") return Response.json(await cloud.createInvitation(String(body.email ?? ""), body.role === "admin" ? "admin" : "member"));
-      if (action === "create-folder") return Response.json(await cloud.createFolder(String(body.name ?? ""), typeof body.parentName === "string" ? body.parentName : null));
-      if (action === "move-folder") return Response.json(await cloud.moveFolder(String(body.name ?? ""), typeof body.parentName === "string" ? body.parentName : null));
-      if (action === "profile-grant") return Response.json(await cloud.setProfileGrant(String(body.profileId ?? ""), String(body.accountId ?? ""), body.permission === "edit" ? "edit" : "view"));
-      if (action === "remove-profile-grant") return Response.json(await cloud.removeProfileGrant(String(body.profileId ?? ""), String(body.accountId ?? "")));
-      if (action === "delete-folder") return Response.json(await cloud.deleteFolder(String(body.name ?? "")));
-      if (action === "resend") return Response.json(await cloud.resendInvitation(String(body.id ?? "")));
-      if (action === "revoke") return Response.json(await cloud.revokeInvitation(String(body.id ?? "")));
-      if (action === "role") return Response.json(await cloud.changeMemberRole(String(body.accountId ?? ""), body.role === "admin" ? "admin" : "member"));
-      if (action === "reset-password") return Response.json(await cloud.sendMemberPasswordReset(String(body.accountId ?? "")));
-      if (action === "remove-member") return Response.json(await cloud.removeMember(String(body.accountId ?? "")));
-      if (action === "grant") return Response.json(await cloud.setFolderGrant(String(body.folderName ?? ""), String(body.accountId ?? ""), body.permission === "edit" ? "edit" : "view"));
-      if (action === "remove-grant") return Response.json(await cloud.removeFolderGrant(String(body.folderName ?? ""), String(body.accountId ?? "")));
-      return Response.json({ ok: false, error: "unknown Cloud workspace action" }, { status: 400 });
-    } catch (error) {
-      const status = error instanceof CloudApiError
-        ? error.status
-        : error instanceof CloudRequestError ? 502 : 400;
-      return Response.json({ ok: false, error: msg(error) }, { status });
-    }
-  }
-
-  if (pathname === "/ui/api/cloud-store" && (req.method === "GET" || req.method === "POST")) {
-    if (!options.cloudConnection) return noStoreJson({ ok: false, error: "Vela Cloud connection is unavailable" }, 503);
-    const cloud = options.cloudConnection.client;
-    try {
-      if (req.method === "GET") {
-        // Cloud bodies pass through unchanged. The catalog comes from NobleProxy and can be down
-        // (503 partner_unavailable); the wallet and the owned proxies still show without it.
-        const catalog = cloud.getProxyCatalog().then(
-          (value) => ({ catalog: value }),
-          () => ({ catalog: null }),
-        );
-        const [wallet, proxies] = await Promise.all([cloud.getWallet(), cloud.listPurchasedProxies()]);
-        return noStoreJson({ ok: true, available: true, wallet, proxies, ...await catalog });
-      }
-      const rejected = rejectUntrustedJsonMutation(req);
-      if (rejected) return rejected;
-      const body = await req.json() as Record<string, unknown>;
-      const text = (value: unknown) => typeof value === "string" && value ? value : null;
-      const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : null;
-      if (body.action === "deposit") {
-        const amountCents = count(body.amountCents);
-        if (!amountCents || (body.method !== "card" && body.method !== "crypto")) return noStoreJson({ ok: false, error: "Enter an amount and a payment method" }, 400);
-        return noStoreJson(await cloud.createDeposit({ amountCents, method: body.method }));
-      }
-      if (body.action === "deposit-status") {
-        const depositId = text(body.depositId);
-        if (!depositId) return noStoreJson({ ok: false, error: "depositId is required" }, 400);
-        return noStoreJson(await cloud.getDeposit(depositId));
-      }
-      if (body.action === "purchase") {
-        const type = text(body.type), country = text(body.country), quantity = count(body.quantity), idempotencyKey = text(body.idempotencyKey);
-        if (!type || !country || !quantity || !idempotencyKey) return noStoreJson({ ok: false, error: "Choose a proxy type, country and quantity" }, 400);
-        const src = storeSrc(body.src);
-        try {
-          return noStoreJson(await cloud.purchaseProxies({ type, country, quantity, idempotencyKey, ...(src ? { src } : {}) }));
-        } catch (error) {
-          // A Cloud without `src` rejects the field before it charges anything: buy again without it, same key.
-          if (!src || !(error instanceof CloudApiError && error.code === "validation_failed")) throw error;
-          return noStoreJson(await cloud.purchaseProxies({ type, country, quantity, idempotencyKey }));
-        }
-      }
-      if (body.action === "store-events") {
-        // Only the type, the placement slug and the time go to Cloud.
-        const events = (Array.isArray(body.events) ? body.events : []).flatMap((event: any) => {
-          const src = storeSrc(event?.src);
-          return STORE_EVENT_TYPES.has(event?.type) && src && Number.isSafeInteger(event?.at) && event.at > 0
-            ? [{ type: event.type, src, at: event.at }] : [];
-        });
-        if (!events.length) return noStoreJson({ ok: false, error: "events are required" }, 400);
-        return noStoreJson(await cloud.postStoreEvents({ events }));
-      }
-      if (body.action === "auto-renew") {
-        const orderId = text(body.orderId);
-        if (!orderId || typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "orderId and enabled are required" }, 400);
-        return noStoreJson(await cloud.setProxyAutoRenew(orderId, body.enabled));
-      }
-      if (body.action === "nobleproxy-handoff") return noStoreJson(await cloud.createNobleProxyHandoff());
-      return noStoreJson({ ok: false, error: "unknown Cloud store action" }, 400);
-    } catch (error) {
-      // An older Cloud has no wallet or store yet: the app keeps the outside offer link.
-      if (req.method === "GET" && error instanceof CloudApiError && error.status === 404) return noStoreJson({ ok: true, available: false });
-      const status = error instanceof CloudApiError
-        ? error.status
-        : error instanceof CloudRequestError ? 502 : 400;
-      return noStoreJson({ ok: false, error: msg(error), ...(error instanceof CloudApiError ? { code: error.code } : {}) }, status);
-    }
-  }
-
-  if (options.appConfig?.read().mode === "cloud" && !remote && !options.cloudBrowser) {
-    return Response.json(
-      { ok: false, error: "Vela Cloud authentication is required" },
-      { status: 503 },
-    );
-  }
-
   if (pathname.startsWith("/ui/api/proxies/")) {
     if (remote) return noStoreJson({ ok: false, error: "Bulk proxy tools are unavailable in legacy remote mode" }, 400);
     if (req.method !== "POST") return noStoreJson({ ok: false, error: "POST is required" }, 405);
     const rejected = rejectUntrustedJsonMutation(req);
     if (rejected) return rejected;
-    if (options.cloudBrowser && !options.cloudConnection) return noStoreJson({ ok: false, error: "Cloud connection is unavailable" }, 503);
+
     return handleProxyToolsRequest(req, store, launcher, options);
   }
 
@@ -1347,51 +686,13 @@ export async function handleUiRequest(
       const rejected = rejectUntrustedJsonMutation(req);
       if (rejected) return rejected;
     }
-    if (options.cloudBrowser && !options.cloudConnection) return noStoreJson({ ok: false, error: "Cloud connection is unavailable" }, 503);
-    return handleTrashRequest(req, store, launcher, options);
-  }
 
-  const cloudLifecycleRoute =
-    (pathname === "/ui/api/profiles" && (req.method === "GET" || req.method === "POST")) ||
-    (pathname === "/ui/api/profiles/move" && req.method === "POST") ||
-    (pathname === "/ui/api/profiles/delete" && req.method === "POST") ||
-    (pathname === "/ui/api/profiles/export" && req.method === "POST") ||
-    (pathname === "/ui/api/profiles/update-file" && req.method === "POST") ||
-    (pathname === "/ui/api/import/upload" && req.method === "POST") ||
-    (pathname === "/ui/api/groups/rename" && req.method === "POST") ||
-    (req.method === "POST" &&
-      /^\/ui\/api\/profiles\/[^/]+\/(open|close|clear-cache|raise|cookies|restore-session|check-fingerprint)$/.test(pathname)) ||
-    (pathname === "/ui/api/profiles/cookies" && req.method === "POST");
-  const cloudEditorRoute =
-    (req.method === "GET" && /^\/ui\/api\/profiles\/[^/]+$/.test(pathname)) ||
-    (req.method === "POST" && /^\/ui\/api\/profiles\/[^/]+\/update$/.test(pathname));
-  // The extension registry stores files on this device. Cloud profiles and
-  // folders sync assignment ids, then resolve matching local installs at launch.
-  const cloudExtensionRoute =
-    (pathname === "/ui/api/extensions" && req.method === "GET") ||
-    (pathname === "/ui/api/extensions/web-store" && req.method === "POST") ||
-    (pathname === "/ui/api/extensions/upload" && req.method === "POST") ||
-    (pathname === "/ui/api/extensions/delete" && req.method === "POST") ||
-    (pathname === "/ui/api/groups/extensions" && (req.method === "GET" || req.method === "POST"));
-  if (
-    options.appConfig?.read().mode === "cloud" &&
-    options.cloudBrowser &&
-    !remote &&
-    !cloudLifecycleRoute &&
-    !cloudEditorRoute &&
-    !cloudExtensionRoute
-  ) {
-    return Response.json(
-      { ok: false, error: "This Cloud profile operation is not available yet" },
-      { status: 501 },
-    );
+    return handleTrashRequest(req, store, launcher, options);
   }
 
   if (pathname === "/ui/api/profiles" && req.method === "GET") {
     try {
-      if (options.cloudBrowser) {
-        return Response.json(await options.cloudBrowser.listRoster());
-      }
+
       if (remote) {
         // Remote mode: the roster is the hub's (with lock + session status); layer
         // on this machine's local running state. Probe live CDP ports first and drop
@@ -1420,34 +721,38 @@ export async function handleUiRequest(
       // sees "Unexpected token '<'". Keep this API JSON-shaped even on failure.
       return Response.json(
         { ok: false, error: `profile roster failed: ${msg(error)}` },
-        { status: remote || options.cloudBrowser ? 502 : 500 },
+        { status: remote || undefined ? 502 : 500 },
       );
     }
   }
 
   if (pathname === "/ui/api/profiles" && req.method === "POST") {
     // Create a new profile: unique id → unique seed → unique fingerprint/UA.
+    let uncertain = false;
     try {
       const input = (await req.json()) as NewProfileInput;
       if (remote && input.chromiumRuntime) throw new Error("Vela Chromium is unavailable in legacy Remote mode");
       if (remote) {
+        uncertain = true;
         const { id } = await remote.createProfile(input);
         return Response.json({ ok: true, id });
       }
       const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
-      if (!options.cloudBrowser) store.applyGroupExtensionDefaults(profile, null, false);
+      store.applyGroupExtensionDefaults(profile, null, false);
       // Best-effort: match the browser clock to the proxy's exit location. A
       // failed lookup keeps the host timezone.
       if (profile.proxy) {
         await attachTimezones([profile], options.timezoneFetch, true).catch(() => {});
         syncFirefoxTimezone(profile);
       }
-      const created = options.cloudBrowser ? await options.cloudBrowser.create(profile) : undefined;
+      uncertain = true;
+      const created = undefined;
       if (!created) store.upsertProfile(profile);
-      launcher.prefetchFirefoxFontPacks?.([profile]);
+      // A download hint cannot turn a persisted creation into an apparent failure.
+      try { launcher.prefetchFirefoxFontPacks?.([profile]); } catch {}
       return Response.json({ ok: true, ...(created ?? { id: profile.id }) });
     } catch (e) {
-      return Response.json({ ok: false, error: msg(e) }, { status: 400 });
+      return Response.json({ ok: false, error: msg(e), uncertain }, { status: 400 });
     }
   }
 
@@ -1457,15 +762,7 @@ export async function handleUiRequest(
       const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
       const group = typeof body.group === "string" ? body.group.trim() : "";
       if (ids.length === 0) return Response.json({ ok: false, error: "no profiles selected" }, { status: 400 });
-      if (options.cloudBrowser) {
-        const summaries = (await options.cloudConnection!.client.listProfiles()).profiles;
-        for (const id of ids) {
-          const profile = summaries.find((item) => item.id === id);
-          if (!profile) return Response.json({ ok: false, error: `profile ${id} was not found` }, { status: 404 });
-          await options.cloudConnection!.client.moveProfile(id, { destination: group, expectedVersion: profile.version });
-        }
-        return Response.json({ ok: true, moved: ids.length, group });
-      }
+
       const moved = remote ? await remote.move(ids, group) : store.setGroup(ids, group);
       return Response.json({ ok: true, moved, group });
     } catch (e) {
@@ -1478,44 +775,7 @@ export async function handleUiRequest(
       const body = (await req.json()) as { ids?: unknown };
       const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
       if (ids.length === 0) return Response.json({ ok: false, error: "no profiles selected" }, { status: 400 });
-      if (options.cloudBrowser) {
-        const cloud = options.cloudConnection!.client;
-        const transition = await options.cloudAuth?.acquireTransition();
-        try {
-          const accountId = options.cloudConnection!.accountId();
-          const current = () => !req.signal.aborted && (!transition || options.cloudAuth!.isTransitionCurrent(transition)) &&
-            options.cloudConnection!.accountId() === accountId;
-          if (!current()) return noStoreJson({ ok: false, error: "Account changed; reload profiles" }, 409);
-          const summaries = new Map((await cloud.listProfiles()).profiles.map((profile) => [profile.id, profile]));
-          const uniqueIds = [...new Set(ids)];
-          const outcomes: Array<"deleted" | "locked" | "failed"> = [];
-          let cursor = 0;
-          const worker = async () => {
-            while (cursor < uniqueIds.length) {
-              const index = cursor++, id = uniqueIds[index]!;
-              outcomes[index] = "failed";
-              if (!current()) continue;
-              const profile = summaries.get(id);
-              if (!profile || profile.trashedAt !== null || profile.permission !== "edit" || !isSafeProfileId(id)) continue;
-              await launcher.cacheCleanupSettled(id);
-              if (profile.activeOpens.length || launcher.profileDeletionBlocked(id)) { outcomes[index] = "locked"; continue; }
-              try {
-                await cloud.trashProfile(id, { expectedVersion: profile.version });
-                outcomes[index] = "deleted";
-              } catch (error) {
-                if (error instanceof CloudApiError && error.status === 409 && error.code === "profile_open") outcomes[index] = "locked";
-              }
-            }
-          };
-          await Promise.all(Array.from({ length: Math.min(4, uniqueIds.length) }, worker));
-          if (!current()) return noStoreJson({ ok: false, error: "Operation interrupted; reload profiles before retrying" }, 409);
-          return noStoreJson({
-            ok: true, deleted: outcomes.filter((outcome) => outcome === "deleted").length,
-            locked: uniqueIds.filter((_, index) => outcomes[index] === "locked"),
-            failed: uniqueIds.filter((_, index) => outcomes[index] === "failed"),
-          });
-        } finally { transition?.release(); }
-      }
+
       if (remote) {
         const r = await remote.deleteProfiles(ids);
         return Response.json({ ok: true, ...r });
@@ -1561,19 +821,12 @@ export async function handleUiRequest(
       const form = await req.formData();
       const uploads: { name: string; bytes: Uint8Array }[] = [];
       const override = importOverridesFromForm(form);
-      if (options.cloudBrowser && !override.group) {
-        return Response.json({ ok: false, error: "a Cloud destination folder is required" }, { status: 400 });
-      }
+
       for (const [, value] of form) {
         if (value instanceof File) uploads.push({ name: value.name, bytes: new Uint8Array(await value.arrayBuffer()) });
       }
       if (uploads.length === 0) return Response.json({ ok: false, error: "no files uploaded" }, { status: 400 });
-      if (options.cloudBrowser) {
-        const prepared = await prepareImportBuffers(uploads, console.log, override, undefined, options.timezoneFetch);
-        await options.cloudBrowser.importProfiles(override.group!, prepared.imports.map(({ profile, sessionBundle }) => ({ ...profile, sessionBundle })));
-        launcher.prefetchFirefoxFontPacks?.(prepared.imports.map(({ profile }) => profile));
-        return Response.json({ ok: true, ...prepared.result });
-      }
+
       if (remote) {
         const result = await remote.importToHub(uploads, override);
         if (result.profiles === 0) {
@@ -1640,12 +893,7 @@ export async function handleUiRequest(
     // user-agent, so they need the profile's secrets. .csv is the trimmed
     // credential view.
     const full = format !== "csv";
-    if (options.cloudBrowser && !options.cloudConnection && !remote) {
-      return Response.json(
-        { ok: false, error: "Vela Cloud connection is unavailable" },
-        { status: 503 },
-      );
-    }
+
     try {
       // Collect the export rows from whichever store owns the profile. The
       // optional hooks exist for the streaming response below: `onProgress`
@@ -1661,24 +909,7 @@ export async function handleUiRequest(
           // reader keeps its own bounded fan-out and reports between batches.
           return remote.getProfiles(ids, full, (completed) => onProgress(completed));
         }
-        if (options.cloudBrowser) {
-          const profiles: ProfileExport[] = [];
-          for (let i = 0; i < ids.length; i += CLOUD_EXPORT_BATCH) {
-            if (aborted()) return profiles;
-            const batch = await Promise.all(ids.slice(i, i + CLOUD_EXPORT_BATCH).map(async (id) => {
-              const authoritative = await options.cloudConnection!.client.getProfile(id);
-              const { profile, sessionBundle } = decodePortableProfile(authoritative.payload);
-              if (profile.id !== id) throw new Error("Cloud returned a mismatched profile payload");
-              const local = store.getProfile(id);
-              if (local?.fpObserved) profile.fpObserved = { ...local.fpObserved };
-              if (local?.fpExpected) profile.fpExpected = { ...local.fpExpected };
-              return { ...profile, sessionBundle, sessionSource: "cloud" as const };
-            }));
-            profiles.push(...batch);
-            onProgress(Math.min(i + CLOUD_EXPORT_BATCH, ids.length));
-          }
-          return profiles;
-        }
+
         const profiles: ProfileExport[] = [];
         let processed = 0;
         for (const id of ids) {
@@ -1713,7 +944,7 @@ export async function handleUiRequest(
         return new Response(bytes as unknown as BodyInit, {
           headers: {
             "content-type": mime,
-            "content-disposition": `attachment; filename=aliasmode-export.${format}`,
+            "content-disposition": `attachment; filename=vela-export.${format}`,
             "cache-control": "no-store",
           },
         });
@@ -1763,7 +994,7 @@ export async function handleUiRequest(
     } catch (error) {
       const status = error instanceof CloudApiError
         ? error.status
-        : error instanceof CloudRequestError || options.cloudBrowser ? 502 : 500;
+        : error instanceof CloudRequestError || undefined ? 502 : 500;
       return Response.json({ ok: false, error: msg(error) }, { status });
     }
   }
@@ -1798,12 +1029,7 @@ export async function handleUiRequest(
             errors.push({ id: u.id, error: PROFILE_ID_ERROR });
             continue;
           }
-          if (options.cloudBrowser) {
-            const set = { ...cloudPending.get(u.id), ...u.set };
-            delete set.customNo;
-            cloudPending.set(u.id, set);
-            continue;
-          }
+
           const p = pending.get(u.id) ?? store.getProfile(u.id);
           if (!p) { notFound.push(u.id); continue; }
           try {
@@ -1822,24 +1048,7 @@ export async function handleUiRequest(
       if (errors.length) {
         return Response.json({ ok: false, updated: 0, skipped, notFound, errors }, { status: 400 });
       }
-      if (options.cloudBrowser) {
-        if (!options.cloudConnection) {
-          return Response.json({ ok: false, error: "Vela Cloud connection is unavailable" }, { status: 503 });
-        }
-        const editor = new CloudProfileEditor(options.cloudConnection.client, store, options.timezoneFetch);
-        // Cloud writes are separate versioned requests, not a Local transaction.
-        for (const [id, set] of cloudPending) {
-          try {
-            const expectedVersion = await editor.closedProfileVersion(id);
-            await editor.save(id, expectedVersion, set);
-            updated++;
-          } catch (error) {
-            if (error instanceof CloudApiError && error.code === "profile_not_found") notFound.push(id);
-            else errors.push({ id, error: msg(error) });
-          }
-        }
-        return Response.json({ ok: errors.length === 0, updated, skipped, notFound, errors });
-      }
+
       // Open profiles change too. Their browsers keep the identity they launched with until the next start.
       // A new proxy gets its exit timezone. A failed lookup keeps the saved one.
       const located = [...proxyChanged]
@@ -1894,10 +1103,7 @@ export async function handleUiRequest(
       const body = (await req.json()) as { from?: unknown; to?: unknown };
       const from = String(body.from ?? "").trim(), to = String(body.to ?? "").trim();
       if (!from || !to) return Response.json({ ok: false, error: "from and to group names required" }, { status: 400 });
-      if (options.cloudBrowser) {
-        const renamed = await options.cloudConnection!.client.renameFolder(from, to);
-        return Response.json({ ok: true, moved: 0, folder: renamed.folder });
-      }
+
       const source = store.listFolders().find((folder) => folder.name === from);
       const moved = store.renameGroup(from, to);
       const name = source?.parentName ? `${source.parentName}/${to}` : to;
@@ -1938,19 +1144,7 @@ export async function handleUiRequest(
     if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
     try {
       if (req.method === "GET") {
-        if (options.cloudBrowser) {
-          const folders = (await options.cloudConnection!.client.listFolders()).folders;
-          return Response.json({
-            ok: true,
-            groups: folders
-              .filter((folder) => !folder.archivedAt)
-              .map((folder) => ({
-                name: folder.name,
-                extensions: folder.extensionDefaults ?? [],
-                permission: folder.permission,
-              })),
-          });
-        }
+
         return Response.json({
           ok: true,
           groups: store.listGroupExtensionDefaults().map((group) => ({ ...group, permission: "edit" as const })),
@@ -1965,9 +1159,7 @@ export async function handleUiRequest(
       if (!group || !extensions) {
         return Response.json({ ok: false, error: "group and extensions are required" }, { status: 400 });
       }
-      if (options.cloudBrowser) {
-        return Response.json(await options.cloudConnection!.client.setFolderExtensionDefaults(group, extensions));
-      }
+
       return Response.json({ ok: true, updatedCount: store.setGroupExtensionDefaults(group, extensions) });
     } catch (error) {
       const status = error instanceof CloudApiError
@@ -2079,7 +1271,7 @@ export async function handleUiRequest(
       const extId = String(body.extensionId ?? "").trim();
       const add = body.op !== "remove";
       if (!ids.length || !extId) return Response.json({ ok: false, error: "ids and extensionId required" }, { status: 400 });
-      const firefoxIds = ids.filter((id) => profileEngine(store.getProfile(id)) === "firefox");
+      const firefoxIds = ids.filter((id) => profileEngine(store.getProfile(id)) !== "chromium");
       if (firefoxIds.length > 0) {
         return Response.json({ ok: false, error: "Chrome extensions are unavailable for Firefox profiles" }, { status: 400 });
       }
@@ -2095,7 +1287,7 @@ export async function handleUiRequest(
   if (timezoneRoute && req.method === "POST") {
     const rejected = rejectUntrustedJsonMutation(req);
     if (rejected) return rejected;
-    if (remote || options.cloudBrowser) {
+    if (remote || undefined) {
       return Response.json({ ok: false, error: "timezone lookup is available for Local profiles only" }, { status: 400 });
     }
     try {
@@ -2171,7 +1363,7 @@ export async function handleUiRequest(
             errors.push({ id, error: "profile browser is not open", status: 409 });
             continue;
           }
-          const engine = launch.engine === "firefox" || profileEngine(store.getProfile(id)) === "firefox" ? "firefox" : "chromium";
+          const engine = launch.engine ?? profileEngine(store.getProfile(id));
           try {
             await setCookies(store.getLaunch(id)!.ws, cookiesForEngine(cookies, engine));
           } catch {
@@ -2180,18 +1372,6 @@ export async function handleUiRequest(
             continue;
           }
           live++;
-        } else if (options.cloudBrowser) {
-          if (!options.cloudConnection) {
-            errors.push({ id, error: "Vela Cloud connection is unavailable", status: 503 });
-            continue;
-          }
-          // A newer session this device still has to upload would be replaced by the Cloud copy.
-          if (options.cloudBrowser.sessionSettled?.(id) === false) {
-            errors.push({ id, error: "This device has a newer session of this profile that is not in Cloud yet. Open the profile once, then add the cookies.", status: 409 });
-            continue;
-          }
-          await new CloudProfileEditor(options.cloudConnection.client, store, options.timezoneFetch).addSessionCookies(id, cookies);
-          nextStart++;
         } else if (remote) {
           errors.push({ id, error: "profile browser is not open", status: 409 });
         } else {
@@ -2203,7 +1383,7 @@ export async function handleUiRequest(
           nextStart++;
         }
       } catch (error) {
-        errors.push({ id, error: msg(error), status: options.cloudBrowser ? cloudProfileEditorErrorStatus(error) : 500 });
+        errors.push({ id, error: msg(error), status: 500 });
       }
     }
     if (cookieRoute) {
@@ -2238,6 +1418,22 @@ export async function handleUiRequest(
       return Response.json({ ok: true, removed: pending.length });
     }
     return noStoreJson({ ok: true, cookies: pending.map(({ domain, name }) => ({ domain, name })) });
+  }
+
+  const auditRoute = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/fingerprint-audit$/);
+  if (auditRoute && (req.method === "GET" || req.method === "POST")) {
+    if (remote) return noStoreJson({ ok: false, error: "Fingerprint measurement requires a browser on this device" }, 400);
+    let id: string;
+    try { id = decodeURIComponent(auditRoute[1]!); } catch { return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400); }
+    if (!isSafeProfileId(id)) return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400);
+    const profile = store.getProfile(id);
+    if (!profile) return noStoreJson({ ok: false, error: "no such profile" }, 404);
+    if (req.method === "GET") return noStoreJson({ ok: true, audit: fingerprintAudit(profile) });
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    if (!await launcher.certifiedActive(id).catch(() => false)) return noStoreJson({ ok: false, error: "profile browser is not open" }, 409);
+    try { return noStoreJson({ ok: true, audit: await launcher.refreshFingerprint(id) }); }
+    catch { return noStoreJson({ ok: false, error: "Fingerprint measurement could not complete. Reopen this browser and try again." }, 409); }
   }
 
   // Open the Vela Browser fingerprint test in a new tab of a running profile. Only these pages can be opened.
@@ -2298,30 +1494,7 @@ export async function handleUiRequest(
   const single = pathname.match(/^\/ui\/api\/profiles\/([^/]+)$/);
   if (single && req.method === "GET") {
     const id = decodeURIComponent(single[1]!);
-    if (options.cloudBrowser) {
-      // A profile open on THIS device is edited live: its decrypted copy in the
-      // local cache is the session writer's source of truth, and the checkpoint
-      // and close syncs push the whole profile — edited fields included — back
-      // to Cloud. No expectedVersion handshake applies on this path, and no
-      // Cloud connection is needed — so this branch stays ahead of that guard.
-      if (options.cloudBrowser.canEditLive?.(id) === true) {
-        const live = store.getProfile(id);
-        if (!live) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
-        return Response.json({ ok: true, profile: { ...profileEditView(live), liveEdit: true } });
-      }
-      if (!options.cloudConnection) {
-        return Response.json({ ok: false, error: "Vela Cloud connection is unavailable" }, { status: 503 });
-      }
-      try {
-        const editor = new CloudProfileEditor(options.cloudConnection.client, store, options.timezoneFetch);
-        return Response.json({ ok: true, profile: await editor.get(id) });
-      } catch (error) {
-        return Response.json(
-          { ok: false, error: msg(error) },
-          { status: cloudProfileEditorErrorStatus(error) },
-        );
-      }
-    }
+
     const p = remote
       ? await remote.getProfile(id).catch(() => null)
       : store.getProfile(id);
@@ -2335,58 +1508,7 @@ export async function handleUiRequest(
     try {
       const id = decodeURIComponent(upd[1]!);
       if (!isSafeProfileId(id)) return Response.json({ ok: false, error: PROFILE_ID_ERROR }, { status: 400 });
-      if (options.cloudBrowser) {
-        const rejected = rejectUntrustedJsonMutation(req);
-        if (rejected) return rejected;
-        const body = (await req.json()) as { expectedVersion?: unknown; set?: unknown };
-        const set = body.set && typeof body.set === "object" && !Array.isArray(body.set)
-          ? body.set as Record<string, unknown>
-          : {};
-        // Open on this device → live edit of the local cached copy; the running
-        // session's checkpoint/close sync carries the change to Cloud. The
-        // coordinator commits through the same transition fence as close.
-        if (options.cloudBrowser.canEditLive?.(id) === true) {
-          const live = store.getProfile(id);
-          if (!live) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
-          // The portable-profile contract carries no custom NO., so accepting
-          // one here would only survive until the next open erased it. Ignore
-          // it, like the closed-profile Cloud editor does.
-          delete set.customNo;
-          // The open browser keeps its launch identity; a changed proxy or fingerprint applies at its next start.
-          const liveProxyChanged = applyEdits(live, set) && !live.timezoneManual;
-          if (liveProxyChanged && live.proxy && !("timezone" in set)) {
-            const location = await lookupExitLocation(live.proxy, options.timezoneFetch);
-            if (location) live.timezone = location.timezone;
-            syncFirefoxTimezone(live);
-          } else if (liveProxyChanged && !("timezone" in set)) {
-            live.timezone = "";
-            syncFirefoxTimezone(live);
-          }
-          const committed = await (options.cloudBrowser.commitLiveEdit?.(live) ?? Promise.resolve(false));
-          if (!committed) {
-            return Response.json(
-              { ok: false, error: "the browser just closed; reopen Edit before saving" },
-              { status: 409 },
-            );
-          }
-          return Response.json({ ok: true, ...restartRequired(store, id) });
-        }
-        if (body.expectedVersion === undefined) {
-          // The dialog was opened against a running profile that has since
-          // finished closing — its live-edit path is gone and there is no
-          // version to hand the Cloud editor.
-          return Response.json(
-            { ok: false, error: "the browser just closed; reopen Edit before saving" },
-            { status: 409 },
-          );
-        }
-        if (!options.cloudConnection) {
-          return Response.json({ ok: false, error: "Vela Cloud connection is unavailable" }, { status: 503 });
-        }
-        const editor = new CloudProfileEditor(options.cloudConnection.client, store, options.timezoneFetch);
-        await editor.save(id, body.expectedVersion as number, set);
-        return Response.json({ ok: true });
-      }
+
       const body = (await req.json()) as { set?: unknown };
       const set = body.set && typeof body.set === "object" ? (body.set as Record<string, unknown>) : {};
       // Every field saves now, also while the browser is open. That browser keeps the identity it
@@ -2419,7 +1541,7 @@ export async function handleUiRequest(
     } catch (e) {
       return Response.json(
         { ok: false, error: msg(e) },
-        { status: options.cloudBrowser ? cloudProfileEditorErrorStatus(e) : 500 },
+        { status: 500 },
       );
     }
   }
@@ -2461,40 +1583,10 @@ export async function handleUiRequest(
     }
   }
 
-  const restore = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/restore-session$/);
-  if (restore && req.method === "POST") {
-    if (!options.cloudBrowser) {
-      return Response.json({ ok: false, error: "Saved sessions are a Cloud feature" }, { status: 400 });
-    }
-    try {
-      const result = await options.cloudBrowser.restoreParkedSession(decodeURIComponent(restore[1]!));
-      return result.ok
-        ? Response.json({ ok: true, version: result.version })
-        : Response.json({ ok: false, error: result.error }, { status: 409 });
-    } catch (error) {
-      return Response.json({ ok: false, error: msg(error) }, { status: 500 });
-    }
-  }
-
   const action = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/(open|close|clear-cache)$/);
   if (action && req.method === "POST") {
     const id = decodeURIComponent(action[1]!);
-    if (options.cloudBrowser) {
-      try {
-        if (action[2] === "open") {
-          const result = await options.cloudBrowser.open(id);
-          return result.ok
-            ? openResponse(store.getProfile(id), result)
-            : Response.json({ ok: false, error: result.error ?? "open failed" }, { status: 500 });
-        }
-        if (action[2] === "close") {
-          return cloudCloseResponse(await options.cloudBrowser.close(id));
-        }
-        return Response.json({ ok: true });
-      } catch (error) {
-        return Response.json({ ok: false, error: msg(error) }, { status: 500 });
-      }
-    }
+
     if (remote) {
       try {
         if (action[2] === "open") {

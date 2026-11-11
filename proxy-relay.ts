@@ -15,12 +15,13 @@
  */
 
 import net from "node:net";
+import tls from "node:tls";
 import { openSocks5Tunnel } from "./geoip.ts";
 import type { ProxySpec } from "./types.ts";
 
 export interface UpstreamProxy {
   /** Omitted for backward-compatible HTTP relay callers. */
-  type?: "http" | "socks5";
+  type?: "http" | "https" | "socks5";
   host: string;
   port: number;
   user: string;
@@ -123,14 +124,16 @@ function connectTunnel(
     void connectSocksTunnel(client, up, target, rest, log, track);
     return;
   }
-  const upSock = track(net.connect({ host: up.host, port: up.port }));
+  const upSock = track(up.type === "https"
+    ? tls.connect({ host: up.host, port: up.port, ...(net.isIP(up.host) ? {} : { servername: up.host }) })
+    : net.connect({ host: up.host, port: up.port }));
   upSock.on("error", (e) => { log(`upstream CONNECT error for ${target}: ${e.message}`); client.destroy(); });
   client.on("error", () => upSock.destroy());
   // In particular, cover a browser abandoning CONNECT before the upstream has
   // replied: the streams are not piped yet, so normal pipe end-propagation does
   // not exist and the upstream socket otherwise survives the client.
   client.once("close", () => upSock.destroy());
-  upSock.on("connect", () => {
+  upSock.once(up.type === "https" ? "secureConnect" : "connect", () => {
     const headers = [
       `CONNECT ${target} HTTP/1.1`,
       `Host: ${target}`,
@@ -262,11 +265,13 @@ function plainHttp(
     "",
   ].join("\r\n");
 
-  const upSock = track(net.connect({ host: up.host, port: up.port }));
+  const upSock = track(up.type === "https"
+    ? tls.connect({ host: up.host, port: up.port, ...(net.isIP(up.host) ? {} : { servername: up.host }) })
+    : net.connect({ host: up.host, port: up.port }));
   upSock.on("error", (e) => { log(`upstream HTTP error: ${e.message}`); client.destroy(); });
   client.on("error", () => upSock.destroy());
   client.once("close", () => upSock.destroy());
-  upSock.on("connect", () => {
+  upSock.once(up.type === "https" ? "secureConnect" : "connect", () => {
     upSock.write(rebuilt);
     if (rest.length) upSock.write(rest);
     upSock.pipe(client);
