@@ -7,6 +7,7 @@
  */
 
 import { join } from "node:path";
+import { TaskbarMode, taskbarModeSupported } from "./taskbar.ts";
 import index from "./web/index.html";
 import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
@@ -215,6 +216,13 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const admission = opts.lifecycleAdmission ?? new LifecycleAdmissionController(opts.lifecycleAdmissionOptions);
   const lifecycle = { admission };
   const agentNonce = opts.agentNonce;
+  // Desktop only: keep environment windows out of the Windows taskbar when the user asked for it.
+  const taskbarMode = agentNonce && opts.appConfig && taskbarModeSupported() ? new TaskbarMode({
+    store,
+    enabled: () => { try { return opts.appConfig!.read().hideFromTaskbar === true; } catch { return false; } },
+    log,
+  }) : undefined;
+  taskbarMode?.start();
   const workbenchHub = agentNonce ? new WorkbenchHub({
     launcher, store,
     canControl: async (id) => {
@@ -343,6 +351,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
       return dispatchWithLifecycleAdmission(req, admission, async () => {
         const ui = await handleUiRequest(req, launcher, store, opts.remote, {
           appConfig: opts.appConfig,
+          taskbarMode,
           paths: opts.paths,
 
 

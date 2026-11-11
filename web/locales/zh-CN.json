@@ -814,5 +814,10 @@
   "Saved": "已保存",
   "New group…": "新建分组…",
   "New platform…": "新建网站/平台…",
-  "Scripts, runs and logs stay on this computer.": "脚本、运行记录和日志保存在本机。"
+  "Scripts, runs and logs stay on this computer.": "脚本、运行记录和日志保存在本机。",
+  "Environment windows": "环境窗口",
+  "Hide only removes each environment's taskbar button. The window, its position and everything a page can see stay exactly the same.": "隐藏只去掉每个环境在任务栏上的按钮。窗口本身、它的位置，以及网页能读到的一切都保持原样。",
+  "Taskbar": "任务栏",
+  "Show in taskbar": "在任务栏显示",
+  "Hide from taskbar": "从任务栏隐藏"
 }

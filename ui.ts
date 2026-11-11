@@ -10,6 +10,7 @@
  */
 
 import { BrowserLaunchError, defaultSetCookies, launchIdentityChanged, type Launcher } from "./launcher.ts";
+import { taskbarModeSupported } from "./taskbar.ts";
 import type { ProfileStore } from "./store.ts";
 import type { AutomationHealthStatus } from "./remote-types.ts";
 import type { RemoteCoordinator } from "./remote.ts";
@@ -453,6 +454,8 @@ export interface UiRuntimeOptions {
 
   scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime };
   appConfig?: AppConfigStore;
+  /** Re-applies taskbar-hidden mode right after the setting changes. */
+  taskbarMode?: import("./taskbar.ts").TaskbarMode;
   paths?: StatePaths;
 
 
@@ -618,7 +621,19 @@ export async function handleUiRequest(
       ...(hostChromiumRuntime() ? { chromiumRuntime: hostChromiumRuntime() } : {}),
       ...(!remote && supportsChromium155Host(process.platform, process.arch) ? { defaultChromiumRuntime: "aliasmode" } : {}),
       ...(!remote ? { defaultEngine: defaultProfileEngine(), webkitAvailable: webkitSupported() } : {}),
+      ...(taskbarModeSupported() ? { taskbarModeSupported: true } : {}),
     });
+  }
+
+  if (pathname === "/ui/api/desktop/taskbar" && req.method === "POST") {
+    if (!options.appConfig || !taskbarModeSupported()) return noStoreJson({ ok: false, error: "Not available on this computer" }, 404);
+    const body = (await req.json().catch(() => ({}))) as { hidden?: unknown };
+    if (typeof body.hidden !== "boolean") return noStoreJson({ ok: false, error: "hidden must be true or false" }, 400);
+    const current = options.appConfig.read();
+    const { hideFromTaskbar: _previous, ...rest } = current;
+    const saved = options.appConfig.write(body.hidden ? { ...rest, hideFromTaskbar: true } : rest);
+    await options.taskbarMode?.sweep();
+    return noStoreJson({ ok: true, hidden: saved.hideFromTaskbar === true });
   }
 
   if (pathname === "/ui/api/shell-language" && req.method === "GET") {

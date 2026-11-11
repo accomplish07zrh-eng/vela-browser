@@ -118,6 +118,20 @@ export interface AppModeConfig {
   /** The engine of new profiles on this computer: Chromium on Windows, Firefox on macOS and Linux. Absent in legacy Remote mode. */
   webkitAvailable?: boolean;
   defaultEngine?: "chromium" | "firefox" | "webkit";
+  /** Windows desktop: environment windows can be kept out of the taskbar. */
+  taskbarModeSupported?: boolean;
+  hideFromTaskbar?: boolean;
+}
+
+export async function saveTaskbarHidden(hidden: boolean): Promise<boolean> {
+  const response = await fetch("/ui/api/desktop/taskbar", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hidden }),
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; hidden?: boolean; error?: string };
+  if (!response.ok || !body.ok) throw new Error(body.error || "The setting could not be saved");
+  return body.hidden === true;
 }
 
 export async function fetchAppMode(): Promise<AppModeConfig> {

@@ -34,6 +34,7 @@ import {
   type GroupExtensionDefaults,
   type AppModeConfig,
   fetchAppMode,
+  saveTaskbarHidden,
   fetchRuntimeDownloads,
   type RuntimeDownload,
   fetchProfiles,
@@ -3357,6 +3358,37 @@ function App() {
               </div>
             </div>
           </section>
+          {appMode?.taskbarModeSupported && (
+            <section className="settings-card">
+              <header><Icon name="wall" className="sm" /><h2>{t("Environment windows")}</h2></header>
+              <div className="card-body">
+                <p>{t("Hide only removes each environment's taskbar button. The window, its position and everything a page can see stay exactly the same.")}</p>
+                <div className="segmented" role="radiogroup" aria-label={t("Taskbar")}>
+                  {([[false, "Show in taskbar"], [true, "Hide from taskbar"]] as const).map(([hidden, label]) => (
+                    <button
+                      key={label}
+                      type="button"
+                      role="radio"
+                      aria-checked={(appMode.hideFromTaskbar === true) === hidden}
+                      className={(appMode.hideFromTaskbar === true) === hidden ? "active" : ""}
+                      onClick={() => {
+                        const previous = appMode.hideFromTaskbar === true;
+                        setAppMode({ ...appMode, hideFromTaskbar: hidden });
+                        saveTaskbarHidden(hidden)
+                          .then((saved) => setAppMode((current) => current && { ...current, hideFromTaskbar: saved }))
+                          .catch((error) => {
+                            setAppMode((current) => current && { ...current, hideFromTaskbar: previous });
+                            flash(error instanceof Error ? error.message : String(error));
+                          });
+                      }}
+                    >
+                      {t(label)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
 
             </>
           )}

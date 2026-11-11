@@ -11,6 +11,8 @@ export interface AppConfig {
   localAnalytics: boolean;
   /** Set when the user hid the Services page from the sidebar. */
   servicesHidden?: boolean;
+  /** Windows: environment windows have no taskbar button. Nothing else about them changes. */
+  hideFromTaskbar?: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -40,6 +42,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     mode: "local",
     localAnalytics: raw.localAnalytics === true,
     ...(raw.servicesHidden === true ? { servicesHidden: true } : {}),
+    ...(raw.hideFromTaskbar === true ? { hideFromTaskbar: true } : {}),
   };
 }
 

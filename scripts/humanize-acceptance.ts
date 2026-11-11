@@ -109,10 +109,16 @@ try {
   report = { executable, count, parallel: overlap, wallMs: Math.round(performance.now() - t0), sumOfRunsMs: Math.round(sequentialEstimate), runs };
 } finally {
   if (report) console.log(JSON.stringify(report, null, 2));
-  for (const browser of browsers) {
-    if (process.platform === "win32") spawn("taskkill", ["/pid", String(browser.child.pid), "/T", "/F"], { stdio: "ignore" });
-    else browser.child.kill();
-  }
+  // Ask each browser to quit over DevTools: on Windows, Edge and Chrome may hand the window to a
+  // relaunched process, so ending the spawned process id would leave the real browser running.
+  await Promise.all(browsers.map((browser) => new Promise<void>((resolve) => {
+    const socket = new WebSocket(browser.ws);
+    const done = () => { try { socket.close(); } catch {} resolve(); };
+    socket.onopen = () => socket.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+    socket.onclose = done; socket.onerror = done;
+    setTimeout(done, 5000);
+  })));
+  for (const browser of browsers) browser.child.kill();
   server.stop(true);
   await Bun.sleep(1500);
   for (const browser of browsers) { try { rmSync(browser.dir, { recursive: true, force: true }); } catch {} }
