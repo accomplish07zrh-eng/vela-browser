@@ -1,13 +1,12 @@
 mod browser;
-mod window_origin;
 mod releases;
 mod runtime_descriptor;
 mod shutdown;
 mod sidecar;
 mod update_attempt;
 mod update_download;
+mod window_origin;
 
-use window_origin::WindowOrigin;
 use rand::random;
 use std::{
     error::Error,
@@ -26,6 +25,7 @@ use tauri::{
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::ShellExt;
+use window_origin::WindowOrigin;
 
 const IMPORT_RESTRICTION: &str = "Windows DPAPI protects persisted browser secrets, so this import works only for the same Windows machine and account. Persisted persona fields are preserved, but runtime or browser differences can change the account-visible fingerprint.";
 

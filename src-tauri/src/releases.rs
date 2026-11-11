@@ -15,7 +15,8 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::sync::Mutex;
 use url::Url;
 
-const RELEASES_API: &str = "https://api.github.com/repos/accomplish07zrh-eng/vela-browser/releases?per_page=10";
+const RELEASES_API: &str =
+    "https://api.github.com/repos/accomplish07zrh-eng/vela-browser/releases?per_page=10";
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const UPDATE_MANIFEST: &str = "latest-v2.json";
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -178,7 +179,14 @@ fn is_release_asset_url(url: &Url, tag: &str, name: &str) -> bool {
     expected
         .path_segments_mut()
         .expect("release origin accepts path segments")
-        .extend(["accomplish07zrh-eng", "vela-browser", "releases", "download", tag, name]);
+        .extend([
+            "accomplish07zrh-eng",
+            "vela-browser",
+            "releases",
+            "download",
+            tag,
+            name,
+        ]);
     url.scheme() == "https"
         && url.host_str() == Some("github.com")
         && url.port().is_none()
@@ -300,7 +308,9 @@ fn validate_manifest_result(
         &candidate.tag,
         &update_artifact_name(&candidate.version),
     ) {
-        return Err("release manifest installer URL was not an Vela Browser release asset".to_owned());
+        return Err(
+            "release manifest installer URL was not an Vela Browser release asset".to_owned(),
+        );
     }
 
     let raw_version = raw_json
@@ -437,7 +447,9 @@ pub fn last_update_result(app: AppHandle) -> Result<Option<LastUpdateResult>, St
 fn restart_after_install_failure(app: AppHandle, error: impl std::fmt::Display) {
     eprintln!("Vela Browser update installation failed: {error}");
     app.dialog()
-        .message("Vela Browser could not start the verified update. The current version will restart.")
+        .message(
+            "Vela Browser could not start the verified update. The current version will restart.",
+        )
         .title("Vela Browser update failed")
         .kind(MessageDialogKind::Error)
         .buttons(MessageDialogButtons::Ok)

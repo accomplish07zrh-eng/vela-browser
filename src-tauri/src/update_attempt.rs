@@ -1056,7 +1056,11 @@ mod linux_tests {
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir_all(root.join("lib").join("Vela Browser")).unwrap();
         fs::write(root.join("bin").join("aliasmode"), "old").unwrap();
-        fs::write(root.join("lib").join("Vela Browser").join("old-only"), "old").unwrap();
+        fs::write(
+            root.join("lib").join("Vela Browser").join("old-only"),
+            "old",
+        )
+        .unwrap();
         root
     }
 
@@ -1077,7 +1081,11 @@ mod linux_tests {
             fs::read_to_string(root.join("bin").join("aliasmode")).unwrap(),
             "new"
         );
-        assert!(!root.join("lib").join("Vela Browser").join("old-only").exists());
+        assert!(!root
+            .join("lib")
+            .join("Vela Browser")
+            .join("old-only")
+            .exists());
         let mode = fs::metadata(root.join("lib/Vela Browser/firefox/aliasmode"))
             .unwrap()
             .permissions()

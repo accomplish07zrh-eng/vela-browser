@@ -470,8 +470,8 @@ pub async fn launch_and_verify(
 #[cfg(test)]
 mod tests {
     use super::{
-        import_command_args, parse_ready_line,
-        should_present_unexpected_exit, verify_health_record, HealthRecord, PROTOCOL, VERSION,
+        import_command_args, parse_ready_line, should_present_unexpected_exit,
+        verify_health_record, HealthRecord, PROTOCOL, VERSION,
     };
     use std::{ffi::OsString, path::Path};
 
