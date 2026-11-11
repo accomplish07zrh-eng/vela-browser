@@ -239,8 +239,8 @@ function firefoxHelperBinaryPaths(binaryPath: string): string[] {
   return [
     helper("plugin-container.app", "plugin-container"),
     // Headed windows start a GPU process; media playback starts the media plugin helper.
-    helper("gpu-helper.app", "Vela Browser GPU Helper"),
-    helper("media-plugin-helper.app", "Vela Browser Media Plugin Helper"),
+    helper("gpu-helper.app", "AliasMode"),
+    helper("media-plugin-helper.app", "AliasMode"),
   ];
 }
 
