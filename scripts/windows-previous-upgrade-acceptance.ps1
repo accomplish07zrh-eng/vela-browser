@@ -174,9 +174,9 @@ $temporaryRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
 }
 $runRoot = Join-Path $temporaryRoot "aliasmode-previous-upgrade-$([Guid]::NewGuid().ToString('N'))"
 $installRoot = Join-Path $runRoot "aliasmode update acceptance"
-$defaultDataRoot = Join-Path $env:APPDATA "com.aliasmode.desktop"
+$defaultDataRoot = Join-Path $env:APPDATA "com.velabrowser.desktop"
 $registrationKeys = @(
-  "Registry::HKEY_CURRENT_USER\Software\aliasmode\Vela Browser",
+  "Registry::HKEY_CURRENT_USER\Software\Vela Browser\Vela Browser",
   "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser"
 )
 $stage = "validating-inputs"

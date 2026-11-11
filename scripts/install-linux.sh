@@ -101,7 +101,7 @@ allow_chrome_sandbox() {
 abi <abi/4.0>,
 include <tunables/global>
 
-profile aliasmode-chromium @{HOME}/.local/share/com.aliasmode.desktop/runtimes/*/chrome flags=(unconfined) {
+profile aliasmode-chromium @{HOME}/.local/share/com.velabrowser.desktop/runtimes/*/chrome flags=(unconfined) {
   userns,
 
   include if exists <local/aliasmode-chromium>

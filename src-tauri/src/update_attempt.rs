@@ -10,7 +10,7 @@ const ATTEMPT_FILE: &str = "update-attempt.json";
 const ATTEMPT_TEMP_FILE: &str = "update-attempt.tmp";
 const ATTEMPT_ARGUMENT: &str = "--aliasmode-update-attempt=";
 const ATTEMPT_SCHEMA: u8 = 1;
-const MANUFACTURER_KEY: &str = r"Software\aliasmode\Vela Browser";
+const MANUFACTURER_KEY: &str = r"Software\Vela Browser\Vela Browser";
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser";
 const MAX_REGISTRY_STRING_BYTES: u32 = 32 * 1024;
 

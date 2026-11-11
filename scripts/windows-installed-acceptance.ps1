@@ -577,7 +577,7 @@ $appDataRoot = Join-Path $env:APPDATA "com.velabrowser.desktop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $workspaceRoot = if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) { $repoRoot } else { $env:GITHUB_WORKSPACE }
 $registrationKeys = @(
-  "Registry::HKEY_CURRENT_USER\Software\aliasmode\Vela Browser",
+  "Registry::HKEY_CURRENT_USER\Software\Vela Browser\Vela Browser",
   "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser"
 )
 $liveProxyEnvironmentNames = @(

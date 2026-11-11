@@ -31,7 +31,7 @@ test("the Linux installer writes the AppArmor profile that the app looks for, fo
   const installer = read("scripts/install-linux.sh");
   expect(installer).toContain(`apparmor_profile="${LINUX_CHROMIUM_APPARMOR_PROFILE}"`);
   // Chromium 155 and CloakBrowser runtimes both live in <data>/runtimes/<dir>/chrome.
-  expect(installer).toContain("@{HOME}/.local/share/com.aliasmode.desktop/runtimes/*/chrome");
+  expect(installer).toContain("@{HOME}/.local/share/com.velabrowser.desktop/runtimes/*/chrome");
   // The app folder and its data folder follow the XDG data home that agent/runtime-client.mjs reads.
   expect(installer).toContain('root="$data_home/aliasmode"');
   expect(read("agent/runtime-client.mjs")).toContain('join(linuxDataHome(env), "aliasmode", "bin", "aliasmode")');

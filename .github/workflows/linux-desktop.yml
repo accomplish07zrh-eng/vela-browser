@@ -161,7 +161,7 @@ jobs:
         run: |
           set -euo pipefail
           root="$HOME/.local/share/aliasmode"
-          data="$HOME/.local/share/com.aliasmode.desktop"
+          data="$HOME/.local/share/com.velabrowser.desktop"
           helper="$root/bin/aliasmode-mcp"
           evidence="$RUNNER_TEMP/evidence"
           mkdir -p "$evidence" "$data"
@@ -390,7 +390,7 @@ jobs:
         run: |
           set -euo pipefail
           root="$HOME/.local/share/aliasmode"
-          data="$HOME/.local/share/com.aliasmode.desktop"
+          data="$HOME/.local/share/com.velabrowser.desktop"
           evidence="$RUNNER_TEMP/evidence"
           sudo apt-get install -y -q webkit2gtk-driver
           # The app opens outside links with xdg-open; this one records the address instead.
@@ -450,7 +450,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/evidence/logs"
-          cp "$HOME/.local/share/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
+          cp "$HOME/.local/share/com.velabrowser.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
           import -window root "$RUNNER_TEMP/evidence/final.png" || true
           cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns > "$RUNNER_TEMP/evidence/userns-restriction.txt" 2>&1 || true
       - uses: actions/upload-artifact@v4
@@ -572,7 +572,7 @@ jobs:
           mkdir -p "$evidence"
           root="$HOME/.local/share/aliasmode"
           helper="$root/bin/aliasmode-mcp"
-          data="$HOME/.local/share/com.aliasmode.desktop"
+          data="$HOME/.local/share/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
           Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$evidence/xvfb.log" 2>&1 &
@@ -633,8 +633,8 @@ jobs:
         run: |
           work="$RUNNER_TEMP/update"
           [[ -f "$work/hosts.backup" ]] && sudo cp "$work/hosts.backup" /etc/hosts
-          cp "$HOME/.local/share/com.aliasmode.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
-          cp "$HOME/.local/share/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/.local/share/com.velabrowser.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/.local/share/com.velabrowser.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo cp "$work/fixture-state.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo chmod -R a+r "$RUNNER_TEMP/update-evidence" 2>/dev/null || true
       - uses: actions/upload-artifact@v4

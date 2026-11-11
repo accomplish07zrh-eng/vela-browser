@@ -178,7 +178,7 @@ jobs:
           if ($install.ExitCode -ne 0) { throw "Vela Browser installer exited with code $($install.ExitCode)" }
           $helper = Join-Path $installRoot "aliasmode-mcp.exe"
           if (-not (Test-Path $helper -PathType Leaf)) { throw "Vela Browser helper was not installed" }
-          $aliasData = Join-Path $appData "com.aliasmode.desktop"
+          $aliasData = Join-Path $appData "com.velabrowser.desktop"
           New-Item -ItemType Directory -Force $aliasData | Out-Null
           @{ version = 1; mode = "local"; localAnalytics = $false } |
             ConvertTo-Json -Compress |
@@ -338,7 +338,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $descriptor = Join-Path $env:APPDATA "com.aliasmode.desktop\agent-runtime.json"
+          $descriptor = Join-Path $env:APPDATA "com.velabrowser.desktop\agent-runtime.json"
           if (Test-Path $descriptor -PathType Leaf) {
             $runtime = Get-Content $descriptor | ConvertFrom-Json
             Stop-Process -Id $runtime.desktopPid -Force -ErrorAction SilentlyContinue

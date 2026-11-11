@@ -144,7 +144,7 @@ jobs:
           set -euo pipefail
           app="/Applications/Vela Browser.app"
           mkdir -p "$RUNNER_TEMP/evidence"
-          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          data="$HOME/Library/Application Support/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
           helper="$app/Contents/MacOS/aliasmode-mcp"
@@ -397,7 +397,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/evidence/logs"
-          cp "$HOME/Library/Application Support/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
+          cp "$HOME/Library/Application Support/com.velabrowser.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
           screencapture -x "$RUNNER_TEMP/evidence/final.png" || true
       - uses: actions/upload-artifact@v4
         if: always()
@@ -522,7 +522,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/update-evidence"
           app="/Applications/Vela Browser.app"
           helper="$app/Contents/MacOS/aliasmode-mcp"
-          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          data="$HOME/Library/Application Support/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
           open -n "$app"
@@ -576,8 +576,8 @@ jobs:
           [[ -f "$work/hosts.backup" ]] && sudo cp "$work/hosts.backup" /etc/hosts
           sudo dscacheutil -flushcache || true
           screencapture -x "$RUNNER_TEMP/update-evidence/final.png" || true
-          cp "$HOME/Library/Application Support/com.aliasmode.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
-          cp "$HOME/Library/Application Support/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/Library/Application Support/com.velabrowser.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/Library/Application Support/com.velabrowser.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo cp "$work/fixture-state.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo chmod -R a+r "$RUNNER_TEMP/update-evidence" 2>/dev/null || true
       - uses: actions/upload-artifact@v4
