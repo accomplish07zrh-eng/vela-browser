@@ -186,8 +186,8 @@ jobs:
           }
 
           $setupBunVersion = (& bun --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $setupBunVersion -ne "1.2.21") {
-            throw "setup Bun identity is not 1.2.21"
+          if ($LASTEXITCODE -ne 0 -or $setupBunVersion -ne "1.4.1") {
+            throw "setup Bun identity is not 1.4.1"
           }
           $setupBunPath = (Get-Command bun -ErrorAction Stop).Source
           $setupBunSha = (Get-FileHash -LiteralPath $setupBunPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -217,7 +217,7 @@ jobs:
           }
 
           $toolchainIdentity = @(
-            "setup-bun=1.2.21:$setupBunSha"
+            "setup-bun=1.4.1:$setupBunSha"
             "baseline-bun=1.2.21:$baselineSha"
             "rustc=$rustcIdentity"
             "rust-toolchain=$activeToolchain"
