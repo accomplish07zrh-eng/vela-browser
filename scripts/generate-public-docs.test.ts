@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Launcher } from "../launcher.ts";
-import { ProfileStore } from "../store.ts";
-import { handleRequest } from "../server.ts";
-import { handleUserApi } from "../adspower-users.ts";
+import type { Launcher } from "../src/launcher.ts";
+import { ProfileStore } from "../src/store.ts";
+import { handleRequest } from "../src/server.ts";
+import { handleUserApi } from "../src/adspower-users.ts";
 import {
   CURRENT_CATALOG_PATH,
   MANIFEST_PATH,

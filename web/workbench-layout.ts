@@ -1,4 +1,4 @@
-import type { WorkbenchInput, WorkbenchRefreshTier } from "../workbench-protocol.ts";
+import type { WorkbenchInput, WorkbenchRefreshTier } from "../src/workbench-protocol.ts";
 import { springValue } from "./motion.ts";
 
 export interface ViewportBox { x: number; y: number; width: number; height: number }

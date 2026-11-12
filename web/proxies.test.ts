@@ -14,7 +14,7 @@ import {
   requestProxyPreview,
   retryProxyProfileIds,
 } from "./proxies.tsx";
-import type { ProxyCheckView, ProxyProgressEvent, ProxyReplacementView } from "../proxy-tools-types.ts";
+import type { ProxyCheckView, ProxyProgressEvent, ProxyReplacementView } from "../src/proxy-tools-types.ts";
 import { catalogs } from "./locales/registry.ts";
 
 const realFetch = globalThis.fetch;

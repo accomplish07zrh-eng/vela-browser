@@ -16,7 +16,7 @@ export function normalizeFixtureConfig(input) {
   const candidateVersion = requireString(input?.candidateVersion, "candidate version");
   const candidateTag = `v${candidateVersion}`;
   // The macOS update acceptance passes its own feed and archive names.
-  const installerName = input?.installerName ?? `Vela Browser_${candidateVersion}_x64-setup.exe`;
+  const installerName = input?.installerName ?? `Vela-Browser_${candidateVersion}_x64-setup.exe`;
   const manifestName = input?.manifestName ?? "latest-v2.json";
   const releaseBase = `/accomplish07zrh-eng/vela-browser/releases/download/${candidateTag}`;
   const manifestRoute = `${releaseBase}/${manifestName}`;

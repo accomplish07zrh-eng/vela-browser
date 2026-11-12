@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { ALIASMODE_VERSION } from "../version.ts";
+import { ALIASMODE_VERSION } from "../src/version.ts";
 
 export function buildAgentBootstrapManifest(options: {
   installer: string;
@@ -16,7 +16,6 @@ export function buildAgentBootstrapManifest(options: {
   return {
     schema: 1,
     version: ALIASMODE_VERSION,
-    wingetId: "Vela Browser.Vela Browser",
     installer: {
       name: basename(installer),
       url: `${releaseBase}/${encodeURIComponent(basename(installer))}`,

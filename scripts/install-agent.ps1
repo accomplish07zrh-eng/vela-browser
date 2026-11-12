@@ -28,13 +28,6 @@ function Helper-MatchesVersion {
 
 try {
   if (-not (Helper-MatchesVersion)) {
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if ($winget) {
-      & $winget.Source install --id Vela Browser.Vela Browser --version $Version --exact --force --silent --disable-interactivity --accept-package-agreements --accept-source-agreements *> $null
-    }
-  }
-
-  if (-not (Helper-MatchesVersion)) {
     New-Item -ItemType Directory -Path $tempRoot | Out-Null
     if (-not $ManifestUri) {
       $ManifestUri = "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v$Version/aliasmode-agent-bootstrap.json"

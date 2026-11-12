@@ -9,7 +9,7 @@ import {
 
 const version = "0.1.0-beta.46";
 const tag = `v${version}`;
-const installerName = `Vela Browser_${version}_x64-setup.exe`;
+const installerName = `Vela-Browser_${version}_x64-setup.exe`;
 const releaseBase = `/accomplish07zrh-eng/vela-browser/releases/download/${tag}`;
 const config = normalizeFixtureConfig({
   candidateVersion: version,

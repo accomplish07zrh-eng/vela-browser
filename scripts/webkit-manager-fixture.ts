@@ -1,8 +1,8 @@
 /** Isolated QA manager. Its exit intentionally leaves the owned browser workers alive. */
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import { Launcher } from "../launcher.ts";
-import { ProfileStore } from "../store.ts";
+import { Launcher } from "../src/launcher.ts";
+import { ProfileStore } from "../src/store.ts";
 
 const lines = createInterface({ input: process.stdin, terminal: false });
 const iterator = lines[Symbol.asyncIterator]();

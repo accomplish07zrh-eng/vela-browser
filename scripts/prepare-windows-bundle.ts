@@ -10,8 +10,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { extractZipTo } from "../unzip.ts";
-import { ALIASMODE_VERSION } from "../version.ts";
+import { extractZipTo } from "../src/unzip.ts";
+import { ALIASMODE_VERSION } from "../src/version.ts";
 
 export const NODE_WINDOWS_X64_VERSION = "22.23.2";
 export const NODE_WINDOWS_X64_SHA256 = "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97";
@@ -162,7 +162,7 @@ export async function compileSidecar(cwd: string, output: string, target = WINDO
     "--external=chromium-bidi",
     "--external=electron",
     // One program for the sidecar and the MCP helper; Cargo builds the aliasmode-mcp launcher.
-    "sidecar-entry.ts",
+    "src/sidecar-entry.ts",
     "--outfile",
     output,
   ], { cwd, stdout: "inherit", stderr: "inherit" });

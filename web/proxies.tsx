@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "./i18n.tsx";
-import { folderScope, type FolderInfo } from "../folders.ts";
+import { folderScope, type FolderInfo } from "../src/folders.ts";
 import type {
   ProxyCheckView,
   ProxyPreview,
@@ -9,7 +9,7 @@ import type {
   ProxyReplacementMode,
   ProxyReplacementView,
   ProxyScope,
-} from "../proxy-tools-types.ts";
+} from "../src/proxy-tools-types.ts";
 
 export class ProxyToolsError extends Error {}
 

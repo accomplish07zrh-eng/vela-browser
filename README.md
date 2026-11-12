@@ -73,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/accomplish07zrh-eng/vela-browser/ma
 ```bash
 bun install
 bun test
-bun cli.ts start
+bun start
 ```
 
 打包 Windows 桌面版：
@@ -87,12 +87,13 @@ bun run desktop:build:nsis
 
 | 位置 | 内容 |
 | --- | --- |
+| `src/` | 环境管理、启动器、指纹、代理和本地服务 |
 | `web/` | 界面：工作台、浮动坞和各个页面 |
 | `src-tauri/` | 桌面外壳、安装器、应用内更新 |
 | `agent/` | MCP 服务、拟人输入、脚本运行器 |
 | `scripts/` | 打包、安装和验收脚本 |
 | `docs/public/` | 本地 API 和 MCP 工具的公开说明 |
-| 根目录 `*.ts` | 环境管理、启动器、指纹、代理和本地服务 |
+| 根目录 `*.mjs` | 浏览器后台进程；打包后与 `agent/` 同层，所以留在根目录 |
 
 ## 致谢与许可
 

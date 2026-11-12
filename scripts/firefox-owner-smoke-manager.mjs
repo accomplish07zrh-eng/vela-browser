@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { createFirefoxProfileConfig, normalizeFirefoxProfileConfig } from "../firefox-config.ts";
-import { startFirefoxOwner } from "../firefox-runtime.ts";
+import { createFirefoxProfileConfig, normalizeFirefoxProfileConfig } from "../src/firefox-config.ts";
+import { startFirefoxOwner } from "../src/firefox-runtime.ts";
 
 const [browser, directory, record, configPath, mode] = process.argv.slice(2);
 if (!browser || !directory || !record || !configPath) throw new Error("Firefox owner smoke manager input is missing");

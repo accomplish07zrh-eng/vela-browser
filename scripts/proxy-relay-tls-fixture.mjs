@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import net from "node:net";
 import tls from "node:tls";
-import { startProxyRelay } from "../proxy-relay.ts";
+import { startProxyRelay } from "../src/proxy-relay.ts";
 
 const trusted = process.argv.includes("--trusted");
 const certificate = new URL("../test-fixtures/proxy-relay/certificate.pem", import.meta.url);

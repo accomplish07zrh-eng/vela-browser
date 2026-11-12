@@ -2,12 +2,12 @@
 import { mkdtempSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ProfileStore } from "../store.ts";
-import { parseExport } from "../parse.ts";
-import { AppConfigStore } from "../app-config.ts";
-import { serveDashboard } from "../web.ts";
-import type { Launcher } from "../launcher.ts";
-import { startFirefoxOwner, callFirefoxOwner, closeFirefoxOwner } from "../firefox-runtime.ts";
+import { ProfileStore } from "../src/store.ts";
+import { parseExport } from "../src/parse.ts";
+import { AppConfigStore } from "../src/app-config.ts";
+import { serveDashboard } from "../src/web.ts";
+import type { Launcher } from "../src/launcher.ts";
+import { startFirefoxOwner, callFirefoxOwner, closeFirefoxOwner } from "../src/firefox-runtime.ts";
 import { createHash } from "node:crypto";
 
 const root = mkdtempSync(join(tmpdir(), "vela-workbench-qa-"));

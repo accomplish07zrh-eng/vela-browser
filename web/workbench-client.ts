@@ -1,4 +1,4 @@
-import type { WorkbenchInput, WorkbenchTab, WorkbenchRefreshTier } from "../workbench-protocol.ts";
+import type { WorkbenchInput, WorkbenchTab, WorkbenchRefreshTier } from "../src/workbench-protocol.ts";
 
 export interface ViewportState {
   status: "connecting" | "live" | "paused" | "error" | "ended";

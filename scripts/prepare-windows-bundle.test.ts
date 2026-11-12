@@ -4,8 +4,8 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareWindowsBundle, WINDOWS_SIDECAR_TARGET, assertWindowsSidecarBunVersion } from "./prepare-windows-bundle.ts";
-import { MCP_MODE } from "../sidecar-entry.ts";
-import { ALIASMODE_VERSION } from "../version.ts";
+import { MCP_MODE } from "../src/sidecar-entry.ts";
+import { ALIASMODE_VERSION } from "../src/version.ts";
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -74,10 +74,10 @@ test("one sidecar program also runs the MCP helper behind the aliasmode-mcp laun
   const launcher = readFileSync(join(repo, "src-tauri", "src", "bin", "aliasmode-mcp.rs"), "utf8");
   expect(launcher).toContain(`const MCP_MODE: &str = "${MCP_MODE}";`);
 
-  const helper = Bun.spawnSync([process.execPath, "sidecar-entry.ts", MCP_MODE, "version"], { cwd: repo });
+  const helper = Bun.spawnSync([process.execPath, "src/sidecar-entry.ts", MCP_MODE, "version"], { cwd: repo });
   expect(helper.exitCode).toBe(0);
   expect(JSON.parse(helper.stdout.toString())).toEqual({ ok: true, result: { version: ALIASMODE_VERSION } });
-  const failed = Bun.spawnSync([process.execPath, "sidecar-entry.ts", MCP_MODE, "unknown"], { cwd: repo });
+  const failed = Bun.spawnSync([process.execPath, "src/sidecar-entry.ts", MCP_MODE, "unknown"], { cwd: repo });
   expect(failed.exitCode).toBe(1);
   expect(JSON.parse(failed.stdout.toString())).toMatchObject({ ok: false });
 });

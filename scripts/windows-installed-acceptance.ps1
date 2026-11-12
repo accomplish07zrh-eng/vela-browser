@@ -80,7 +80,7 @@ function Install-AcceptanceArtifact(
   $installerName = Split-Path $ResolvedInstallerPath -Leaf
   $nameMatch = [Text.RegularExpressions.Regex]::Match(
     $installerName,
-    '^Vela Browser_(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)_x64(?:-offline)?-setup\.exe$'
+    '^Vela-Browser_(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)_x64(?:-offline)?-setup\.exe$'
   )
   if (-not $nameMatch.Success) { throw "installer name is invalid" }
   $version = $nameMatch.Groups["version"].Value
@@ -577,7 +577,7 @@ $appDataRoot = Join-Path $env:APPDATA "com.velabrowser.desktop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $workspaceRoot = if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) { $repoRoot } else { $env:GITHUB_WORKSPACE }
 $registrationKeys = @(
-  "Registry::HKEY_CURRENT_USER\Software\aliasmode\Vela Browser",
+  "Registry::HKEY_CURRENT_USER\Software\Vela Browser\Vela Browser",
   "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser"
 )
 $liveProxyEnvironmentNames = @(
@@ -1597,7 +1597,8 @@ try {
     "local-upgrade" {
       Set-AcceptanceStage "local-upgrade-preparing"
       $playwrightRuntime = Join-Path $installRoot "playwright"
-      $upgradeRoot = Join-Path $runRoot "local-upgrade"
+      # A release build always keeps its data in AppData; the override below only reaches debug builds.
+      $upgradeRoot = $appDataRoot
       New-Item -ItemType Directory -Force $upgradeRoot | Out-Null
       $configPath = Join-Path $upgradeRoot "config.json"
       $legacyConfig = @{ version = 1; mode = "cloud"; cloudUrl = "http://127.0.0.1:1"; localAnalytics = $false; servicesHidden = $true }

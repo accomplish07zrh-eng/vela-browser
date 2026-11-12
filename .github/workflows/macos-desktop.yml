@@ -64,7 +64,7 @@ jobs:
           set -euo pipefail
           version="$(jq -er .version src-tauri/tauri.conf.json)"
           mkdir -p "$BUNDLE/dmg"
-          dmg="$BUNDLE/dmg/Vela Browser_${version}_${ARCH}.dmg"
+          dmg="$BUNDLE/dmg/Vela-Browser_${version}_${ARCH}.dmg"
           venv="$RUNNER_TEMP/dmgbuild"
           if python3 -m venv "$venv" &&
             "$venv/bin/pip" install --quiet --require-hashes --only-binary :all: -r src-tauri/macos/dmg-requirements.txt &&
@@ -110,9 +110,9 @@ jobs:
           version="$(jq -er .version src-tauri/tauri.conf.json)"
           files="$RUNNER_TEMP/release/v$version"
           mkdir -p "$files"
-          cp "$BUNDLE/dmg/Vela Browser_${version}_${ARCH}.dmg" "$files/"
-          tar -czf "$files/Vela Browser_${version}_${ARCH}.app.tar.gz" -C "$BUNDLE/macos" "Vela Browser.app"
-          (cd "$files" && shasum -a 256 "Vela Browser_${version}_${ARCH}.app.tar.gz" "Vela Browser_${version}_${ARCH}.dmg" > SHA256SUMS-macos.txt)
+          cp "$BUNDLE/dmg/Vela-Browser_${version}_${ARCH}.dmg" "$files/"
+          tar -czf "$files/Vela-Browser_${version}_${ARCH}.app.tar.gz" -C "$BUNDLE/macos" "Vela Browser.app"
+          (cd "$files" && shasum -a 256 "Vela-Browser_${version}_${ARCH}.app.tar.gz" "Vela-Browser_${version}_${ARCH}.dmg" > SHA256SUMS-macos.txt)
           cat "$files/SHA256SUMS-macos.txt"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install with the terminal installer
@@ -124,7 +124,7 @@ jobs:
           bad="$RUNNER_TEMP/bad-release/v$version"
           mkdir -p "$bad"
           cp "$RUNNER_TEMP/release/v$version/SHA256SUMS-macos.txt" "$bad/"
-          head -c 1000000 "$RUNNER_TEMP/release/v$version/Vela Browser_${version}_${ARCH}.app.tar.gz" > "$bad/Vela Browser_${version}_${ARCH}.app.tar.gz"
+          head -c 1000000 "$RUNNER_TEMP/release/v$version/Vela-Browser_${version}_${ARCH}.app.tar.gz" > "$bad/Vela-Browser_${version}_${ARCH}.app.tar.gz"
           if ALIASMODE_RELEASE_BASE="file://$RUNNER_TEMP/bad-release" bash scripts/install-macos.sh --version "$version"; then
             echo "the installer accepted a damaged download"
             exit 1
@@ -144,7 +144,7 @@ jobs:
           set -euo pipefail
           app="/Applications/Vela Browser.app"
           mkdir -p "$RUNNER_TEMP/evidence"
-          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          data="$HOME/Library/Application Support/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
           helper="$app/Contents/MacOS/aliasmode-mcp"
@@ -160,10 +160,8 @@ jobs:
           sleep 5
           screencapture -x "$RUNNER_TEMP/evidence/dashboard.png"
 
-          # A click on an outside link must open the default browser. The offer host is turned off
-          # on this runner, so Safari keeps the full address and NobleProxy counts no visit.
-          echo "127.0.0.1 nobleproxy.com" | sudo tee -a /etc/hosts >/dev/null
-          sudo dscacheutil -flushcache
+          # A click on an outside link must open the default browser. The interface starts in
+          # Chinese, its default language, so elements are found by their Chinese names.
           ui() {
             DESKTOP_PID="$(jq -er .desktopPid "$data/agent-runtime.json")" ACTION="$1" WANTED="$2" osascript -l JavaScript -e '
               ObjC.import("stdlib");
@@ -200,19 +198,16 @@ jobs:
             for attempt in $(seq 1 20); do pgrep -x Safari >/dev/null || return 0; sleep 1; done
             return 1
           }
-          ui click 'uiElements.byName("Buy proxies from NobleProxy'
-          browser_shows "https://github.com/accomplish07zrh-eng/vela-browser?src=sidebar-cart"
-          screencapture -x "$RUNNER_TEMP/evidence/link-sidebar.png"
+          ui click 'byName("Vela Browser 在 GitHub")'
+          browser_shows "github.com"
+          screencapture -x "$RUNNER_TEMP/evidence/link-github.png"
           close_browser
-          ui click 'buttons.byName("New Profile")'
+          ui click 'buttons.byName("新建环境")'
           sleep 2
           # A new Chrome profile uses Chromium 155 on Apple Silicon and CloakBrowser on Intel, and the help text must say so.
           ui find 'buttons.byName("Chrome: ${{ matrix.chrome }}")'
-          ui click 'uiElements.byName("Buy static residential proxies from NobleProxy'
-          browser_shows "https://github.com/accomplish07zrh-eng/vela-browser?src=profile-dialog"
-          screencapture -x "$RUNNER_TEMP/evidence/link-new-profile.png"
-          close_browser
-          ui click 'buttons.byName("Cancel")'
+          screencapture -x "$RUNNER_TEMP/evidence/new-profile.png"
+          ui click 'buttons.byName("取消")'
 
           created="$("$helper" profiles create --name ci-firefox --temporary --engine firefox)"
           profile="$(jq -er 'select(.ok) | .result.id' <<<"$created")"
@@ -294,8 +289,8 @@ jobs:
           # A CloakBrowser profile from Windows arrives without a Chromium runtime. The app must
           # download the macOS CloakBrowser build for it and must not use Chromium 155.
           bun -e '
-            import { buildNewProfile } from "./create.ts";
-            import { serializeAdsTxt } from "./parse.ts";
+            import { buildNewProfile } from "./src/create.ts";
+            import { serializeAdsTxt } from "./src/parse.ts";
             const profile = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows", chromiumRuntime: "cloakbrowser" }, () => false);
             // As made on Windows: a CloakBrowser profile with its stored processor cores.
             process.stdout.write(serializeAdsTxt([{ ...profile, hardware: { cores: 20 } }]));
@@ -339,7 +334,7 @@ jobs:
           HELPER="$helper" bun -e '
             import { WebSocketServer } from "ws";
             import { MCP_TUNNEL_PROTOCOL } from "./contracts/cloud-v1.ts";
-            import { McpTunnelRuntime } from "./mcp-tunnel.ts";
+            import { McpTunnelRuntime } from "./src/mcp-tunnel.ts";
             const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
             await new Promise((resolve) => server.once("listening", resolve));
             const tools = new Promise((resolve, reject) => {
@@ -397,7 +392,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/evidence/logs"
-          cp "$HOME/Library/Application Support/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
+          cp "$HOME/Library/Application Support/com.velabrowser.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
           screencapture -x "$RUNNER_TEMP/evidence/final.png" || true
       - uses: actions/upload-artifact@v4
         if: always()
@@ -460,15 +455,19 @@ jobs:
           if [[ "$current" == *-* ]]; then
             successor="$current.acceptance.1"
           else
-            successor="${current%.*}.$((${current##*.} + 1))-acceptance.1"
+            successor="${current%.*}.$((${current##*.} + 1))"
           fi
-          for file in package.json version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
+          for file in package.json src/version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml; do
             test "$(grep -oF "$current" "$file" | wc -l | tr -d ' ')" = 1
             CURRENT="$current" SUCCESSOR="$successor" perl -pi -e 's/\Q$ENV{CURRENT}\E/$ENV{SUCCESSOR}/' "$file"
           done
+          # Cargo.lock also lists other crates that can share the version; only the app's own entry moves.
+          test "$(grep -A1 -xF 'name = "aliasmode-desktop"' src-tauri/Cargo.lock | grep -cxF "version = \"$current\"")" = 1
+          CURRENT="$current" SUCCESSOR="$successor" perl -0pi -e 's/(name = "aliasmode-desktop"\r?\nversion = ")\Q$ENV{CURRENT}\E"/$1$ENV{SUCCESSOR}"/' src-tauri/Cargo.lock
+          test "$(grep -A1 -xF 'name = "aliasmode-desktop"' src-tauri/Cargo.lock | grep -cxF "version = \"$successor\"")" = 1
           bun run desktop:prepare:macos
           bunx tauri build --bundles app --config "$work/test-key.json"
-          archive="Vela Browser_${successor}_${ARCH}.app.tar.gz"
+          archive="Vela-Browser_${successor}_${ARCH}.app.tar.gz"
           tar -czf "$work/$archive" -C "$BUNDLE/macos" "Vela Browser.app"
           TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null
           url="https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v$successor/$archive"
@@ -518,7 +517,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/update-evidence"
           app="/Applications/Vela Browser.app"
           helper="$app/Contents/MacOS/aliasmode-mcp"
-          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          data="$HOME/Library/Application Support/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
           open -n "$app"
@@ -541,7 +540,7 @@ jobs:
             const app = events.applicationProcesses.whose({ unixId: Number($.getenv("OLD_PID")) })[0];
             app.frontmost = true;
             const elements = app.windows[0].entireContents();
-            const button = elements.find((element) => Automation.getDisplayString(element).includes("buttons.byName(\"Update now\")"));
+            const button = elements.find((element) => Automation.getDisplayString(element).includes("buttons.byName(\"立即更新\")"));
             if (!button) throw new Error("the Update now button was not found among " + elements.length + " elements");
             button.click();
             "clicked Update now";
@@ -572,8 +571,8 @@ jobs:
           [[ -f "$work/hosts.backup" ]] && sudo cp "$work/hosts.backup" /etc/hosts
           sudo dscacheutil -flushcache || true
           screencapture -x "$RUNNER_TEMP/update-evidence/final.png" || true
-          cp "$HOME/Library/Application Support/com.aliasmode.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
-          cp "$HOME/Library/Application Support/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/Library/Application Support/com.velabrowser.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/Library/Application Support/com.velabrowser.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo cp "$work/fixture-state.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo chmod -R a+r "$RUNNER_TEMP/update-evidence" 2>/dev/null || true
       - uses: actions/upload-artifact@v4
