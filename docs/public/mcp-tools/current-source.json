@@ -821,6 +821,50 @@
   ],
   "playwrightTools": [
     {
+      "name": "browser_batch",
+      "description": "Run several browser actions in one call, in order, each exactly as if called on its own (human-like input included). For example: type into two fields, then click the button. Stops at the first step that fails and says which one. Returns the last step's result, with its page snapshot, after a one-line summary of the steps before it. Prefer this to calling actions one at a time.",
+      "annotations": {
+        "title": "Several browser actions in one call",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 25,
+            "description": "Each step names a browser tool listed by this server and its arguments, as you would call it alone.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string"
+                },
+                "arguments": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "browser_resize",
       "description": "Resize the browser window",
       "annotations": {
@@ -887,7 +931,7 @@
     },
     {
       "name": "browser_handle_dialog",
-      "description": "Handle a dialog",
+      "description": "Handle a dialog Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Handle a dialog",
         "readOnlyHint": false,
@@ -955,7 +999,7 @@
     },
     {
       "name": "browser_file_upload",
-      "description": "Upload one or multiple files",
+      "description": "Upload one or multiple files Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Upload files",
         "readOnlyHint": false,
@@ -983,7 +1027,7 @@
     },
     {
       "name": "browser_fill_form",
-      "description": "Fill multiple form fields",
+      "description": "Fill multiple form fields Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Fill form",
         "readOnlyHint": false,
@@ -1046,7 +1090,7 @@
     },
     {
       "name": "browser_press_key",
-      "description": "Press a key on the keyboard",
+      "description": "Press a key on the keyboard Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Press a key",
         "readOnlyHint": false,
@@ -1074,7 +1118,7 @@
     },
     {
       "name": "browser_type",
-      "description": "Type text into editable element",
+      "description": "Type text into editable element Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Type text",
         "readOnlyHint": false,
@@ -1120,7 +1164,7 @@
     },
     {
       "name": "browser_navigate",
-      "description": "Navigate to a URL",
+      "description": "Navigate to a URL Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Navigate to a URL",
         "readOnlyHint": false,
@@ -1148,7 +1192,7 @@
     },
     {
       "name": "browser_navigate_back",
-      "description": "Go back to the previous page",
+      "description": "Go back to the previous page Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Go back",
         "readOnlyHint": false,
@@ -1418,7 +1462,7 @@
     },
     {
       "name": "browser_snapshot",
-      "description": "Capture accessibility snapshot of the current page, this is better than screenshot",
+      "description": "Capture accessibility snapshot of the current page, this is better than screenshot Actions such as browser_click and browser_type already return the updated snapshot: take one only to look before the first action.",
       "annotations": {
         "title": "Page snapshot",
         "readOnlyHint": true,
@@ -1443,7 +1487,7 @@
     },
     {
       "name": "browser_click",
-      "description": "Perform click on a web page",
+      "description": "Perform click on a web page Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Click",
         "readOnlyHint": false,
@@ -1503,7 +1547,7 @@
     },
     {
       "name": "browser_drag",
-      "description": "Perform drag and drop between two elements",
+      "description": "Perform drag and drop between two elements Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Drag mouse",
         "readOnlyHint": false,
@@ -1546,7 +1590,7 @@
     },
     {
       "name": "browser_hover",
-      "description": "Hover over element on page",
+      "description": "Hover over element on page Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Hover mouse",
         "readOnlyHint": false,
@@ -1579,7 +1623,7 @@
     },
     {
       "name": "browser_select_option",
-      "description": "Select an option in a dropdown",
+      "description": "Select an option in a dropdown Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Select option",
         "readOnlyHint": false,
@@ -1653,7 +1697,7 @@
     },
     {
       "name": "browser_tabs",
-      "description": "List, create, close, or select a browser tab.",
+      "description": "List, create, close, or select a browser tab. Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Manage tabs",
         "readOnlyHint": false,
@@ -1733,7 +1777,7 @@
     },
     {
       "name": "browser_wait_for",
-      "description": "Wait for text to appear or disappear or a specified time to pass",
+      "description": "Wait for text to appear or disappear or a specified time to pass Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.",
       "annotations": {
         "title": "Wait for",
         "readOnlyHint": true,
