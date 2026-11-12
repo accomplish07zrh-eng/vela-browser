@@ -29,9 +29,9 @@ function groupColor(group: string): string {
   const palette = ["#9b9283", "#b5aa98", "#817b70", "#a69e90", "#b9b1a4", "#8f897d"];
   return group ? palette[[...group].reduce((sum, character) => (sum * 31 + character.charCodeAt(0)) >>> 0, 0) % palette.length]! : "var(--line-strong)";
 }
-type ViewStatus = "running" | "loading" | "proxy-error" | "disconnected" | "idle";
+type ViewStatus = "running" | "loading" | "proxy-error" | "disconnected" | "idle" | "cooled";
 function viewStatus(profile: UiProfile, state?: ViewportState): ViewStatus {
-  if (!profile.running) return "idle";
+  if (!profile.running) return profile.cooled ? "cooled" : "idle";
   if (state?.status === "error" || state?.status === "ended") return "disconnected";
   if (profile.proxyError) return "proxy-error";
   return !state?.frame ? "loading" : "running";
@@ -88,11 +88,11 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
     sendInput({ kind: "key", event: phase, key: event.key, code: event.code, keyCode: event.keyCode, modifiers: modifiers(event) });
   };
   const status = viewStatus(profile, state);
-  const labels: Record<ViewStatus, string> = { running: t("running"), loading: t("Connecting…"), "proxy-error": t("Proxy error"), disconnected: t("Disconnected"), idle: t("Not started") };
+  const labels: Record<ViewStatus, string> = { running: t("running"), loading: t("Connecting…"), "proxy-error": t("Proxy error"), disconnected: t("Disconnected"), idle: t("Not started"), cooled: t("Cooled") };
   return <article ref={host} data-viewport={profile.id} data-status={status} className={`browser-viewport${selected ? " selected" : ""}${focused ? " expanded" : ""}${obscured ? " obscured" : ""}${master ? " master" : ""}`}
     aria-label={t("Browser viewport: {name}", { name: profile.name })} aria-current={selected ? "true" : undefined} tabIndex={0}
     style={{ "--group-color": groupColor(profile.group), "--arrival-delay": `${Math.min(order, 12) * 24}ms`, viewTransitionName: `environment-${Array.from(profile.id).map((character) => character.codePointAt(0)!.toString(16)).join("-")}` } as CSSProperties}
-    onClick={(event) => { if (!focused) onSelect(profile.id, event); }} onDoubleClick={() => { if (profile.running) onFocus(profile.id); }}
+    onClick={(event) => { if (!focused) onSelect(profile.id, event); }} onDoubleClick={() => { if (profile.running) onFocus(profile.id); else if (profile.cooled) onAction("start", [profile.id]); }}
     onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === " ") { event.preventDefault(); onSelect(profile.id, event); } if (event.key === "Enter" && profile.running) { event.preventDefault(); onFocus(profile.id); } }}
     onPointerEnter={() => onHover(profile.id)} onPointerLeave={() => onHover(null)}>
     <div className="viewport-surface" ref={surface} onContextMenu={(event) => event.preventDefault()}
@@ -132,7 +132,15 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
         <button type="button" title={t("Close tab: {name}", { name: tab.title })} aria-label={t("Close tab: {name}", { name: tab.title })} onClick={() => client.current?.command("close", { targetId: tab.id })}><Glyph name="close" /></button>
       </div>)}<button type="button" className="viewport-new-tab" aria-label={t("New tab")} title={t("New tab")} onClick={() => client.current?.command("new")}><Glyph name="plus" /></button></div>
     </div>
-    {(status === "idle" || !state.frame || status === "disconnected") && <div className="viewport-message" role="status" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+    {status === "cooled" && <div className="viewport-message cooled" role="status" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+      <span className="viewport-cooled-title">{t("Cooled to free memory")}</span>
+      <small>{t("Its sign-ins and tabs are saved. Wake it to pick up where it left off.")}</small>
+      <div className="viewport-cooled-actions">
+        <button type="button" className="btn primary xs" onClick={() => onAction("start", [profile.id])}><Glyph name="play" />{t("Wake")}</button>
+        <button type="button" className="btn ghost xs" title={t("Remove from workbench")} onClick={() => onAction("stop", [profile.id])}>{t("Remove")}</button>
+      </div>
+    </div>}
+    {status !== "cooled" && (status === "idle" || !state.frame || status === "disconnected") && <div className="viewport-message" role="status" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
       <span>{status === "idle" ? t("Not started") : status === "disconnected" ? t("Disconnected · reconnect") : t(state.error ?? "Connecting to the browser…")}</span>
       {status === "loading" && <div className="viewport-skeleton" aria-hidden="true"><i /><i /><i /></div>}
       {status === "idle" ? <button type="button" className="btn primary xs" onClick={() => onAction("start", [profile.id])}><Glyph name="play" />{t("Start")}</button> : status === "disconnected" && <button type="button" className="btn ghost xs" onClick={() => setRetry((value) => value + 1)}><Glyph name="refresh" />{t("Reconnect")}</button>}
@@ -193,7 +201,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
   const scope = useMemo(() => folderScope(folders, group), [folders, group]);
   // Groups stay together so each one can become a lane; ungrouped environments come last.
   const groupOrder = useMemo(() => new Map(groups.map((name, index) => [name, index])), [groups]);
-  const scoped = useMemo(() => profiles.filter((profile) => (profile.running || showStopped) && profile.permission !== "view" && !profile.lockedBy
+  const scoped = useMemo(() => profiles.filter((profile) => (profile.running || profile.cooled || showStopped) && profile.permission !== "view" && !profile.lockedBy
     && (group === "all" || group === "" && !profile.group || scope.has(profile.group) || profile.group === group))
     .sort((a, b) => (groupOrder.get(a.group) ?? Number.MAX_SAFE_INTEGER) - (groupOrder.get(b.group) ?? Number.MAX_SAFE_INTEGER) || a.group.localeCompare(b.group)
       || (a.serial ?? Number.MAX_SAFE_INTEGER) - (b.serial ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id)), [profiles, group, scope, showStopped, groupOrder]);
@@ -549,6 +557,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     current.lastX = event.clientX; current.lastAt = now;
   };
   const matches = query.trim() ? displayed.filter((profile) => `${profile.name} ${numberOf(profile)} ${profile.group}`.toLowerCase().includes(query.trim().toLowerCase())) : [];
+  const cooledCount = displayed.filter((profile) => !profile.running && profile.cooled).length;
   const running = displayed.filter((profile) => profile.running).length, issues = displayed.filter((profile) => profile.proxyError || health[profile.id] === "disconnected").length;
   const scriptProgress = scriptRun ? Math.round(scriptRun.profiles.filter((profile) => ["succeeded", "failed", "cancelled"].includes(profile.status)).length / Math.max(1, scriptRun.profiles.length) * 100) : 0;
   const previewProfile = displayed.find((profile) => profile.id === preview), previewFrame = preview ? records.current.get(preview)?.state.current.frame : undefined;
@@ -565,7 +574,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
           onKeyDown={(event) => { if (event.key === "Enter" && matches[0]) { locate(matches[0].id); setSelected(new Set([matches[0].id])); setQuery(""); scroller.current?.focus(); } if (event.key === "Escape") setQuery(""); }} />
         {query.trim() && <div className="workbench-search-results">{matches.length ? matches.map((profile) => <button type="button" key={profile.id} onClick={() => { locate(profile.id); setSelected(new Set([profile.id])); setQuery(""); }}>{profile.name}<span>#{numberOf(profile)}</span></button>) : <p>{t("No matching environments")}</p>}</div>}
       </div>
-      <span className="workbench-count" role="status">{t("{running} running · {issues} issues", { running, issues })}</span><span className="spacer" />
+      <span className="workbench-count" role="status">{t("{running} running · {issues} issues", { running, issues })}{cooledCount ? ` · ${t("{count} cooled", { count: cooledCount })}` : ""}</span><span className="spacer" />
       <button type="button" className={`iconbtn${showStopped ? " on" : ""}`} aria-pressed={showStopped} aria-label={t("Show stopped environments")} title={t("Show stopped environments")} onClick={() => setShowStopped(!showStopped)}><Glyph name="eye" /></button>
       <button type="button" className={`iconbtn${overview ? " on" : ""}`} aria-pressed={overview} aria-label={t(overview ? "Return to ring" : "Overview grid")} title={t(overview ? "Return to ring" : "Overview grid")} onClick={() => { if (focused) collapse(); setOverview(!overview); }}><Glyph name={overview ? "lanes" : "grid"} /></button>
       <span className="workbench-toolbar-divider" />
@@ -621,7 +630,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
         onLostPointerCapture={(event) => finishDrag(event.currentTarget, event.pointerId, true)}
         onClickCapture={(event) => { if (ignoreClick.current) { event.preventDefault(); event.stopPropagation(); } }}>
         {displayed.map((profile, index) => <button type="button" key={profile.id} data-env={profile.id} ref={(node) => { if (node) dots.current.set(profile.id, node); else dots.current.delete(profile.id); }}
-          className={`workbench-ring-dot${index && displayed[index - 1]!.group !== profile.group ? " group-start" : ""}`} data-status={health[profile.id] ?? viewStatus(profile)} aria-label={t("Locate {name}", { name: profile.name })}
+          className={`workbench-ring-dot${index && displayed[index - 1]!.group !== profile.group ? " group-start" : ""}`} data-status={!profile.running && profile.cooled ? "cooled" : health[profile.id] ?? viewStatus(profile)} aria-label={t("Locate {name}", { name: profile.name })}
           aria-pressed={selected.has(profile.id)} title={profile.name} disabled={!!focused}
           onPointerEnter={() => setPreview(profile.id)} onPointerLeave={() => setPreview(null)} onFocus={() => setPreview(profile.id)} onBlur={() => setPreview(null)}
           onClick={() => { locate(profile.id); setSelected(new Set([profile.id])); }}><span /></button>)}

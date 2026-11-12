@@ -8,6 +8,7 @@
 
 import { join } from "node:path";
 import { TaskbarMode, taskbarModeSupported } from "./taskbar.ts";
+import { ActivityLog, COOLING_DEFAULTS, CoolingMonitor } from "./cooling.ts";
 import index from "../web/index.html";
 import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
@@ -223,8 +224,9 @@ export function serveDashboard(opts: DashboardServerOptions) {
     log,
   }) : undefined;
   taskbarMode?.start();
+  const activity = new ActivityLog();
   const workbenchHub = agentNonce ? new WorkbenchHub({
-    launcher, store,
+    launcher, store, activity,
     canControl: async (id) => {
 
       if (opts.remote) {
@@ -240,7 +242,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
         store,
         admission,
         remote: opts.remote,
-
+        activity,
 
         log,
       })
@@ -257,6 +259,25 @@ export function serveDashboard(opts: DashboardServerOptions) {
       remote: opts.remote,   log,
     }),
   } : undefined;
+  // Desktop only: idle browsers cool down when memory runs short and come back signed in.
+  const finished = new Set(["succeeded", "failed", "cancelled", "skipped"]);
+  const cooling = agentNonce && opts.appConfig && !opts.remote ? new CoolingMonitor({
+    settings: () => { try { return opts.appConfig!.read().cooling ?? COOLING_DEFAULTS; } catch { return COOLING_DEFAULTS; } },
+    running: () => store.listLaunches().map((launch) => ({ profileId: launch.profileId, startedAt: launch.startedAt ?? 0 })),
+    busy: (id) => activity.held(id) || !!agentHub?.holds(id)
+      || !!scripts?.runner.status()?.profiles.some((profile) => profile.id === id && !finished.has(profile.status)),
+    lastActive: (id) => activity.lastActive(id),
+    cool: async (id) => {
+      const launch = store.getLaunch(id);
+      if (!launch) return false;
+      await launcher.captureLocalSession(id);
+      return await launcher.stop(id, launch);
+    },
+    exists: (id) => !!store.getProfile(id),
+    file: opts.paths ? join(opts.paths.root, "cooled-browsers.json") : undefined,
+    log,
+  }) : undefined;
+  cooling?.start();
   if (library && python) {
     python.prune();
     // A user who already has a Python script gets the runtime before the first run.
@@ -352,6 +373,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
         const ui = await handleUiRequest(req, launcher, store, opts.remote, {
           appConfig: opts.appConfig,
           taskbarMode,
+          cooling,
+          activity,
           paths: opts.paths,
 
 

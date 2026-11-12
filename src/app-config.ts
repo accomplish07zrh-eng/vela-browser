@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
+import { normalizeCoolingSettings, type CoolingSettings } from "./cooling.ts";
 
 export type AppMode = "unconfigured" | "local" | "cloud";
 
@@ -13,6 +14,8 @@ export interface AppConfig {
   servicesHidden?: boolean;
   /** Windows: environment windows have no taskbar button. Nothing else about them changes. */
   hideFromTaskbar?: boolean;
+  /** Cooling of idle browsers when memory runs short. Absent means the defaults. */
+  cooling?: CoolingSettings;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -43,6 +46,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     localAnalytics: raw.localAnalytics === true,
     ...(raw.servicesHidden === true ? { servicesHidden: true } : {}),
     ...(raw.hideFromTaskbar === true ? { hideFromTaskbar: true } : {}),
+    ...(raw.cooling !== undefined ? { cooling: normalizeCoolingSettings(raw.cooling) } : {}),
   };
 }
 
