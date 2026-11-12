@@ -5,6 +5,7 @@ import type { Launcher } from "../src/launcher.ts";
 import { ProfileStore } from "../src/store.ts";
 import { handleRequest } from "../src/server.ts";
 import { handleUserApi } from "../src/adspower-users.ts";
+import { DEVTOOLS_TOOLS } from "../agent/devtools.mjs";
 import {
   CURRENT_CATALOG_PATH,
   MANIFEST_PATH,
@@ -162,7 +163,8 @@ test("MCP catalogs list the expected tools", () => {
   expect(released.aliasModeTools.map((tool: any) => tool.name)).toEqual(BETA42_ALIASMODE_TOOLS);
   expect(current.status).toBe("source");
   expect(current.playwrightToolAvailability).toBe("listed-before-selection");
-  expect(current.aliasModeTools.length).toBe(9);
+  expect(current.aliasModeTools.length).toBe(9 + DEVTOOLS_TOOLS.length);
+  for (const tool of DEVTOOLS_TOOLS) expect(current.aliasModeTools.some((item: any) => item.name === tool.name)).toBe(true);
   expect(current.aliasModeTools.map((tool: any) => tool.name)).not.toContain("aliasmode_profiles_replace_proxies");
   expect(current.aliasModeTools.map((tool: any) => tool.name)).not.toContain("aliasmode_profile_update");
   for (const catalog of [current, released]) {

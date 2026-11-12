@@ -235,8 +235,13 @@ async function connectSocksTunnel(
   }
 }
 
-/** Plain HTTP: inject auth into the request head and force the connection closed after one response,
- *  so the browser opens a fresh (re-injected) connection for any follow-up request. */
+function isUpgrade(lines: string[]): boolean {
+  return lines.some(line => /^upgrade\s*:\s*\S/i.test(line))
+    && lines.some(line => /^connection\s*:/i.test(line) && line.slice(line.indexOf(":") + 1).split(",").some(token => token.trim().toLowerCase() === "upgrade"));
+}
+
+/** Plain HTTP reinjects auth per request. An HTTP upgrade keeps its duplex tunnel,
+ *  so proxied WebSocket traffic uses the same upstream instead of losing its handshake. */
 function plainHttp(
   client: net.Socket,
   up: UpstreamProxy,
@@ -251,6 +256,7 @@ function plainHttp(
     return;
   }
   const lines = head.split("\r\n");
+  const upgrading = isUpgrade(lines);
   const reqLine = lines[0] ?? "";
   const headers = lines
     .slice(1)
@@ -259,8 +265,8 @@ function plainHttp(
     reqLine,
     ...headers,
     ...(auth ? [`Proxy-Authorization: ${auth}`] : []),
-    "Connection: close",
-    "Proxy-Connection: close",
+    upgrading ? "Connection: Upgrade" : "Connection: close",
+    ...(upgrading ? [] : ["Proxy-Connection: close"]),
     "",
     "",
   ].join("\r\n");
@@ -291,13 +297,14 @@ async function plainHttpViaSocks(
   let upSock: net.Socket | undefined;
   try {
     const lines = head.split("\r\n");
+    const upgrading = isUpgrade(lines);
     const match = (lines[0] ?? "").match(/^(\S+)\s+(\S+)\s+(HTTP\/\d(?:\.\d)?)$/i);
     if (!match) throw new Error("invalid HTTP proxy request line");
     const [, method, requestTarget, version] = match;
     const hostHeader = lines.slice(1).find((line) => /^host\s*:/i.test(line))?.replace(/^host\s*:\s*/i, "") ?? "";
     let destination: { host: string; port: number };
     let originTarget = requestTarget!;
-    if (/^http:\/\//i.test(requestTarget!)) {
+    if (/^(?:http|ws):\/\//i.test(requestTarget!)) {
       const url = new URL(requestTarget!);
       destination = { host: url.hostname.replace(/^\[|\]$/g, ""), port: Number(url.port || 80) };
       originTarget = `${url.pathname || "/"}${url.search}`;
@@ -310,7 +317,7 @@ async function plainHttpViaSocks(
     const rebuilt = [
       `${method} ${originTarget} ${version}`,
       ...headers,
-      "Connection: close",
+      upgrading ? "Connection: Upgrade" : "Connection: close",
       "",
       "",
     ].join("\r\n");

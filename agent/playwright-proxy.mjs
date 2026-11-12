@@ -5,12 +5,13 @@ import { chromium } from "playwright-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { BrowserDevtools, DEVTOOLS_TOOLS, DEVTOOLS_TOOL_NAMES } from "./devtools.mjs";
 
 const CAPABILITIES = ["core", "core-tabs", "vision", "pdf", "testing", "tracing"];
 const FILTERED_TOOLS = new Set(["browser_close", "browser_install"]);
 
-export async function connectOfficial(version, contextGetter) {
-  const server = await createConnection({ capabilities: CAPABILITIES }, contextGetter);
+export async function connectOfficial(version, contextGetter, connectionFactory = createConnection) {
+  const server = await connectionFactory({ capabilities: CAPABILITIES }, contextGetter);
   const client = new Client(
     { name: "aliasmode-playwright-proxy", version },
     { capabilities: { roots: { listChanged: false } } },
@@ -59,7 +60,7 @@ export class PlaywrightToolProxy {
     const official = await connectOfficial(this.version, async () => {
       throw new Error("select an open Vela Browser browser first");
     });
-    this.tools = official.tools;
+    this.tools = [...official.tools, ...DEVTOOLS_TOOLS];
     await official.client.close().catch(() => {});
     await official.server.close().catch(() => {});
   }
@@ -74,6 +75,7 @@ export class PlaywrightToolProxy {
     }
 
     try {
+      this.devtools = new BrowserDevtools(context);
       const official = await connectOfficial(
         this.version,
         async () => nonClosingContext(context),
@@ -82,8 +84,9 @@ export class PlaywrightToolProxy {
       this.context = context;
       this.officialServer = official.server;
       this.officialClient = official.client;
-      this.tools = official.tools;
+      this.tools = [...official.tools, ...DEVTOOLS_TOOLS];
     } catch (error) {
+      this.devtools?.dispose(); this.devtools = undefined;
       await browser.close().catch(() => {});
       throw error;
     }
@@ -95,6 +98,7 @@ export class PlaywrightToolProxy {
 
   async callTool(name, args) {
     if (!this.officialClient) throw new Error("select an open Vela Browser browser first");
+    if (DEVTOOLS_TOOL_NAMES.has(name)) return await this.devtools.call(name, args ?? {});
     if (FILTERED_TOOLS.has(name)) throw new Error("Vela Browser owns browser lifecycle operations");
     return await this.officialClient.callTool({ name, arguments: args ?? {} });
   }
@@ -107,6 +111,7 @@ export class PlaywrightToolProxy {
     this.officialServer = undefined;
     this.browser = undefined;
     this.context = undefined;
+    this.devtools?.dispose(); this.devtools = undefined;
     await client?.close().catch(() => {});
     await server?.close().catch(() => {});
     // A CDP-connected Browser closes only its Playwright transport. The guarded

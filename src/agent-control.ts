@@ -2,6 +2,7 @@ import { webkitPublicFields } from "./browser-capabilities.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
+import { callWebKitOwner, type WebKitOwner } from "./webkit-runtime.ts";
 import { attachTimezones } from "./geoip.ts";
 import {
   BrowserLaunchError,
@@ -43,6 +44,7 @@ export interface AgentControlDeps {
   store: ProfileStore;
   admission: LifecycleAdmissionController;
   firefoxCall?: (owner: FirefoxOwner, operation: string, payload: Record<string, unknown>) => Promise<unknown>;
+  webkitCall?: (owner: WebKitOwner, operation: string, payload: Record<string, unknown>) => Promise<unknown>;
   remote?: RemoteCoordinator | null;
   /** AI actions count as work in that browser, so cooling leaves it alone. */
   activity?: import("./cooling.ts").ActivityLog;
@@ -212,7 +214,7 @@ export class AgentControlSession {
     // Page actions of different browsers run side by side, so an AI can drive many windows at
     // once, each with its own pointer and keyboard. One browser still takes one action at a time,
     // and lifecycle requests wait for every action in flight.
-    const lane = request.method === "firefox.tools.call" && typeof request.params?.profileId === "string"
+    const lane = ["firefox.tools.call", "webkit.tools.call"].includes(request.method) && typeof request.params?.profileId === "string"
       ? request.params.profileId : undefined;
     if (lane) {
       const run = Promise.all([this.queue, this.lanes.get(lane)]).then(execute);
@@ -271,6 +273,14 @@ export class AgentControlSession {
           ...(params.arguments === undefined ? {} : { arguments: object(params.arguments) }),
           ...(params.humanize === undefined ? {} : { humanize: humanizeParam(params.humanize) }),
         });
+      case "webkit.tools.list":
+        return { tools: await this.webkitCall(stringParam(params, "profileId"), "mcp-list", {}) };
+      case "webkit.tools.call":
+        return await this.webkitCall(stringParam(params, "profileId"), "mcp-call", {
+          name: stringParam(params, "name"),
+          ...(params.arguments === undefined ? {} : { arguments: object(params.arguments) }),
+          ...(params.humanize === undefined ? {} : { humanize: humanizeParam(params.humanize) }),
+        });
       case "browser.detach":
         return this.detachProfile(stringParam(params, "profileId"));
       case "browser.close":
@@ -292,6 +302,15 @@ export class AgentControlSession {
       throw agentError("browser_not_running", "This Firefox profile is not safely running");
     }
     return await (this.deps.firefoxCall ?? callFirefoxOwner)(launch.firefoxOwner, operation, payload);
+  }
+
+  private async webkitCall(profileId: string, operation: string, payload: Record<string, unknown>): Promise<unknown> {
+    const launch = this.deps.store.getLaunch(profileId);
+    if (launch?.engine !== "webkit" || !launch.webkitOwner) throw agentError("browser_not_webkit", "This profile is not running in WebKit");
+    if (!(await this.deps.launcher.certifiedActive(profileId).catch(() => false))) {
+      throw agentError("browser_not_running", "This WebKit profile is not running");
+    }
+    return await (this.deps.webkitCall ?? callWebKitOwner)(launch.webkitOwner, operation, payload);
   }
 
   private async listProfiles(): Promise<SafeProfile[]> {

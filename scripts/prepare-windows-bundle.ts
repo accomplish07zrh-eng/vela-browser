@@ -228,6 +228,7 @@ export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
     "mcp-host.mjs",
     "playwright-proxy.mjs",
     "humanize.mjs",
+    "devtools.mjs",
     "playwright-runner.mjs",
     "script-runner.mjs",
     "script-runner.py",

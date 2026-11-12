@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MAX_BYTES, VERSION, operatePersistentContext } from "./playwright-worker.mjs";
 import { FirefoxWorkbench as ContextWorkbench } from "./workbench-firefox.mjs";
+import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs";
+import { createHumanizer } from "./agent/humanize.mjs";
+import { BrowserDevtools, DEVTOOLS_TOOLS, DEVTOOLS_TOOL_NAMES } from "./agent/devtools.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const error = (code) => Object.assign(new Error(`WebKit owner ${code.replaceAll("_", " ")}`), { code });
@@ -50,6 +53,21 @@ async function run() {
   const browserPid = context?._connection?.toImpl?.(context)?._browser?.options?.browserProcess?.process?.pid;
   if (!Number.isSafeInteger(browserPid) || browserPid <= 0) { await context.close(); throw error("runtime_unavailable"); }
   const workbench = new ContextWorkbench(context);
+  const devtools = new BrowserDevtools(context);
+  let official, humanizer;
+  const closeOfficial = async () => {
+    const current = official; official = undefined;
+    await current?.client.close().catch(() => {});
+    await current?.server.close().catch(() => {});
+  };
+  const initializeOfficial = async () => {
+    if (official) return official;
+    // This pinned WebKit uses Playwright 1.65. Its own bundled MCP implementation
+    // understands that context's snapshot and input APIs; no replacement context is created.
+    const { default: core } = await import(pathToFileURL(join(ROOT, "node_modules", "playwright-webkit-core", "lib", "coreBundle.js")).href);
+    return official = await connectOfficial("vela-webkit-owner", async () => nonClosingContext(context),
+      (config, getter) => core.tools.createConnection({ ...config, outputDir: join(input.userDataDir, "mcp-output") }, getter));
+  };
   const ids = new WeakMap(); let nextId = 0, closing = false, crashed = false;
   const origins = new Set(); const storageCache = new Map();
   const tabs = () => context.pages().map((page) => {
@@ -109,7 +127,19 @@ async function run() {
       ...payload.captureSeed, origins: [...new Set([...(payload.captureSeed?.origins ?? []), ...(payload.captureSeed?.openTabsOnly ? [] : origins)])],
     } };
     if (name === "session-restore") storageCache.clear();
-    if (["mcp-list", "mcp-call", "playwright-endpoint"].includes(name)) throw error("invalid_request");
+    if (name === "mcp-list") return [...(await initializeOfficial()).tools.filter(tool => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS];
+    if (name === "mcp-call") {
+      if (typeof payload.name !== "string") throw error("invalid_request");
+      if (DEVTOOLS_TOOL_NAMES.has(payload.name)) return devtools.call(payload.name, payload.arguments ?? {}).catch(caught => ({ isError: true, content: [{ type: "text", text: caught.message }] }));
+      const bridge = await initializeOfficial();
+      if (!bridge.tools.some(tool => tool.name === payload.name && !/pdf/i.test(tool.name))) throw error("invalid_request");
+      humanizer ??= createHumanizer({ context, profileId: input.profileId,
+        callOfficial: (tool, args) => official.client.callTool({ name: tool, arguments: args ?? {} }) });
+      humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });
+      return humanizer.call(payload.name, payload.arguments ?? {});
+    }
+    if (name === "detach") { await closeOfficial(); return null; }
+    if (name === "playwright-endpoint") throw error("invalid_request");
     return operatePersistentContext(browser, context, name, payload, { nativeStorage: true, storageCache });
   };
   let queue = Promise.resolve();
@@ -128,14 +158,14 @@ async function run() {
       const pending = value.operation === "status" ? operate(value.operation, value.payload) : queue.then(() => operate(value.operation, value.payload));
       if (value.operation !== "status") queue = pending.catch(() => {});
       const result = await pending;
-      if (value.operation === "close") { closing = true; await context.close(); }
+      if (value.operation === "close") { closing = true; await closeOfficial(); devtools.dispose(); await context.close(); }
       send(response, 200, { ok: true, result });
       if (closing) { server.close(); server.closeIdleConnections(); }
     } catch (caught) {
       send(response, 400, { ok: false, error: { code: caught?.code || "operation_failed", message: "WebKit owner operation failed", ...(caught?.details ? { details: caught.details } : {}) } });
     }
   })(); });
-  const shutdown = () => { closing = true; server.close(); server.closeIdleConnections(); void context.close().catch(() => {}); };
+  const shutdown = () => { closing = true; devtools.dispose(); server.close(); server.closeIdleConnections(); void closeOfficial().finally(() => context.close()).catch(() => {}); };
   context.once("close", shutdown);
   try { await new Promise((resolve, reject) => { server.once("error", reject); server.listen(Number(address.port), address.hostname, resolve); }); }
   catch (caught) { await context.close().catch(() => {}); throw caught; }

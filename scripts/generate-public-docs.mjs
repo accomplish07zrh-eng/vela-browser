@@ -28,7 +28,7 @@ export const CATALOG_DIR = "mcp-tools";
 export const CURRENT_CATALOG_PATH = `${CATALOG_DIR}/current-source.json`;
 const CATALOG_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
-const TAG_AGENT_FILES = ["mcp-host.mjs", "playwright-proxy.mjs", "runtime-client.mjs"];
+const TAG_AGENT_FILES = ["mcp-host.mjs", "playwright-proxy.mjs", "runtime-client.mjs", "humanize.mjs", "devtools.mjs"];
 
 export function serialize(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -70,7 +70,7 @@ function publicTool(tool) {
 }
 
 function isVelaBrowserTool(tool) {
-  return tool.name.startsWith("aliasmode_") || tool.name === "browser_close";
+  return tool.name.startsWith("aliasmode_") || tool.name.startsWith("browser_devtools_") || tool.name === "browser_close";
 }
 
 async function listPlaywrightTools(version) {
@@ -147,7 +147,8 @@ export async function generateReleasedCatalog(tag) {
   const show = (path) => execFileSync("git", ["-C", ROOT, "show", `${tag}:${path}`], { encoding: "utf8" });
   const pkg = JSON.parse(show("package.json"));
   const currentPkg = readJson(join(ROOT, "package.json"));
-  const meta = playwrightMetaFromSource(show("agent/playwright-proxy.mjs"));
+  const taggedProxy = show("agent/playwright-proxy.mjs");
+  const meta = playwrightMetaFromSource(taggedProxy);
   const currentMeta = playwrightMetaFromSource(readFileSync(join(ROOT, "agent", "playwright-proxy.mjs"), "utf8"));
   const playwrightMcpVersion = pkg.dependencies["@playwright/mcp"];
   if (
@@ -157,12 +158,14 @@ export async function generateReleasedCatalog(tag) {
   ) {
     throw new Error(`${tag} pins a different @playwright/mcp version, capabilities, or filtered tools; its Playwright tool list cannot be reproduced from the installed package`);
   }
-  const playwrightTools = await listPlaywrightTools(pkg.version);
+  const playwrightTools = (await listPlaywrightTools(pkg.version)).filter(tool =>
+    !tool.name.startsWith("browser_devtools_") || taggedProxy.includes("DEVTOOLS_TOOLS"));
+  const tagFiles = new Set(execFileSync("git", ["-C", ROOT, "ls-tree", "--name-only", tag, "agent/"], { encoding: "utf8" }).trim().split(/\r?\n/));
   const tmp = join(ROOT, `.tmp-${tag}`);
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(join(tmp, "agent"), { recursive: true });
   try {
-    for (const file of TAG_AGENT_FILES) writeFileSync(join(tmp, "agent", file), show(`agent/${file}`));
+    for (const file of TAG_AGENT_FILES) if (tagFiles.has(`agent/${file}`)) writeFileSync(join(tmp, "agent", file), show(`agent/${file}`));
     const tools = await listHostTools(join(tmp, "agent", "mcp-host.mjs"), playwrightTools);
     return catalog({
       aliasModeVersion: pkg.version,

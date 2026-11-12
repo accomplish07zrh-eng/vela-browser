@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.2",
+  "aliasModeVersion": "0.1.3",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -58,7 +58,8 @@
             "type": "string",
             "enum": [
               "chromium",
-              "firefox"
+              "firefox",
+              "webkit"
             ]
           },
           "chromiumRuntime": {
@@ -282,6 +283,526 @@
             "description": "Text longer than this many characters goes in at once, like a paste, instead of key by key. 0 always types; null restores each profile's own threshold (28 to 51 characters). The system clipboard is never used."
           }
         },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_summary",
+      "description": "Inspect this profile's automatically recorded developer diagnostics: pages, console errors, failed requests, downloads and workers. Includes capture time and buffer eviction counts; no enable step is needed.",
+      "annotations": {
+        "title": "Browser summary",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_pages",
+      "description": "List this profile's pages, frames, dedicated workers and service workers with stable ids. Ids belong only to this browser session; use them to target developer tools.",
+      "annotations": {
+        "title": "Browser pages",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_console",
+      "description": "Read console output and uncaught exceptions across this profile's tabs, including severity, source location and exception stacks. Includes log/debug, groups, traces, assertions and errors. Captured automatically, preserved across navigation; cursor pagination never consumes messages.",
+      "annotations": {
+        "title": "Browser console",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Return records updated after this cursor. Reading does not consume records."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100
+          },
+          "text": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "all",
+              "debug",
+              "info",
+              "warning",
+              "error"
+            ],
+            "default": "all"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_network",
+      "description": "List HTTP requests in this profile: method, URL, resource type, status, failure, timing and redirect ids. Includes static assets by default. Use requestId with browser_devtools_request for headers and bodies; cursor pagination includes later status updates.",
+      "annotations": {
+        "title": "Browser network",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Return records updated after this cursor. Reading does not consume records."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100
+          },
+          "text": {
+            "type": "string"
+          },
+          "failedOnly": {
+            "type": "boolean"
+          },
+          "resourceType": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 599
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_request",
+      "description": "Inspect a recorded request's complete request/response headers, POST data, response body, timing and transfer sizes without resending it or changing browser caching. Bodies are read on demand in byte chunks; nextOffset retrieves the rest. Binary chunks use base64.",
+      "annotations": {
+        "title": "Browser request",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "requestBody": {
+            "type": "boolean",
+            "default": true
+          },
+          "responseBody": {
+            "type": "boolean",
+            "default": false
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576,
+            "default": 65536
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "requestId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_events",
+      "description": "Read developer events from this profile: WebSocket sent/received frames, socket errors, page lifecycle, downloads and workers. Console output and page exceptions are also available. Frame payloads include encoding, byte counts and explicit truncation metadata.",
+      "annotations": {
+        "title": "Browser events",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Return records updated after this cursor. Reading does not consume records."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100
+          },
+          "text": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_evaluate",
+      "description": "Execute JavaScript in a specific page, iframe, dedicated worker or service worker of this profile, like the DevTools Console execution-context selector. expression may be a JavaScript expression or a function; argument is passed to a function. Returns the value and context ids. Existing browser identity and context are used.",
+      "annotations": {
+        "title": "Browser evaluate",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "workerId": {
+            "type": "string"
+          },
+          "expression": {
+            "type": "string"
+          },
+          "argument": {},
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "expression"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_element",
+      "description": "Inspect a DOM element in a page or iframe: markup, text, attributes, bounding rectangle and requested computed CSS properties, without changing the DOM.",
+      "annotations": {
+        "title": "Browser element",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "styles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "characters": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576,
+            "default": 65536
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_storage",
+      "description": "Read this profile's cookies and the selected page/frame's localStorage, sessionStorage, IndexedDB database names and Cache Storage keys. Opens no helper pages and changes no storage, permissions or browser identity.",
+      "annotations": {
+        "title": "Browser storage",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_storage_edit",
+      "description": "Write, remove or clear cookies, localStorage or sessionStorage in the selected existing profile. Cookie writes accept Playwright cookie objects (url or domain/path, httpOnly, secure, sameSite, expires); name/domain/path filter cookie removal. Page storage writes take string-valued entries, removals take keys. JavaScript evaluation can edit IndexedDB and Cache Storage.",
+      "annotations": {
+        "title": "Browser storage edit",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "cookies",
+              "localStorage",
+              "sessionStorage"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "set",
+              "remove",
+              "clear"
+            ]
+          },
+          "entries": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cookies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "storage",
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_fetch",
+      "description": "Send or replay an HTTP request through the selected page/frame's real browser network stack, profile cookies and proxy. Supports method, headers and text/base64 POST body. Returns response headers and a byte-exact body chunk; captured network requests let you read the remainder without replaying. The browser's normal Fetch/CORS rules apply; no Node HTTP client is used.",
+      "annotations": {
+        "title": "Browser fetch",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "body": {
+            "type": "string"
+          },
+          "bodyBase64": {
+            "type": "string"
+          },
+          "credentials": {
+            "type": "string",
+            "enum": [
+              "omit",
+              "same-origin",
+              "include"
+            ],
+            "default": "include"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576,
+            "default": 65536
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_protocol",
+      "description": "Send a native Chrome DevTools Protocol command to a page in this existing Chromium profile and return its result. All commands supported by the engine are available, including developer changes. Firefox/WebKit use the cross-engine developer tools and JavaScript evaluation instead of CDP.",
+      "annotations": {
+        "title": "Browser protocol",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "method": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "method"
+        ],
         "additionalProperties": false
       }
     }

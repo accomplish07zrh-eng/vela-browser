@@ -31,7 +31,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   const releasesSource = readFileSync(join(root, "src-tauri", "src", "releases.rs"), "utf8");
   const releaseWorkflow = readFileSync(join(root, ".github", "workflows", "release-candidate.yml"), "utf8")
     .replaceAll("\r\n", "\n");
-  const ciWorkflow = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const ciWorkflow = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8").replaceAll("\r\n", "\n");
   const compatibilityWorkflow = readFileSync(
     join(root, ".github", "workflows", "client-compatibility.yml"),
     "utf8",
@@ -124,7 +124,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
     job.indexOf(nextStep),
   );
 
-  expect(ALIASMODE_VERSION).toBe("0.1.2");
+  expect(ALIASMODE_VERSION).toBe("0.1.3");
   expect(packageJson.version).toBe(ALIASMODE_VERSION);
   expect(packageJson.scripts["desktop:build:nsis"]).toBe("bun run desktop:prepare && tauri build --bundles nsis --no-sign");
   expect(tauriConfig.version).toBe(ALIASMODE_VERSION);

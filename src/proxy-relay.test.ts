@@ -6,8 +6,9 @@ const EXPECTED_AUTH = "Basic " + Buffer.from("puser:ppass").toString("base64");
 
 /** A fake upstream proxy that requires Proxy-Authorization. Records the auth it saw. CONNECT with the
  *  right auth → 200 then echo; plain HTTP with the right auth → a fixed 200 body; wrong/no auth → 407. */
-function fakeUpstream(requireAuth = true): Promise<{ port: number; close(): void; lastAuth(): string | null; connectCount(): number }> {
+function fakeUpstream(requireAuth = true): Promise<{ port: number; close(): void; lastAuth(): string | null; lastHead(): string; connectCount(): number }> {
   let lastAuth: string | null = null;
+  let lastHead = "";
   let connects = 0;
   const server = net.createServer((sock) => {
     let buf = Buffer.alloc(0);
@@ -17,12 +18,16 @@ function fakeUpstream(requireAuth = true): Promise<{ port: number; close(): void
       if (end === -1) return;
       sock.removeListener("data", onData);
       const head = buf.subarray(0, end).toString("latin1");
+      lastHead = head;
       const firstLine = head.split("\r\n")[0] ?? "";
       const authLine = head.split("\r\n").find((l) => /^proxy-authorization:/i.test(l));
       lastAuth = authLine ? authLine.split(/:\s*/).slice(1).join(": ") : null;
       const ok = !requireAuth || lastAuth === EXPECTED_AUTH;
       if (!ok) { sock.end("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"); return; }
-      if (/^CONNECT\s/i.test(firstLine)) {
+      if (/^upgrade:\s*websocket/im.test(head) && /^connection:\s*upgrade/im.test(head)) {
+        sock.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+        sock.on("data", data => sock.write(data));
+      } else if (/^CONNECT\s/i.test(firstLine)) {
         connects++;
         sock.write("HTTP/1.1 200 Connection established\r\n\r\n");
         sock.on("data", (d) => sock.write(d)); // echo tunnel bytes
@@ -36,7 +41,7 @@ function fakeUpstream(requireAuth = true): Promise<{ port: number; close(): void
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const port = (server.address() as net.AddressInfo).port;
-      resolve({ port, close: () => server.close(), lastAuth: () => lastAuth, connectCount: () => connects });
+      resolve({ port, close: () => server.close(), lastAuth: () => lastAuth, lastHead: () => lastHead, connectCount: () => connects });
     });
   });
 }
@@ -104,8 +109,11 @@ function fakeSocksUpstream(requireAuth = true): Promise<{
         if (/^(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|PATCH)\s/i.test(buf.toString("latin1"))) {
           const end = buf.indexOf("\r\n\r\n");
           if (end < 0) return;
-          httpHeads.push(consume(end + 4).toString("latin1"));
-          sock.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi");
+          const head = consume(end + 4).toString("latin1");
+          httpHeads.push(head);
+          if (/^upgrade:\s*websocket/im.test(head) && /^connection:\s*upgrade/im.test(head)) {
+            sock.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+          } else sock.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi");
           return;
         }
         sock.write(consume(buf.length));
@@ -182,6 +190,37 @@ test("relay binds loopback only", async () => {
   expect(relay.port).toBeGreaterThan(0);
   relay.close();
   up.close();
+});
+
+test.each(["http", "socks5"] as const)("%s relay preserves authenticated WebSocket upgrades and duplex traffic", async (type) => {
+  const upstream = type === "http" ? await fakeUpstream() : await fakeSocksUpstream();
+  const relay = await startProxyRelay({ type, host: "127.0.0.1", port: upstream.port, user: "puser", pass: "ppass" });
+  const client = net.connect(relay.port, "127.0.0.1");
+  try {
+    const result = await new Promise<string>((resolve, reject) => {
+      let text = "", upgraded = false;
+      client.setTimeout(3000, () => reject(new Error("upgrade tunnel timed out")));
+      client.on("error", reject);
+      client.on("connect", () => client.write("GET http://socket.test:8080/feed HTTP/1.1\r\nHost: socket.test:8080\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\nProxy-Authorization: must-be-replaced\r\n\r\n"));
+      client.on("data", chunk => {
+        text += chunk.toString();
+        if (!upgraded && text.includes("\r\n\r\n")) { upgraded = true; client.write("after-upgrade"); }
+        if (text.endsWith("after-upgrade")) resolve(text);
+      });
+    });
+    expect(result).toContain("101 Switching Protocols");
+    expect(result).toContain("after-upgrade");
+    if ("lastHead" in upstream) {
+      expect(upstream.lastAuth()).toBe(EXPECTED_AUTH);
+      expect(upstream.lastHead()).toContain("Connection: Upgrade");
+      expect(upstream.lastHead()).not.toContain("must-be-replaced");
+    } else {
+      expect(upstream.targets()).toEqual(["socket.test:8080"]);
+      expect(upstream.httpHeads()[0]).toContain("GET /feed HTTP/1.1");
+      expect(upstream.httpHeads()[0]).toContain("Connection: Upgrade");
+      expect(upstream.httpHeads()[0]).not.toContain("Proxy-Authorization");
+    }
+  } finally { client.destroy(); relay.close(); upstream.close(); }
 });
 
 test("CONNECT: relay authenticates the tunnel and pipes bytes", async () => {
