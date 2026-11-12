@@ -48,7 +48,8 @@ export interface WorkbenchAdapter {
    * Pushes frames of the selected tab as it paints, until the returned stop is called or another
    * stream starts. Adapters without live streaming leave this out and are polled with frame().
    */
-  stream?(options: WorkbenchStreamOptions, onFrame: (frame: WorkbenchFrame) => void): Promise<() => Promise<void>>;
+  stream?(options: WorkbenchStreamOptions, onFrame: (frame: WorkbenchFrame) => void,
+    onPointer?: (pointer: { x: number; y: number; phase: "move" | "down" | "up" }) => void): Promise<() => Promise<void>>;
   viewport?(): Promise<{ width: number; height: number }>;
   input(input: WorkbenchInput): Promise<void>;
   /** Detach control only; never close the managed browser or persistent context. */

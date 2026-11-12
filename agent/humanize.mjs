@@ -174,7 +174,11 @@ function withNote(result, note) {
  * @param {string} options.profileId
  * @param {(name: string, args: object) => Promise<any>} options.callOfficial
  */
-export function createHumanizer({ context, profileId, callOfficial, platform = process.platform }) {
+/**
+ * onPointer, when given, hears every step of the pointer this humanizer moves, in page CSS pixels,
+ * so Vela Browser can draw it over its own view of the page. Nothing is drawn in the page itself.
+ */
+export function createHumanizer({ context, profileId, callOfficial, platform = process.platform, onPointer = undefined }) {
   const persona = personaFor(profileId);
   const random = Math.random;
   const positions = new WeakMap();
@@ -182,6 +186,12 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
   const commandKey = platform === "darwin" ? "Meta" : "Control";
 
   const viewportOf = async (page) => page.viewportSize?.() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  const report = (page, point, phase) => {
+    if (!onPointer || !point) return;
+    try { onPointer({ page, x: point.x, y: point.y, phase }); } catch {}
+  };
+  const down = async (page, options) => { report(page, positions.get(page), "down"); await page.mouse.down(options); };
+  const up = async (page, options) => { await page.mouse.up(options); report(page, positions.get(page), "up"); };
 
   const positionOf = async (page) => {
     const known = positions.get(page);
@@ -200,6 +210,8 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
     for (const step of path) {
       await sleep(started + step.t - performance.now());
       await page.mouse.move(step.x, step.y);
+      positions.set(page, { x: step.x, y: step.y });
+      report(page, step, "move");
     }
     positions.set(page, point);
   };
@@ -209,9 +221,9 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
     for (const key of keys) await page.keyboard.down(key);
     await sleep(persona.dwell * (0.6 + random() * 0.8) / settings.speed);
     for (let click = 1; click <= clickCount; click++) {
-      await page.mouse.down({ button, clickCount: click });
+      await down(page, { button, clickCount: click });
       await sleep(persona.hold * (0.7 + random() * 0.6));
-      await page.mouse.up({ button, clickCount: click });
+      await up(page, { button, clickCount: click });
       if (click < clickCount) await sleep(70 + random() * 70);
     }
     for (const key of keys.reverse()) await page.keyboard.up(key);
@@ -414,11 +426,11 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
       const endBox = from && await end.locator.boundingBox();
       if (!from || !endBox) return callOfficial(name, args);
       await sleep(persona.dwell);
-      await start.page.mouse.down();
+      await down(start.page);
       await sleep(120 + random() * 160);
       await moveTo(start.page, targetPoint(endBox, random), Math.min(endBox.width, endBox.height), 0.6);
       await sleep(100 + random() * 150);
-      await start.page.mouse.up();
+      await up(start.page);
       return humanized(start.page, "Dragged with human-like pointer movement.");
     }
     if (name === "browser_mouse_move_xy" || name === "browser_mouse_click_xy" || name === "browser_mouse_drag_xy") {
@@ -428,10 +440,10 @@ export function createHumanizer({ context, profileId, callOfficial, platform = p
         const from = { x: args.startX, y: args.startY }, to = { x: args.endX, y: args.endY };
         await moveTo(page, from);
         await sleep(persona.dwell);
-        await page.mouse.down();
+        await down(page);
         await sleep(120 + random() * 160);
         await moveTo(page, to, 40, 0.6);
-        await page.mouse.up();
+        await up(page);
         return humanized(page, "Dragged with human-like pointer movement.");
       }
       const point = { x: args.x, y: args.y };

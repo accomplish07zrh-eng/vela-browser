@@ -66,7 +66,8 @@ export class LiveFrames {
     }
     clearTimeout(this.idle);
     this.idle = setTimeout(() => this.stop(), Math.max(4000, wait * 3));
-    if (this.latest && this.latest.seq > since) return this.latest;
+    if (this.latest && this.latest.seq > since) return this.withPointer(this.latest);
+    if (this.pointers?.length) return this.withPointer({ unchanged: true, seq: this.seq, ...this.viewport });
     return await new Promise((resolve) => {
       const waiter = { resolve };
       this.waiters.add(waiter);
@@ -79,8 +80,26 @@ export class LiveFrames {
   push(buffer) {
     this.seq++;
     this.latest = { data: buffer.toString("base64"), seq: this.seq, ...this.viewport };
-    for (const waiter of this.waiters) waiter.resolve(this.latest);
+    for (const waiter of this.waiters) waiter.resolve(this.withPointer(this.latest));
     this.waiters.clear();
+  }
+  /**
+   * The AI's human-like pointer, for Vela Browser to draw over its own view of this page. It rides
+   * along with the next answer, and wakes a waiting request so it arrives without waiting for paint.
+   */
+  pointer(event) {
+    if (!this.stopStream || (event.page && this.page && event.page !== this.page)) return;
+    (this.pointers ??= []).push({ x: Math.round(event.x * 10) / 10, y: Math.round(event.y * 10) / 10, phase: event.phase });
+    if (this.pointers.length > 64) this.pointers.splice(0, this.pointers.length - 64);
+    if (!this.waiters.size) return;
+    const answer = this.withPointer({ unchanged: true, seq: this.seq, ...this.viewport });
+    for (const waiter of this.waiters) waiter.resolve(answer);
+    this.waiters.clear();
+  }
+  withPointer(answer) {
+    if (!this.pointers?.length) return answer;
+    const pointer = this.pointers; this.pointers = [];
+    return { ...answer, pointer };
   }
   stop() {
     clearTimeout(this.idle); this.idle = null;

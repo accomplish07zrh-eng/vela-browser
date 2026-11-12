@@ -105,3 +105,27 @@
 @media (max-width: 960px) { .workbench-count { display: none; } .workbench-toolbar { padding-left: 4px; padding-right: 4px; } }
 @media (max-width: 760px) { .workbench { margin: 0 4px 8px; } .workbench-toolbar { flex-wrap: wrap; } .workbench-toolbar .select { min-width: 120px; max-width: 160px; } .workbench-search { flex: 1; } .workbench-batch { flex-wrap: wrap; justify-content: center; width: max-content; } .workbench-ring { max-width: 100%; } }
 @media (prefers-reduced-motion: reduce) { .browser-viewport, .workbench.morphing .browser-viewport, .viewport-tabs, .viewport-controls, .workbench-ring-dot span { transition-duration: .01ms; } .viewport-dot.loading, .workbench-ring-dot[data-status="loading"] span { animation: none; } }
+
+/* The AI's human-like pointer, drawn over the card (virtual-cursor.tsx), never in the page. */
+.ai-cursor-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; opacity: 0; transition: opacity 420ms ease; }
+.ai-cursor-layer.on { opacity: 1; transition-duration: 160ms; }
+.ai-cursor { position: absolute; left: 0; top: 0; width: 22px; height: 26px; margin: -2px 0 0 -2px; transform-origin: 2px 2px; will-change: transform; }
+.ai-cursor svg { position: relative; display: block;
+  filter: drop-shadow(0 0 4px rgba(236, 190, 96, 1)) drop-shadow(0 0 14px rgba(226, 176, 72, .75)) drop-shadow(0 2px 3px rgba(26, 24, 20, .32)); }
+.ai-cursor-halo { position: absolute; left: -22px; top: -22px; width: 48px; height: 48px; border-radius: 50%; mix-blend-mode: normal;
+  background: radial-gradient(circle, rgba(255, 226, 150, .8) 0%, rgba(236, 190, 96, .38) 34%, rgba(236, 190, 96, .12) 55%, rgba(236, 190, 96, 0) 72%);
+  animation: ai-cursor-breathe 2.2s ease-in-out infinite; }
+@keyframes ai-cursor-breathe { 0%, 100% { opacity: .8; transform: scale(.88); } 50% { opacity: 1; transform: scale(1.12); } }
+.ai-cursor-tag { position: absolute; left: 17px; top: 20px; padding: 1px 6px; border-radius: 999px; font: 650 9.5px/14px var(--font); letter-spacing: .08em;
+  color: #2a2318; background: linear-gradient(180deg, #fff3d2, #e9c46f);
+  box-shadow: 0 0 0 1px rgba(120, 86, 20, .25), 0 0 10px rgba(236, 190, 96, .7), 0 2px 6px rgba(26, 24, 20, .2); }
+.ai-cursor-trail { position: absolute; left: -5px; top: -5px; width: 10px; height: 10px; border-radius: 50%; will-change: transform;
+  background: radial-gradient(circle, rgba(255, 240, 200, 1) 0%, rgba(236, 186, 84, .85) 45%, rgba(236, 186, 84, 0) 74%);
+  box-shadow: 0 0 10px rgba(236, 190, 96, .55); }
+.ai-cursor-ring { position: absolute; left: -20px; top: -20px; width: 40px; height: 40px; border-radius: 50%;
+  border: 2px solid rgba(222, 170, 60, 1);
+  background: radial-gradient(circle, rgba(255, 230, 160, .5) 0%, rgba(255, 230, 160, 0) 65%);
+  box-shadow: 0 0 16px rgba(236, 186, 84, .85), inset 0 0 10px rgba(236, 186, 84, .5);
+  animation: ai-cursor-ring 700ms cubic-bezier(.2, .8, .3, 1) forwards; }
+@keyframes ai-cursor-ring { from { opacity: 1; transform: translate3d(var(--x), var(--y), 0) scale(.2); } 60% { opacity: .7; } to { opacity: 0; transform: translate3d(var(--x), var(--y), 0) scale(1.7); } }
+@media (prefers-reduced-motion: reduce) { .ai-cursor-halo { animation: none; } .ai-cursor-layer { transition: none; } }

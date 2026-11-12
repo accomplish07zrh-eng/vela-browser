@@ -140,6 +140,8 @@ async function run() {
       const bridge = await initializeOfficial();
       if (!bridge.tools.some(tool => tool.name === payload.name && !/pdf/i.test(tool.name))) throw error("invalid_request");
       humanizer ??= createHumanizer({ context, profileId: input.profileId,
+        // Its pointer reaches Vela Browser with the workbench frames, to be drawn over the card.
+        onPointer: (event) => workbench.live.pointer(event),
         callOfficial: (tool, args) => official.client.callTool({ name: tool, arguments: args ?? {} }) });
       humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });
       return humanizer.call(payload.name, payload.arguments ?? {});

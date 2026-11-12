@@ -19,6 +19,8 @@ export class ViewportClient {
   private following = false;
   private presentation = "";
   private width?: number;
+  /** The AI's pointer goes straight to whoever draws it, outside React, many times a second. */
+  readonly pointerListeners = new Set<(pointer: { x: number; y: number; phase: "move" | "down" | "up" }) => void>();
   private state: ViewportState = { status: "connecting", generation: "", targetId: "", tabs: [] };
   constructor(private profileId: string, private update: (state: ViewportState) => void) { void this.connect(); }
   private publish(change: Partial<ViewportState>): void { if (!this.disposed) { this.state = { ...this.state, ...change }; this.update(this.state); } }
@@ -49,6 +51,9 @@ export class ViewportClient {
         if (message.type === "error") this.publish({ status: "error", error: message.error });
         if (message.type === "ended") { this.publish({ status: "ended", error: "This environment has stopped or restarted." }); socket.close(); }
         if (message.type === "frame-error" && !this.state.frame) this.publish({ error: message.error });
+        if (message.type === "pointer" && (!message.targetId || message.targetId === this.state.targetId)) {
+          for (const listener of this.pointerListeners) listener({ x: message.x, y: message.y, phase: message.phase });
+        }
       };
       socket.onerror = () => this.publish({ status: "error", error: "Browser connection lost. Reconnect to try again." });
       socket.onclose = () => { if (this.state.status !== "ended") this.publish({ status: "error", error: "Browser connection lost. Reconnect to try again." }); };

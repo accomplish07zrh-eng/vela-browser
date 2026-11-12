@@ -429,6 +429,8 @@ async function run() {
       humanizer ??= createHumanizer({
         context,
         profileId: input.profileId,
+        // Its pointer reaches Vela Browser with the workbench frames, to be drawn over the card.
+        onPointer: (event) => workbench.live.pointer(event),
         callOfficial: (tool, args) => official ? official.client.callTool({ name: tool, arguments: args ?? {} }) : callOfficial(tool, args),
       });
       humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });

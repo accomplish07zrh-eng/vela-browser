@@ -335,6 +335,29 @@ export async function createVelaBrowserMcp(options = {}) {
     },
   });
 
+  /**
+   * Sends the humanizer's pointer to Vela Browser, which draws it over this browser's card on the
+   * workbench (never in the page). Moves go at most about 30 a second; presses always go. An app
+   * that does not know the method is not asked again.
+   */
+  let pointerSupported = true;
+  const pointerReporter = (profileId) => {
+    let last = 0, pending = null, timer = null;
+    const send = (event) => {
+      if (!pointerSupported) return;
+      runtime.call("workbench.pointer", { profileId, x: Math.round(event.x * 10) / 10, y: Math.round(event.y * 10) / 10, phase: event.phase })
+        .catch((error) => { if (/unknown|unsupported|invalid_request/i.test(String(error?.message ?? error))) pointerSupported = false; });
+    };
+    return (event) => {
+      if (!pointerSupported) return;
+      if (event.phase !== "move") { clearTimeout(timer); timer = null; pending = null; last = Date.now(); send(event); return; }
+      const wait = 33 - (Date.now() - last);
+      if (wait <= 0) { last = Date.now(); send(event); return; }
+      pending = event;
+      timer ??= setTimeout(() => { timer = null; if (pending) { last = Date.now(); send(pending); pending = null; } }, wait);
+    };
+  };
+
   const detachSession = async (profileId) => {
     const session = sessions.get(profileId);
     if (!session) return;
@@ -366,6 +389,7 @@ export async function createVelaBrowserMcp(options = {}) {
       context: proxy.context,
       profileId,
       callOfficial: (tool, toolArgs) => proxy.callTool(tool, toolArgs),
+      onPointer: pointerReporter(profileId),
     }) : undefined;
     humanizer?.configure({ ...humanize, pasteOver: humanize.pasteOver ?? null });
     const session = { engine, ws: status.ws, proxy, humanizer, lane: Promise.resolve() };

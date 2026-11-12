@@ -3,6 +3,7 @@ import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { callWebKitOwner, type WebKitOwner } from "./webkit-runtime.ts";
+import { validWorkbenchPointer } from "./workbench.ts";
 import { attachTimezones } from "./geoip.ts";
 import {
   BrowserLaunchError,
@@ -50,6 +51,8 @@ export interface AgentControlDeps {
   activity?: import("./cooling.ts").ActivityLog;
   /** The enabled plugins, read from the plugins folder each time an AI lists or calls tools. */
   plugins?: () => import("./plugins.ts").PluginSpec[];
+  /** The AI's human-like pointer, drawn over the browser's card on the workbench. */
+  pointer?: (profileId: string, pointer: import("./workbench.ts").WorkbenchPointer) => void;
 
   log?: (message: string) => void;
 }
@@ -268,6 +271,12 @@ export class AgentControlSession {
         return await this.profileStatus(stringParam(params, "profileId"));
       case "plugins.list":
         return { plugins: this.pluginSpecs() };
+      case "workbench.pointer": {
+        const pointer = { x: params.x, y: params.y, phase: params.phase };
+        if (!validWorkbenchPointer(pointer)) throw agentError("invalid_request", "Invalid pointer");
+        this.deps.pointer?.(stringParam(params, "profileId"), pointer);
+        return {};
+      }
       case "firefox.tools.list":
         return { tools: await this.firefoxCall(stringParam(params, "profileId"), "mcp-list", this.withPlugins({})) };
       case "firefox.tools.call":

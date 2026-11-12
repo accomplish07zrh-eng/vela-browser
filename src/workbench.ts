@@ -34,20 +34,23 @@ class ContextAdapter implements WorkbenchAdapter {
   closeTab(targetId: string): Promise<void> { return this.run("close", { targetId }); }
   frame(focused: boolean): Promise<WorkbenchFrame> { return this.run("frame", { focused }); }
   /** The owner answers each request as soon as the page paints a newer frame, so this is a push in all but name. */
-  async stream(options: WorkbenchStreamOptions, onFrame: (frame: WorkbenchFrame) => void): Promise<() => Promise<void>> {
+  async stream(options: WorkbenchStreamOptions, onFrame: (frame: WorkbenchFrame) => void, onPointer?: (pointer: WorkbenchPointer) => void): Promise<() => Promise<void>> {
     const targetId = this.target;
     let active = true, since = 0;
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    // The owner's humanizer reports its pointer with the frames, for the card to draw.
+    const pointers = (answer: any) => { for (const pointer of Array.isArray(answer?.pointer) ? answer.pointer : []) if (validWorkbenchPointer(pointer)) onPointer?.(pointer); };
     // The first answer must be a frame, or the caller falls back to polling.
     const first = await this.call<any>(this.owner, "workbench", { action: "frame", targetId, stream: true, since, wait: 1000, ...options }, { timeoutMs: 3500 });
     if (!first?.data) throw new Error("No live frames for this tab");
-    since = first.seq; onFrame({ data: first.data, width: first.width, height: first.height });
+    since = first.seq; onFrame({ data: first.data, width: first.width, height: first.height }); pointers(first);
     void (async () => {
       while (active && this.target === targetId) {
         const started = Date.now();
         try {
           const next = await this.call<any>(this.owner, "workbench", { action: "frame", targetId, stream: true, since, wait: 1500, ...options }, { timeoutMs: 3500 });
           if (!active) break;
+          pointers(next);
           if (next?.data && next.seq > since) { since = next.seq; onFrame({ data: next.data, width: next.width, height: next.height }); }
         } catch { if (active) await sleep(500); }
         const rest = options.minInterval - (Date.now() - started);
@@ -61,8 +64,31 @@ class ContextAdapter implements WorkbenchAdapter {
   dispose(): void { /* The owner and its persistent context belong to the launcher. */ }
 }
 
+export interface WorkbenchPointer { x: number; y: number; phase: "move" | "down" | "up" }
+export function validWorkbenchPointer(value: unknown): value is WorkbenchPointer {
+  const v = value as WorkbenchPointer;
+  return !!v && typeof v === "object" && Number.isFinite(v.x) && Number.isFinite(v.y) && Math.abs(v.x) <= 32_768 && Math.abs(v.y) <= 32_768
+    && ["move", "down", "up"].includes(v.phase);
+}
+
 export class WorkbenchHub {
   private captures = 0;
+  private live = new Map<string, Set<WorkbenchConnection>>();
+  /** The AI's human-like pointer in this browser, to draw over its card; never drawn in the page. */
+  pointer(profileId: string, pointer: WorkbenchPointer): void {
+    for (const connection of this.live.get(profileId) ?? []) connection.showPointer(pointer);
+  }
+  attach(connection: WorkbenchConnection): void {
+    let set = this.live.get(connection.profileId);
+    if (!set) this.live.set(connection.profileId, set = new Set());
+    set.add(connection);
+  }
+  detach(connection: WorkbenchConnection): void {
+    const set = this.live.get(connection.profileId);
+    if (!set) return;
+    set.delete(connection);
+    if (!set.size) this.live.delete(connection.profileId);
+  }
   constructor(readonly options: {
     launcher: Launcher; store: ProfileStore;
     canControl?: (id: string) => boolean | Promise<boolean>;
@@ -125,9 +151,13 @@ export class WorkbenchConnection {
   private send(value: object): void {
     if (!this.disposed && this.current()) this.emit({ ...value, profileId: this.profileId, generation: this.generation });
   }
+  showPointer(pointer: WorkbenchPointer): void {
+    if (this.visible || this.following) this.send({ type: "pointer", targetId: this.targetId, x: pointer.x, y: pointer.y, phase: pointer.phase });
+  }
   async start(emit: (value: object) => void): Promise<void> {
     this.emit = emit;
     if (this.disposed || !this.current()) return;
+    this.hub.attach(this);
     try {
       const tabs = await this.adapter.tabs();
       if (!tabs.length) throw new Error("No open tabs");
@@ -243,7 +273,7 @@ export class WorkbenchConnection {
         if (targetId === this.targetId && this.visible && !this.frozen && this.streamKey === key && frame.width > 0) this.send({ type: "frame", targetId, ...frame });
       };
       try {
-        const stop = await adapter.stream!(options, onFrame);
+        const stop = await adapter.stream!(options, onFrame, (pointer) => this.showPointer(pointer));
         if (this.streamKey !== key || this.disposed) { await stop().catch(() => {}); return; }
         this.stopStream = stop; this.streaming = true;
         // A tab the browser is not painting sends nothing: show it by polling instead.
@@ -266,6 +296,7 @@ export class WorkbenchConnection {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true; clearTimeout(this.frameTimer); clearInterval(this.heartbeat);
+    this.hub.detach(this);
     this.streamKey = ""; this.streaming = false;
     const stop = this.stopStream; this.stopStream = undefined; await stop?.().catch(() => {});
     this.releaseFocus?.(); this.releaseFocus = undefined;

@@ -7,6 +7,7 @@ import { parsePastedProxy } from "./proxy-input.ts";
 import type { WorkbenchInput, WorkbenchRefreshTier } from "../src/workbench-protocol.ts";
 import { useTranslation } from "./i18n.tsx";
 import { ViewportClient, type ViewportState } from "./workbench-client.ts";
+import { VirtualCursor } from "./virtual-cursor.tsx";
 import { workbenchLayout, workbenchPosition, workbenchLocate, workbenchSnap, workbenchSpring, workbenchFocusBox, workbenchRefreshTier, viewportPoint, workbenchFollowerInput, type ViewportBox } from "./workbench-layout.ts";
 import "./workbench.css";
 
@@ -138,6 +139,7 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       }} onPointerCancel={() => client.current?.release()}>
       {state.frame && <FrameCanvas data={state.frame.data} />}
+      {state.generation && <VirtualCursor client={client} surface={surface} state={snapshot} focused={focusedRef} generation={state.generation} />}
     </div>
     {focused && <textarea ref={input} className="viewport-input" aria-label={t("Type in {name}", { name: profile.name })} autoCapitalize="off" autoCorrect="off" spellCheck={false}
       onKeyDown={(event) => key(event, "down")} onKeyUp={(event) => key(event, "up")}

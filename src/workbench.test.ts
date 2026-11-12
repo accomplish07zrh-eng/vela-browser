@@ -205,6 +205,26 @@ test("a tab that streams nothing is polled instead, at its card's size", async (
   } finally { await a.dispose(); }
 });
 
+test("the AI's pointer reaches only the cards showing that browser, with the tab it is on", async () => {
+  const f = fixture();
+  const a = await f.hub.connect("a"), b = await f.hub.connect("b"), seen: any[] = [], other: any[] = [];
+  try {
+    await a.start((message) => seen.push(message));
+    await b.start((message) => other.push(message));
+    // A card that is not shown draws nothing.
+    f.hub.pointer("a", { x: 10, y: 20, phase: "move" });
+    expect(seen.filter((message) => message.type === "pointer")).toEqual([]);
+    await a.enqueue({ action: "visibility", generation: a.generation, visible: true, tier: "visible" });
+    await b.enqueue({ action: "visibility", generation: b.generation, visible: true, tier: "visible" });
+    f.hub.pointer("a", { x: 10, y: 20, phase: "down" });
+    expect(seen.filter((message) => message.type === "pointer")).toEqual([{ type: "pointer", targetId: "tab-1", x: 10, y: 20, phase: "down", profileId: "a", generation: a.generation }]);
+    expect(other.some((message) => message.type === "pointer")).toBe(false);
+    await a.dispose();
+    f.hub.pointer("a", { x: 1, y: 1, phase: "up" });
+    expect(seen.filter((message) => message.type === "pointer")).toHaveLength(1);
+  } finally { await a.dispose(); await b.dispose(); }
+});
+
 test("explicit synchronization can control an offscreen follower without capturing it", async () => {
   const f = fixture(), a = await f.hub.connect("a"), messages: any[] = [];
   try {
