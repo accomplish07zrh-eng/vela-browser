@@ -58,7 +58,7 @@
 .proxy-upload { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
 .proxy-upload input { max-width: 250px; font-size: 11px; }
 .proxy-input-panel textarea { font: 12px/1.8 var(--mono); resize: vertical; min-height: 120px; }
-.proxy-input-panel select { max-width: 480px; }
+.proxy-input-panel :is(select, .vselect) { max-width: 480px; }
 .proxy-table-wrap { overflow-x: auto; }
 .proxy-page .proxy-table { min-width: 760px; table-layout: fixed; }
 .proxy-page .proxy-table th, .proxy-page .proxy-table td { padding: 13px 18px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
@@ -156,7 +156,7 @@
 .store-trust .store-glyph { width: 15px; height: 15px; color: var(--accent); }
 .store-trust li.store-trust-deal { color: var(--ink); font-weight: 600; }
 .store-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 28px; }
-.store-form .fld select { height: 38px; font-size: 13.5px; }
+.store-form .fld :is(select, .vselect) { height: 38px; font-size: 13.5px; }
 .store-quantity { grid-column: 1 / -1; }
 .store-quantity-row { display: flex; align-items: center; gap: 20px; }
 .store-stepper { display: inline-flex; flex: 0 0 auto; height: 38px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--sh-field); overflow: hidden; }

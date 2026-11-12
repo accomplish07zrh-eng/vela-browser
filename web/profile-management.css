@@ -90,7 +90,7 @@
 .profile-create-summary > .management-note { margin-top: 24px; color: var(--faint); }
 .profile-template-bar { margin-bottom: 8px; }
 .profile-template-actions { justify-content: space-between; }
-.profile-template-actions select { min-width: 0 !important; flex: 1; }
+.profile-template-actions :is(select, .vselect) { min-width: 0 !important; flex: 1; }
 .profile-batch-options { padding-top: 8px; }
 .batch-toggle { display: inline-flex; align-items: center; gap: 12px; font: 400 13px/20px var(--font); cursor: pointer; color: var(--ink-soft); }
 .batch-toggle input { margin: 0; }

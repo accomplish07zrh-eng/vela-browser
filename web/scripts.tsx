@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Select } from "./select.tsx";
 import type {
   PublishedScript,
   PublishedScriptSummary,
@@ -325,9 +326,9 @@ function PublicLibrary({ onImported }: { onImported: (script: ScriptRecord) => P
   return <div className="scripts-library">
     <form className="scripts-library-search" onSubmit={(event) => { event.preventDefault(); search(); }}>
       <input className="input" aria-label={t("Search public scripts")} placeholder={t("Search scripts")} value={queryInput} onChange={(event) => setQueryInput(event.target.value)} />
-      <select className="select" aria-label={t("Script language")} value={language} onChange={(event) => { setOffset(0); setLanguage(event.target.value as ScriptLanguage | ""); }}>
+      <Select className="select" aria-label={t("Script language")} value={language} onChange={(event) => { setOffset(0); setLanguage(event.target.value as ScriptLanguage | ""); }}>
         <option value="">{t("All languages")}</option><option value="javascript">JavaScript</option><option value="python">Python</option>
-      </select>
+      </Select>
       <button className="btn primary" type="submit" disabled={busy}>{t("Search")}</button>
     </form>
     {error && <div className="modal-err" role="alert">{error}</div>}
@@ -447,7 +448,7 @@ export function ScriptRunPanel({ open, selectedProfiles, onClose }: {
             <p className="formnote">{t("Scripts run locally with your computer permissions.")}</p>
             {error && <div className="modal-err" role="alert">{error}</div>}
             <PythonRuntimeNote status={python} onDownload={downloadPython} />
-            <label className="fld"><span>{t("Script")}</span><select className="select" value={scriptId} onChange={(event) => setScriptId(event.target.value)} disabled={busy || runActive}><option value="">{t("Choose a script…")}</option>{scripts.map((script) => <option key={script.id} value={script.id}>{script.name}</option>)}</select></label>
+            <label className="fld"><span>{t("Script")}</span><Select className="select" value={scriptId} onChange={(event) => setScriptId(event.target.value)} disabled={busy || runActive}><option value="">{t("Choose a script…")}</option>{scripts.map((script) => <option key={script.id} value={script.id}>{script.name}</option>)}</Select></label>
             <label className="fld"><span>{t("JSON inputs")}</span><textarea className="input script-inputs" value={inputs} onChange={(event) => setInputs(event.target.value)} disabled={busy || runActive} /></label>
             <label className="script-credentials"><input type="checkbox" checked={useCredentials} onChange={(event) => setUseCredentials(event.target.checked)} disabled={busy || runActive} />{t("Use saved profile login details")}</label>
             <label className="fld"><span>{t("Parallel browsers")}</span><input className="input" type="number" min={1} step={1} value={concurrency} onChange={(event) => setConcurrency(event.target.value)} disabled={busy || runActive} /></label>

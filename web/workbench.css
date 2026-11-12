@@ -95,7 +95,7 @@
 .workbench-batch-backdrop { position: fixed; inset: 0; z-index: 150; display: grid; place-items: center; background: rgba(0,0,0,.18); backdrop-filter: blur(6px); }
 .workbench-batch-editor { padding: 24px; width: min(420px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--sh-pop); }
 .workbench-batch-editor h2 { margin: 0 0 16px; font: 600 16px var(--font); }
-.workbench-batch-editor > input, .workbench-batch-editor > select { width: 100%; }
+.workbench-batch-editor > input, .workbench-batch-editor > :is(select, .vselect) { width: 100%; }
 .workbench-batch-editor p { font-size: 12px; color: var(--muted); }
 .workbench-batch-editor > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 .workbench-marquee { position: absolute; pointer-events: none; z-index: 20; border: 1px solid var(--focus-accent); background: var(--focus-accent-soft); border-radius: 4px; }

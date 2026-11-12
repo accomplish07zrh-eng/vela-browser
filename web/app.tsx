@@ -16,6 +16,7 @@ import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
 import { TitleBar, usesOwnTitleBar } from "./titlebar.tsx";
+import { Select } from "./select.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
 import { localeTimezoneMismatch } from "../src/profile-locale.ts";
 import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
@@ -596,7 +597,7 @@ function PlatformPill({ platform }: { platform: string }) {
 }
 
 /**
- * Group selector used in every dialog: a styled <select> of existing groups
+ * Group selector used in every dialog: a styled <Select> of existing groups
  * plus "New group…", which flips to an inline text field so you can create a
  * group on the fly. Consistent with the other modal selects (no native datalist).
  */
@@ -612,7 +613,7 @@ function GroupPicker({ value, onChange, groups, allowCreate = true }: { value: s
     );
   }
   return (
-    <select
+    <Select
       value={groups.includes(value) ? value : ""}
       onChange={(e) => {
         if (e.target.value === "__new__") { setCreating(true); onChange(""); }
@@ -622,7 +623,7 @@ function GroupPicker({ value, onChange, groups, allowCreate = true }: { value: s
       <option value="">{t("(ungrouped)")}</option>
       {groups.map((g) => <option key={g} value={g}>{g}</option>)}
       {allowCreate && <option value="__new__">{t("New group…")}</option>}
-    </select>
+    </Select>
   );
 }
 
@@ -639,10 +640,10 @@ function PlatformPicker({ value, onChange }: { value: string; onChange: (v: stri
     );
   }
   return (
-    <select value={value} onChange={(e) => { if (e.target.value === "__new__") { setCreating(true); onChange(""); } else onChange(e.target.value); }}>
+    <Select value={value} onChange={(e) => { if (e.target.value === "__new__") { setCreating(true); onChange(""); } else onChange(e.target.value); }}>
       {KNOWN_PLATFORMS.map((p) => <option key={p.value} value={p.value}>{p.value ? p.label : t(p.label)}</option>)}
       <option value="__new__">{t("New platform…")}</option>
-    </select>
+    </Select>
   );
 }
 
@@ -777,12 +778,12 @@ function FingerprintSettings({
         <label className="fld">
           <span>{t("Operating system")}</span>
           {onPlatformOsChange && engine !== "webkit" ? (
-            <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
+            <Select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
               <option value="">{t("Automatic — match this computer")}</option>
               <option value="windows">Windows</option>
               <option value="macos">macOS</option>
               <option value="linux">Linux</option>
-            </select>
+            </Select>
           ) : (
             <input value={{ windows: "Windows", macos: "macOS", linux: "Linux" }[platformOs] ?? "Automatic"} readOnly tabIndex={-1} className="ro" />
           )}
@@ -2868,7 +2869,7 @@ function App() {
           {sharedOnly ? <span>{t("Shared with me")}</span> : [...(breadcrumb?.ancestors ?? []), group].map((name) => <span key={name}> / <button className="btn ghost xs" onClick={() => selectFolder(name)}>{folderLabel(name)}</button></span>)}
         </nav>}
         <div className="filterbar">
-          <select
+          <Select
             className="select group-filter"
             aria-label={"Group filter"}
             value={group}
@@ -2876,7 +2877,7 @@ function App() {
           >
             <option value="all">{t("All profiles")}</option>
             {existingGroups.map((g) => <option key={g} value={g}>{g}</option>)}
-          </select>
+          </Select>
           <div className="searchfield">
             <Icon name="search" className="sm" />
             <input
@@ -2892,15 +2893,15 @@ function App() {
         </div>
 
         <div className="profile-filters" aria-label={t("Profile filters")}>
-          <select className="select quiet-select" aria-label={t("Filter by status")} value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as ProfileStatusFilter)}>
+          <Select className="select quiet-select" aria-label={t("Filter by status")} value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as ProfileStatusFilter)}>
             <option value="all">{t("All statuses")}</option><option value="running">{t("running")}</option><option value="stopped">{t("Not started")}</option><option value="attention">{t("Needs attention")}</option>
-          </select>
-          <select className="select quiet-select" aria-label={t("Filter by browser")} value={engineFilter} onChange={(event) => setEngineFilter(event.target.value as ProfileEngineFilter)}>
+          </Select>
+          <Select className="select quiet-select" aria-label={t("Filter by browser")} value={engineFilter} onChange={(event) => setEngineFilter(event.target.value as ProfileEngineFilter)}>
             <option value="all">{t("All browsers")}</option><option value="chromium">Chromium</option><option value="firefox">Firefox</option><option value="webkit">WebKit</option>
-          </select>
-          {(profileTags.length > 0 || tagFilter) && <select className="select quiet-select" aria-label={t("Filter by tag")} value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
+          </Select>
+          {(profileTags.length > 0 || tagFilter) && <Select className="select quiet-select" aria-label={t("Filter by tag")} value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
             <option value="">{t("All tags")}</option>{[...new Set([...profileTags, ...(tagFilter ? [tagFilter] : [])])].map((tag) => <option key={tag} value={tag}>{tag}</option>)}
-          </select>}
+          </Select>}
           <span className="profile-filter-count">{t("{count} profiles in view", { count: filtered.length })}</span>
           <SavedProfileViews key={`views:${managementScope}`} scope={managementScope} filters={profileFilters} onApply={applyProfileFilters} />
         </div>
@@ -2972,7 +2973,7 @@ function App() {
             {newMode ? (
               <input className="input" autoFocus placeholder={t("new group name")} value={newGroup} onChange={(e) => setNewGroup(e.target.value)} />
             ) : (
-              <select
+              <Select
                 className="select move-group"
                 aria-label={t("Move to group")}
                 title={moveTarget || "Choose group"}
@@ -2985,7 +2986,7 @@ function App() {
                   <option key={g} value={g}>{g}</option>
                 ))}
                 <option value="__new__">{t("+ new group…")}</option>
-              </select>
+              </Select>
             )}
             {newMode && (
               <button className="btn ghost" onClick={() => { setNewMode(false); setNewGroup(""); }}>{t("cancel")}</button>
@@ -2999,10 +3000,10 @@ function App() {
               <span className="vsep" />
               <div className="extctl">
                 <span className="extctl-lbl"><Icon name="puzzle" className="sm" />{t("Extension")}</span>
-                <select className="select extctl-sel" aria-label={t("Extension for bulk assignment")} disabled={!selected.size} value={bulkExt} onChange={(e) => setBulkExt(e.target.value)}>
+                <Select className="select extctl-sel" aria-label={t("Extension for bulk assignment")} disabled={!selected.size} value={bulkExt} onChange={(e) => setBulkExt(e.target.value)}>
                   <option value="">{t("choose…")}</option>
                   {extensions.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-                </select>
+                </Select>
                 <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("add")}>{t("Add")}</button>
                 <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("remove")}>{t("Remove")}</button>
               </div>
@@ -3258,9 +3259,9 @@ function App() {
               disabled={visibleProfilePage + 1 >= profilePageCount}
               onClick={() => setProfilePage(visibleProfilePage + 1)}
             ><Icon name="chevronRight" className="sm" /></button>
-            <select className="select" aria-label={t("Rows per page")} value={pageSize} onChange={(e) => applyPageSize(Number(e.target.value))}>
+            <Select className="select" aria-label={t("Rows per page")} value={pageSize} onChange={(e) => applyPageSize(Number(e.target.value))}>
               {PAGE_SIZES.map((size) => <option key={size} value={size}>{t("{size} / page", { size })}</option>)}
-            </select>
+            </Select>
           </span>
         </footer>
       </div>
@@ -3305,7 +3306,7 @@ function App() {
                 <>
                   <label className="fld">
                     <span>{t("Group")}</span>
-                    <select
+                    <Select
                       aria-label={t("Extension default group")}
                       value={groupDefaultName}
                       onChange={(event) => {
@@ -3315,7 +3316,7 @@ function App() {
                       }}
                     >
                       {editableDefaultGroups.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-                    </select>
+                    </Select>
                   </label>
                   {groupDefaultExtensionChoices.length > 0 ? (
                     <div className="extassign">
@@ -3431,11 +3432,11 @@ function App() {
                 ))}
               </div>
               <label className="fld"><span>{t("language.label")}</span>
-                <select className="select" value={language} onChange={(event) => setLanguage(event.target.value)}>
+                <Select className="select" value={language} onChange={(event) => setLanguage(event.target.value)}>
                   {availableLanguages().map((lang) => (
                     <option key={lang} value={lang}>{languageNativeName(lang)}</option>
                   ))}
-                </select>
+                </Select>
               </label>
             </div>
           </section>
@@ -3496,14 +3497,14 @@ function App() {
                   {cooling.enabled && (
                     <div className="cooling-fields">
                       <label className="fld"><span>{t("Start cooling at memory use")}</span>
-                        <select className="select" value={cooling.threshold} onChange={(event) => save({ threshold: Number(event.target.value) })}>
+                        <Select className="select" value={cooling.threshold} onChange={(event) => save({ threshold: Number(event.target.value) })}>
                           {[...new Set([70, 75, 80, 85, 90, 95, cooling.threshold])].sort((a, b) => a - b).map((value) => <option key={value} value={value}>{value}%</option>)}
-                        </select>
+                        </Select>
                       </label>
                       <label className="fld"><span>{t("Only browsers left alone for")}</span>
-                        <select className="select" value={cooling.idleMinutes} onChange={(event) => save({ idleMinutes: Number(event.target.value) })}>
+                        <Select className="select" value={cooling.idleMinutes} onChange={(event) => save({ idleMinutes: Number(event.target.value) })}>
                           {[...new Set([5, 10, 15, 30, 60, cooling.idleMinutes])].sort((a, b) => a - b).map((value) => <option key={value} value={value}>{t("{count} min", { count: value })}</option>)}
-                        </select>
+                        </Select>
                       </label>
                     </div>
                   )}
@@ -3717,10 +3718,10 @@ function App() {
         <div className="modal mode-confirm" role="dialog" aria-modal="true" aria-labelledby="folder-move-title" onClick={(event) => event.stopPropagation()}>
           <div className="modal-head" id="folder-move-title">{t("Move {folder}", { folder: movingFolder })}</div>
           <div className="modal-body">
-            <label className="fld"><span>{t("Parent folder")}</span><select value={folderParent} disabled={folderMoveBusy} onChange={(event) => setFolderParent(event.target.value)}>
+            <label className="fld"><span>{t("Parent folder")}</span><Select value={folderParent} disabled={folderMoveBusy} onChange={(event) => setFolderParent(event.target.value)}>
               <option value="">{t("Top level")}</option>
               {tree.filter((folder) => folder.name !== movingFolder && !folder.ancestors.includes(movingFolder)).map((folder) => <option key={folder.name} value={folder.name}>{folder.name}</option>)}
-            </select></label>
+            </Select></label>
 
             {folderMoveErr && <div className="modal-err" role="alert">{folderMoveErr}</div>}
           </div>
@@ -3819,11 +3820,11 @@ function App() {
               {form.engine === "chromium" && !appMode?.legacyRemote && !appMode?.chromiumRuntime && (
                 <label className="fld">
                   <span>{t("Chrome version")}</span>
-                  <select value={form.chromiumRuntime} onChange={(e) => setF("chromiumRuntime", e.target.value as "" | "aliasmode")}>
+                  <Select value={form.chromiumRuntime} onChange={(e) => setF("chromiumRuntime", e.target.value as "" | "aliasmode")}>
                     {appMode?.defaultChromiumRuntime
                       ? <><option value="aliasmode">{t("Vela Chromium 155 (default)")}</option><option value="">{t("CloakBrowser 146")}</option></>
                       : <><option value="">{t("CloakBrowser 146 (default)")}</option><option value="aliasmode">{t("Vela Chromium 155")}</option></>}
-                  </select>
+                  </Select>
                   <small>{!form.chromiumRuntime
                     ? t(CLOAKBROWSER_NOTE)
                     : t("Downloads once (about 190 MB) on each computer that opens it.")}</small>
@@ -3857,11 +3858,11 @@ function App() {
                   <div className="fld-row">
                     <label className="fld type">
                       <span>{t("Proxy type")}</span>
-                      <select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
+                      <Select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
                         <option value="http">http</option>
                         <option value="https">https</option>
                         <option value="socks5">socks5</option>
-                      </select>
+                      </Select>
                     </label>
                     <label className="fld grow">
                       <span>{t("Host")}</span>
@@ -3991,11 +3992,11 @@ function App() {
                   <div className="fld-row">
                     <label className="fld type">
                       <span>{t("Proxy type")}</span>
-                      <select value={editForm.proxyType ?? "http"} onChange={(e) => setEF("proxyType", e.target.value)}>
+                      <Select value={editForm.proxyType ?? "http"} onChange={(e) => setEF("proxyType", e.target.value)}>
                         <option value="http">http</option>
                         <option value="https">https</option>
                         <option value="socks5">socks5</option>
-                      </select>
+                      </Select>
                     </label>
                     <label className="fld grow">
                       <span>Proxy</span>
@@ -4197,9 +4198,9 @@ function App() {
                 </label>
                 <label className="fld grow">
                   <span>{t("Platform")}</span>
-                  <select value={bulkPlatform} onChange={(e) => setBulkPlatform(e.target.value)}>
+                  <Select value={bulkPlatform} onChange={(e) => setBulkPlatform(e.target.value)}>
                     {KNOWN_PLATFORMS.map((platform) => <option key={platform.value} value={platform.value}>{platform.value ? platform.label : t(platform.label)}</option>)}
-                  </select>
+                  </Select>
                 </label>
               </div>
               <p className="formnote">

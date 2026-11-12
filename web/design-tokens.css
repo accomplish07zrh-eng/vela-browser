@@ -65,12 +65,12 @@
 /* Quiet exhibition surfaces. No generic glass or floating control panels. */
 body { font-variant-numeric: tabular-nums; position: relative; isolation: isolate; }
 body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: -1; opacity: .024; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.78' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath fill='%23887c68' d='M0 0h180v180H0z' filter='url(%23grain)'/%3E%3C/svg%3E"); }
-button, input, select, textarea { font-family: var(--font); font-variant-numeric: tabular-nums; }
+button, input, :is(select, .vselect), textarea { font-family: var(--font); font-variant-numeric: tabular-nums; }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--focus-accent); }
 button, .btn, .iconbtn { transition: background-color 100ms var(--spring-control), color 100ms var(--spring-control), opacity 180ms var(--spring-control), transform 220ms var(--spring-control); }
 button:active:not(:disabled), .btn:active:not(:disabled) { transform: scale(.97); }
-button:disabled, input:disabled, select:disabled { opacity: .38; cursor: not-allowed; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--focus-accent); outline-offset: 3px; }
+button:disabled, input:disabled, :is(select, .vselect):disabled { opacity: .38; cursor: not-allowed; }
+button:focus-visible, a:focus-visible, input:focus-visible, :is(select, .vselect):focus-visible, textarea:focus-visible { outline: 2px solid var(--focus-accent); outline-offset: 3px; }
 .btn, .iconbtn { box-shadow: none; }
 .btn.primary:hover, .btn.accent:hover { box-shadow: none; transform: none; }
 .btn.primary:active, .btn.accent:active { transform: scale(.97); }
@@ -135,7 +135,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .workbench-batch .btn:hover { background: var(--field-bg); }
 .workbench-batch-backdrop { background: rgba(43,35,23,.14); backdrop-filter: none; }
 .workbench-batch-editor { border: 0; box-shadow: var(--shadow-paper); }
-.workbench-batch-editor input:focus-visible, .workbench-batch-editor select:focus-visible { outline-offset: 3px; }
+.workbench-batch-editor input:focus-visible, .workbench-batch-editor :is(select, .vselect):focus-visible { outline-offset: 3px; }
 :lang(zh) .workbench-count, :lang(zh) .pagehead h1 { letter-spacing: 0; }
 :root[data-theme="dark"] .viewport-surface { background: #353026; }
 :root[data-theme="dark"] .viewport-surface :is(img, canvas) { opacity: .92; }
@@ -194,9 +194,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .settings-card > header .icon { width: 32px; height: 32px; border-radius: 8px; }
 .settings-card .card-body { gap: 16px; padding: 16px 0 24px; }
 .settings-row > span { font-size: 13px; line-height: 20px; }
-.settings-row .select, .settings-card .fld input, .settings-card .fld select { height: 40px; border-radius: 8px; }
+.settings-row .select, .settings-card .fld input, .settings-card .fld :is(select, .vselect) { height: 40px; border-radius: 8px; }
 .pagefoot { padding: 16px 0 0; border: 0; }
-.fld input, .fld select, .fld textarea, .modal-foot > .btn { border-radius: 8px; font-size: 14px; }
+.fld input, .fld :is(select, .vselect), .fld textarea, .modal-foot > .btn { border-radius: 8px; font-size: 14px; }
 .modal { animation-timing-function: var(--spring-layout); }
 .modal-head { font-family: var(--font); letter-spacing: 0; }
 .modal-head .modal-close:active { transform: scale(.97); }

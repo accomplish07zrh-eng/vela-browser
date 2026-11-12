@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Select } from "./select.tsx";
 import { flushSync } from "react-dom";
 import { folderScope, folderTree, type FolderInfo } from "../src/folders.ts";
 import { closeProfile, fetchScriptRun, moveProfiles, openProfile, raiseProfile, updateProfile, type UiProfile, type ScriptRun } from "./api.ts";
@@ -592,10 +593,10 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     onPointerEnter={(event) => { if (event.pointerType !== "touch") hovered.current = true; }}
     onPointerLeave={() => { hovered.current = false; hoveredCard.current = null; motion.current.resumeAfter = performance.now() + 900; paintRef.current(); }}>
     <div className="workbench-toolbar">
-      <select className="select" aria-label={t("Workbench group")} value={group} onChange={(event) => onGroupChange(event.target.value)}>
+      <Select className="select" aria-label={t("Workbench group")} value={group} onChange={(event) => onGroupChange(event.target.value)}>
         <option value="all">{t("All groups")}</option><option value="">{t("Ungrouped")}</option>
         {folderTree<FolderInfo>(folders.length ? folders : groups.map((name) => ({ name }))).map((folder) => <option key={folder.name} value={folder.name}>{"　".repeat(folder.depth)}{folder.label ?? folder.name}</option>)}
-      </select>
+      </Select>
       <div className="workbench-search">
         <Glyph name="search" /><input type="search" placeholder={t("Find an environment…")} aria-label={t("Find an environment…")} value={query} onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter" && matches[0]) { locate(matches[0].id); setSelected(new Set([matches[0].id])); setQuery(""); scroller.current?.focus(); } if (event.key === "Escape") setQuery(""); }} />
@@ -675,7 +676,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     {batchMode && <div className="workbench-batch-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setBatchMode(null); }}>
       <div ref={batchEditor} className="workbench-batch-editor" role="dialog" aria-modal="true" tabIndex={-1} aria-label={t(batchMode === "group" ? "Move to group" : "Change proxy")}>
         <h2>{t(batchMode === "group" ? "Move to group" : "Change proxy")}</h2>
-        {batchMode === "group" ? <select className="select" autoFocus aria-label={t("Target group")} value={batchValue} onChange={(event) => setBatchValue(event.target.value)}><option value="">{t("Ungrouped")}</option>{groups.map((name) => <option key={name} value={name}>{name}</option>)}</select> :
+        {batchMode === "group" ? <Select className="select" autoFocus aria-label={t("Target group")} value={batchValue} onChange={(event) => setBatchValue(event.target.value)}><option value="">{t("Ungrouped")}</option>{groups.map((name) => <option key={name} value={name}>{name}</option>)}</Select> :
           <><input autoFocus type="text" aria-label={t("New proxy")} placeholder="http://host:port" value={batchValue} onChange={(event) => setBatchValue(event.target.value)} /><p>{t("Stop the selected environments before replacing their proxy.")}</p></>}
         <div><button type="button" className="btn ghost" onClick={() => setBatchMode(null)}>{t("Cancel")}</button><button type="button" className="btn primary" disabled={busy || batchMode === "proxy" && !batchValue.trim()} onClick={() => void applyBatch()}>{t(busy ? "Processing…" : "Apply")}</button></div>
       </div>
