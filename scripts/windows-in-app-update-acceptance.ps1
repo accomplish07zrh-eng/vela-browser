@@ -369,8 +369,11 @@ function Invoke-DesktopUiProbe(
       throw "desktop UI probe timed out"
     }
     $output = $outputTask.GetAwaiter().GetResult()
-    [void]$errorTask.GetAwaiter().GetResult()
-    if ($process.ExitCode -ne 0) { throw "desktop UI probe failed" }
+    $probeError = $errorTask.GetAwaiter().GetResult()
+    if ($process.ExitCode -ne 0) {
+      $reason = ($probeError -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 1)
+      throw "desktop UI probe failed: $reason"
+    }
     try { $result = $output | ConvertFrom-Json } catch { throw "desktop UI probe returned invalid output" }
     $expectedResult = switch ($Action) {
       "click-update" { "visible-update-now" }
