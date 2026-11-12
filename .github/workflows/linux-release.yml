@@ -64,7 +64,8 @@ jobs:
           jq -e '[.assets[].name | select(test("linux"))] | length == 0' release.json
           cd assets
           ls -la
-          test "$(ls | sort | tr '\n' ' ')" = "Vela-Browser_${VERSION}_x86_64-linux.tar.gz SHA256SUMS-linux.txt "
+          expected="$(printf '%s\n' "Vela-Browser_${VERSION}_x86_64-linux.tar.gz" SHA256SUMS-linux.txt | sort)"
+          test "$(ls | sort)" = "$expected"
           sha256sum --check --strict SHA256SUMS-linux.txt
       - name: Sign the update archive and write the Linux update feed
         shell: bash

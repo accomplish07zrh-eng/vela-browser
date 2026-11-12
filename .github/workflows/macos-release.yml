@@ -68,7 +68,8 @@ jobs:
           jq -e '[.assets[].name | select(test("aarch64|_x64\\.(dmg|app)|macos"))] | length == 0' release.json
           for arch in aarch64 x64; do
             ls -la "$arch"
-            test "$(ls "$arch" | sort | tr '\n' ' ')" = "Vela-Browser_${VERSION}_${arch}.app.tar.gz Vela-Browser_${VERSION}_${arch}.dmg SHA256SUMS-macos.txt "
+            expected="$(printf '%s\n' "Vela-Browser_${VERSION}_${arch}.app.tar.gz" "Vela-Browser_${VERSION}_${arch}.dmg" SHA256SUMS-macos.txt | sort)"
+            test "$(ls "$arch" | sort)" = "$expected"
             (cd "$arch" && sha256sum --check --strict SHA256SUMS-macos.txt)
           done
           # One checksum file lists both Macs' files; the installer picks its own line.
