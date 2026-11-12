@@ -4,6 +4,23 @@ import { chromium } from "playwright-core";
 const inputPath = process.argv[2] ?? "";
 const outputPath = process.argv[3] ?? "";
 
+// The app opens in Simplified Chinese unless the user picks another language, so every visible
+// string is matched in English and in the zh-CN catalog.
+const zhCN = JSON.parse(await readFile(new URL("../web/locales/zh-CN.json", import.meta.url), "utf8"));
+
+function fill(source, values) {
+  return source.replace(/\{\{?(\w+)\}?\}/g, (match, key) => (Object.hasOwn(values, key) ? String(values[key]) : match));
+}
+
+function texts(source, values = {}) {
+  return [...new Set([source, zhCN[source]].filter((text) => typeof text === "string").map((text) => fill(text, values)))];
+}
+
+function exactly(source) {
+  const escaped = texts(source).map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(`^(?:${escaped.join("|")})$`);
+}
+
 async function readInput() {
   let text = inputPath ? await readFile(inputPath, "utf8") : "";
   if (!inputPath) {
@@ -84,23 +101,24 @@ async function main() {
       await result.waitFor({ state: "visible", timeout: 60_000 });
       const title = (await result.locator("strong").innerText()).trim();
       const detail = (await result.locator(".update-copy span").innerText()).trim();
-      if (title !== `Vela Browser ${input.candidateVersion} installed successfully.` ||
-          detail !== `Updated from ${input.sourceVersion} and verified the installed app after restart.`) {
+      if (!texts("Vela Browser {version} installed successfully.", { version: input.candidateVersion }).includes(title) ||
+          !texts("Updated from {fromVersion} and verified the installed app after restart.", { fromVersion: input.sourceVersion }).includes(detail)) {
         throw new Error("durable updater result did not confirm the exact version handoff");
       }
       await writeResult({ ok: true, action: "verified-durable-success" });
       return;
     }
 
+    const updateNow = exactly("Update now");
     const banner = page.locator(".update-banner").filter({
-      has: page.getByRole("button", { name: "Update now", exact: true }),
+      has: page.getByRole("button", { name: updateNow }),
     });
     await banner.waitFor({ state: "visible", timeout: 60_000 });
     const announcedVersion = await banner.locator('[role="status"] strong').innerText();
-    if (announcedVersion.trim() !== `Vela Browser ${input.candidateVersion} is available.`) {
+    if (!texts("Vela Browser {version} is available.", { version: input.candidateVersion }).includes(announcedVersion.trim())) {
       throw new Error("visible update banner announced a different version");
     }
-    const updateButton = banner.getByRole("button", { name: "Update now", exact: true });
+    const updateButton = banner.getByRole("button", { name: updateNow });
     await updateButton.waitFor({ state: "visible", timeout: 30_000 });
     if (!(await updateButton.isEnabled())) throw new Error("visible Update now action was disabled");
     await updateButton.click({ noWaitAfter: true });
@@ -117,7 +135,7 @@ async function main() {
   }
 }
 
-main().catch(() => {
-  process.stderr.write("Vela Browser updater UI probe failed\n");
+main().catch((error) => {
+  process.stderr.write(`Vela Browser updater UI probe failed: ${error?.message ?? error}\n`);
   process.exitCode = 1;
 });
