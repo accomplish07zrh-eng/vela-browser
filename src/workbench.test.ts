@@ -163,6 +163,28 @@ test("a live stream replaces polling, sized to the card, and restarts when the c
   } finally { await a.dispose(); }
 });
 
+test("a stream that falls silent, as a minimized browser's does, is backed by a capture every two seconds", async () => {
+  const f = fixture();
+  const original = f.hub.options.adapter!;
+  const polled: Array<number | undefined> = [];
+  f.hub.options.adapter = (launch) => ({
+    ...original(launch),
+    frame: async (_focused: boolean, maxWidth?: number) => { polled.push(maxWidth); return { data: "polled", width: 1280, height: 720 }; },
+    stream: async (_options: any, onFrame: any) => { onFrame({ data: "live", width: 1280, height: 720 }); return async () => {}; },
+  });
+  const a = await f.hub.connect("a"), messages: any[] = [];
+  try {
+    await a.start((message) => messages.push(message));
+    await a.enqueue({ action: "visibility", generation: a.generation, visible: true, tier: "visible", width: 300 });
+    await Bun.sleep(1000);
+    expect(polled).toEqual([]);
+    await Bun.sleep(2600);
+    expect(polled.length).toBeGreaterThan(0);
+    expect(polled[0]).toBe(320);
+    expect(messages.filter((message) => message.type === "frame").map((message) => message.data)).toContain("polled");
+  } finally { await a.dispose(); }
+});
+
 test("a tab that streams nothing is polled instead, at its card's size", async () => {
   const f = fixture();
   const original = f.hub.options.adapter!;

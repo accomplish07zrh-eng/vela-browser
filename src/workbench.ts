@@ -110,6 +110,7 @@ export class WorkbenchConnection {
   private streamKey = "";
   private stopStream?: () => Promise<void>;
   private streaming = false;
+  private lastStreamFrame = 0;
   /** Tabs that sent no live frame (a tab the browser is not painting): they are polled instead. */
   private polledTargets = new Set<string>();
   private streamChange = Promise.resolve();
@@ -141,14 +142,18 @@ export class WorkbenchConnection {
   }
   private schedule(elapsed = 0): void {
     clearTimeout(this.frameTimer);
-    const interval = workbenchFrameInterval(this.tier);
+    const polled = workbenchFrameInterval(this.tier);
+    // While a stream pushes frames, polling only checks every two seconds that it has not fallen silent.
+    const interval = polled && this.streaming ? Math.max(polled, 2000) : polled;
     if (!this.disposed && !this.capturing && !this.frozen && interval) this.frameTimer = setTimeout(() => void this.capture(), Math.max(16, interval - elapsed));
   }
   private async capture(): Promise<void> {
     if (this.disposed) return;
     if (!this.current()) { this.emit({ type: "ended", profileId: this.profileId, generation: this.generation }); await this.dispose(); return; }
-    // A live stream is pushing frames; polling would only repeat them.
-    if (this.streaming) { this.schedule(); return; }
+    // A live stream is pushing frames; polling would only repeat them. A browser that is minimized or
+    // covered stops painting, so its stream falls silent: then a scaled capture every two seconds
+    // keeps its card current.
+    if (this.streaming && performance.now() - this.lastStreamFrame < 2000) { this.schedule(); return; }
     if (!this.visible || this.frozen || !this.targetId || !this.hub.acquireFrame()) { this.schedule(); return; }
     const targetId = this.targetId, epoch = this.captureEpoch, started = performance.now();
     this.capturing = true;
@@ -234,7 +239,7 @@ export class WorkbenchConnection {
       const options: WorkbenchStreamOptions = { quality: tier === "interactive" ? 80 : 65, minInterval: workbenchStreamInterval(tier), ...(this.frameWidth ? { maxWidth: this.frameWidth } : {}) };
       let received = false;
       const onFrame = (frame: WorkbenchFrame) => {
-        received = true;
+        received = true; this.lastStreamFrame = performance.now();
         if (targetId === this.targetId && this.visible && !this.frozen && this.streamKey === key && frame.width > 0) this.send({ type: "frame", targetId, ...frame });
       };
       try {

@@ -1591,15 +1591,19 @@ export class Launcher {
     // args before caller-supplied ephemeral args as the general override order.
     // Chromium 155 binds a Google login to the computer's TPM chip (Device Bound Session Credentials).
     // Its cookies then cannot renew on another device or after the Cloud copy replaces them, and Google
-    // signs the account out. CloakBrowser 146 ships with this binding off. Chromium reads only the last
-    // --disable-features, so a forwarded one joins this list.
+    // signs the account out. CloakBrowser 146 ships with this binding off.
+    // Intensive wake-up throttling: once a page has been hidden for five minutes, Chrome lets its
+    // chained timers wake only once a minute, which stalls a browser left minimized behind the
+    // workbench. Chrome's own enterprise policy turns this off; the ordinary once-a-second
+    // throttling of hidden pages stays exactly as in Chrome.
+    // Chromium reads only the last --disable-features, so every list joins this one.
     const disableFeatures = "--disable-features=";
-    if (profile.chromiumRuntime) {
-      const features = ["DeviceBoundSessions", "EnableBoundSessionCredentials"];
-      for (const arg of forwardedArgs) if (arg.startsWith(disableFeatures)) features.push(arg.slice(disableFeatures.length));
-      args.push(`${disableFeatures}${features.join(",")}`);
+    const features = ["IntensiveWakeUpThrottling", ...(profile.chromiumRuntime ? ["DeviceBoundSessions", "EnableBoundSessionCredentials"] : [])];
+    for (const arg of [...this.baseArgs, ...forwardedArgs]) {
+      if (arg.startsWith(disableFeatures)) features.push(...arg.slice(disableFeatures.length).split(","));
     }
-    args.push(...this.baseArgs, ...forwardedArgs.filter((arg) => !profile.chromiumRuntime || !arg.startsWith(disableFeatures)));
+    args.push(`${disableFeatures}${[...new Set(features.map((feature) => feature.trim()).filter(Boolean))].join(",")}`);
+    args.push(...[...this.baseArgs, ...forwardedArgs].filter((arg) => !arg.startsWith(disableFeatures)));
     return args;
   }
 

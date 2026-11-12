@@ -2204,7 +2204,9 @@ test("buildArgs accepts the fixed Automation runtime flag bundle", () => {
     "--automation-launcher-pid=4242",
   ];
   const args = launcher.buildArgs(profile, 9333, "/data", launchArgs);
-  for (const arg of launchArgs) expect(args).toContain(arg);
+  for (const arg of launchArgs.filter((arg) => !arg.startsWith("--disable-features="))) expect(args).toContain(arg);
+  // Chromium reads only the last --disable-features, so the bundle's joins Vela Browser's own.
+  expect(args.filter((arg) => arg.startsWith("--disable-features="))).toEqual(["--disable-features=IntensiveWakeUpThrottling,BackForwardCache"]);
   store.close();
 });
 
@@ -2217,10 +2219,15 @@ test("buildArgs keeps Chromium 155 Google logins off the TPM binding and merges 
   const features = (args: string[]) => args.filter((arg) => arg.startsWith("--disable-features="));
 
   expect(features(launcher.buildArgs(chromium155, 9333, "/data", [])))
-    .toEqual(["--disable-features=DeviceBoundSessions,EnableBoundSessionCredentials"]);
+    .toEqual(["--disable-features=IntensiveWakeUpThrottling,DeviceBoundSessions,EnableBoundSessionCredentials"]);
   expect(features(launcher.buildArgs(chromium155, 9333, "/data", ["--disable-features=BackForwardCache"])))
-    .toEqual(["--disable-features=DeviceBoundSessions,EnableBoundSessionCredentials,BackForwardCache"]);
-  expect(features(launcher.buildArgs(cloak, 9333, "/data", []))).toEqual([]);
+    .toEqual(["--disable-features=IntensiveWakeUpThrottling,DeviceBoundSessions,EnableBoundSessionCredentials,BackForwardCache"]);
+  // Every runtime keeps a browser left in the background from sleeping a minute between timers;
+  // the ordinary once-a-second throttling of hidden pages stays as in Chrome.
+  expect(features(launcher.buildArgs(cloak, 9333, "/data", []))).toEqual(["--disable-features=IntensiveWakeUpThrottling"]);
+  const all = launcher.buildArgs(cloak, 9333, "/data", []);
+  expect(all).not.toContain("--disable-background-timer-throttling");
+  expect(all).not.toContain("--disable-backgrounding-occluded-windows");
   store.close();
 });
 
