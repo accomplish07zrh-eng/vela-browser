@@ -1,13 +1,12 @@
 mod browser;
-mod credentials;
 mod releases;
 mod runtime_descriptor;
 mod shutdown;
 mod sidecar;
 mod update_attempt;
 mod update_download;
+mod window_origin;
 
-use credentials::{credential_delete, credential_get, credential_set, CredentialOrigin};
 use rand::random;
 use std::{
     error::Error,
@@ -26,19 +25,16 @@ use tauri::{
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::ShellExt;
+use window_origin::WindowOrigin;
 
 const IMPORT_RESTRICTION: &str = "Windows DPAPI protects persisted browser secrets, so this import works only for the same Windows machine and account. Persisted persona fields are preserved, but runtime or browser differences can change the account-visible fingerprint.";
 
-const ALLOWED_EXTERNAL_URLS: [&str; 9] = [
+const ALLOWED_EXTERNAL_URLS: [&str; 5] = [
     "https://github.com/accomplish07zrh-eng/vela-browser/support/",
     "https://github.com/accomplish07zrh-eng/vela-browser/terms/",
     "https://github.com/accomplish07zrh-eng/vela-browser/privacy/",
     "https://github.com/accomplish07zrh-eng/vela-browser/acceptable-use/",
     "https://github.com/accomplish07zrh-eng/vela-browser",
-    "https://github.com/accomplish07zrh-eng/vela-browser",
-    "https://github.com/aliasmode/aliasmode",
-    "https://github.com/accomplish07zrh-eng/vela-browser/",
-    "https://github.com/accomplish07zrh-eng/vela-browser/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor",
 ];
 
 const WINDOWS_ACCEPTANCE_BROWSER_ARGS: &str =
@@ -56,63 +52,6 @@ fn windows_acceptance_browser_args(enabled: bool, debug_port: Option<&str>) -> O
 
 fn allowed_external_url(url: &str) -> bool {
     ALLOWED_EXTERNAL_URLS.contains(&url)
-        || proxy_offer_url(url)
-        || stripe_checkout_url(url)
-        || nobleproxy_handoff_url(url)
-        || services_go_url(url)
-}
-
-/// A Visit button on the Services page opens aliasmode.com/go/<slug>, which counts the click and redirects.
-/// Only lowercase letters, digits and hyphens in the slug, with no query and no fragment.
-fn services_go_url(url: &str) -> bool {
-    let Some(slug) = url.strip_prefix("https://github.com/accomplish07zrh-eng/vela-browser/go/") else {
-        return false;
-    };
-    (1..=64).contains(&slug.len())
-        && !slug.starts_with('-')
-        && slug
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-}
-
-/// "Manage on NobleProxy" opens the short-lived sign-in link that Vela Cloud got from NobleProxy.
-/// Only this exact form: one `h` token of URL-safe characters, no other parameter and no fragment.
-fn nobleproxy_handoff_url(url: &str) -> bool {
-    let Some(token) = url.strip_prefix("https://nobleproxy.com/continue/aliasmode?h=") else {
-        return false;
-    };
-    token.len() >= 20
-        && token
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-}
-
-/// A wallet top-up by card opens the Stripe Checkout page that Vela Cloud created.
-/// Only that host, with plain path and fragment characters, so no query can redirect elsewhere.
-fn stripe_checkout_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://checkout.stripe.com/") else {
-        return false;
-    };
-    (1..=2000).contains(&rest.len())
-        && rest
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"/_-.#%=+~".contains(&byte))
-}
-
-/// The proxy offer link can name the button that was clicked, a quantity and the app language.
-fn proxy_offer_url(url: &str) -> bool {
-    let Some(query) = url.strip_prefix("https://github.com/accomplish07zrh-eng/vela-browser?") else {
-        return false;
-    };
-    query.split('&').all(|pair| {
-        pair.split_once('=').is_some_and(|(key, value)| {
-            matches!(key, "src" | "qty" | "lang")
-                && (1..=32).contains(&value.len())
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
-    })
 }
 
 #[allow(deprecated)]
@@ -332,31 +271,20 @@ mod tests {
             "https://github.com/accomplish07zrh-eng/vela-browser/privacy/",
             "https://github.com/accomplish07zrh-eng/vela-browser/acceptable-use/",
             "https://github.com/accomplish07zrh-eng/vela-browser",
-            "https://github.com/accomplish07zrh-eng/vela-browser",
-            "https://github.com/aliasmode/aliasmode",
-            "https://github.com/accomplish07zrh-eng/vela-browser/",
-            "https://github.com/accomplish07zrh-eng/vela-browser/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor",
-            "https://github.com/accomplish07zrh-eng/vela-browser?src=sidebar-cart",
-            "https://github.com/accomplish07zrh-eng/vela-browser?src=proxies-no-proxy&qty=12",
-            "https://github.com/accomplish07zrh-eng/vela-browser?src=profile-dialog&lang=zh-CN",
-            "https://github.com/accomplish07zrh-eng/vela-browser?src=import-no-proxy&qty=3&lang=ru-RU",
-            "https://checkout.stripe.com/c/pay/cs_test_a1B2c3D4e5#fidkdWxOYHwnPyd1blpxYHZxWjA0SmZ%2FPWBWfQ%3D%3D",
-            "https://checkout.stripe.com/g/pay/cs_live_a1jR9tbRvftQTDnmkkEdu4o1ARCgIj9J3DTTo8l00zJaV7fDtKOBAig94s#fidkIqPtHjp%2FJquzcfcZx1PosH%2Bk1gj53e5bB%2FYEU9Qeax5zomqD%2BbPa6YlsAE%2BmL8aLtkhyX%3DK4spAcpw7fMm%2Bbs9vYnQYSD%2FwifHdJs%2BCcwEWQ5Ke%2Bl41LGRZa0Bt1%3DgVgfpLfu%2FzO89tc6XiCHUD%3DS5R5GSWN12T3%2B3Aqr9O%2FIhWPKNwrb%3DiJ2AdzHwM%2FZMNWNVJgF%3Da3J29nmKI%2BWnnH9Xl4iUX5%2BS5tRschFC3YGY%2F6XLgHVx7O5pQeG%2FCB%3D%3D",
-            "https://nobleproxy.com/continue/aliasmode?h=Ab3_x-Yz09Ab3_x-Yz09",
-            "https://nobleproxy.com/continue/aliasmode?h=hJ8kQ2mN5pR7sT9vW1xY3zA6bC8dE0fG",
-            "https://github.com/accomplish07zrh-eng/vela-browser/go/nobleproxy",
-            "https://github.com/accomplish07zrh-eng/vela-browser/go/sms-activate-2",
         ] {
             assert!(allowed_external_url(url));
         }
         for url in [
+            "https://checkout.stripe.com/c/pay/cs_test_a1B2c3D4e5#fidkdWxOYHwnPyd1blpxYHZxWjA0SmZ%2FPWBWfQ%3D%3D",
+            "https://checkout.stripe.com/g/pay/cs_live_a1jR9tbRvftQTDnmkkEdu4o1ARCgIj9J3DTTo8l00zJaV7fDtKOBAig94s#fidkIqPtHjp%2FJquzcfcZx1PosH%2Bk1gj53e5bB%2FYEU9Qeax5zomqD%2BbPa6YlsAE%2BmL8aLtkhyX%3DK4spAcpw7fMm%2Bbs9vYnQYSD%2FwifHdJs%2BCcwEWQ5Ke%2Bl41LGRZa0Bt1%3DgVgfpLfu%2FzO89tc6XiCHUD%3DS5R5GSWN12T3%2B3Aqr9O%2FIhWPKNwrb%3DiJ2AdzHwM%2FZMNWNVJgF%3Da3J29nmKI%2BWnnH9Xl4iUX5%2BS5tRschFC3YGY%2F6XLgHVx7O5pQeG%2FCB%3D%3D",
+            "https://nobleproxy.com/continue/aliasmode?h=Ab3_x-Yz09Ab3_x-Yz09",
+            "https://nobleproxy.com/continue/aliasmode?h=hJ8kQ2mN5pR7sT9vW1xY3zA6bC8dE0fG",
             "http://aliasmode.com/terms/",
             "https://cloud.aliasmode.com/terms/",
             "https://github.com/accomplish07zrh-eng/vela-browser/terms/extra",
             "https://github.com/accomplish07zrh-eng/vela-browser/terms/?continue=https://example.com",
             "https://example.com/terms/",
             "http://nobleproxy.com/t/aliasmode",
-            "https://github.com/accomplish07zrh-eng/vela-browser/",
             "https://github.com/accomplish07zrh-eng/vela-browser?source=app",
             "https://github.com/accomplish07zrh-eng/vela-browser?",
             "https://github.com/accomplish07zrh-eng/vela-browser?src=",
@@ -496,18 +424,27 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            credential_get,
-            credential_set,
-            credential_delete,
             runtime_descriptor::agent_runtime_ready,
             runtime_descriptor::script_capability,
-            shutdown::restart_after_mode_change,
+            runtime_descriptor::workbench_capability,
             releases::check_for_updates,
             releases::last_update_result,
             releases::update_now,
         ])
         .setup(move |app| {
             let data_dir = app.path().app_data_dir()?;
+            // Acceptance builds can keep disposable browser data outside protected AppData folders.
+            #[cfg(debug_assertions)]
+            let data_dir = if matches!(
+                std::env::var("ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG").as_deref(),
+                Ok("1")
+            ) {
+                std::env::var_os("ALIASMODE_ACCEPTANCE_DATA_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or(data_dir)
+            } else {
+                data_dir
+            };
             match import_request {
                 Err(error) => {
                     present_import_result(
@@ -545,9 +482,6 @@ pub fn run() {
             }
             fs::create_dir_all(data_dir.join("profiles"))?;
             fs::create_dir_all(data_dir.join("inbox"))?;
-            #[cfg(not(windows))]
-            credentials::set_secret_dir(&data_dir);
-
             let resource_dir = app.path().resource_dir()?;
             let mut firefox = browser::verify_firefox_resource(&resource_dir).map_err(boxed)?;
             firefox.executable = cli_compatible_windows_path(&firefox.executable);
@@ -640,16 +574,16 @@ pub fn run() {
             app.manage(runtime_descriptor);
 
             let origin = format!("http://127.0.0.1:{port}");
-            app.manage(CredentialOrigin(origin.clone()));
+            app.manage(WindowOrigin(origin.clone()));
             app.manage(sidecar.clone());
             if let Err(error) = app.add_capability(
                 CapabilityBuilder::new(format!("loopback-{port}"))
                     .local(false)
                     .window("main")
                     .remote(format!("{origin}/*"))
-                    .permission("allow-credential-bridge")
                     .permission("allow-runtime-ready")
                     .permission("allow-script-capability")
+                    .permission("allow-workbench-capability")
                     .permission("allow-update-bridge"),
             ) {
                 return Err(error.into());
@@ -687,10 +621,11 @@ pub fn run() {
                         .app_handle()
                         .state::<runtime_descriptor::RuntimeDescriptorState>();
                     runtime.activate();
-                    if configured_local_mode(&readiness_data_dir)
-                        && runtime.publish("local").is_err()
-                    {
-                        window.app_handle().exit(1);
+                    if configured_local_mode(&readiness_data_dir) {
+                        if let Err(error) = runtime.publish("local") {
+                            eprintln!("Vela Browser could not publish desktop readiness: {error}");
+                            window.app_handle().exit(1);
+                        }
                     }
                 });
             #[cfg(windows)]

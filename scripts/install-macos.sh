@@ -4,7 +4,7 @@
 # --agent-setup also connects installed AI agent clients and prints the helper's JSON result.
 set -euo pipefail
 
-repo="https://github.com/aliasmode/aliasmode"
+repo="https://github.com/accomplish07zrh-eng/vela-browser"
 # A local file:// base lets the build pipeline test an unpublished release.
 base="${ALIASMODE_RELEASE_BASE:-$repo/releases/download}"
 version=""
@@ -33,9 +33,9 @@ fi
 
 if [[ -z "$version" ]]; then
   # The newest release that has a build for this Mac; the API lists releases newest first.
-  version="$(curl -fsSL "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=20" \
-    | grep -o "Vela Browser_[^\"/]*_${build}\.app\.tar\.gz" | head -n 1 \
-    | sed -e 's/^Vela Browser_//' -e "s/_${build}\.app\.tar\.gz\$//")" || true
+  version="$(curl -fsSL "https://api.github.com/repos/accomplish07zrh-eng/vela-browser/releases?per_page=20" \
+    | grep -o "Vela-Browser_[^\"/]*_${build}\.app\.tar\.gz" | head -n 1 \
+    | sed -e 's/^Vela-Browser_//' -e "s/_${build}\.app\.tar\.gz\$//")" || true
   [[ -n "$version" ]] || fail "no macOS release for this Mac was found"
 fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || fail "the version is not valid"
@@ -56,7 +56,7 @@ if [[ "$(installed_version || true)" != "$version" ]]; then
   mkdir -p "$applications"
   work="$(mktemp -d "$applications/.aliasmode-install.XXXXXX")"
   trap 'rm -rf "$work"' EXIT
-  archive="Vela Browser_${version}_${build}.app.tar.gz"
+  archive="Vela-Browser_${version}_${build}.app.tar.gz"
   curl -fsSL -o "$work/SHA256SUMS-macos.txt" "$base/v$version/SHA256SUMS-macos.txt" \
     || fail "version $version has no macOS build"
   expected="$(awk -v name="$archive" '$2 == name { print $1 }' "$work/SHA256SUMS-macos.txt")"

@@ -77,10 +77,7 @@ impl RuntimeDescriptorState {
         if !self.active.load(Ordering::Acquire) {
             return Err("runtime descriptor is not active".to_owned());
         }
-        if !matches!(
-            readiness,
-            "local" | "cloud_authenticated" | "sign_in_required"
-        ) {
+        if readiness != "local" {
             return Err("runtime readiness state is invalid".to_owned());
         }
         let _guard = self
@@ -124,10 +121,20 @@ fn valid_nonce(value: &str) -> bool {
 #[tauri::command]
 pub fn script_capability(
     window: tauri::WebviewWindow,
-    origin: tauri::State<'_, crate::credentials::CredentialOrigin>,
+    origin: tauri::State<'_, crate::window_origin::WindowOrigin>,
     state: tauri::State<'_, RuntimeDescriptorState>,
 ) -> Result<String, String> {
-    crate::credentials::authorize(&window, &origin)?;
+    crate::window_origin::authorize(&window, &origin)?;
+    Ok(state.base.nonce.clone())
+}
+
+#[tauri::command]
+pub fn workbench_capability(
+    window: tauri::WebviewWindow,
+    origin: tauri::State<'_, crate::window_origin::WindowOrigin>,
+    state: tauri::State<'_, RuntimeDescriptorState>,
+) -> Result<String, String> {
+    crate::window_origin::authorize(&window, &origin)?;
     Ok(state.base.nonce.clone())
 }
 
@@ -247,16 +254,16 @@ mod tests {
         assert_eq!(local.readiness, "local");
         assert_eq!(local.sidecar_pid, 222);
 
-        first.publish("cloud_authenticated").unwrap();
+        first.publish("local").unwrap();
         let updated: RuntimeDescriptor =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(updated.readiness, "cloud_authenticated");
+        assert_eq!(updated.readiness, "local");
 
         let replacement =
             RuntimeDescriptorState::new(dir.path(), "b".repeat(64), "d".repeat(64), 50401, 333)
                 .unwrap();
         replacement.activate();
-        replacement.publish("sign_in_required").unwrap();
+        replacement.publish("local").unwrap();
         first.remove_owned().unwrap();
         assert!(path.is_file());
         replacement.remove_owned().unwrap();
@@ -271,6 +278,8 @@ mod tests {
                 .unwrap();
         state.activate();
         assert!(state.publish("starting").is_err());
+        assert!(state.publish("cloud_authenticated").is_err());
+        assert!(state.publish("sign_in_required").is_err());
         assert!(!dir.path().join("agent-runtime.json").exists());
     }
 }

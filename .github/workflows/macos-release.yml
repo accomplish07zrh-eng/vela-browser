@@ -44,7 +44,7 @@ jobs:
           ref: ${{ inputs.tag }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -68,12 +68,12 @@ jobs:
           jq -e '[.assets[].name | select(test("aarch64|_x64\\.(dmg|app)|macos"))] | length == 0' release.json
           for arch in aarch64 x64; do
             ls -la "$arch"
-            test "$(ls "$arch" | sort | tr '\n' ' ')" = "Vela Browser_${VERSION}_${arch}.app.tar.gz Vela Browser_${VERSION}_${arch}.dmg SHA256SUMS-macos.txt "
+            test "$(ls "$arch" | sort | tr '\n' ' ')" = "Vela-Browser_${VERSION}_${arch}.app.tar.gz Vela-Browser_${VERSION}_${arch}.dmg SHA256SUMS-macos.txt "
             (cd "$arch" && sha256sum --check --strict SHA256SUMS-macos.txt)
           done
           # One checksum file lists both Macs' files; the installer picks its own line.
           mkdir assets
-          mv aarch64/Vela Browser_* x64/Vela Browser_* assets/
+          mv "aarch64/Vela-Browser_"* "x64/Vela-Browser_"* assets/
           cat aarch64/SHA256SUMS-macos.txt x64/SHA256SUMS-macos.txt > assets/SHA256SUMS-macos.txt
           (cd assets && sha256sum --check --strict SHA256SUMS-macos.txt)
       - name: Sign the update archives and write the macOS update feeds
@@ -83,12 +83,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          for arch in aarch64 x64; do bunx tauri signer sign "assets/Vela Browser_${VERSION}_${arch}.app.tar.gz" > /dev/null; done
+          for arch in aarch64 x64; do bunx tauri signer sign "assets/Vela-Browser_${VERSION}_${arch}.app.tar.gz" > /dev/null; done
           unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           pubkey="$(jq -er .plugins.updater.pubkey src-tauri/tauri.conf.json)"
           check=(cargo run --quiet --locked --manifest-path scripts/updater-signature-check/Cargo.toml --)
           for arch in aarch64 x64; do
-            archive="assets/Vela Browser_${VERSION}_${arch}.app.tar.gz"
+            archive="assets/Vela-Browser_${VERSION}_${arch}.app.tar.gz"
             "${check[@]}" "$archive" "$archive.sig" "$pubkey"
             # A changed archive must fail the same check.
             cp "$archive" corrupt.tar.gz
@@ -100,23 +100,23 @@ jobs:
             rm corrupt.tar.gz
           done
           # Installed apps accept only a one-platform feed, so each Mac type has its own.
-          jq -n --arg version "$VERSION" --arg signature "$(cat "assets/Vela Browser_${VERSION}_aarch64.app.tar.gz.sig")" \
-            --arg url "https://github.com/$GH_REPO/releases/download/$TAG/Vela Browser_${VERSION}_aarch64.app.tar.gz" \
+          jq -n --arg version "$VERSION" --arg signature "$(cat "assets/Vela-Browser_${VERSION}_aarch64.app.tar.gz.sig")" \
+            --arg url "https://github.com/$GH_REPO/releases/download/$TAG/Vela-Browser_${VERSION}_aarch64.app.tar.gz" \
             '{version: $version, platforms: {"darwin-aarch64": {url: $url, signature: $signature}}}' > assets/latest-macos.json
-          jq -n --arg version "$VERSION" --arg signature "$(cat "assets/Vela Browser_${VERSION}_x64.app.tar.gz.sig")" \
-            --arg url "https://github.com/$GH_REPO/releases/download/$TAG/Vela Browser_${VERSION}_x64.app.tar.gz" \
+          jq -n --arg version "$VERSION" --arg signature "$(cat "assets/Vela-Browser_${VERSION}_x64.app.tar.gz.sig")" \
+            --arg url "https://github.com/$GH_REPO/releases/download/$TAG/Vela-Browser_${VERSION}_x64.app.tar.gz" \
             '{version: $version, platforms: {"darwin-x86_64": {url: $url, signature: $signature}}}' > assets/latest-macos-x64.json
       - name: Upload the macOS assets
         shell: bash
         run: |
           set -euo pipefail
           gh release upload "$TAG" \
-            "assets/Vela Browser_${VERSION}_aarch64.app.tar.gz" \
-            "assets/Vela Browser_${VERSION}_aarch64.app.tar.gz.sig" \
-            "assets/Vela Browser_${VERSION}_aarch64.dmg" \
-            "assets/Vela Browser_${VERSION}_x64.app.tar.gz" \
-            "assets/Vela Browser_${VERSION}_x64.app.tar.gz.sig" \
-            "assets/Vela Browser_${VERSION}_x64.dmg" \
+            "assets/Vela-Browser_${VERSION}_aarch64.app.tar.gz" \
+            "assets/Vela-Browser_${VERSION}_aarch64.app.tar.gz.sig" \
+            "assets/Vela-Browser_${VERSION}_aarch64.dmg" \
+            "assets/Vela-Browser_${VERSION}_x64.app.tar.gz" \
+            "assets/Vela-Browser_${VERSION}_x64.app.tar.gz.sig" \
+            "assets/Vela-Browser_${VERSION}_x64.dmg" \
             "assets/SHA256SUMS-macos.txt"
           # The feeds go last: an installed app must never read one before its archive exists.
           gh release upload "$TAG" "assets/latest-macos.json" "assets/latest-macos-x64.json"
@@ -126,13 +126,13 @@ jobs:
           set -euo pipefail
           mkdir public
           cd public
-          for name in "Vela Browser_${VERSION}_aarch64.app.tar.gz" "Vela Browser_${VERSION}_aarch64.dmg" \
-            "Vela Browser_${VERSION}_x64.app.tar.gz" "Vela Browser_${VERSION}_x64.dmg" SHA256SUMS-macos.txt; do
+          for name in "Vela-Browser_${VERSION}_aarch64.app.tar.gz" "Vela-Browser_${VERSION}_aarch64.dmg" \
+            "Vela-Browser_${VERSION}_x64.app.tar.gz" "Vela-Browser_${VERSION}_x64.dmg" SHA256SUMS-macos.txt; do
             curl --fail --silent --show-error --location --retry 3 -o "$name" "https://github.com/$GH_REPO/releases/download/$TAG/$name"
           done
           cmp SHA256SUMS-macos.txt ../assets/SHA256SUMS-macos.txt
           sha256sum --check --strict SHA256SUMS-macos.txt
-          for name in "Vela Browser_${VERSION}_aarch64.app.tar.gz.sig" "Vela Browser_${VERSION}_x64.app.tar.gz.sig" \
+          for name in "Vela-Browser_${VERSION}_aarch64.app.tar.gz.sig" "Vela-Browser_${VERSION}_x64.app.tar.gz.sig" \
             latest-macos.json latest-macos-x64.json; do
             curl --fail --silent --show-error --location --retry 3 "https://github.com/$GH_REPO/releases/download/$TAG/$name" | cmp - "../assets/$name"
           done

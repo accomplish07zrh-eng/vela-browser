@@ -38,7 +38,7 @@ jobs:
           sudo apt-get install -y -q libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev build-essential pkg-config
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -75,8 +75,8 @@ jobs:
           echo
           files="$RUNNER_TEMP/release/v$version"
           mkdir -p "$files"
-          tar --hard-dereference -czf "$files/Vela Browser_${version}_x86_64-linux.tar.gz" -C "$RUNNER_TEMP" Vela Browser
-          (cd "$files" && sha256sum "Vela Browser_${version}_x86_64-linux.tar.gz" > SHA256SUMS-linux.txt)
+          tar --hard-dereference -czf "$files/Vela-Browser_${version}_x86_64-linux.tar.gz" -C "$RUNNER_TEMP" "Vela Browser"
+          (cd "$files" && sha256sum "Vela-Browser_${version}_x86_64-linux.tar.gz" > SHA256SUMS-linux.txt)
           ls -l "$files"
           cat "$files/SHA256SUMS-linux.txt"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -106,7 +106,7 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
@@ -134,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           root="$HOME/.local/share/aliasmode"
-          archive="Vela Browser_${VERSION}_x86_64-linux.tar.gz"
+          archive="Vela-Browser_${VERSION}_x86_64-linux.tar.gz"
           # A damaged download must be refused before anything is installed.
           bad="$RUNNER_TEMP/bad-release/v$VERSION"
           mkdir -p "$bad"
@@ -161,7 +161,7 @@ jobs:
         run: |
           set -euo pipefail
           root="$HOME/.local/share/aliasmode"
-          data="$HOME/.local/share/com.aliasmode.desktop"
+          data="$HOME/.local/share/com.velabrowser.desktop"
           helper="$root/bin/aliasmode-mcp"
           evidence="$RUNNER_TEMP/evidence"
           mkdir -p "$evidence" "$data"
@@ -276,8 +276,8 @@ jobs:
           # A CloakBrowser profile from Windows arrives without a Chromium runtime. The app must
           # download the Linux CloakBrowser build for it and must not use Chromium 155.
           bun -e '
-            import { buildNewProfile } from "./create.ts";
-            import { serializeAdsTxt } from "./parse.ts";
+            import { buildNewProfile } from "./src/create.ts";
+            import { serializeAdsTxt } from "./src/parse.ts";
             const profile = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows", chromiumRuntime: "cloakbrowser" }, () => false);
             // As made on Windows: a CloakBrowser profile with its stored processor cores.
             process.stdout.write(serializeAdsTxt([{ ...profile, hardware: { cores: 20 } }]));
@@ -319,7 +319,7 @@ jobs:
           HELPER="$helper" bun -e '
             import { WebSocketServer } from "ws";
             import { MCP_TUNNEL_PROTOCOL } from "./contracts/cloud-v1.ts";
-            import { McpTunnelRuntime } from "./mcp-tunnel.ts";
+            import { McpTunnelRuntime } from "./src/mcp-tunnel.ts";
             const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
             await new Promise((resolve) => server.once("listening", resolve));
             const tools = new Promise((resolve, reject) => {
@@ -356,7 +356,7 @@ jobs:
           # Closing the window with a browser still open asks first, then closes that browser
           # and stops the sidecar.
           pgrep -f "profiles/$profile" >/dev/null
-          wmctrl -c Vela Browser
+          wmctrl -c "Vela Browser"
           dialog=""
           for attempt in $(seq 1 30); do
             dialog="$(xdotool search --name "Close Vela Browser" 2>/dev/null | head -n 1 || true)"
@@ -390,7 +390,7 @@ jobs:
         run: |
           set -euo pipefail
           root="$HOME/.local/share/aliasmode"
-          data="$HOME/.local/share/com.aliasmode.desktop"
+          data="$HOME/.local/share/com.velabrowser.desktop"
           evidence="$RUNNER_TEMP/evidence"
           sudo apt-get install -y -q webkit2gtk-driver
           # The app opens outside links with xdg-open; this one records the address instead.
@@ -431,17 +431,16 @@ jobs:
             echo "the app did not open $1 (it opened: $(tr '\n' ' ' < "$OPENED"))"
             return 1
           }
-          click "$(wait_element "css selector" 'a[href*="src=sidebar-cart"]')"
-          opened "https://github.com/accomplish07zrh-eng/vela-browser?src=sidebar-cart"
-          click "$(wait_element xpath "//button[normalize-space()='New Profile']")"
+          # Selectors here do not depend on the interface language.
+          click "$(wait_element "css selector" 'a.projectlink[href="https://github.com/accomplish07zrh-eng/vela-browser"]')"
+          opened "https://github.com/accomplish07zrh-eng/vela-browser"
+          click "$(wait_element "css selector" 'button.newbtn')"
           # A new Chrome profile on Linux starts on Chromium 155, and the help text must say so.
           wait_element "css selector" 'button[aria-label="Chrome: Vela Chromium"]' >/dev/null
-          click "$(wait_element "css selector" 'a[href*="src=profile-dialog"]')"
-          opened "https://github.com/accomplish07zrh-eng/vela-browser?src=profile-dialog"
           import -window root "$evidence/link-new-profile.png" || true
           cat "$OPENED"
           desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
-          wmctrl -c Vela Browser
+          wmctrl -c "Vela Browser"
           for attempt in $(seq 1 60); do kill -0 "$desktop" 2>/dev/null || break; sleep 1; done
           ! kill -0 "$desktop" 2>/dev/null
           curl -sf -m 60 -X DELETE "$wd/session/$session" >/dev/null || true
@@ -450,7 +449,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/evidence/logs"
-          cp "$HOME/.local/share/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
+          cp "$HOME/.local/share/com.velabrowser.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
           import -window root "$RUNNER_TEMP/evidence/final.png" || true
           cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns > "$RUNNER_TEMP/evidence/userns-restriction.txt" 2>&1 || true
       - uses: actions/upload-artifact@v4
@@ -475,7 +474,7 @@ jobs:
             xvfb openbox wmctrl imagemagick dbus-x11 webkit2gtk-driver
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -507,21 +506,25 @@ jobs:
           if [[ "$current" == *-* ]]; then
             successor="$current.acceptance.1"
           else
-            successor="${current%.*}.$((${current##*.} + 1))-acceptance.1"
+            successor="${current%.*}.$((${current##*.} + 1))"
           fi
-          for file in package.json version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
+          for file in package.json src/version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml; do
             test "$(grep -oF "$current" "$file" | wc -l | tr -d ' ')" = 1
             CURRENT="$current" SUCCESSOR="$successor" perl -pi -e 's/\Q$ENV{CURRENT}\E/$ENV{SUCCESSOR}/' "$file"
           done
+          # Cargo.lock also lists other crates that can share the version; only the app's own entry moves.
+          test "$(grep -A1 -xF 'name = "aliasmode-desktop"' src-tauri/Cargo.lock | grep -cxF "version = \"$current\"")" = 1
+          CURRENT="$current" SUCCESSOR="$successor" perl -0pi -e 's/(name = "aliasmode-desktop"\r?\nversion = ")\Q$ENV{CURRENT}\E"/$1$ENV{SUCCESSOR}"/' src-tauri/Cargo.lock
+          test "$(grep -A1 -xF 'name = "aliasmode-desktop"' src-tauri/Cargo.lock | grep -cxF "version = \"$successor\"")" = 1
           bun run desktop:prepare:linux
           bunx tauri build --bundles deb --config "$work/test-key.json"
           data="$(find src-tauri/target/release/bundle/deb -mindepth 2 -maxdepth 2 -type d -name data | head -n 1)"
           cp -a "$data/usr" "$work/Vela Browser"
-          archive="Vela Browser_${successor}_x86_64-linux.tar.gz"
-          tar --hard-dereference -czf "$work/$archive" -C "$work" Vela Browser
+          archive="Vela-Browser_${successor}_x86_64-linux.tar.gz"
+          tar --hard-dereference -czf "$work/$archive" -C "$work" "Vela Browser"
           rm -rf "$work/Vela Browser" src-tauri/target/release/bundle/deb
           TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null
-          url="https://github.com/aliasmode/aliasmode/releases/download/v$successor/$archive"
+          url="https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v$successor/$archive"
           jq -n --arg version "$successor" --arg url "$url" --arg signature "$(cat "$work/$archive.sig")" \
             '{version: $version, platforms: {"linux-x86_64": {url: $url, signature: $signature}}}' > "$work/latest-linux.json"
           {
@@ -545,8 +548,8 @@ jobs:
             candidateVersion: $version,
             manifestName: "latest-linux.json",
             installerName: $archive,
-            manifestUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/latest-linux.json",
-            installerUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/\($archive)",
+            manifestUrl: "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v\($version)/latest-linux.json",
+            installerUrl: "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v\($version)/\($archive)",
             manifestPath: "\($work)/latest-linux.json",
             installerPath: "\($work)/\($archive)",
             certificatePath: "\($work)/leaf.pem",
@@ -557,7 +560,7 @@ jobs:
           echo "127.0.0.1 github.com api.github.com" | sudo tee -a /etc/hosts > /dev/null
           sudo -b "$(command -v node)" "$GITHUB_WORKSPACE/scripts/windows-updater-https-fixture.mjs" "$work/fixture.json"
           for attempt in $(seq 1 30); do [[ -f fixture-state.json ]] && break; sleep 1; done
-          curl --fail --silent --show-error "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=10" | jq -e --arg tag "v$SUCCESSOR" '.[0].tag_name == $tag'
+          curl --fail --silent --show-error "https://api.github.com/repos/accomplish07zrh-eng/vela-browser/releases?per_page=10" | jq -e --arg tag "v$SUCCESSOR" '.[0].tag_name == $tag'
       - name: Update through the dashboard and verify the relaunched app
         timeout-minutes: 15
         shell: bash
@@ -568,7 +571,7 @@ jobs:
           mkdir -p "$evidence"
           root="$HOME/.local/share/aliasmode"
           helper="$root/bin/aliasmode-mcp"
-          data="$HOME/.local/share/com.aliasmode.desktop"
+          data="$HOME/.local/share/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
           Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$evidence/xvfb.log" 2>&1 &
@@ -594,7 +597,7 @@ jobs:
           done
           button=""
           for attempt in $(seq 1 60); do
-            button="$(jq -nc '{using: "xpath", value: "//button[normalize-space()=\"Update now\"]"}' \
+            button="$(jq -nc '{using: "xpath", value: "//button[normalize-space()=\"立即更新\" or normalize-space()=\"Update now\"]"}' \
               | curl -sf -m 60 -X POST "$wd/session/$session/element" -H 'content-type: application/json' -d @- \
               | jq -er '.value | to_entries[0].value' 2>/dev/null || true)"
             [[ -n "$button" ]] && break
@@ -629,8 +632,8 @@ jobs:
         run: |
           work="$RUNNER_TEMP/update"
           [[ -f "$work/hosts.backup" ]] && sudo cp "$work/hosts.backup" /etc/hosts
-          cp "$HOME/.local/share/com.aliasmode.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
-          cp "$HOME/.local/share/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/.local/share/com.velabrowser.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/.local/share/com.velabrowser.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo cp "$work/fixture-state.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo chmod -R a+r "$RUNNER_TEMP/update-evidence" 2>/dev/null || true
       - uses: actions/upload-artifact@v4

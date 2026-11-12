@@ -9,8 +9,8 @@ import {
 
 const version = "0.1.0-beta.46";
 const tag = `v${version}`;
-const installerName = `Vela Browser_${version}_x64-setup.exe`;
-const releaseBase = `/aliasmode/aliasmode/releases/download/${tag}`;
+const installerName = `Vela-Browser_${version}_x64-setup.exe`;
+const releaseBase = `/accomplish07zrh-eng/vela-browser/releases/download/${tag}`;
 const config = normalizeFixtureConfig({
   candidateVersion: version,
   manifestUrl: `https://github.com${releaseBase}/latest-v2.json`,
@@ -54,7 +54,7 @@ describe("Windows updater HTTPS fixture", () => {
     for (const request of [
       ["POST", "api.github.com", RELEASES_ROUTE],
       ["GET", "api.github.com:443", RELEASES_ROUTE],
-      ["GET", "api.github.com", "/repos/aliasmode/aliasmode/releases?per_page=100"],
+      ["GET", "api.github.com", "/repos/accomplish07zrh-eng/vela-browser/releases?per_page=100"],
       ["GET", "github.com", `${config.manifestRoute}?download=1`],
       ["GET", "github.com", `${config.installerRoute}.sig`],
       ["GET", "objects.githubusercontent.com", config.installerRoute],

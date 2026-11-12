@@ -6,19 +6,19 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { buildNewProfile } from "../create.ts";
-import { Launcher } from "../launcher.ts";
-import { completeProfileFingerprint, createFirefoxProfileConfig, syncFirefoxTimezone } from "../firefox-config.ts";
-import { callFirefoxOwner, closeFirefoxOwner, FirefoxOwnerError, reserveFirefoxOwner, startFirefoxOwner } from "../firefox-runtime.ts";
-import { decodePortableProfile, encodePortableProfile } from "../portable-profile.ts";
-import { resolvePlaywrightRuntime } from "../playwright-runtime.ts";
-import { PythonRuntime } from "../python-runtime.ts";
-import { applySourceRuntime, type SourceRuntime } from "../source-runtime.ts";
-import { CloudBrowserCoordinator } from "../cloud-browser.ts";
-import { PendingSyncQueue } from "../pending-sync.ts";
-import { addBrowserCookie, applySessionToEndpoint, readSessionInSubprocess } from "../session.ts";
-import { ProfileStore } from "../store.ts";
-import type { Profile } from "../types.ts";
+import { buildNewProfile } from "../src/create.ts";
+import { Launcher } from "../src/launcher.ts";
+import { completeProfileFingerprint, createFirefoxProfileConfig, syncFirefoxTimezone } from "../src/firefox-config.ts";
+import { callFirefoxOwner, closeFirefoxOwner, FirefoxOwnerError, reserveFirefoxOwner, startFirefoxOwner } from "../src/firefox-runtime.ts";
+import { decodePortableProfile, encodePortableProfile } from "../src/portable-profile.ts";
+import { resolvePlaywrightRuntime } from "../src/playwright-runtime.ts";
+import { PythonRuntime } from "../src/python-runtime.ts";
+import { applySourceRuntime, type SourceRuntime } from "../src/source-runtime.ts";
+import { CloudBrowserCoordinator } from "../src/cloud-browser.ts";
+import { PendingSyncQueue } from "../src/pending-sync.ts";
+import { addBrowserCookie, applySessionToEndpoint, readSessionInSubprocess } from "../src/session.ts";
+import { ProfileStore } from "../src/store.ts";
+import type { Profile } from "../src/types.ts";
 
 const [binaryArg, rootArg, expectedSha256, sourceRuntimeArg] = process.argv.slice(2);
 if (!binaryArg || !rootArg || !/^[a-f0-9]{64}$/.test(expectedSha256 ?? "")
@@ -637,7 +637,21 @@ export default async ({ context, inputs }) => {
         while ((await status()).pageTargets.length !== tabs.length && Date.now() < deadline) await Bun.sleep(50);
         assert.deepEqual((await status()).pageTargets.map(page => page.url), tabs, "closing one tab keeps only the remaining tabs");
       }
-      await localLauncher.verifyRunningIdentity(nativeCloseId);
+      try {
+        await localLauncher.verifyRunningIdentity(nativeCloseId);
+      } catch (error) {
+        // Records what the owner reports next to the launch record, so a mismatch or a slow owner is visible.
+        const launch = localStore.getLaunch(nativeCloseId);
+        const started = performance.now();
+        const reported = await callFirefoxOwner<Record<string, unknown>>(owner, "status", {}, { timeoutMs: 10_000 })
+          .then((value) => ({ ...value, pageTargets: undefined }), (failure) => ({ failure: String(failure) }));
+        console.error("native-close identity diagnostics", JSON.stringify({
+          statusMs: Math.round(performance.now() - started), reported,
+          launch: launch && { pid: launch.pid, binaryPath: launch.binaryPath, userDataDir: launch.userDataDir, owner: launch.firefoxOwner },
+          diagnosis: await localLauncher.diagnoseCdp(nativeCloseId),
+        }));
+        throw error;
+      }
       if (close === "managed") {
         assert.equal(await localLauncher.captureLocalSession(nativeCloseId), true);
         assert.equal(await localLauncher.stop(nativeCloseId), true);

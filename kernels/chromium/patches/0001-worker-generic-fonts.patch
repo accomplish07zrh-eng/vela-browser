@@ -1,0 +1,62 @@
+Subject: [PATCH] Use saved generic fonts in workers without document preferences
+
+diff --git a/third_party/blink/renderer/core/workers/worker_settings.cc b/third_party/blink/renderer/core/workers/worker_settings.cc
+--- a/third_party/blink/renderer/core/workers/worker_settings.cc
++++ b/third_party/blink/renderer/core/workers/worker_settings.cc
+@@ -4,13 +4,45 @@
+ 
+ #include "third_party/blink/renderer/core/workers/worker_settings.h"
+ 
++#include "base/apostate/profile.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
+ 
+ namespace blink {
+ 
++namespace {
++
++// Shared/Service Workers have no owning Document's WebPreferences. Fill only
++// absent common-script families from the same immutable process profile used
++// by pages; preserve any explicit and per-script settings a worker inherited.
++void FillProfileGenericFonts(GenericFontFamilySettings& fonts) {
++  const auto* profile = base::apostate::Profile::Get();
++  if (!profile)
++    return;
++  for (const auto& [generic, family] : profile->generic_font_family_map()) {
++    const AtomicString face(String::FromUtf8(family));
++    if (generic == "serif" && fonts.Serif().empty())
++      fonts.UpdateSerif(face);
++    else if (generic == "sans-serif" && fonts.SansSerif().empty())
++      fonts.UpdateSansSerif(face);
++    else if (generic == "monospace" && fonts.Fixed().empty())
++      fonts.UpdateFixed(face);
++    else if (generic == "cursive" && fonts.Cursive().empty())
++      fonts.UpdateCursive(face);
++    else if (generic == "fantasy" && fonts.Fantasy().empty())
++      fonts.UpdateFantasy(face);
++    else if (generic == "math" && fonts.Math().empty())
++      fonts.UpdateMath(face);
++  }
++  if (fonts.Standard().empty() && !fonts.Serif().empty())
++    fonts.UpdateStandard(fonts.Serif());
++}
++
++}  // namespace
++
+ WorkerSettings::WorkerSettings(Settings* settings) {
+   if (settings)
+     CopyFlagValuesFromSettings(settings);
++  FillProfileGenericFonts(generic_font_family_settings_);
+ }
+ 
+ WorkerSettings::WorkerSettings(
+@@ -24,7 +56,9 @@
+       allow_running_of_insecure_content_(allow_running_of_insecure_content),
+       strictly_block_blockable_mixed_content_(
+           strictly_block_blockable_mixed_content),
+-      generic_font_family_settings_(generic_font_family_settings) {}
++      generic_font_family_settings_(generic_font_family_settings) {
++  FillProfileGenericFonts(generic_font_family_settings_);
++}
+ 
+ std::unique_ptr<WorkerSettings> WorkerSettings::Copy(
+     WorkerSettings* old_settings) {

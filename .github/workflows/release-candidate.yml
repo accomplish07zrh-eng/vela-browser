@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - name: Validate candidate source run
         id: source_run
         shell: pwsh
@@ -110,8 +110,8 @@ jobs:
           $version = [string](Get-Content ".\src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json).version
           $semantic = [Management.Automation.SemanticVersion]::Parse($version)
           if ($semantic.ToString() -cne $version) { throw "candidate version is not canonical" }
-          $fullName = "Vela Browser_${version}_x64-offline-setup.exe"
-          $slimName = "Vela Browser_${version}_x64-setup.exe"
+          $fullName = "Vela-Browser_${version}_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_${version}_x64-setup.exe"
           $payloadNames = @($fullName, $slimName, "browser.json", "SHA256SUMS.txt", "size-report.json")
           $requiredNames = @($payloadNames + "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath ".\candidate" -Force)
@@ -217,14 +217,14 @@ jobs:
           $successorVersion = if ($env:WINDOWS_VERSION.Contains("-")) {
             "$($env:WINDOWS_VERSION).acceptance.1"
           } else {
-            "$($sourceSemantic.Major).$($sourceSemantic.Minor).$($sourceSemantic.Patch + 1)-acceptance.1"
+            "$($sourceSemantic.Major).$($sourceSemantic.Minor).$($sourceSemantic.Patch + 1)"
           }
           $successorSemantic = [Management.Automation.SemanticVersion]::Parse($successorVersion)
           if ($successorSemantic -le $sourceSemantic -or $successorSemantic.ToString() -cne $successorVersion) {
             throw "synthetic successor version is not canonical and newer"
           }
 
-          $name = "Vela Browser_${successorVersion}_x64-setup.exe"
+          $name = "Vela-Browser_${successorVersion}_x64-setup.exe"
           $requiredNames = @($name, "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath ".\unsigned-successor" -Force)
           $actualNames = @($entries | ForEach-Object Name | Sort-Object)
@@ -297,7 +297,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -318,8 +318,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $arguments = @(
             ".\candidate",
             "--role", "candidate",
@@ -352,8 +352,8 @@ jobs:
           }
 
           $tag = "v$($env:WINDOWS_VERSION)"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $signatureName = "$slimName.sig"
           $artifact = ".\artifacts\signed-current"
           New-Item -ItemType Directory -Force $artifact | Out-Null
@@ -519,7 +519,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -543,7 +543,7 @@ jobs:
           WINDOWS_SOURCE: ${{ needs.provenance.outputs.source }}
         run: |
           $ErrorActionPreference = "Stop"
-          $name = "Vela Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
+          $name = "Vela-Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
           $requiredNames = @($name, "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath ".\unsigned-successor" -Force)
           $actualNames = @($entries | ForEach-Object Name | Sort-Object)
@@ -622,7 +622,7 @@ jobs:
             throw "protected Tauri updater signing secrets are unavailable"
           }
           $artifact = ".\artifacts\synthetic-successor"
-          $name = "Vela Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
+          $name = "Vela-Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
           $installer = Join-Path $artifact $name
           try {
             bunx tauri signer sign $installer
@@ -708,7 +708,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-release-provenance
@@ -721,8 +721,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $arguments = @(
             ".\candidate",
             "--role", "candidate",
@@ -745,10 +745,24 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
+          # The first Vela Browser release has nothing to upgrade from; every later one must pass.
+          $candidate = [Management.Automation.SemanticVersion]::Parse($env:WINDOWS_VERSION)
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+          $earlier = @(
+            @(Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases?per_page=100" -Headers $headers | Write-Output) |
+              Where-Object { -not $_.draft -and $_.tag_name.StartsWith("v") } |
+              Where-Object {
+                try { [Management.Automation.SemanticVersion]::Parse($_.tag_name.Substring(1)) -lt $candidate } catch { $false }
+              }
+          )
+          if ($earlier.Count -eq 0) {
+            Write-Host "::notice::No earlier public release exists, so there is no previous version to upgrade from."
+            exit 0
+          }
           $diagnostics = ".\diagnostics\previous-upgrade.json"
           & .\scripts\windows-previous-upgrade-acceptance.ps1 `
             -CandidateVersion $env:WINDOWS_VERSION `
-            -FullInstallerPath ".\candidate\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -FullInstallerPath ".\candidate\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\candidate\SHA256SUMS.txt" `
             -Repository $env:GITHUB_REPOSITORY `
             -GitHubToken $env:GITHUB_TOKEN `
@@ -774,7 +788,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
@@ -793,8 +807,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $currentArguments = @(
             ".\candidate",
             "--role", "candidate",
@@ -810,7 +824,7 @@ jobs:
           & bun scripts/windows-artifact-manifest.ts verify @currentArguments
           if ($LASTEXITCODE -ne 0) { throw "candidate producer verification failed" }
 
-          $successorName = "Vela Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
+          $successorName = "Vela-Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
           $successorArguments = @(
             ".\synthetic-successor",
             "--role", "synthetic-successor",
@@ -831,10 +845,10 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $successorName = "Vela Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
+          $successorName = "Vela-Browser_$($env:SUCCESSOR_VERSION)_x64-setup.exe"
           & .\scripts\windows-in-app-update-acceptance.ps1 `
             -SourceVersion $env:WINDOWS_VERSION `
-            -SourceInstallerPath ".\candidate\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -SourceInstallerPath ".\candidate\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -SourceChecksumsPath ".\candidate\SHA256SUMS.txt" `
             -CandidateVersion $env:SUCCESSOR_VERSION `
             -CandidateInstallerPath ".\synthetic-successor\$successorName" `
@@ -852,7 +866,7 @@ jobs:
           compression-level: 0
 
   publish_release:
-    name: Publish verified prerelease
+    name: Publish verified release
     needs: [provenance, sign_current, previous_upgrade_acceptance, exact_updater_acceptance]
     runs-on: ubuntu-latest
     environment: windows-release
@@ -865,7 +879,7 @@ jobs:
           ref: ${{ needs.provenance.outputs.source }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-signed-current
@@ -878,8 +892,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           set -euo pipefail
-          full_name="Vela Browser_${WINDOWS_VERSION}_x64-offline-setup.exe"
-          slim_name="Vela Browser_${WINDOWS_VERSION}_x64-setup.exe"
+          full_name="Vela-Browser_${WINDOWS_VERSION}_x64-offline-setup.exe"
+          slim_name="Vela-Browser_${WINDOWS_VERSION}_x64-setup.exe"
           bun scripts/windows-artifact-manifest.ts verify ./signed-current \
             --role signed-current \
             --source "$WINDOWS_SOURCE" \
@@ -902,9 +916,11 @@ jobs:
           root="$GITHUB_WORKSPACE/signed-current"
           tag="v${RELEASE_VERSION}"
           release_name="Vela Browser ${RELEASE_VERSION}"
+          # Installed stable apps update only to releases that GitHub does not mark as prereleases.
+          if [[ "$RELEASE_VERSION" == *-* ]]; then prerelease=true; else prerelease=false; fi
           marker="<!-- aliasmode-release-run:${GITHUB_RUN_ID};source:${RELEASE_SOURCE} -->"
-          full_name="Vela Browser_${RELEASE_VERSION}_x64-offline-setup.exe"
-          slim_name="Vela Browser_${RELEASE_VERSION}_x64-setup.exe"
+          full_name="Vela-Browser_${RELEASE_VERSION}_x64-offline-setup.exe"
+          slim_name="Vela-Browser_${RELEASE_VERSION}_x64-setup.exe"
           required=(
             "$full_name"
             "$slim_name"
@@ -948,7 +964,7 @@ jobs:
           fi
           if [[ "$match_count" -eq 1 ]]; then
             release="$(jq '.[0]' <<<"$matches")"
-            if [[ "$(jq -r '.prerelease' <<<"$release")" != true ||
+            if [[ "$(jq -r '.prerelease' <<<"$release")" != "$prerelease" ||
                   "$(jq -r '.target_commitish' <<<"$release")" != "$RELEASE_SOURCE" ||
                   "$(jq -r '.name' <<<"$release")" != "$release_name" ||
                   "$(jq -r '.body' <<<"$release")" != "$marker" ]]; then
@@ -969,7 +985,8 @@ jobs:
                 --arg source "$RELEASE_SOURCE" \
                 --arg name "$release_name" \
                 --arg body "$marker" \
-                '{tag_name:$tag,target_commitish:$source,name:$name,body:$body,draft:true,prerelease:true}' |
+                --argjson prerelease "$prerelease" \
+                '{tag_name:$tag,target_commitish:$source,name:$name,body:$body,draft:true,prerelease:$prerelease}' |
                 gh api --method POST "repos/$GITHUB_REPOSITORY/releases" --input -
             )"
           fi
@@ -1055,10 +1072,10 @@ jobs:
           if [[ "$already_published" == true ]]; then
             published="$release"
           else
-            published="$(jq -n '{draft:false,prerelease:true}' | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input -)"
+            published="$(jq -n --argjson prerelease "$prerelease" '{draft:false,prerelease:$prerelease}' | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input -)"
           fi
           if [[ "$(jq -r '.draft' <<<"$published")" != false ||
-                "$(jq -r '.prerelease' <<<"$published")" != true ||
+                "$(jq -r '.prerelease' <<<"$published")" != "$prerelease" ||
                 "$(jq -r '.tag_name' <<<"$published")" != "$tag" ||
                 "$(jq -r '.target_commitish' <<<"$published")" != "$RELEASE_SOURCE" ]]; then
             printf 'published prerelease identity is inconsistent\n' >&2

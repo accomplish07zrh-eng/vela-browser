@@ -1,25 +1,18 @@
 /** Typed client for the dashboard's /ui/api/* endpoints. */
 
 import type {
-  PublishScriptInput,
   PublishedScript,
   PublishedScriptSummary,
   ScriptLanguage,
   ScriptRecord,
   ScriptSummary,
 } from "../contracts/cloud-v1.ts";
-import type { ScriptRun } from "../scripts.ts";
-import type { PythonRuntimeStatus } from "../python-runtime.ts";
-import type { ServicesResult } from "../services-directory.ts";
-import type { RuntimeDownload } from "../runtime-download.ts";
-import type { FolderInfo } from "../folders.ts";
-import {
-  CLOUD_DIAGNOSTIC_TYPES,
-  type CloudDiagnosticEvent,
-} from "../cloud-diagnostics.ts";
-
-export type { CloudDiagnosticEvent } from "../cloud-diagnostics.ts";
-export type { RuntimeDownload } from "../runtime-download.ts";
+import type { ScriptRun } from "../src/scripts.ts";
+import type { PythonRuntimeStatus } from "../src/python-runtime.ts";
+import type { RuntimeDownload } from "../src/runtime-download.ts";
+import type { FolderInfo } from "../src/folders.ts";
+import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
+export type { RuntimeDownload } from "../src/runtime-download.ts";
 
 export type HealthStatus = "suspended" | "alive" | "no_data";
 
@@ -27,7 +20,7 @@ export interface UiProfile {
   id: string;
   name: string;
   /** Browser family. Legacy profiles without a value are Chromium. */
-  engine: "chromium" | "firefox";
+  engine: "chromium" | "firefox" | "webkit";
   /** "aliasmode" is the opt-in Chromium 155 beta; absent is CloakBrowser. */
   chromiumRuntime?: "aliasmode";
   group: string;
@@ -112,8 +105,7 @@ export interface HealthResult { ok: boolean; version: string; root: string; logD
 
 export interface AppModeConfig {
   version: 1;
-  mode: "unconfigured" | "local" | "cloud";
-  cloudUrl?: string;
+  mode: "local";
   localAnalytics: boolean;
   /** The user hid the Services page from the sidebar. */
   servicesHidden?: boolean;
@@ -124,14 +116,29 @@ export interface AppModeConfig {
   /** Set when this computer can run Chromium 155: the New profile dialog then starts on it. */
   defaultChromiumRuntime?: "aliasmode";
   /** The engine of new profiles on this computer: Chromium on Windows, Firefox on macOS and Linux. Absent in legacy Remote mode. */
-  defaultEngine?: "chromium" | "firefox";
+  webkitAvailable?: boolean;
+  defaultEngine?: "chromium" | "firefox" | "webkit";
+  /** Windows desktop: environment windows can be kept out of the taskbar. */
+  taskbarModeSupported?: boolean;
+  hideFromTaskbar?: boolean;
+}
+
+export async function saveTaskbarHidden(hidden: boolean): Promise<boolean> {
+  const response = await fetch("/ui/api/desktop/taskbar", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hidden }),
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; hidden?: boolean; error?: string };
+  if (!response.ok || !body.ok) throw new Error(body.error || "The setting could not be saved");
+  return body.hidden === true;
 }
 
 export async function fetchAppMode(): Promise<AppModeConfig> {
   const path = "/ui/api/app-mode";
   const response = await fetch(path);
   const body = await apiJson(response, path);
-  if (body.mode !== "unconfigured" && body.mode !== "local" && body.mode !== "cloud") {
+  if (body.mode !== "local") {
     throw new Error(body.error || "Vela Browser returned an invalid application mode");
   }
   return body as AppModeConfig;
@@ -158,62 +165,6 @@ export async function saveShellLanguage(language: string): Promise<void> {
   if (!response.ok || body.ok !== true) throw new Error(body.error || "Could not save language preference");
 }
 
-export async function fetchServices(): Promise<ServicesResult> {
-  const path = "/ui/api/services";
-  const response = await fetch(path, { cache: "no-store" });
-  const body = await apiJson(response, path);
-  if (!Array.isArray(body.services)) throw new Error(body.error || "The services list could not be loaded");
-  return body as ServicesResult;
-}
-
-export async function saveServicesHidden(hidden: boolean): Promise<void> {
-  const path = "/ui/api/services/visibility";
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ hidden }),
-  });
-  const body = await apiJson(response, path);
-  if (!response.ok || body.ok !== true) throw new Error(body.error || "Could not save the Services setting");
-}
-
-export async function selectAppMode(mode: "local" | "cloud"): Promise<any> {
-  const path = "/ui/api/app-mode";
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
-  });
-  const body = await apiJson(response, path);
-  if (!response.ok || body.ok !== true) throw new Error(body.error || "Could not save Vela Browser mode");
-  return body;
-}
-
-export async function fetchCloudEvents(): Promise<CloudDiagnosticEvent[]> {
-  const path = "/ui/api/cloud-events";
-  const response = await fetch(path);
-  const body = await apiJson(response, path);
-  if (!response.ok || !Array.isArray(body.events)) {
-    throw new Error("Cloud diagnostics are unavailable");
-  }
-  const knownTypes = new Set<string>(CLOUD_DIAGNOSTIC_TYPES);
-  return body.events.map((event: unknown) => {
-    if (!event || typeof event !== "object") throw new Error("Cloud diagnostics returned invalid data");
-    const keys = Object.keys(event as object).sort();
-    const timestamp = (event as any).timestamp;
-    const type = (event as any).type;
-    if (
-      keys.join(",") !== "timestamp,type" ||
-      !Number.isFinite(timestamp) ||
-      !Number.isFinite(new Date(timestamp).getTime()) ||
-      !knownTypes.has(type)
-    ) {
-      throw new Error("Cloud diagnostics returned invalid data");
-    }
-    return { timestamp, type } as CloudDiagnosticEvent;
-  });
-}
-
 /** Browser runtimes downloading now, with the bytes received so far. */
 export async function fetchRuntimeDownloads(): Promise<RuntimeDownload[]> {
   const path = "/ui/api/runtime-downloads";
@@ -221,204 +172,6 @@ export async function fetchRuntimeDownloads(): Promise<RuntimeDownload[]> {
   const body = await apiJson(response, path);
   if (!response.ok || !Array.isArray(body.downloads)) throw new Error("Browser downloads returned invalid data");
   return body.downloads as RuntimeDownload[];
-}
-
-export interface CloudLegalState {
-  current: { terms: string; privacy: string; acceptableUse: string };
-  accepted: ({ terms: string; privacy: string; acceptableUse: string; acceptedAt: number }) | null;
-}
-
-export interface CloudAuthState {
-  authenticated: boolean;
-  expiresAt?: number;
-  user?: { id: string; email?: string };
-  workspace?: { id: string; name: string; ownerAccountId: string; role: "owner" | "admin" | "member" };
-  legal?: CloudLegalState;
-}
-
-export function cloudSessionContextReady(state: CloudAuthState): boolean {
-  return state.authenticated && !!state.workspace && !!state.legal;
-}
-
-export function cloudWorkspaceReady(state: CloudAuthState | null): boolean {
-  const legal = state?.legal;
-  return state?.authenticated === true && !!legal?.accepted &&
-    legal.accepted.terms === legal.current.terms &&
-    legal.accepted.privacy === legal.current.privacy &&
-    legal.accepted.acceptableUse === legal.current.acceptableUse;
-}
-
-export async function fetchCloudAuth(): Promise<CloudAuthState> {
-  const path = "/ui/api/cloud-auth";
-  const response = await fetch(path);
-  const body = await apiJson(response, path);
-  if (!response.ok || body.ok !== true) throw new Error(body.error || "Cloud authentication is unavailable");
-  return {
-    authenticated: body.authenticated === true,
-    expiresAt: body.expiresAt,
-    user: body.user,
-    workspace: body.workspace,
-    legal: body.legal,
-  };
-}
-
-export type CloudRestoreStage = "auth_refresh" | "cloud_status" | "lifecycle_resume";
-export type CloudRestoreCategory = "network" | "service" | "authentication";
-export type CloudRestoreCode =
-  | "network_unavailable"
-  | "service_unavailable"
-  | "authentication_invalid"
-  | "authentication_required"
-  | "email_not_verified"
-  | "device_revoked"
-  | "membership_revoked"
-  | "response_invalid";
-
-export class CloudSessionRestoreError extends Error {
-  constructor(
-    message: string,
-    readonly stage: CloudRestoreStage,
-    readonly retryable: boolean,
-    readonly category: CloudRestoreCategory,
-    readonly code: CloudRestoreCode,
-  ) {
-    super(message);
-    this.name = "CloudSessionRestoreError";
-  }
-}
-
-const CLOUD_RESTORE_STAGES = new Set<CloudRestoreStage>(["auth_refresh", "cloud_status", "lifecycle_resume"]);
-const CLOUD_RESTORE_CATEGORIES = new Set<CloudRestoreCategory>(["network", "service", "authentication"]);
-const CLOUD_RESTORE_CODES = new Set<CloudRestoreCode>([
-  "network_unavailable",
-  "service_unavailable",
-  "authentication_invalid",
-  "authentication_required",
-  "email_not_verified",
-  "device_revoked",
-  "membership_revoked",
-  "response_invalid",
-]);
-
-async function cloudAuthAction(action: string, input: Record<string, string | boolean>): Promise<any> {
-  const path = `/ui/api/cloud-auth/${action}`;
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  const body = await apiJson(response, path);
-  if (!response.ok || body.ok !== true) {
-    if (
-      action === "restore"
-      && typeof body.error === "string"
-      && CLOUD_RESTORE_STAGES.has(body.stage)
-      && typeof body.retryable === "boolean"
-      && CLOUD_RESTORE_CATEGORIES.has(body.category)
-      && CLOUD_RESTORE_CODES.has(body.code)
-    ) {
-      throw new CloudSessionRestoreError(body.error, body.stage, body.retryable, body.category, body.code);
-    }
-    throw new CloudAuthError(body.error || "Cloud authentication failed", typeof body.code === "string" ? body.code : undefined);
-  }
-  return body;
-}
-
-/** A failed Cloud auth action; `code` is the Auth error code, such as email_not_confirmed. */
-export class CloudAuthError extends Error {
-  constructor(message: string, readonly code?: string) {
-    super(message);
-    this.name = "CloudAuthError";
-  }
-}
-
-export const signUpCloud = (email: string, password: string) =>
-  cloudAuthAction("signup", { email, password });
-export const resendCloudSignUp = (email: string) => cloudAuthAction("resend-signup", { email });
-export const verifyCloudSignUp = (email: string, code: string) => cloudAuthAction("verify-signup", { email, code });
-export const requestCloudPasswordReset = (email: string) => cloudAuthAction("forgot-password", { email });
-export const signInCloud = (email: string, password: string, queueKey?: string) =>
-  cloudAuthAction("signin", { email, password, ...(queueKey ? { queueKey } : {}) });
-export const restoreCloudSession = (
-  refreshToken: string,
-  deviceCredential: string,
-  queueKey: string,
-  resumeLifecycle = false,
-) => cloudAuthAction("restore", {
-  refreshToken,
-  deviceCredential,
-  queueKey,
-  ...(resumeLifecycle ? { resumeLifecycle: true } : {}),
-});
-export const forgetCloudSession = () => cloudAuthAction("forget", {});
-export const signOutCloud = () => cloudAuthAction("signout", {});
-export const acceptCloudLegal = () => cloudAuthAction("accept-legal", {});
-export const acceptCloudInvitation = (code: string) => cloudAuthAction("accept-invitation", { code });
-
-export type CloudConnectorState = "active" | "revoked" | "missing" | "disabled";
-
-export interface CloudConnectorResult {
-  ok: true;
-  state: CloudConnectorState;
-  connectorId?: string;
-  deviceId?: string;
-  url?: string;
-  token?: string;
-}
-
-async function cloudConnectorAction(
-  action: "create" | "status" | "revoke",
-  connectorId?: string,
-): Promise<CloudConnectorResult> {
-  const path = "/ui/api/cloud-connector";
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, ...(connectorId ? { connectorId } : {}) }),
-  });
-  const body = await apiJson(response, path);
-  if (!response.ok || body.ok !== true) throw new Error(body.error || "Remote MCP settings are unavailable");
-  return body as CloudConnectorResult;
-}
-
-export const createCloudConnector = () => cloudConnectorAction("create");
-export const fetchCloudConnector = (connectorId: string) => cloudConnectorAction("status", connectorId);
-export const revokeCloudConnector = (connectorId: string) => cloudConnectorAction("revoke", connectorId);
-
-export interface CloudTeamState {
-  folders: Array<FolderInfo & {
-    archivedAt: number | null;
-    permission: "view" | "edit";
-    extensionDefaults: string[];
-  }>;
-  members: Array<{
-    accountId: string; email: string; role: "owner" | "admin" | "member"; joinedAt: number;
-    grants: Array<{ folderName: string; accountId: string; permission: "view" | "edit" }>;
-    profileGrants?: Array<{ profileId: string; accountId: string; permission: "view" | "edit" }>;
-  }>;
-  invitations: Array<{
-    id: string; email: string; role: "admin" | "member"; expiresAt: number;
-    acceptedAt: number | null; revokedAt: number | null; createdAt: number;
-  }>;
-}
-
-export async function fetchCloudTeam(): Promise<CloudTeamState> {
-  const path = "/ui/api/cloud-workspace";
-  const response = await fetch(path);
-  const body = await apiJson(response, path);
-  if (!response.ok || body.ok !== true) throw new Error(body.error || "Cloud team is unavailable");
-  return { folders: body.folders, members: body.members, invitations: body.invitations };
-}
-
-export async function cloudWorkspaceAction(action: string, input: Record<string, string | null>): Promise<any> {
-  const path = "/ui/api/cloud-workspace";
-  const response = await fetch(path, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, ...input }),
-  });
-  const body = await apiJson(response, path);
-  if (!response.ok || body.ok !== true) throw new Error(body.error || "Cloud workspace action failed");
-  return body;
 }
 
 export async function fetchLogs(): Promise<{ file: string; content: string }> {
@@ -454,7 +207,7 @@ async function apiJson(response: Response, path: string): Promise<any> {
   } catch {
     const contentType = response.headers.get("content-type") || "unknown content type";
     const guidance = response.status >= 500
-      ? "The local server failed before it could return JSON; check aliasmode.log, restart Vela Browser, then reload this page."
+      ? "The local server failed before it could return JSON; check the application log, restart Vela Browser, then reload this page."
       : "The dashboard and local server may be on different versions; stop Vela Browser, update it, restart it, then reload this page.";
     throw new Error(
       `Vela Browser API ${path} returned non-JSON (${response.status}, ${contentType}). ` +
@@ -475,8 +228,8 @@ export async function fetchProfiles(): Promise<UiRoster> {
   if (!Array.isArray(body.profiles)) throw new Error(body.error || "Vela Browser API returned no profile roster");
   return {
     profiles: body.profiles.map((profile: UiProfile) => {
-      const engine = profile.engine === "firefox" ? "firefox" : "chromium";
-      if (engine === "firefox") {
+      const engine = profile.engine === "firefox" || profile.engine === "webkit" ? profile.engine : "chromium";
+      if (engine === "firefox" || engine === "webkit") {
         const { debugPort: _debugPort, ...firefoxProfile } = profile;
         return { ...firefoxProfile, engine };
       }
@@ -553,6 +306,12 @@ export async function checkFingerprint(id: string, page: string): Promise<any> {
   const path = `/ui/api/profiles/${encodeURIComponent(id)}/check-fingerprint`;
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ page }) });
   return apiJson(response, path);
+}
+export async function measureFingerprint(id: string): Promise<FingerprintAudit> {
+  const path = `/ui/api/profiles/${encodeURIComponent(id)}/fingerprint-audit`;
+  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const result = await apiJson(response, path);
+  return result.audit;
 }
 export const restoreParkedSession = (id: string) =>
   post(`/ui/api/profiles/${encodeURIComponent(id)}/restore-session`);
@@ -752,7 +511,7 @@ export async function checkProxy(proxy: ProxyCheckInput): Promise<ProxyCheckResu
 export interface NewProfileInput {
   name?: string;
   /** Browser family selected for a new Local profile. */
-  engine?: "chromium" | "firefox";
+  engine?: "chromium" | "firefox" | "webkit";
   /** Chromium runtime of a new Chromium profile: Chromium 155 or CloakBrowser. */
   chromiumRuntime?: "aliasmode" | "cloakbrowser";
   group?: string;
@@ -770,13 +529,20 @@ export interface NewProfileInput {
   twofa?: string;
 }
 
-export async function createProfile(input: NewProfileInput): Promise<any> {
+export async function createProfile(input: NewProfileInput): Promise<{ ok: boolean; id?: string; error?: string; uncertain?: boolean }> {
   const r = await fetch("/ui/api/profiles", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  return apiJson(r, "/ui/api/profiles");
+  const body = await apiJson(r, "/ui/api/profiles");
+  const ok = r.ok && body.ok === true;
+  return {
+    ok,
+    ...(typeof body.id === "string" ? { id: body.id } : {}),
+    ...(typeof body.error === "string" ? { error: body.error } : {}),
+    ...(!ok ? { uncertain: body.uncertain !== false } : {}),
+  };
 }
 
 export async function fetchDiagnose(): Promise<DiagnoseReport | null> {
@@ -789,7 +555,7 @@ export async function fetchDiagnose(): Promise<DiagnoseReport | null> {
 export interface EditProfile {
   id: string;
   name: string;
-  engine: "chromium" | "firefox";
+  engine: "chromium" | "firefox" | "webkit";
   chromiumRuntime?: "aliasmode";
   /** Hardware the profile is set to report on every computer. Absent values are chosen by the engine. */
   hardware?: { gpu?: string; cores?: number };
@@ -934,7 +700,7 @@ export async function exportProfiles(
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `aliasmode-export.${format}`;
+  a.download = `vela-export.${format}`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -1091,18 +857,6 @@ export async function importPublishedScript(id: string): Promise<ScriptRecord> {
   const body = await scriptRequest(`/ui/api/scripts/library/${encodeURIComponent(id)}/import`, { method: "POST", body: "{}" });
   if (!body.script || typeof body.script !== "object") throw new Error("Imported script returned invalid data");
   return body.script as ScriptRecord;
-}
-
-export async function publishScript(id: string, input: PublishScriptInput): Promise<PublishedScript> {
-  const body = await scriptRequest(`/ui/api/scripts/${encodeURIComponent(id)}/publication`, {
-    method: "PUT", body: JSON.stringify(input),
-  });
-  if (!body.script || typeof body.script !== "object") throw new Error("Published script returned invalid data");
-  return body.script as PublishedScript;
-}
-
-export async function unpublishScript(id: string): Promise<void> {
-  await scriptRequest(`/ui/api/scripts/${encodeURIComponent(id)}/publication`, { method: "DELETE", body: "{}" });
 }
 
 export async function fetchScriptRun(): Promise<ScriptRun | null> {

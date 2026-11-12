@@ -3,13 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { ALIASMODE_VERSION } from "../version.ts";
+import { ALIASMODE_VERSION } from "../src/version.ts";
 import { buildAgentBootstrapManifest } from "./write-agent-bootstrap-manifest.ts";
 
 test("agent bootstrap manifest pins an exact installer URL and SHA-256", () => {
   const dir = mkdtempSync(join(tmpdir(), "aliasmode-agent-manifest-"));
-  const name = `Vela Browser_${ALIASMODE_VERSION}_x64-offline-setup.exe`;
-  const releaseBase = `https://github.com/aliasmode/aliasmode/releases/download/v${ALIASMODE_VERSION}`;
+  const name = `Vela-Browser_${ALIASMODE_VERSION}_x64-offline-setup.exe`;
+  const releaseBase = `https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v${ALIASMODE_VERSION}`;
   try {
     const installer = join(dir, name);
     writeFileSync(installer, "installer");
@@ -19,17 +19,16 @@ test("agent bootstrap manifest pins an exact installer URL and SHA-256", () => {
     })).toEqual({
       schema: 1,
       version: ALIASMODE_VERSION,
-      wingetId: "Vela Browser.Vela Browser",
       installer: {
         name,
-        url: `${releaseBase}/${name}`,
+        url: `${releaseBase}/${encodeURIComponent(name)}`,
         sha256: createHash("sha256").update("installer").digest("hex"),
         size: 9,
       },
     });
     expect(() => buildAgentBootstrapManifest({
       installer,
-      releaseBase: "https://github.com/aliasmode/aliasmode/releases/latest",
+      releaseBase: "https://github.com/accomplish07zrh-eng/vela-browser/releases/latest",
     })).toThrow("exact Vela Browser GitHub Release URL");
   } finally {
     rmSync(dir, { recursive: true, force: true });

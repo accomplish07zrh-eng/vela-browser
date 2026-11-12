@@ -1,14 +1,16 @@
 {
   "name": "vela-browser",
-  "version": "0.1.0-beta.74",
+  "version": "0.1.2",
   "description": "Local-first browser profile manager and anti-detect browser",
-  "module": "cli.ts",
+  "module": "src/cli.ts",
   "type": "module",
   "private": true,
+  "packageManager": "bun@1.4.1",
+  "engines": { "bun": ">=1.4.1" },
   "license": "Apache-2.0",
   "scripts": {
-    "start": "bun cli.ts start",
-    "serve": "bun cli.ts serve",
+    "start": "bun src/cli.ts start",
+    "serve": "bun src/cli.ts serve",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "docs:public": "bun scripts/generate-public-docs.mjs",
@@ -44,6 +46,7 @@
     "csv-parse": "^7.0.2",
     "playwright": "1.58.0-alpha-2026-01-16",
     "playwright-core": "1.58.2",
+    "playwright-webkit-core": "npm:playwright-core@1.65.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "ws": "8.21.0"

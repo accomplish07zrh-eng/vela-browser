@@ -1,4 +1,4 @@
-use crate::{browser::FirefoxRuntime, credentials, runtime_descriptor::RuntimeDescriptorState};
+use crate::{browser::FirefoxRuntime, runtime_descriptor::RuntimeDescriptorState};
 use reqwest::{redirect::Policy, Client};
 use serde::Deserialize;
 use std::{
@@ -42,31 +42,6 @@ struct HealthRecord {
 }
 
 #[derive(Debug, Deserialize)]
-struct CredentialSetRecord {
-    protocol: String,
-    event: String,
-    nonce: String,
-    request: u64,
-    key: String,
-    secret: String,
-}
-
-impl Drop for CredentialSetRecord {
-    fn drop(&mut self) {
-        self.secret.zeroize();
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct CredentialDeleteRecord {
-    protocol: String,
-    event: String,
-    nonce: String,
-    request: u64,
-    key: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct ImportRecord {
     pub ok: bool,
     pub message: String,
@@ -95,19 +70,6 @@ pub struct SidecarSupervisor(Arc<SidecarInner>);
 impl SidecarSupervisor {
     pub fn pid(&self) -> u32 {
         self.0.pid
-    }
-
-    fn write_control(&self, value: &serde_json::Value) -> Result<(), String> {
-        let mut child = self
-            .0
-            .child
-            .lock()
-            .map_err(|_| "sidecar handle lock failed".to_owned())?;
-        child
-            .as_mut()
-            .ok_or_else(|| "Vela Browser sidecar is not running".to_owned())?
-            .write(format!("{value}\n").as_bytes())
-            .map_err(|_| "could not write to the owned sidecar".to_owned())
     }
 
     pub fn request_shutdown(&self) -> Result<(), String> {
@@ -202,34 +164,6 @@ fn parse_ready_line(line: &[u8], nonce: &str, pid: u32) -> Result<Option<u16>, S
         return Err("sidecar readiness proof did not match the owned process".to_owned());
     }
     Ok(Some(record.port))
-}
-
-fn parse_credential_set(line: &[u8], nonce: &str) -> Option<CredentialSetRecord> {
-    let record = serde_json::from_slice::<CredentialSetRecord>(line).ok()?;
-    if record.protocol == PROTOCOL
-        && record.event == "credential-set"
-        && record.nonce == nonce
-        && record.request > 0
-        && record.key == "refresh_token"
-    {
-        Some(record)
-    } else {
-        None
-    }
-}
-
-fn parse_credential_delete(line: &[u8], nonce: &str) -> Option<CredentialDeleteRecord> {
-    let record = serde_json::from_slice::<CredentialDeleteRecord>(line).ok()?;
-    if record.protocol == PROTOCOL
-        && record.event == "credential-delete"
-        && record.nonce == nonce
-        && record.request > 0
-        && matches!(record.key.as_str(), "refresh_token" | "device_credential")
-    {
-        Some(record)
-    } else {
-        None
-    }
 }
 
 fn verify_health_record(record: &HealthRecord, nonce: &str, root: &Path) -> Result<(), String> {
@@ -486,38 +420,6 @@ pub async fn launch_and_verify(
         while let Some(event) = events.recv().await {
             match event {
                 CommandEvent::Stdout(mut line) => {
-                    if let Some(mut record) = parse_credential_set(&line, &expected_nonce) {
-                        let request = record.request;
-                        let secret = std::mem::take(&mut record.secret);
-                        let ok = credentials::store_refresh_token(secret).is_ok();
-                        line.zeroize();
-                        let response = serde_json::json!({
-                            "protocol": PROTOCOL,
-                            "event": "credential-result",
-                            "nonce": expected_nonce.as_str(),
-                            "request": request,
-                            "ok": ok,
-                        });
-                        if control.write_control(&response).is_err() {
-                            eprintln!("Vela Browser credential acknowledgement failed");
-                        }
-                        continue;
-                    }
-                    if let Some(record) = parse_credential_delete(&line, &expected_nonce) {
-                        let ok = credentials::delete_cloud_credential(&record.key).is_ok();
-                        line.zeroize();
-                        let response = serde_json::json!({
-                            "protocol": PROTOCOL,
-                            "event": "credential-result",
-                            "nonce": expected_nonce.as_str(),
-                            "request": record.request,
-                            "ok": ok,
-                        });
-                        if control.write_control(&response).is_err() {
-                            eprintln!("Vela Browser credential acknowledgement failed");
-                        }
-                        continue;
-                    }
                     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) {
                         let protocol = value.get("protocol").and_then(|value| value.as_str());
                         let nonce = value.get("nonce").and_then(|value| value.as_str());
@@ -568,8 +470,8 @@ pub async fn launch_and_verify(
 #[cfg(test)]
 mod tests {
     use super::{
-        import_command_args, parse_credential_delete, parse_credential_set, parse_ready_line,
-        should_present_unexpected_exit, verify_health_record, HealthRecord, PROTOCOL, VERSION,
+        import_command_args, parse_ready_line, should_present_unexpected_exit,
+        verify_health_record, HealthRecord, PROTOCOL, VERSION,
     };
     use std::{ffi::OsString, path::Path};
 
@@ -593,47 +495,6 @@ mod tests {
             parse_ready_line(b"ordinary log line", NONCE, 42).unwrap(),
             None
         );
-    }
-
-    #[test]
-    fn accepts_only_nonce_bound_refresh_token_persistence() {
-        let line = serde_json::json!({
-            "protocol": PROTOCOL,
-            "event": "credential-set",
-            "nonce": NONCE,
-            "request": 1,
-            "key": "refresh_token",
-            "secret": "rotated-refresh",
-        });
-        assert!(parse_credential_set(line.to_string().as_bytes(), NONCE).is_some());
-        assert!(parse_credential_set(line.to_string().as_bytes(), &"cd".repeat(32)).is_none());
-
-        let wrong_key = serde_json::json!({
-            "protocol": PROTOCOL,
-            "event": "credential-set",
-            "nonce": NONCE,
-            "request": 1,
-            "key": "access_token",
-            "secret": "access",
-        });
-        assert!(parse_credential_set(wrong_key.to_string().as_bytes(), NONCE).is_none());
-
-        let delete = serde_json::json!({
-            "protocol": PROTOCOL,
-            "event": "credential-delete",
-            "nonce": NONCE,
-            "request": 2,
-            "key": "device_credential",
-        });
-        assert!(parse_credential_delete(delete.to_string().as_bytes(), NONCE).is_some());
-        let delete_queue = serde_json::json!({
-            "protocol": PROTOCOL,
-            "event": "credential-delete",
-            "nonce": NONCE,
-            "request": 3,
-            "key": "queue_encryption_key",
-        });
-        assert!(parse_credential_delete(delete_queue.to_string().as_bytes(), NONCE).is_none());
     }
 
     #[test]

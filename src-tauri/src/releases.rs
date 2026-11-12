@@ -15,7 +15,8 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::sync::Mutex;
 use url::Url;
 
-const RELEASES_API: &str = "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=10";
+const RELEASES_API: &str =
+    "https://api.github.com/repos/accomplish07zrh-eng/vela-browser/releases?per_page=10";
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const UPDATE_MANIFEST: &str = "latest-v2.json";
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -51,7 +52,7 @@ const INSTALLATION_UNSAFE: &str = "Vela Browser cannot safely update this instal
 #[cfg(target_os = "macos")]
 const INSTALLATION_UNSAFE: &str = "Vela Browser cannot update this copy. Move Vela Browser to the Applications folder and open it again, or run the install command again.";
 #[cfg(target_os = "linux")]
-const INSTALLATION_UNSAFE: &str = "Vela Browser cannot update this copy. Close Vela Browser and run the install command from aliasmode.com/download again.";
+const INSTALLATION_UNSAFE: &str = "Vela Browser cannot update this copy. Close Vela Browser and run the install command from the Vela Browser release page again.";
 const CLEANUP_FAILED: &str =
     "The update was not installed because Vela Browser could not safely close browser services. The current version remains installed.";
 const INSTALL_FAILED: &str =
@@ -174,6 +175,18 @@ fn parse_canonical_tag(tag: &str) -> Option<Version> {
 }
 
 fn is_release_asset_url(url: &Url, tag: &str, name: &str) -> bool {
+    let mut expected = Url::parse("https://github.com").expect("fixed release origin");
+    expected
+        .path_segments_mut()
+        .expect("release origin accepts path segments")
+        .extend([
+            "accomplish07zrh-eng",
+            "vela-browser",
+            "releases",
+            "download",
+            tag,
+            name,
+        ]);
     url.scheme() == "https"
         && url.host_str() == Some("github.com")
         && url.port().is_none()
@@ -181,7 +194,7 @@ fn is_release_asset_url(url: &Url, tag: &str, name: &str) -> bool {
         && url.password().is_none()
         && url.query().is_none()
         && url.fragment().is_none()
-        && url.path() == format!("/aliasmode/aliasmode/releases/download/{tag}/{name}")
+        && url.path() == expected.path()
 }
 
 fn release_manifest_url(release: &GithubRelease) -> Option<Url> {
@@ -267,13 +280,13 @@ async fn fetch_releases(url: &str, timeout: Duration) -> Result<Vec<GithubReleas
 
 fn update_artifact_name(version: &Version) -> String {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        format!("Vela Browser_{version}_aarch64.app.tar.gz")
+        format!("Vela-Browser_{version}_aarch64.app.tar.gz")
     } else if cfg!(target_os = "macos") {
-        format!("Vela Browser_{version}_x64.app.tar.gz")
+        format!("Vela-Browser_{version}_x64.app.tar.gz")
     } else if cfg!(target_os = "linux") {
-        format!("Vela Browser_{version}_x86_64-linux.tar.gz")
+        format!("Vela-Browser_{version}_x86_64-linux.tar.gz")
     } else {
-        format!("Vela Browser_{version}_x64-setup.exe")
+        format!("Vela-Browser_{version}_x64-setup.exe")
     }
 }
 
@@ -295,7 +308,9 @@ fn validate_manifest_result(
         &candidate.tag,
         &update_artifact_name(&candidate.version),
     ) {
-        return Err("release manifest installer URL was not an Vela Browser release asset".to_owned());
+        return Err(
+            "release manifest installer URL was not an Vela Browser release asset".to_owned(),
+        );
     }
 
     let raw_version = raw_json
@@ -432,7 +447,9 @@ pub fn last_update_result(app: AppHandle) -> Result<Option<LastUpdateResult>, St
 fn restart_after_install_failure(app: AppHandle, error: impl std::fmt::Display) {
     eprintln!("Vela Browser update installation failed: {error}");
     app.dialog()
-        .message("Vela Browser could not start the verified update. The current version will restart.")
+        .message(
+            "Vela Browser could not start the verified update. The current version will restart.",
+        )
         .title("Vela Browser update failed")
         .kind(MessageDialogKind::Error)
         .buttons(MessageDialogButtons::Ok)
@@ -720,7 +737,7 @@ mod tests {
     use url::Url;
 
     fn manifest_url(tag: &str) -> String {
-        format!("https://github.com/aliasmode/aliasmode/releases/download/{tag}/{UPDATE_MANIFEST}")
+        format!("https://github.com/accomplish07zrh-eng/vela-browser/releases/download/{tag}/{UPDATE_MANIFEST}")
     }
 
     fn release(tag: &str, draft: bool, prerelease: bool, manifest_count: usize) -> GithubRelease {
@@ -851,15 +868,15 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_exact_aliasmode_release_asset_urls() {
+    fn accepts_only_exact_release_asset_urls() {
         let tag = "v0.1.0-beta.36";
         let valid = Url::parse(&manifest_url(tag)).unwrap();
         assert!(is_release_asset_url(&valid, tag, UPDATE_MANIFEST));
         for invalid in [
-            "http://github.com/aliasmode/aliasmode/releases/download/v0.1.0-beta.36/latest-v2.json",
-            "https://example.com/aliasmode/aliasmode/releases/download/v0.1.0-beta.36/latest-v2.json",
-            "https://github.com/other/aliasmode/releases/download/v0.1.0-beta.36/latest-v2.json",
-            "https://github.com/aliasmode/aliasmode/releases/download/v0.1.0-beta.36/latest-v2.json?raw=1",
+            "http://github.com/accomplish07zrh-eng/vela-browser/releases/download/v0.1.0-beta.36/latest-v2.json",
+            "https://example.com/accomplish07zrh-eng/vela-browser/releases/download/v0.1.0-beta.36/latest-v2.json",
+            "https://github.com/other/vela-browser/releases/download/v0.1.0-beta.36/latest-v2.json",
+            "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v0.1.0-beta.36/latest-v2.json?raw=1",
         ] {
             assert!(!is_release_asset_url(
                 &Url::parse(invalid).unwrap(),
@@ -881,7 +898,7 @@ mod tests {
             assets: vec![GithubAsset {
                 name: "latest.json".to_owned(),
                 browser_download_url: format!(
-                    "https://github.com/aliasmode/aliasmode/releases/download/{tag}/latest.json"
+                    "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/{tag}/latest.json"
                 ),
             }],
         };
@@ -893,7 +910,7 @@ mod tests {
     fn binds_manifest_to_release_version_target_and_installer() {
         let candidate = candidate("0.1.0-beta.36");
         let installer = format!(
-            "https://github.com/aliasmode/aliasmode/releases/download/v0.1.0-beta.36/{}",
+            "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v0.1.0-beta.36/{}",
             update_artifact_name(&candidate.version)
         );
         let installer = installer.as_str();

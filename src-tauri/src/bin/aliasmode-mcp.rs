@@ -1,6 +1,6 @@
 //! `aliasmode-mcp` starts the MCP helper that ships inside the `aliasmode-sidecar` program.
 //!
-//! AI clients and Remote MCP start this file by its installed path. It keeps that path and passes
+//! Local AI clients start this file by its installed path. It keeps that path and passes
 //! the arguments, the environment, stdin, stdout, stderr and the exit code through unchanged.
 
 use std::{
@@ -47,7 +47,9 @@ fn main() {
         fail("the Vela Browser installation folder is unavailable");
     };
     let error = run(command);
-    fail(&format!("the Vela Browser program could not start: {error}"));
+    fail(&format!(
+        "the Vela Browser program could not start: {error}"
+    ));
 }
 
 /// Replaces this process, so the process id, signals and stdio of the client reach the helper.

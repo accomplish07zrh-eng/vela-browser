@@ -154,7 +154,8 @@ test("MCP lifecycle tools include directory annotations", async () => {
     openWorldHint: false,
   });
   expect(tools.find((tool) => tool.name === "aliasmode_profile_delete")?.annotations?.destructiveHint).toBe(true);
-  expect(tools.find((tool) => tool.name === "aliasmode_profiles_replace_proxies")?.annotations?.destructiveHint).toBe(true);
+  expect(tools.some((tool) => tool.name === "aliasmode_profiles_replace_proxies")).toBe(false);
+  expect(tools.some((tool) => tool.name === "aliasmode_profile_update")).toBe(false);
   expect(tools.find((tool) => tool.name === "aliasmode_browser_open")?.annotations).toMatchObject({
     destructiveHint: true,
     openWorldHint: true,
@@ -186,7 +187,7 @@ test("MCP profile creation forwards the selected browser engine", async () => {
       chromiumRuntime: { type: "string", enum: ["aliasmode", "cloakbrowser"] },
     },
   });
-  expect(tool?.description).toContain("Without engine, Windows creates an Vela Chromium profile, and macOS and Linux create an Vela Firefox profile.");
+  expect(tool?.description).toContain("Without engine, Windows creates a Vela Chromium profile, and macOS and Linux create a Vela Firefox profile.");
   const created = await client.callTool({ name: "aliasmode_profile_create", arguments: { name: "Firefox", engine: "firefox" } });
   expect(created.isError).not.toBe(true);
   expect(runtime.calls.at(-1)).toEqual({
@@ -199,85 +200,6 @@ test("MCP profile creation forwards the selected browser engine", async () => {
     method: "profiles.create",
     params: { input: { name: "Cloak", chromiumRuntime: "cloakbrowser" }, temporary: false },
   });
-
-  await client.close();
-  await host.close();
-});
-
-test("MCP profile update forwards versioned edits without returning credentials", async () => {
-  const runtime = new FakeRuntime();
-  const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright: new FakePlaywright() });
-  const client = new Client({ name: "test", version: "1" }, { capabilities: {} });
-  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
-
-  const tool = (await client.listTools()).tools.find((tool) => tool.name === "aliasmode_profile_update");
-  expect(tool?.annotations?.destructiveHint).toBe(true);
-  expect(tool?.inputSchema).toMatchObject({
-    required: ["profileId", "expectedVersion", "set"], additionalProperties: false,
-    properties: {
-      expectedVersion: { type: "integer", minimum: 0 },
-      set: { type: "object", minProperties: 1, additionalProperties: false, properties: { password: { type: "string" }, extensions: { type: "array" } } },
-    },
-  });
-  const args = { profileId: "profile1", expectedVersion: 7, set: { username: "matched-user", password: "private-password", twofa: "private-totp" } };
-  const result = await client.callTool({ name: "aliasmode_profile_update", arguments: args });
-  expect(result.isError).not.toBe(true);
-  expect(runtime.calls.at(-1)).toEqual({ method: "profiles.update", params: args });
-  expect(result.structuredContent).toEqual({ profileId: "profile1", updated: true });
-  expect(JSON.stringify(result)).not.toContain("private-password");
-  expect(JSON.stringify(result)).not.toContain("private-totp");
-
-  await client.close();
-  await host.close();
-});
-
-test("MCP host exposes strict proxy replacement input and forwards safe results", async () => {
-  const runtime = new FakeRuntime();
-  const host = await createVelaBrowserMcp({
-    discovered: { client: runtime },
-    playwright: new FakePlaywright(),
-  });
-  const client = new Client({ name: "test", version: "1" }, { capabilities: {} });
-  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
-
-  const listed = await client.listTools();
-  const tool = listed.tools.find((candidate) => candidate.name === "aliasmode_profiles_replace_proxies");
-  expect(tool?.inputSchema).toMatchObject({
-    type: "object",
-    properties: {
-      dryRun: { type: "boolean", default: true },
-      replacements: { type: "array", minItems: 1 },
-      csv: { type: "string", minLength: 1 },
-    },
-    additionalProperties: false,
-  });
-  expect((tool?.inputSchema as { oneOf?: unknown[] }).oneOf).toHaveLength(2);
-
-  const replacement = {
-    username: "exact-user",
-    proxy: { type: "socks5", host: "proxy.test", port: "1080", user: "proxy-user", pass: "private-pass" },
-  };
-  const structured = await client.callTool({
-    name: "aliasmode_profiles_replace_proxies",
-    arguments: { dryRun: true, replacements: [replacement] },
-  });
-  expect(structured.isError).not.toBe(true);
-  expect(runtime.calls.at(-1)).toEqual({
-    method: "profiles.replaceProxies",
-    params: { dryRun: true, replacements: [replacement] },
-  });
-  expect(JSON.stringify(structured)).not.toContain("private-pass");
-  expect(structured.structuredContent).toMatchObject({
-    dryRun: true,
-    counts: { ready: 1 },
-    results: [{ index: 0, status: "ready", profileId: "profile-1", currentVersion: 4 }],
-  });
-
-  const csv = "username,type,host,port,user,pass\nexact-user,http,proxy.test,8080,user,private-csv-pass";
-  await client.callTool({ name: "aliasmode_profiles_replace_proxies", arguments: { csv } });
-  expect(runtime.calls.at(-1)).toEqual({ method: "profiles.replaceProxies", params: { csv } });
 
   await client.close();
   await host.close();
@@ -419,3 +341,18 @@ test("browser actions require one selected profile", async () => {
   await client.close();
   await host.close();
 });
+
+test("MCP cannot call retired account tools or forward them to the runtime", async () => {
+    const runtime = new FakeRuntime();
+    const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright: new FakePlaywright() });
+    const client = new Client({ name: "test", version: "1" }, { capabilities: {} });
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+      for (const name of ["aliasmode_profile_update", "aliasmode_profiles_replace_proxies"]) {
+        const result = await client.callTool({ name, arguments: {} });
+        expect(result.isError).toBe(true);
+      }
+      expect(runtime.calls).toEqual([]);
+    } finally { await client.close(); await host.close(); }
+  });

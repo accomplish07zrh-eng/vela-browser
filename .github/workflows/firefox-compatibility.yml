@@ -10,24 +10,24 @@ on:
       - scripts/firefox-owner-smoke.mjs
       - scripts/firefox-owner-bridge-smoke-runner.mjs
       - scripts/firefox-owner-smoke-manager.mjs
-      - launcher.ts
-      - firefox-config.ts
-      - firefox-fonts.ts
-      - firefox-media.ts
+      - src/launcher.ts
+      - src/firefox-config.ts
+      - src/firefox-fonts.ts
+      - src/firefox-media.ts
       - firefox-data/**
-      - firefox-runtime.ts
-      - firefox-install.ts
-      - browser-install.ts
-      - source-runtime.ts
-      - cli.ts
-      - scripts.ts
+      - src/firefox-runtime.ts
+      - src/firefox-install.ts
+      - src/browser-install.ts
+      - src/source-runtime.ts
+      - src/cli.ts
+      - src/scripts.ts
       - agent/script-runner.mjs
       - agent/script-runner.py
-      - session.ts
-      - store.ts
-      - types.ts
+      - src/session.ts
+      - src/store.ts
+      - src/types.ts
       - firefox-worker.mjs
-      - playwright-runtime.ts
+      - src/playwright-runtime.ts
       - playwright-worker.mjs
       - agent/playwright-proxy.mjs
       - package.json
@@ -41,24 +41,24 @@ on:
       - scripts/firefox-owner-smoke.mjs
       - scripts/firefox-owner-bridge-smoke-runner.mjs
       - scripts/firefox-owner-smoke-manager.mjs
-      - launcher.ts
-      - firefox-config.ts
-      - firefox-fonts.ts
-      - firefox-media.ts
+      - src/launcher.ts
+      - src/firefox-config.ts
+      - src/firefox-fonts.ts
+      - src/firefox-media.ts
       - firefox-data/**
-      - firefox-runtime.ts
-      - firefox-install.ts
-      - browser-install.ts
-      - source-runtime.ts
-      - cli.ts
-      - scripts.ts
+      - src/firefox-runtime.ts
+      - src/firefox-install.ts
+      - src/browser-install.ts
+      - src/source-runtime.ts
+      - src/cli.ts
+      - src/scripts.ts
       - agent/script-runner.mjs
       - agent/script-runner.py
-      - session.ts
-      - store.ts
-      - types.ts
+      - src/session.ts
+      - src/store.ts
+      - src/types.ts
       - firefox-worker.mjs
-      - playwright-runtime.ts
+      - src/playwright-runtime.ts
       - playwright-worker.mjs
       - agent/playwright-proxy.mjs
       - package.json
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
@@ -117,7 +117,7 @@ jobs:
           }
       - uses: actions/download-artifact@v4
         with:
-          name: Vela BrowserBuilds-windows-x86_64
+          name: AliasModeBuilds-windows-x86_64
           path: artifacts/firefox
           github-token: ${{ github.token }}
           repository: aliasmode/aliasmode-firefox
@@ -168,11 +168,11 @@ jobs:
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
           }
           $proof = Join-Path $env:RUNNER_TEMP "cloud-launcher-smoke-$([guid]::NewGuid().ToString('N'))"
-          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" setup --state-root $proof
+          bun --no-env-file "$env:GITHUB_WORKSPACE\src\cli.ts" setup --state-root $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun --no-env-file -e '
             import { existsSync, realpathSync, readFileSync } from "node:fs";
-            import { applySourceRuntime } from "./source-runtime.ts";
+            import { applySourceRuntime } from "./src/source-runtime.ts";
             const root = process.argv[1];
             const runtime = JSON.parse(readFileSync(`${root}/browser-runtime.json`, "utf8"));
             applySourceRuntime(root);
@@ -187,9 +187,9 @@ jobs:
             }
           ' $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" __cloud-launcher-smoke --headless --state-root $proof
+          bun --no-env-file "$env:GITHUB_WORKSPACE\src\cli.ts" __browser-lifecycle-smoke --headless --state-root $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun --no-env-file "$env:GITHUB_WORKSPACE\cli.ts" __cloud-launcher-smoke --engine firefox --headless --state-root $proof
+          bun --no-env-file "$env:GITHUB_WORKSPACE\src\cli.ts" __browser-lifecycle-smoke --engine firefox --headless --state-root $proof
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "ALIASMODE_SOURCE_RUNTIME_ROOT=$proof" | Add-Content $env:GITHUB_ENV
       - name: Diagnose Windows source setup failure
@@ -198,7 +198,7 @@ jobs:
         run: |
           $proof = Join-Path $env:RUNNER_TEMP "source-setup-diagnostic-$([guid]::NewGuid().ToString('N'))"
           bun --no-env-file -e '
-            import { setupSourceRuntime } from "./source-runtime.ts";
+            import { setupSourceRuntime } from "./src/source-runtime.ts";
             try {
               await setupSourceRuntime(process.argv[1]);
             } catch (error) {
@@ -272,7 +272,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
@@ -323,7 +323,7 @@ jobs:
           fi
           install_root="$(mktemp -d "$RUNNER_TEMP/firefox-install-${{ matrix.platform }}-XXXXXX")"
           installed="$(ALIASMODE_FIREFOX_ARCHIVE="${entries[0]}" ALIASMODE_FIREFOX_INSTALL_ROOT="$install_root" bun -e '
-            import { installFirefox } from "./firefox-install.ts";
+            import { installFirefox } from "./src/firefox-install.ts";
             const result = await installFirefox({
               archive: process.env.ALIASMODE_FIREFOX_ARCHIVE,
               cwd: process.env.ALIASMODE_FIREFOX_INSTALL_ROOT,
@@ -358,10 +358,10 @@ jobs:
           set -euo pipefail
           unset GH_TOKEN GITHUB_TOKEN CLOAKBROWSER_BINARY_PATH CLOAKBROWSER_BINARY_SHA256 ALIASMODE_FIREFOX_BINARY_PATH ALIASMODE_FIREFOX_BINARY_SHA256
           proof="$(mktemp -d "$RUNNER_TEMP/cloud-launcher-smoke-${{ matrix.platform }}-XXXXXX")"
-          bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" setup --state-root "$proof"
+          bun --no-env-file "$GITHUB_WORKSPACE/src/cli.ts" setup --state-root "$proof"
           bun --no-env-file -e '
             import { existsSync, realpathSync, readFileSync } from "node:fs";
-            import { applySourceRuntime } from "./source-runtime.ts";
+            import { applySourceRuntime } from "./src/source-runtime.ts";
             const root = process.argv[1];
             const runtime = JSON.parse(readFileSync(`${root}/browser-runtime.json`, "utf8"));
             applySourceRuntime(root);
@@ -377,16 +377,16 @@ jobs:
           ' "$proof"
           # GitHub's Ubuntu runner blocks Chromium's user namespaces.
           if [[ "${{ matrix.platform }}" == "linux" ]]; then
-            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __cloud-launcher-smoke --headless --no-sandbox --state-root "$proof"
+            bun --no-env-file "$GITHUB_WORKSPACE/src/cli.ts" __browser-lifecycle-smoke --headless --no-sandbox --state-root "$proof"
           else
-            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __cloud-launcher-smoke --headless --state-root "$proof"
+            bun --no-env-file "$GITHUB_WORKSPACE/src/cli.ts" __browser-lifecycle-smoke --headless --state-root "$proof"
           fi
-          # A Cloud V3 payload on Apple Silicon must download and open Vela Browser's own Mac Chromium 155 build.
+          # A Chromium 155 profile on Apple Silicon must download and open Vela Browser's own Mac Chromium 155 build.
           if [[ "${{ matrix.platform }}" == "darwin" && "${{ matrix.architecture }}" == "arm64" ]]; then
-            bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __cloud-launcher-smoke --chromium-runtime aliasmode --headless --state-root "$proof/cloud-beta-state"
-            test -x "$proof/cloud-beta-state/runtimes/chromium-155.0.8059.85-aliasmode.5/Chromium.app/Contents/MacOS/Chromium"
+            bun --no-env-file "$GITHUB_WORKSPACE/src/cli.ts" __browser-lifecycle-smoke --chromium-runtime aliasmode --headless --state-root "$proof/browser-beta-state"
+            test -x "$proof/browser-beta-state/runtimes/chromium-155.0.8059.85-aliasmode.5/Chromium.app/Contents/MacOS/Chromium"
           fi
-          bun --no-env-file "$GITHUB_WORKSPACE/cli.ts" __cloud-launcher-smoke --engine firefox --headless --state-root "$proof"
+          bun --no-env-file "$GITHUB_WORKSPACE/src/cli.ts" __browser-lifecycle-smoke --engine firefox --headless --state-root "$proof"
           printf 'ALIASMODE_SOURCE_RUNTIME_ROOT=%s\n' "$proof" >> "$GITHUB_ENV"
       # The previous runtime has no Intel package.
       - name: Install previous macOS runtime for profile upgrade proof
@@ -399,7 +399,7 @@ jobs:
           curl --fail --location --silent --show-error 'https://github.com/aliasmode/aliasmode-firefox/releases/download/aliasmode-runtime-152.0.4-beta.30-r4/aliasmode-152.0.4-beta.30-mac.arm64.zip' --output "$archive"
           printf '%s  %s\n' a9847893bbe0472114cfc35b9f67ecb741f9a59002ac7d9e867634594792d320 "$archive" | shasum -a 256 --check
           ditto -x -k "$archive" "$destination"
-          browser="$destination/Vela Browser.app/Contents/MacOS/aliasmode"
+          browser="$destination/AliasMode.app/Contents/MacOS/aliasmode"
           printf '%s  %s\n' 20e2f8c93457eaf5cbd73a2580d1abdf436fbe54894e14fa7dc69469c1925ee9 "$browser" | shasum -a 256 --check
           printf 'ALIASMODE_PREVIOUS_FIREFOX_BINARY_PATH=%s\n' "$browser" >> "$GITHUB_ENV"
       - name: Prove persistent contexts, MCP, scripts, and storage

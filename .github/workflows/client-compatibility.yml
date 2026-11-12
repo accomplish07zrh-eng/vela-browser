@@ -72,7 +72,7 @@ jobs:
           }
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-windows-candidate
@@ -89,8 +89,8 @@ jobs:
           $artifact = Join-Path $env:GITHUB_WORKSPACE "artifact"
           $version = [string](Get-Content ".\src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json).version
           if ([string]::IsNullOrWhiteSpace($version)) { throw "candidate source version is missing" }
-          $fullName = "Vela Browser_${version}_x64-offline-setup.exe"
-          $slimName = "Vela Browser_${version}_x64-setup.exe"
+          $fullName = "Vela-Browser_${version}_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_${version}_x64-setup.exe"
           $payloadNames = @($fullName, $slimName, "browser.json", "SHA256SUMS.txt", "size-report.json")
           $requiredNames = @($payloadNames + "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath $artifact -Force)
@@ -150,7 +150,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:ALIASMODE_CANDIDATE_VERSION)) {
             throw "verified Vela Browser candidate version is missing"
           }
-          $installerName = "Vela Browser_$($env:ALIASMODE_CANDIDATE_VERSION)_x64-offline-setup.exe"
+          $installerName = "Vela-Browser_$($env:ALIASMODE_CANDIDATE_VERSION)_x64-offline-setup.exe"
           $installer = Get-Item (Join-Path $env:GITHUB_WORKSPACE "artifact\$installerName")
           $checksumFile = Join-Path $env:GITHUB_WORKSPACE "artifact\SHA256SUMS.txt"
           $checksumPattern = '^([a-f0-9]{64})  ' + [regex]::Escape($installerName) + '$'
@@ -178,7 +178,7 @@ jobs:
           if ($install.ExitCode -ne 0) { throw "Vela Browser installer exited with code $($install.ExitCode)" }
           $helper = Join-Path $installRoot "aliasmode-mcp.exe"
           if (-not (Test-Path $helper -PathType Leaf)) { throw "Vela Browser helper was not installed" }
-          $aliasData = Join-Path $appData "com.aliasmode.desktop"
+          $aliasData = Join-Path $appData "com.velabrowser.desktop"
           New-Item -ItemType Directory -Force $aliasData | Out-Null
           @{ version = 1; mode = "local"; localAnalytics = $false } |
             ConvertTo-Json -Compress |
@@ -291,7 +291,7 @@ jobs:
           @'
           import { WebSocketServer } from "ws";
           import { MCP_TUNNEL_PROTOCOL } from "./contracts/cloud-v1.ts";
-          import { McpTunnelRuntime } from "./mcp-tunnel.ts";
+          import { McpTunnelRuntime } from "./src/mcp-tunnel.ts";
           const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
           await new Promise((resolve) => server.once("listening", resolve));
           const tools = new Promise((resolve, reject) => {
@@ -338,7 +338,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $descriptor = Join-Path $env:APPDATA "com.aliasmode.desktop\agent-runtime.json"
+          $descriptor = Join-Path $env:APPDATA "com.velabrowser.desktop\agent-runtime.json"
           if (Test-Path $descriptor -PathType Leaf) {
             $runtime = Get-Content $descriptor | ConvertFrom-Json
             Stop-Process -Id $runtime.desktopPid -Force -ErrorAction SilentlyContinue

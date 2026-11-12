@@ -56,10 +56,10 @@ function Start-RunnerUserProcess(
 }
 
 $publicVersion = $SourceVersion
-$publicInstallerName = "Vela Browser_${publicVersion}_x64-offline-setup.exe"
+$publicInstallerName = "Vela-Browser_${publicVersion}_x64-offline-setup.exe"
 $candidateTag = "v$CandidateVersion"
-$candidateInstallerName = "Vela Browser_${CandidateVersion}_x64-setup.exe"
-$candidateReleaseBase = "https://github.com/aliasmode/aliasmode/releases/download/$candidateTag"
+$candidateInstallerName = "Vela-Browser_${CandidateVersion}_x64-setup.exe"
+$candidateReleaseBase = "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/$candidateTag"
 $candidateManifestUrl = "$candidateReleaseBase/latest-v2.json"
 $candidateInstallerUrl = "$candidateReleaseBase/$candidateInstallerName"
 $repoRoot = Split-Path $PSScriptRoot -Parent
@@ -821,11 +821,11 @@ if ([string]::IsNullOrWhiteSpace($DiagnosticsPath)) {
 $hostsPath = Join-Path $env:SystemRoot "System32\drivers\etc\hosts"
 $appDataRoot = Join-Path (
   [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
-) "com.aliasmode.desktop"
+) "com.velabrowser.desktop"
 $configPath = Join-Path $appDataRoot "config.json"
 $sentinelPath = Join-Path $appDataRoot "in-app-update-sentinel.txt"
 $appPath = Join-Path $installRoot "Vela Browser.exe"
-$manufacturerKey = "Registry::HKEY_CURRENT_USER\Software\aliasmode\Vela Browser"
+$manufacturerKey = "Registry::HKEY_CURRENT_USER\Software\Vela Browser\Vela Browser"
 $uninstallKey = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser"
 $registrationBackup = $null
 $registrationChanged = $false
@@ -901,7 +901,7 @@ try {
     if (Test-Path -LiteralPath $path) { throw "runner has pre-existing Vela Browser state" }
   }
   foreach ($key in @(
-    "Registry::HKEY_CURRENT_USER\Software\aliasmode\Vela Browser",
+    "Registry::HKEY_CURRENT_USER\Software\Vela Browser\Vela Browser",
     "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser"
   )) {
     if (Test-Path -LiteralPath $key) { throw "runner has pre-existing Vela Browser registration" }

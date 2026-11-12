@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "./i18n.tsx";
-import { folderScope, type FolderInfo } from "../folders.ts";
-import type { TrashMutationResult, TrashProfileView } from "../proxy-tools-types.ts";
+import { folderScope, type FolderInfo } from "../src/folders.ts";
+import type { TrashMutationResult, TrashProfileView } from "../src/proxy-tools-types.ts";
 import { proxyResultPage } from "./proxies.tsx";
 
 export function filterTrash(profiles: TrashProfileView[], groups: string[] | null, search: string): TrashProfileView[] {

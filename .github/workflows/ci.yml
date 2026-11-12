@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -164,7 +164,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -176,8 +176,8 @@ jobs:
           FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_firefox.outputs.executable_sha256 }}
         run: |
           $ErrorActionPreference = "Stop"
-          $baselineUrl = "https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip"
-          $expectedBaselineSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"
+          $baselineUrl = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.1/bun-windows-x64-baseline.zip"
+          $expectedBaselineSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"
           $baselineZip = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline.zip"
           Invoke-WebRequest $baselineUrl -OutFile $baselineZip
           $baselineSha = (Get-FileHash -LiteralPath $baselineZip -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -186,8 +186,8 @@ jobs:
           }
 
           $setupBunVersion = (& bun --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $setupBunVersion -ne "1.2.21") {
-            throw "setup Bun identity is not 1.2.21"
+          if ($LASTEXITCODE -ne 0 -or $setupBunVersion -ne "1.4.1") {
+            throw "setup Bun identity is not 1.4.1"
           }
           $setupBunPath = (Get-Command bun -ErrorAction Stop).Source
           $setupBunSha = (Get-FileHash -LiteralPath $setupBunPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -217,8 +217,8 @@ jobs:
           }
 
           $toolchainIdentity = @(
-            "setup-bun=1.2.21:$setupBunSha"
-            "baseline-bun=1.2.21:$baselineSha"
+            "setup-bun=1.4.1:$setupBunSha"
+            "baseline-bun=1.4.1:$baselineSha"
             "rustc=$rustcIdentity"
             "rust-toolchain=$activeToolchain"
             "runner=$env:RUNNER_OS/$env:RUNNER_ARCH/$env:ImageOS/$env:ImageVersion"
@@ -281,8 +281,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $candidate = ".\artifacts\windows-candidate"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $payloadNames = @($fullName, $slimName, "browser.json", "SHA256SUMS.txt", "size-report.json")
           $requiredNames = @($payloadNames + "artifact-manifest.json") | Sort-Object
           $entries = @(Get-ChildItem -LiteralPath $candidate -Force)
@@ -393,7 +393,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -424,7 +424,7 @@ jobs:
             $successorVersion = if ($env:WINDOWS_VERSION.Contains("-")) {
               "$($env:WINDOWS_VERSION).acceptance.1"
             } else {
-              "$($sourceSemantic.Major).$($sourceSemantic.Minor).$($sourceSemantic.Patch + 1)-acceptance.1"
+              "$($sourceSemantic.Major).$($sourceSemantic.Minor).$($sourceSemantic.Patch + 1)"
             }
             $successorSemantic = [Management.Automation.SemanticVersion]::Parse($successorVersion)
             if ($successorSemantic -le $sourceSemantic -or $successorSemantic.ToString() -cne $successorVersion) {
@@ -433,27 +433,32 @@ jobs:
 
             $versionFiles = @(
               ".\package.json",
-              ".\version.ts",
+              ".\src\version.ts",
               ".\src-tauri\tauri.conf.json",
               ".\src-tauri\Cargo.toml",
               ".\src-tauri\Cargo.lock"
             )
             foreach ($path in $versionFiles) {
               $text = [IO.File]::ReadAllText($path)
-              if ([regex]::Matches($text, [regex]::Escape($env:WINDOWS_VERSION)).Count -ne 1) {
+              # Cargo.lock also lists other crates that can share the version; only the app's own entry moves.
+              $pattern = [regex]::Escape($env:WINDOWS_VERSION)
+              if ($path.EndsWith("Cargo.lock")) {
+                $pattern = '(?<=name = "aliasmode-desktop"\r?\nversion = ")' + $pattern + '(?=")'
+              }
+              if ([regex]::Matches($text, $pattern).Count -ne 1) {
                 throw "synthetic successor version replacement is ambiguous: $path"
               }
               [IO.File]::WriteAllText(
                 $path,
-                $text.Replace($env:WINDOWS_VERSION, $successorVersion),
+                [regex]::Replace($text, $pattern, $successorVersion),
                 [Text.UTF8Encoding]::new($false)
               )
             }
 
             $bunZip = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline.zip"
             $bunRoot = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline"
-            Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip" -OutFile $bunZip
-            $expectedBunSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"
+            Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.4.1/bun-windows-x64-baseline.zip" -OutFile $bunZip
+            $expectedBunSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"
             if ((Get-FileHash -LiteralPath $bunZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedBunSha) {
               throw "official baseline Bun archive SHA-256 mismatch"
             }
@@ -462,7 +467,7 @@ jobs:
             if ($bunCandidates.Count -ne 1) { throw "official baseline Bun archive must contain exactly one bun.exe" }
             $baselineBun = $bunCandidates[0].FullName
             $baselineVersion = (& $baselineBun --version).Trim()
-            if ($LASTEXITCODE -ne 0 -or $baselineVersion -cne "1.2.21") {
+            if ($LASTEXITCODE -ne 0 -or $baselineVersion -cne "1.4.1") {
               throw "official baseline Bun version is incorrect"
             }
 
@@ -472,7 +477,7 @@ jobs:
             & .\scripts\build-windows-installer.ps1 -Flavor slim -OutputDirectory $artifact
             if ($LASTEXITCODE -ne 0) { throw "synthetic successor build failed" }
 
-            $name = "Vela Browser_${successorVersion}_x64-setup.exe"
+            $name = "Vela-Browser_${successorVersion}_x64-setup.exe"
             $installer = Join-Path $artifact $name
             if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
               throw "synthetic successor installer is missing"
@@ -546,7 +551,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-firefox-windows-x64
@@ -561,11 +566,11 @@ jobs:
           ALIASMODE_FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_cache.outputs.firefox_executable_sha256 }}
         run: |
           $ErrorActionPreference = "Stop"
-          $pinnedSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"
+          $pinnedSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"
           if ($env:EXPECTED_BASELINE_SHA -ne $pinnedSha) { throw "baseline Bun provenance is inconsistent" }
           $zip = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline.zip"
           $root = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline"
-          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip" -OutFile $zip
+          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.4.1/bun-windows-x64-baseline.zip" -OutFile $zip
           $actualSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualSha -ne $env:EXPECTED_BASELINE_SHA) { throw "official baseline Bun archive SHA-256 mismatch" }
           Expand-Archive $zip $root -Force
@@ -573,7 +578,7 @@ jobs:
           if ($baselineCandidates.Count -ne 1) { throw "official baseline Bun archive must contain exactly one bun.exe" }
           $baselineBun = $baselineCandidates[0].FullName
           $baselineVersion = (& $baselineBun --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $baselineVersion -ne "1.2.21") { throw "official baseline Bun version is incorrect" }
+          if ($LASTEXITCODE -ne 0 -or $baselineVersion -ne "1.4.1") { throw "official baseline Bun version is incorrect" }
           & $baselineBun scripts/prepare-windows-bundle.ts
           if ($LASTEXITCODE -ne 0) { throw "baseline bundle preparation failed" }
       - name: Archive prepared bundle inputs
@@ -634,7 +639,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -656,11 +661,11 @@ jobs:
           ALIASMODE_FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_cache.outputs.firefox_executable_sha256 }}
         run: |
           $ErrorActionPreference = "Stop"
-          $pinnedSha = "23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be"
+          $pinnedSha = "2d1871e72b28165a8574a9c91de867cbe499f55b8c75facf4fb9e42888eddba6"
           if ($env:EXPECTED_BASELINE_SHA -ne $pinnedSha) { throw "baseline Bun provenance is inconsistent" }
           $zip = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline.zip"
           $root = Join-Path $env:RUNNER_TEMP "bun-windows-x64-baseline"
-          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip" -OutFile $zip
+          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v1.4.1/bun-windows-x64-baseline.zip" -OutFile $zip
           $actualSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualSha -ne $env:EXPECTED_BASELINE_SHA) { throw "official baseline Bun archive SHA-256 mismatch" }
           Expand-Archive $zip $root -Force
@@ -668,7 +673,7 @@ jobs:
           if ($baselineCandidates.Count -ne 1) { throw "official baseline Bun archive must contain exactly one bun.exe" }
           $baselineBun = $baselineCandidates[0].FullName
           $baselineVersion = (& $baselineBun --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $baselineVersion -ne "1.2.21") { throw "official baseline Bun version is incorrect" }
+          if ($LASTEXITCODE -ne 0 -or $baselineVersion -ne "1.4.1") { throw "official baseline Bun version is incorrect" }
           & $baselineBun scripts/prepare-windows-bundle.ts
           if ($LASTEXITCODE -ne 0) { throw "baseline bundle preparation failed" }
       - name: Build full offline installer with zlib
@@ -685,7 +690,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $directory = ".\artifacts\windows-full"
-          $installerName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $installerName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
           $installer = Join-Path $directory $installerName
           Copy-Item ".\src-tauri\generated\browser.json" (Join-Path $directory "browser.json")
           "$((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant())  $installerName" |
@@ -722,7 +727,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -766,7 +771,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $directory = ".\artifacts\windows-slim"
-          $installerName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $installerName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $arguments = @(
             $directory,
             "--role", "slim",
@@ -796,7 +801,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
@@ -880,20 +885,20 @@ jobs:
           foreach ($name in @("CLOAKBROWSER_BINARY_PATH", "CLOAKBROWSER_BINARY_SHA256")) {
             [Environment]::SetEnvironmentVariable($name, $null, "Process")
           }
-          # No CloakBrowser is bundled: the first Cloud profile downloads the pinned build on first use.
+          # No CloakBrowser is bundled: the first local profile downloads the pinned build on first use.
           Push-Location $smoke
           try {
-            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --headless --state-root "$smoke\cloud-state"
-            if ($LASTEXITCODE -ne 0) { throw "Cloud launcher smoke exited with code $LASTEXITCODE" }
+            & ".\aliasmode-sidecar.exe" __browser-lifecycle-smoke --headless --state-root "$smoke\browser-state"
+            if ($LASTEXITCODE -ne 0) { throw "Local browser lifecycle smoke exited with code $LASTEXITCODE" }
           } finally {
             Pop-Location
           }
-          $browserPath = Get-Item -LiteralPath "$smoke\cloud-state\runtimes\cloakbrowser-146.0.7680.177.5\chrome.exe"
+          $browserPath = Get-Item -LiteralPath "$smoke\browser-state\runtimes\cloakbrowser-146.0.7680.177.5\chrome.exe"
           $browserSha256 = (Get-FileHash -LiteralPath $browserPath.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($browserSha256 -cne "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80") {
             throw "downloaded CloakBrowser does not match its pin"
           }
-          if (@(Get-ChildItem -LiteralPath "$smoke\cloud-state\runtimes" -Force | Where-Object Name -Like ".*").Count -ne 0) {
+          if (@(Get-ChildItem -LiteralPath "$smoke\browser-state\runtimes" -Force | Where-Object Name -Like ".*").Count -ne 0) {
             throw "CloakBrowser download left a partial or temporary file"
           }
           $browser = Start-Process -PassThru $browserPath.FullName -ArgumentList @(
@@ -933,13 +938,13 @@ jobs:
           $env:CLOAKBROWSER_BINARY_SHA256 = $browserSha256
           Push-Location $smoke
           try {
-            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --proxy-mismatch --headless --state-root "$smoke\proxy-mismatch-state"
+            & ".\aliasmode-sidecar.exe" __browser-lifecycle-smoke --proxy-mismatch --headless --state-root "$smoke\proxy-mismatch-state"
             if ($LASTEXITCODE -ne 0) { throw "deterministic proxy mismatch smoke exited with code $LASTEXITCODE" }
-            # A Cloud V3 payload must download and open the Chromium 155 beta, not CloakBrowser.
-            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --chromium-runtime aliasmode --headless --state-root "$smoke\cloud-beta-state"
-            if ($LASTEXITCODE -ne 0) { throw "Cloud Chromium 155 beta smoke exited with code $LASTEXITCODE" }
-            if (-not (Test-Path -LiteralPath "$smoke\cloud-beta-state\runtimes\chromium-155.0.8059.85-aliasmode.5\155.0.8059.85.manifest" -PathType Leaf)) {
-              throw "Cloud Chromium 155 beta smoke did not install the beta runtime"
+            # A Chromium 155 profile must download and open the Chromium 155 beta, not CloakBrowser.
+            & ".\aliasmode-sidecar.exe" __browser-lifecycle-smoke --chromium-runtime aliasmode --headless --state-root "$smoke\browser-beta-state"
+            if ($LASTEXITCODE -ne 0) { throw "Chromium 155 beta smoke exited with code $LASTEXITCODE" }
+            if (-not (Test-Path -LiteralPath "$smoke\browser-beta-state\runtimes\chromium-155.0.8059.85-aliasmode.5\155.0.8059.85.manifest" -PathType Leaf)) {
+              throw "Chromium 155 beta smoke did not install the beta runtime"
             }
           } finally {
             Pop-Location
@@ -960,7 +965,7 @@ jobs:
             exit 0
           }
           $runtimes = Join-Path $env:RUNNER_TEMP "aliasmode-live-runtimes"
-          $browserPath = (& bun -e "import { ensureCloakBrowser } from './aliasmode-chromium.ts'; console.log(await ensureCloakBrowser(process.argv[1]))" $runtimes | Select-Object -Last 1)
+          $browserPath = (& bun -e "import { ensureCloakBrowser } from './src/aliasmode-chromium.ts'; console.log(await ensureCloakBrowser(process.argv[1]))" $runtimes | Select-Object -Last 1)
           if ($LASTEXITCODE -ne 0) { throw "CloakBrowser download failed" }
           $env:ALIASMODE_PLAYWRIGHT_RUNTIME = (Resolve-Path ".\src-tauri\resources\playwright").Path
           $env:ALIASMODE_LIVE_BROWSER = $browserPath
@@ -986,7 +991,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-windows-full
@@ -1003,8 +1008,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.windows_cache.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           & bun scripts/windows-artifact-manifest.ts verify ".\artifacts\windows-full" `
             --role full `
             --source $env:WINDOWS_SOURCE `
@@ -1126,7 +1131,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           & .\scripts\windows-installed-acceptance.ps1 `
             -Shard ${{ matrix.shard }} `
-            -InstallerPath ".\package\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -InstallerPath ".\package\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\package\SHA256SUMS.txt" `
             -BrowserMetadataPath ".\package\browser.json" `
             -DiagnosticsPath ".\diagnostics\${{ matrix.shard }}.json"
@@ -1179,7 +1184,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           & .\scripts\windows-installed-acceptance.ps1 `
             -Shard browser `
-            -InstallerPath ".\package\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -InstallerPath ".\package\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\package\SHA256SUMS.txt" `
             -BrowserMetadataPath ".\package\browser.json" `
             -DiagnosticsPath ".\diagnostics\browser.json"
@@ -1193,8 +1198,8 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  windows_accept_cloud:
-    name: Windows installed Cloud acceptance
+  windows_accept_local_upgrade:
+    name: Windows installed local upgrade acceptance
     needs: [windows_cache, windows_full]
     if: >-
       ${{
@@ -1219,23 +1224,23 @@ jobs:
         with:
           name: aliasmode-windows-full
           path: package
-      - name: Run installed Cloud acceptance
+      - name: Run installed local upgrade acceptance
         shell: pwsh
         env:
           WINDOWS_VERSION: ${{ needs.windows_cache.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
           & .\scripts\windows-installed-acceptance.ps1 `
-            -Shard cloud `
-            -InstallerPath ".\package\Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
+            -Shard local-upgrade `
+            -InstallerPath ".\package\Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe" `
             -ChecksumsPath ".\package\SHA256SUMS.txt" `
             -BrowserMetadataPath ".\package\browser.json" `
-            -DiagnosticsPath ".\diagnostics\cloud.json"
-      - name: Upload Cloud acceptance diagnostics
+            -DiagnosticsPath ".\diagnostics\local-upgrade.json"
+      - name: Upload local upgrade acceptance diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aliasmode-windows-cloud-diagnostics-${{ github.run_attempt }}
+          name: aliasmode-windows-local-upgrade-diagnostics-${{ github.run_attempt }}
           path: diagnostics
           if-no-files-found: warn
           retention-days: 7
@@ -1249,7 +1254,7 @@ jobs:
       - windows_candidate
       - windows_accept_runtime
       - windows_accept_browser
-      - windows_accept_cloud
+      - windows_accept_local_upgrade
     if: >-
       ${{
         always() &&
@@ -1261,7 +1266,7 @@ jobs:
         needs.windows_candidate.result == 'success' &&
         needs.windows_accept_runtime.result == 'success' &&
         needs.windows_accept_browser.result == 'success' &&
-        needs.windows_accept_cloud.result == 'success'
+        needs.windows_accept_local_upgrade.result == 'success'
       }}
     runs-on: windows-latest
     steps:
@@ -1269,7 +1274,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-windows-candidate
@@ -1282,8 +1287,8 @@ jobs:
           WINDOWS_VERSION: ${{ needs.windows_cache.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $fullName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
-          $slimName = "Vela Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
+          $fullName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-offline-setup.exe"
+          $slimName = "Vela-Browser_$($env:WINDOWS_VERSION)_x64-setup.exe"
           $arguments = @(
             ".\artifacts\windows-candidate",
             "--role", "candidate",
@@ -1317,7 +1322,7 @@ jobs:
       - windows_candidate
       - windows_accept_runtime
       - windows_accept_browser
-      - windows_accept_cloud
+      - windows_accept_local_upgrade
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1335,7 +1340,7 @@ jobs:
           CANDIDATE_RESULT: ${{ needs.windows_candidate.result }}
           RUNTIME_RESULT: ${{ needs.windows_accept_runtime.result }}
           BROWSER_RESULT: ${{ needs.windows_accept_browser.result }}
-          CLOUD_RESULT: ${{ needs.windows_accept_cloud.result }}
+          LOCAL_UPGRADE_RESULT: ${{ needs.windows_accept_local_upgrade.result }}
         run: |
           set -euo pipefail
           require_result() {
@@ -1350,7 +1355,7 @@ jobs:
 
           if [[ "$WINDOWS_PIPELINE" != "true" ]]; then
             # A push or pull request: no Windows job may have run.
-            for result in "$FIREFOX_RESULT" "$CACHE_RESULT" "$SUCCESSOR_RESULT" "$PREPARE_RESULT" "$FULL_RESULT" "$SLIM_RESULT" "$SOURCE_RESULT" "$CANDIDATE_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$CLOUD_RESULT"; do
+            for result in "$FIREFOX_RESULT" "$CACHE_RESULT" "$SUCCESSOR_RESULT" "$PREPARE_RESULT" "$FULL_RESULT" "$SLIM_RESULT" "$SOURCE_RESULT" "$CANDIDATE_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$LOCAL_UPGRADE_RESULT"; do
               require_result "Windows pipeline job" "$result" skipped
             done
             echo "The Windows pipeline runs only on a manual dispatch. Run Client CI on main before a release."
@@ -1364,7 +1369,7 @@ jobs:
           require_result windows_source "$SOURCE_RESULT" success
           require_result windows_accept_runtime "$RUNTIME_RESULT" success
           require_result windows_accept_browser "$BROWSER_RESULT" success
-          require_result windows_accept_cloud "$CLOUD_RESULT" success
+          require_result windows_accept_local_upgrade "$LOCAL_UPGRADE_RESULT" success
 
           case "$CACHE_HIT" in
             true)

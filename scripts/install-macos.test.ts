@@ -12,11 +12,11 @@ test("the macOS installer, build and release workflows agree on the release file
   // Apple Silicon files end in _aarch64 and Intel files in _x64, as Tauri names the .dmg.
   expect(installer).toContain('build="aarch64"');
   expect(installer).toContain('build="x64"');
-  expect(installer).toContain('archive="Vela Browser_${version}_${build}.app.tar.gz"');
+  expect(installer).toContain('archive="Vela-Browser_${version}_${build}.app.tar.gz"');
   expect(installer).toContain('"$base/v$version/SHA256SUMS-macos.txt"');
   expect(build).toContain("arch: aarch64,");
   expect(build).toContain("arch: x64,");
-  expect(build).toContain("Vela Browser_${version}_${ARCH}.app.tar.gz");
+  expect(build).toContain("Vela-Browser_${version}_${ARCH}.app.tar.gz");
   expect(build).toContain("SHA256SUMS-macos.txt");
   expect(release).toContain("SHA256SUMS-macos.txt");
   // The app reads these feeds and archive names (src-tauri/src/releases.rs).
@@ -24,8 +24,8 @@ test("the macOS installer, build and release workflows agree on the release file
   for (const [arch, feed, target] of [["aarch64", "latest-macos.json", "darwin-aarch64"], ["x64", "latest-macos-x64.json", "darwin-x86_64"]]) {
     expect(updater).toContain(`const UPDATE_MANIFEST: &str = "${feed}";`);
     expect(updater).toContain(`const UPDATE_TARGET: &str = "${target}";`);
-    expect(updater).toContain(`format!("Vela Browser_{version}_${arch}.app.tar.gz")`);
-    expect(release).toContain(`Vela Browser_\${VERSION}_${arch}.app.tar.gz`);
+    expect(updater).toContain(`format!("Vela-Browser_{version}_${arch}.app.tar.gz")`);
+    expect(release).toContain(`Vela-Browser_\${VERSION}_${arch}.app.tar.gz`);
     expect(release).toContain(`assets/${feed}`);
     expect(release).toContain(`{version: $version, platforms: {"${target}": {url: $url, signature: $signature}}}`);
   }

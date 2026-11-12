@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Launcher } from "../launcher.ts";
-import { ProfileStore } from "../store.ts";
-import { handleRequest } from "../server.ts";
-import { handleUserApi } from "../adspower-users.ts";
+import type { Launcher } from "../src/launcher.ts";
+import { ProfileStore } from "../src/store.ts";
+import { handleRequest } from "../src/server.ts";
+import { handleUserApi } from "../src/adspower-users.ts";
 import {
   CURRENT_CATALOG_PATH,
   MANIFEST_PATH,
@@ -162,9 +162,9 @@ test("MCP catalogs list the expected tools", () => {
   expect(released.aliasModeTools.map((tool: any) => tool.name)).toEqual(BETA42_ALIASMODE_TOOLS);
   expect(current.status).toBe("source");
   expect(current.playwrightToolAvailability).toBe("listed-before-selection");
-  expect(current.aliasModeTools.length).toBe(10);
-  expect(current.aliasModeTools.map((tool: any) => tool.name)).toContain("aliasmode_profiles_replace_proxies");
-  expect(current.aliasModeTools.map((tool: any) => tool.name)).toContain("aliasmode_profile_update");
+  expect(current.aliasModeTools.length).toBe(9);
+  expect(current.aliasModeTools.map((tool: any) => tool.name)).not.toContain("aliasmode_profiles_replace_proxies");
+  expect(current.aliasModeTools.map((tool: any) => tool.name)).not.toContain("aliasmode_profile_update");
   for (const catalog of [current, released]) {
     const names = [...catalog.aliasModeTools, ...catalog.playwrightTools].map((tool: any) => tool.name);
     expect(new Set(names).size).toBe(names.length);

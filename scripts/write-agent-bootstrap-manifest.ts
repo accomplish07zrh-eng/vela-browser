@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { ALIASMODE_VERSION } from "../version.ts";
+import { ALIASMODE_VERSION } from "../src/version.ts";
 
 export function buildAgentBootstrapManifest(options: {
   installer: string;
@@ -10,13 +10,12 @@ export function buildAgentBootstrapManifest(options: {
   const installer = resolve(options.installer);
   const bytes = readFileSync(installer);
   const releaseBase = options.releaseBase.replace(/\/$/, "");
-  if (!/^https:\/\/github\.com\/aliasmode\/aliasmode\/releases\/download\/[^/]+$/.test(releaseBase)) {
+  if (!/^https:\/\/github\.com\/accomplish07zrh-eng\/vela-browser\/releases\/download\/[^/]+$/.test(releaseBase)) {
     throw new Error("release base must be an exact Vela Browser GitHub Release URL");
   }
   return {
     schema: 1,
     version: ALIASMODE_VERSION,
-    wingetId: "Vela Browser.Vela Browser",
     installer: {
       name: basename(installer),
       url: `${releaseBase}/${encodeURIComponent(basename(installer))}`,

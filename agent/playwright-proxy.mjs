@@ -79,6 +79,7 @@ export class PlaywrightToolProxy {
         async () => nonClosingContext(context),
       );
       this.browser = browser;
+      this.context = context;
       this.officialServer = official.server;
       this.officialClient = official.client;
       this.tools = official.tools;
@@ -105,6 +106,7 @@ export class PlaywrightToolProxy {
     this.officialClient = undefined;
     this.officialServer = undefined;
     this.browser = undefined;
+    this.context = undefined;
     await client?.close().catch(() => {});
     await server?.close().catch(() => {});
     // A CDP-connected Browser closes only its Playwright transport. The guarded

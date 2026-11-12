@@ -7,3 +7,8 @@ commands.allow = ["agent_runtime_ready"]
 identifier = "allow-script-capability"
 description = "Allows the trusted Vela Browser window to authenticate script operations."
 commands.allow = ["script_capability"]
+
+[[permission]]
+identifier = "allow-workbench-capability"
+description = "Allows the trusted Vela Browser window to authenticate isolated workbench viewports."
+commands.allow = ["workbench_capability"]

@@ -141,7 +141,7 @@ async function focusNativeBrowser() {
   const application = JSON.parse(stdout);
   const pid = application.pid;
   if (!Number.isSafeInteger(pid) || pid < 1) throw new Error("native Firefox application lookup returned an invalid PID");
-  assert.equal(application.name, "Vela Firefox", "native Dock application uses the Firefox-specific name");
+  assert.equal(application.name, "AliasMode Firefox", "native Dock application uses the Firefox-specific name");
   await run("osascript", ["-e", nativeBrowserScript(pid)]);
   return pid;
 }

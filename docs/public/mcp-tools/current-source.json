@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.0-beta.74",
+  "aliasModeVersion": "0.1.2",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -20,7 +20,7 @@
   "aliasModeTools": [
     {
       "name": "aliasmode_profiles_list",
-      "description": "List Vela Browser profiles and their current browser state. Cloud profiles include expectedVersion and permission for editing.",
+      "description": "List local Vela Browser profiles and their current browser state.",
       "annotations": {
         "title": "List Vela Browser profiles",
         "readOnlyHint": false,
@@ -34,137 +34,10 @@
       }
     },
     {
-      "name": "aliasmode_profiles_replace_proxies",
-      "description": "Dry-run or apply bulk proxy replacements to closed Vela Cloud profiles. Apply always preflights first.",
-      "annotations": {
-        "title": "Replace Vela Browser profile proxies",
-        "readOnlyHint": false,
-        "destructiveHint": true,
-        "openWorldHint": false
-      },
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "dryRun": {
-            "type": "boolean",
-            "default": true
-          },
-          "replacements": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "object",
-              "properties": {
-                "profileId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "username": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 255
-                },
-                "expectedVersion": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "proxy": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string",
-                      "enum": [
-                        "http",
-                        "https",
-                        "socks5"
-                      ]
-                    },
-                    "host": {
-                      "type": "string"
-                    },
-                    "port": {
-                      "type": "string"
-                    },
-                    "user": {
-                      "type": "string"
-                    },
-                    "pass": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "host",
-                    "port",
-                    "user",
-                    "pass"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "required": [
-                "proxy"
-              ],
-              "oneOf": [
-                {
-                  "required": [
-                    "profileId"
-                  ],
-                  "not": {
-                    "required": [
-                      "username"
-                    ]
-                  }
-                },
-                {
-                  "required": [
-                    "username"
-                  ],
-                  "not": {
-                    "required": [
-                      "profileId"
-                    ]
-                  }
-                }
-              ],
-              "additionalProperties": false
-            }
-          },
-          "csv": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "oneOf": [
-          {
-            "required": [
-              "replacements"
-            ],
-            "not": {
-              "required": [
-                "csv"
-              ]
-            }
-          },
-          {
-            "required": [
-              "csv"
-            ],
-            "not": {
-              "required": [
-                "replacements"
-              ]
-            }
-          }
-        ],
-        "additionalProperties": false
-      }
-    },
-    {
       "name": "aliasmode_profile_create",
-      "description": "Create a persistent Vela Browser profile, or an explicit temporary profile. Without engine, Windows creates an Vela Chromium profile, and macOS and Linux create an Vela Firefox profile.",
+      "description": "Create a persistent Vela Browser profile, or an explicit temporary profile. Without engine, Windows creates a Vela Chromium profile, and macOS and Linux create a Vela Firefox profile.",
       "annotations": {
-        "title": "Create an Vela Browser profile",
+        "title": "Create a Vela Browser profile",
         "readOnlyHint": false,
         "destructiveHint": false,
         "openWorldHint": false
@@ -241,100 +114,10 @@
       }
     },
     {
-      "name": "aliasmode_profile_update",
-      "description": "Edit a closed Vela Cloud profile by ID using expectedVersion from aliasmode_profiles_list. Only supplied fields change; empty strings clear fields. Sessions and cookies are preserved. Returns confirmation, not credentials.",
-      "annotations": {
-        "title": "Edit an Vela Cloud profile",
-        "readOnlyHint": false,
-        "destructiveHint": true,
-        "openWorldHint": false
-      },
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "profileId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expectedVersion": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "set": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "group": {
-                "type": "string"
-              },
-              "platform": {
-                "type": "string"
-              },
-              "username": {
-                "type": "string"
-              },
-              "password": {
-                "type": "string"
-              },
-              "email": {
-                "type": "string"
-              },
-              "emailPassword": {
-                "type": "string"
-              },
-              "twofa": {
-                "type": "string"
-              },
-              "proxy": {
-                "type": "string",
-                "description": "host:port:user:pass, or an empty string to remove the proxy"
-              },
-              "proxyType": {
-                "type": "string"
-              },
-              "resolution": {
-                "type": "string",
-                "description": "WIDTH*HEIGHT"
-              },
-              "extensions": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "tags": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "minProperties": 1,
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "profileId",
-          "expectedVersion",
-          "set"
-        ],
-        "additionalProperties": false
-      }
-    },
-    {
       "name": "aliasmode_profile_delete",
       "description": "Delete a closed Vela Browser profile.",
       "annotations": {
-        "title": "Delete an Vela Browser profile",
+        "title": "Delete a Vela Browser profile",
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": false
@@ -355,9 +138,9 @@
     },
     {
       "name": "aliasmode_browser_open",
-      "description": "Open an Vela Browser browser and select it for Playwright actions.",
+      "description": "Open a Vela Browser browser and select it for Playwright actions.",
       "annotations": {
-        "title": "Open an Vela Browser browser",
+        "title": "Open a Vela Browser browser",
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": true
@@ -395,7 +178,7 @@
       "name": "aliasmode_browser_select",
       "description": "Select an open Vela Browser browser for subsequent Playwright actions.",
       "annotations": {
-        "title": "Select an Vela Browser browser",
+        "title": "Select a Vela Browser browser",
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": false
@@ -438,7 +221,7 @@
       "name": "aliasmode_browser_close",
       "description": "Safely capture and close one Vela Browser browser.",
       "annotations": {
-        "title": "Close an Vela Browser browser",
+        "title": "Close a Vela Browser browser",
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": false
@@ -468,6 +251,39 @@
         "properties": {},
         "additionalProperties": false
       }
+    },
+    {
+      "name": "aliasmode_humanize",
+      "description": "Turn human-like input on or off for the browsers this connection drives, or change its pace. It is on by default: clicks, hovers, drags, typing and form filling move a pointer on a curved path, land inside the element, scroll with the wheel and type key by key, each profile with its own stable habits. Call without arguments to read the current setting.",
+      "annotations": {
+        "title": "Human-like input",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "speed": {
+            "type": "number",
+            "minimum": 0.4,
+            "maximum": 2.5,
+            "description": "1 is the profile's natural pace; 2 is twice as fast."
+          },
+          "pasteOver": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Text longer than this many characters goes in at once, like a paste, instead of key by key. 0 always types; null restores each profile's own threshold (28 to 51 characters). The system clipboard is never used."
+          }
+        },
+        "additionalProperties": false
+      }
     }
   ],
   "playwrightTools": [
@@ -490,6 +306,10 @@
           "height": {
             "type": "number",
             "description": "Height of the browser window"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -522,6 +342,10 @@
             ],
             "default": "info",
             "description": "Level of the console messages to return. Each level includes the messages of more severe levels. Defaults to \"info\"."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "additionalProperties": false,
@@ -547,6 +371,10 @@
           "promptText": {
             "type": "string",
             "description": "The text of the prompt in case of a prompt dialog."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -579,6 +407,10 @@
           "ref": {
             "type": "string",
             "description": "Exact target element reference from the page snapshot"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -606,6 +438,10 @@
               "type": "string"
             },
             "description": "The absolute paths to the files to upload. Can be single file or multiple files. If omitted, file chooser is cancelled."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "additionalProperties": false,
@@ -662,6 +498,10 @@
               "additionalProperties": false
             },
             "description": "Fields to fill in"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -686,6 +526,10 @@
           "key": {
             "type": "string",
             "description": "Name of the key to press or a character to generate, such as `ArrowLeft` or `a`"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -726,6 +570,10 @@
           "slowly": {
             "type": "boolean",
             "description": "Whether to type one character at a time. Useful for triggering key handlers in the page. By default entire text is filled in at once."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -752,6 +600,10 @@
           "url": {
             "type": "string",
             "description": "The URL to navigate to"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -772,7 +624,12 @@
       },
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
       }
@@ -793,6 +650,10 @@
             "type": "boolean",
             "default": false,
             "description": "Whether to include successful static resources like images, fonts, scripts, etc. Defaults to false."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "additionalProperties": false,
@@ -822,6 +683,10 @@
           "y": {
             "type": "number",
             "description": "Y coordinate"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -856,6 +721,10 @@
           "y": {
             "type": "number",
             "description": "Y coordinate"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -898,6 +767,10 @@
           "endY": {
             "type": "number",
             "description": "End Y coordinate"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -926,6 +799,10 @@
           "filename": {
             "type": "string",
             "description": "File name to save the pdf to. Defaults to `page-{timestamp}.pdf` if not specified. Prefer relative file names to stay within the output directory."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "additionalProperties": false,
@@ -947,6 +824,10 @@
           "code": {
             "type": "string",
             "description": "A JavaScript function containing Playwright code to execute. It will be invoked with a single argument, page, which you can use for any page interaction. For example: `async (page) => { await page.getByRole('button', { name: 'Submit' }).click(); return await page.title(); }`"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -992,6 +873,10 @@
           "fullPage": {
             "type": "boolean",
             "description": "When true, takes a screenshot of the full scrollable page, instead of the currently visible viewport. Cannot be used with element screenshots."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "additionalProperties": false,
@@ -1013,6 +898,10 @@
           "filename": {
             "type": "string",
             "description": "Save snapshot to markdown file instead of returning it in the response."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "additionalProperties": false,
@@ -1065,6 +954,10 @@
               ]
             },
             "description": "Modifier keys to press"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1102,6 +995,10 @@
           "endRef": {
             "type": "string",
             "description": "Exact target element reference from the page snapshot"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1133,6 +1030,10 @@
           "ref": {
             "type": "string",
             "description": "Exact target element reference from the page snapshot"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1169,6 +1070,10 @@
               "type": "string"
             },
             "description": "Array of values to select in the dropdown. This can be a single value or multiple values."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1199,6 +1104,10 @@
           "ref": {
             "type": "string",
             "description": "Exact target element reference from the page snapshot"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1234,6 +1143,10 @@
           "index": {
             "type": "number",
             "description": "Tab index, used for close/select. If omitted for close, current tab is closed."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1254,7 +1167,12 @@
       },
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
       }
@@ -1270,7 +1188,12 @@
       },
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
       }
@@ -1298,6 +1221,10 @@
           "textGone": {
             "type": "string",
             "description": "The text to wait for to disappear"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "additionalProperties": false,
@@ -1323,6 +1250,10 @@
           "accessibleName": {
             "type": "string",
             "description": "ACCESSIBLE_NAME of the element. Can be found in the snapshot like this: `- role \"{ACCESSIBLE_NAME}\"`"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1348,6 +1279,10 @@
           "text": {
             "type": "string",
             "description": "TEXT to verify. Can be found in the snapshot like this: `- role \"Accessible Name\": {TEXT}` or like this: `- text: {TEXT}`"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1383,6 +1318,10 @@
               "type": "string"
             },
             "description": "Items to verify"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [
@@ -1428,6 +1367,10 @@
           "value": {
             "type": "string",
             "description": "Value to verify. For checkbox, use \"true\" or \"false\"."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
         "required": [

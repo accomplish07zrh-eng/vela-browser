@@ -55,7 +55,6 @@ async fn active_browser_count(origin: &str) -> Result<usize, String> {
 #[derive(Clone, Copy)]
 enum CleanupAction {
     Exit,
-    Restart,
 }
 
 pub(crate) async fn graceful_sidecar_cleanup(sidecar: &SidecarSupervisor) -> Result<(), String> {
@@ -117,20 +116,10 @@ fn finish_after_cleanup(
         match graceful_sidecar_cleanup(&sidecar).await {
             Ok(()) => match action {
                 CleanupAction::Exit => app.exit(0),
-                CleanupAction::Restart => app.request_restart(),
             },
             Err(error) => exit_after_cleanup_failure(app, &sidecar, error),
         }
     });
-}
-
-#[tauri::command]
-pub fn restart_after_mode_change(
-    app: AppHandle,
-    window: WebviewWindow,
-    sidecar: tauri::State<'_, SidecarSupervisor>,
-) {
-    finish_after_cleanup(app, window, sidecar.inner().clone(), CleanupAction::Restart);
 }
 
 fn ask_to_close(

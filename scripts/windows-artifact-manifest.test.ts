@@ -15,8 +15,8 @@ const productKey = "a".repeat(64);
 function fixture(): { root: string; input: WindowsArtifactManifestInput } {
   const root = mkdtempSync(join(tmpdir(), "aliasmode-artifact-manifest-"));
   roots.push(root);
-  writeFileSync(join(root, "Vela Browser_0.1.0-beta.47_x64-offline-setup.exe"), "MZ-full-installer");
-  writeFileSync(join(root, "Vela Browser_0.1.0-beta.47_x64-setup.exe"), "MZ-slim-installer");
+  writeFileSync(join(root, "Vela-Browser_0.1.0-beta.47_x64-offline-setup.exe"), "MZ-full-installer");
+  writeFileSync(join(root, "Vela-Browser_0.1.0-beta.47_x64-setup.exe"), "MZ-slim-installer");
   return {
     root,
     input: {
@@ -25,8 +25,8 @@ function fixture(): { root: string; input: WindowsArtifactManifestInput } {
       productKey,
       source: "git-tree:0123456789abcdef",
       files: [
-        "Vela Browser_0.1.0-beta.47_x64-setup.exe",
-        "Vela Browser_0.1.0-beta.47_x64-offline-setup.exe",
+        "Vela-Browser_0.1.0-beta.47_x64-setup.exe",
+        "Vela-Browser_0.1.0-beta.47_x64-offline-setup.exe",
       ],
     },
   };
@@ -47,12 +47,12 @@ test("artifact manifest creation is canonical and verification checks all metada
     source: input.source,
     files: [
       {
-        name: "Vela Browser_0.1.0-beta.47_x64-offline-setup.exe",
+        name: "Vela-Browser_0.1.0-beta.47_x64-offline-setup.exe",
         bytes: 17,
         sha256: "8c21094c66240b02134df384b2b1765a739fa5d13deab4a463fb000ad9975971",
       },
       {
-        name: "Vela Browser_0.1.0-beta.47_x64-setup.exe",
+        name: "Vela-Browser_0.1.0-beta.47_x64-setup.exe",
         bytes: 17,
         sha256: "73e7f9bb4b53d0af469cd267c59524001a40d8dafd9aebe8995df66fb0a73388",
       },
@@ -66,10 +66,10 @@ test("artifact manifest creation is canonical and verification checks all metada
 
 test("artifact manifest rejects missing, extra, resized, and same-size tampered files", async () => {
   for (const mutate of [
-    (root: string) => unlinkSync(join(root, "Vela Browser_0.1.0-beta.47_x64-setup.exe")),
+    (root: string) => unlinkSync(join(root, "Vela-Browser_0.1.0-beta.47_x64-setup.exe")),
     (root: string) => writeFileSync(join(root, "unexpected.txt"), "extra"),
-    (root: string) => writeFileSync(join(root, "Vela Browser_0.1.0-beta.47_x64-setup.exe"), "different-size"),
-    (root: string) => writeFileSync(join(root, "Vela Browser_0.1.0-beta.47_x64-setup.exe"), "MZ-evil-installer"),
+    (root: string) => writeFileSync(join(root, "Vela-Browser_0.1.0-beta.47_x64-setup.exe"), "different-size"),
+    (root: string) => writeFileSync(join(root, "Vela-Browser_0.1.0-beta.47_x64-setup.exe"), "MZ-evil-installer"),
   ]) {
     const { root, input } = fixture();
     await createWindowsArtifactManifest(root, input);

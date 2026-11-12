@@ -44,7 +44,7 @@ jobs:
           ref: ${{ inputs.tag }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.21
+          bun-version: 1.4.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89
@@ -64,7 +64,7 @@ jobs:
           jq -e '[.assets[].name | select(test("linux"))] | length == 0' release.json
           cd assets
           ls -la
-          test "$(ls | sort | tr '\n' ' ')" = "Vela Browser_${VERSION}_x86_64-linux.tar.gz SHA256SUMS-linux.txt "
+          test "$(ls | sort | tr '\n' ' ')" = "Vela-Browser_${VERSION}_x86_64-linux.tar.gz SHA256SUMS-linux.txt "
           sha256sum --check --strict SHA256SUMS-linux.txt
       - name: Sign the update archive and write the Linux update feed
         shell: bash
@@ -73,7 +73,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          archive="assets/Vela Browser_${VERSION}_x86_64-linux.tar.gz"
+          archive="assets/Vela-Browser_${VERSION}_x86_64-linux.tar.gz"
           bunx tauri signer sign "$archive" > /dev/null
           unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           pubkey="$(jq -er .plugins.updater.pubkey src-tauri/tauri.conf.json)"
@@ -88,15 +88,15 @@ jobs:
           fi
           rm corrupt.tar.gz
           jq -n --arg version "$VERSION" --arg signature "$(cat "$archive.sig")" \
-            --arg url "https://github.com/$GH_REPO/releases/download/$TAG/Vela Browser_${VERSION}_x86_64-linux.tar.gz" \
+            --arg url "https://github.com/$GH_REPO/releases/download/$TAG/Vela-Browser_${VERSION}_x86_64-linux.tar.gz" \
             '{version: $version, platforms: {"linux-x86_64": {url: $url, signature: $signature}}}' > assets/latest-linux.json
       - name: Upload the Linux assets
         shell: bash
         run: |
           set -euo pipefail
           gh release upload "$TAG" \
-            "assets/Vela Browser_${VERSION}_x86_64-linux.tar.gz" \
-            "assets/Vela Browser_${VERSION}_x86_64-linux.tar.gz.sig" \
+            "assets/Vela-Browser_${VERSION}_x86_64-linux.tar.gz" \
+            "assets/Vela-Browser_${VERSION}_x86_64-linux.tar.gz.sig" \
             "assets/SHA256SUMS-linux.txt"
           # The feed goes last: an installed app must never read it before the archive exists.
           gh release upload "$TAG" "assets/latest-linux.json"
@@ -106,11 +106,11 @@ jobs:
           set -euo pipefail
           mkdir public
           cd public
-          for name in "Vela Browser_${VERSION}_x86_64-linux.tar.gz" SHA256SUMS-linux.txt; do
+          for name in "Vela-Browser_${VERSION}_x86_64-linux.tar.gz" SHA256SUMS-linux.txt; do
             curl --fail --silent --show-error --location --retry 3 -o "$name" "https://github.com/$GH_REPO/releases/download/$TAG/$name"
           done
           cmp SHA256SUMS-linux.txt ../assets/SHA256SUMS-linux.txt
           sha256sum --check --strict SHA256SUMS-linux.txt
-          for name in "Vela Browser_${VERSION}_x86_64-linux.tar.gz.sig" latest-linux.json; do
+          for name in "Vela-Browser_${VERSION}_x86_64-linux.tar.gz.sig" latest-linux.json; do
             curl --fail --silent --show-error --location --retry 3 "https://github.com/$GH_REPO/releases/download/$TAG/$name" | cmp - "../assets/$name"
           done

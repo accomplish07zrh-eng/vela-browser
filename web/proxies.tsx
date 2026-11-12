@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "./i18n.tsx";
-import { folderScope, type FolderInfo } from "../folders.ts";
-import { ProxyProviderOffer } from "./proxy-offer.tsx";
+import { folderScope, type FolderInfo } from "../src/folders.ts";
 import type {
   ProxyCheckView,
   ProxyPreview,
@@ -10,7 +9,7 @@ import type {
   ProxyReplacementMode,
   ProxyReplacementView,
   ProxyScope,
-} from "../proxy-tools-types.ts";
+} from "../src/proxy-tools-types.ts";
 
 export class ProxyToolsError extends Error {}
 
@@ -366,7 +365,7 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
             </tr>)}</tbody></table></div>
           {!checkResults.total && <p className="tools-hint tools-result-empty">{t("No problems found in the completed checks.")}</p>}
           <Pager {...checkResults} onPage={setCheckPage} />
-        </> : <div className="tools-empty"><span className="tools-empty-symbol" aria-hidden="true">↗</span><h3>{busy === "check" ? t("Checking selected folders…") : t("Ready when you are")}</h3><p>{t("Choose your folders above, then check which proxies are alive, dead, or need attention.")}</p></div>}
+        </> : <div className="tools-empty"><span className="tools-empty-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 18 18 6M6 6h12v12" /></svg></span><h3>{busy === "check" ? t("Checking selected folders…") : t("Ready when you are")}</h3><p>{t("Choose your folders above, then check which proxies are alive, dead, or need attention.")}</p></div>}
       </section>
       <p className="tools-footnote">{t("Supports HTTP and SOCKS5. HTTPS checks are not supported. Unknown means a result could not be confirmed.")}</p>
     </> : <>

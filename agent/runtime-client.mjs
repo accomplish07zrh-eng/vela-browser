@@ -11,7 +11,7 @@ export const AGENT_PROTOCOL = "aliasmode-agent-v1";
 export const AGENT_PATH = "/api/agent/v1/connect";
 const VERSION = process.env.ALIASMODE_APP_VERSION || "0.1.0-beta.32";
 const STARTUP_WAIT_MS = 180_000;
-// Replies can be much larger than requests, e.g. a profile list for a large Cloud workspace.
+// Replies can be much larger than requests, e.g. a large local profile list.
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
 // Windows and Linux report a tick count. macOS reports the `ps -o lstart=` date.
@@ -23,7 +23,6 @@ function validNonce(value) {
 
 export function validateRuntimeDescriptor(value, expectedVersion = VERSION) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("runtime descriptor is invalid");
-  const ready = new Set(["local", "cloud_authenticated", "sign_in_required"]);
   if (
     value.protocol !== RUNTIME_PROTOCOL ||
     value.appVersion !== expectedVersion ||
@@ -33,7 +32,7 @@ export function validateRuntimeDescriptor(value, expectedVersion = VERSION) {
     !Number.isInteger(value.desktopPid) || value.desktopPid < 1 ||
     !Number.isInteger(value.sidecarPid) || value.sidecarPid < 1 ||
     typeof value.desktopStartedAt !== "string" || !START_IDENTITY.test(value.desktopStartedAt) ||
-    !ready.has(value.readiness) ||
+    value.readiness !== "local" ||
     !Number.isInteger(value.createdAt) || value.createdAt < 1
   ) {
     throw new Error("runtime descriptor did not match this Vela Browser adapter");
@@ -41,7 +40,7 @@ export function validateRuntimeDescriptor(value, expectedVersion = VERSION) {
   return value;
 }
 
-/** The XDG data folder that holds the Linux app (aliasmode) and its data (com.aliasmode.desktop). */
+/** The XDG data folder that holds the Linux app (aliasmode) and its Vela data. */
 function linuxDataHome(env) {
   if (env.XDG_DATA_HOME?.startsWith("/")) return env.XDG_DATA_HOME;
   if (!env.HOME) throw new Error("HOME is required to discover Vela Browser");
@@ -52,11 +51,11 @@ export function defaultRuntimeDescriptorPath(env = process.env, platform = proce
   if (env.ALIASMODE_RUNTIME_DESCRIPTOR) return env.ALIASMODE_RUNTIME_DESCRIPTOR;
   if (platform === "darwin") {
     if (!env.HOME) throw new Error("HOME is required to discover Vela Browser");
-    return posix.join(env.HOME, "Library", "Application Support", "com.aliasmode.desktop", "agent-runtime.json");
+    return posix.join(env.HOME, "Library", "Application Support", "com.velabrowser.desktop", "agent-runtime.json");
   }
-  if (platform === "linux") return posix.join(linuxDataHome(env), "com.aliasmode.desktop", "agent-runtime.json");
+  if (platform === "linux") return posix.join(linuxDataHome(env), "com.velabrowser.desktop", "agent-runtime.json");
   if (!env.APPDATA) throw new Error("APPDATA is required to discover Vela Browser");
-  return join(env.APPDATA, "com.aliasmode.desktop", "agent-runtime.json");
+  return join(env.APPDATA, "com.velabrowser.desktop", "agent-runtime.json");
 }
 
 export function windowsProcessIdentityCommand(pid, env = process.env) {
@@ -247,7 +246,7 @@ async function connectAgent(descriptor) {
   const bunNative = typeof process.versions.bun === "string";
   const socket = bunNative
     ? new globalThis.WebSocket(url, {
-        protocol: AGENT_PROTOCOL,
+        protocols: [AGENT_PROTOCOL],
         headers: { Authorization: `Bearer ${descriptor.nonce}` },
       })
     : new NodeWebSocket(url, AGENT_PROTOCOL, {

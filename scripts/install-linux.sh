@@ -5,7 +5,7 @@
 # Missing system libraries and the Chrome sandbox permission need your password once (sudo).
 set -euo pipefail
 
-repo="https://github.com/aliasmode/aliasmode"
+repo="https://github.com/accomplish07zrh-eng/vela-browser"
 # A local file:// base lets the build pipeline test an unpublished release.
 base="${ALIASMODE_RELEASE_BASE:-$repo/releases/download}"
 version=""
@@ -101,7 +101,7 @@ allow_chrome_sandbox() {
 abi <abi/4.0>,
 include <tunables/global>
 
-profile aliasmode-chromium @{HOME}/.local/share/com.aliasmode.desktop/runtimes/*/chrome flags=(unconfined) {
+profile aliasmode-chromium @{HOME}/.local/share/com.velabrowser.desktop/runtimes/*/chrome flags=(unconfined) {
   userns,
 
   include if exists <local/aliasmode-chromium>
@@ -133,9 +133,9 @@ running() {
 main() {
 if [[ -z "$version" ]]; then
   # The newest release that has a Linux build; the API lists releases newest first.
-  version="$(curl -fsSL "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=20" \
-    | grep -o 'Vela Browser_[^"/]*_x86_64-linux\.tar\.gz' | head -n 1 \
-    | sed -e 's/^Vela Browser_//' -e 's/_x86_64-linux\.tar\.gz$//')" || true
+  version="$(curl -fsSL "https://api.github.com/repos/accomplish07zrh-eng/vela-browser/releases?per_page=20" \
+    | grep -o 'Vela-Browser_[^"/]*_x86_64-linux\.tar\.gz' | head -n 1 \
+    | sed -e 's/^Vela-Browser_//' -e 's/_x86_64-linux\.tar\.gz$//')" || true
   [[ -n "$version" ]] || fail "no Linux release was found"
 fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || fail "the version is not valid"
@@ -150,7 +150,7 @@ if [[ "$(installed_version || true)" != "$version" ]]; then
   work="$(mktemp -d "$data_home/.aliasmode-install.XXXXXX")"
   # An interrupted swap puts the previous app back.
   trap '[[ -e "$root" || ! -e "$work/previous" ]] || mv "$work/previous" "$root"; rm -rf "$work"' EXIT
-  archive="Vela Browser_${version}_x86_64-linux.tar.gz"
+  archive="Vela-Browser_${version}_x86_64-linux.tar.gz"
   curl -fsSL -o "$work/SHA256SUMS-linux.txt" "$base/v$version/SHA256SUMS-linux.txt" \
     || fail "version $version has no Linux build"
   curl -fL --progress-bar -o "$work/$archive" "$base/v$version/$archive" || fail "the download did not complete"

@@ -1,3 +1,20 @@
+## Default Permission
+
+This permission set configures which kind of
+updater functions are exposed to the frontend.
+
+#### Granted Permissions
+
+The full workflow from checking for updates to installing them
+is enabled.
+
+#### This default permission set includes the following:
+
+- `allow-check`
+- `allow-download`
+- `allow-install`
+- `allow-download-and-install`
+
 ## Permission Table
 
 <table>

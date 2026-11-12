@@ -130,7 +130,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !endif
 
 ; silk-wallet pure white (#FFFFFF) surface for Welcome/Finish and Header
-!define MUI_BGCOLOR FFFFFF
+!define MUI_BGCOLOR F6F3ED
 
 ; Installer icon
 !if "${INSTALLERICON}" != ""

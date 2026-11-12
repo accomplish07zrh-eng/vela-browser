@@ -14,8 +14,7 @@ import {
   requestProxyPreview,
   retryProxyProfileIds,
 } from "./proxies.tsx";
-import type { ProxyCheckView, ProxyProgressEvent, ProxyReplacementView } from "../proxy-tools-types.ts";
-import { PROXY_SRC, proxyOfferUrl, type ProxySrc } from "./proxy-offer.tsx";
+import type { ProxyCheckView, ProxyProgressEvent, ProxyReplacementView } from "../src/proxy-tools-types.ts";
 import { catalogs } from "./locales/registry.ts";
 
 const realFetch = globalThis.fetch;
@@ -149,13 +148,4 @@ test("the proxy page remains mounted but hidden when navigation changes", () => 
   expect(html).toContain('aria-pressed="true">Check proxies');
   expect(html).toContain('aria-pressed="false">Replace proxies');
   expect(html).not.toContain('type="file"');
-});
-
-test("proxy offer shims remain inert in the clean Vela Browser build", () => {
-  expect(PROXY_SRC.length).toBeGreaterThan(4);
-  for (const placement of PROXY_SRC) {
-    for (const language of Object.keys(catalogs)) {
-      for (const quantity of [0, 1, 1000]) expect(proxyOfferUrl(placement, language, quantity)).toBe("#");
-    }
-  }
 });
