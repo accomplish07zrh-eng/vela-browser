@@ -603,7 +603,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       {!displayed.length && <div className="workbench-empty"><Glyph name="lanes" /><h2>{t("Your browsers, together")}</h2><p>{t("Open environments in this group to bring their live pages into the workbench.")}</p><button type="button" className="btn primary" onClick={onOpenProfiles}>{t("Open environments")}</button></div>}
     </div>
     {laneLabels && !focused && <div className="workbench-lanes">
-      {laneLabels.map((lane, row) => <button type="button" key={lane.name} className={`workbench-lane${activeRow === row ? " active" : ""}`} style={{ top: layout.tracks[row]!.y, height: layout.tracks[row]!.height - 32 }}
+      {laneLabels.map((lane, row) => <button type="button" key={lane.name} className={`workbench-lane${activeRow === row ? " active" : ""}${layout.wraps[row] ? " wraps" : ""}`} style={{ top: layout.tracks[row]!.y, height: layout.tracks[row]!.height - 32 }}
         title={t("Show only {group}", { group: lane.name || t("Ungrouped") })} onClick={() => onGroupChange(lane.name)}>
         <span>{lane.name ? folders.find((folder) => folder.name === lane.name)?.label ?? lane.name : t("Ungrouped")}</span><small>{String(lane.ids.length).padStart(2, "0")}</small>
       </button>)}

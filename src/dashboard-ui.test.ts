@@ -393,7 +393,7 @@ function rosterSelection(filtered: { id: string }[], selected = new Set<string>(
     (next: Set<string> | ((current: Set<string>) => Set<string>)) => {
       selected = typeof next === "function" ? next(selected) : next;
     },
-    (s: string) => s,
+    (s: string, values?: Record<string, string>) => values ? s.replace(/\{(\w+)\}/g, (match, key: string) => values[key] ?? match) : s,
   );
   return { ...controls, selected: () => selected };
 }
@@ -433,8 +433,8 @@ test("selection controls expose scope selection and clearing without changing ex
   expect(app).toContain("disabled={deleting || allFilteredSelected}");
   expect(app).toContain("onClick={selectAllFiltered}");
   expect(app).toContain('aria-label={t("Clear selection")} onClick={() => setSelected(new Set())}');
-  expect(app).toContain('q ? t("matching profiles") : t("profiles")');
-  expect(app).toContain('group === "all" ? "" :');
+  expect(app).toContain('q ? t("{count} matching profiles"');
+  expect(app).toContain('group === "all" ? scopeCount : t("{scope} in “{group}”"');
   expect(app).toContain("const ids = [...selected];");
   expect(app).toContain("await exportProfiles(ids, format, (progress) => setExportProgress(progress));");
 });
