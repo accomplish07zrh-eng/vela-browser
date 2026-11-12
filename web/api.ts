@@ -45,6 +45,8 @@ export interface UiProfile {
   /** Operator-chosen "custom NO."; "" when the serial is used instead. */
   customNo?: string;
   running: boolean;
+  /** Closed by cooling when memory ran short; it keeps its workbench tile and comes back signed in. */
+  cooled?: boolean;
   /** The open browser runs with an older proxy or fingerprint than the saved one. */
   restartPending?: boolean;
   /** Local mode: cookies added while closed; the next start sets them. */
@@ -121,6 +123,24 @@ export interface AppModeConfig {
   /** Windows desktop: environment windows can be kept out of the taskbar. */
   taskbarModeSupported?: boolean;
   hideFromTaskbar?: boolean;
+  /** Desktop: idle browsers cool down when memory runs short. */
+  coolingSupported?: boolean;
+  cooling?: CoolingSettings;
+  /** Memory use in percent when the settings were read. */
+  memoryUse?: number;
+}
+
+export interface CoolingSettings { enabled: boolean; threshold: number; idleMinutes: number }
+
+export async function saveCooling(settings: Partial<CoolingSettings>): Promise<CoolingSettings> {
+  const response = await fetch("/ui/api/desktop/cooling", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; cooling?: CoolingSettings; error?: string };
+  if (!response.ok || !body.ok || !body.cooling) throw new Error(body.error || "The setting could not be saved");
+  return body.cooling;
 }
 
 export async function saveTaskbarHidden(hidden: boolean): Promise<boolean> {

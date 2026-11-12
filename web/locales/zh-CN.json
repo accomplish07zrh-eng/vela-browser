@@ -822,5 +822,19 @@
   "Hide only removes each environment's taskbar button. The window, its position and everything a page can see stay exactly the same.": "隐藏只去掉每个环境在任务栏上的按钮。窗口本身、它的位置，以及网页能读到的一切都保持原样。",
   "Taskbar": "任务栏",
   "Show in taskbar": "在任务栏显示",
-  "Hide from taskbar": "从任务栏隐藏"
+  "Hide from taskbar": "从任务栏隐藏",
+  "Cooled": "已冷却",
+  "Cooled to free memory": "已冷却，为系统腾出内存",
+  "Its sign-ins and tabs are saved. Wake it to pick up where it left off.": "登录状态和标签页都已保存，唤醒即可接着用",
+  "Wake": "唤醒",
+  "Remove from workbench": "从工作台移除",
+  "{count} cooled": "{count} 个已冷却",
+  "Cooling": "冷却",
+  "When memory runs short, the browser you have left alone the longest closes safely. It keeps its place on the workbench and wakes signed in, with its tabs. Browsers you are using, or that a script or AI is driving, are never cooled.": "内存吃紧时，最久没碰过的浏览器会安全关闭，在工作台上的位置不变，唤醒后登录状态和标签页都还在。你正在用的、脚本或 AI 正在操作的浏览器不会被冷却。",
+  "On": "开启",
+  "Off": "关闭",
+  "Start cooling at memory use": "内存占用达到多少时开始冷却",
+  "Only browsers left alone for": "只冷却闲置超过",
+  "{count} min": "{count} 分钟",
+  "Memory in use now: {value}%": "当前内存占用：{value}%"
 }

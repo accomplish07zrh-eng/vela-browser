@@ -406,3 +406,13 @@
   .app .wall .browser-viewport:hover .viewport-surface { transform: none; }
   .app .wall .viewport-skeleton i { animation: none; }
 }
+
+/* Cooled: the browser closed to free memory. Its last picture stays, quietly, until it wakes. */
+.app .wall .browser-viewport[data-status="cooled"] .viewport-surface img { opacity: .32; }
+.app .wall .viewport-message.cooled { gap: 6px; background: color-mix(in srgb, var(--surface-sunken) 72%, transparent); color: var(--ink-soft); }
+.app .wall .viewport-cooled-title { font-size: 13px; font-weight: 600; color: var(--ink); letter-spacing: .01em; }
+.app .wall .viewport-message.cooled small { max-width: 36ch; text-wrap: balance; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+.app .wall .viewport-cooled-actions { display: flex; gap: 6px; margin-top: 8px; }
+.app .wall .viewport-dot.cooled { background: transparent; box-shadow: inset 0 0 0 1.5px var(--status-idle); }
+.app .main .cooling-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; max-width: 520px; }
+.app .wall .workbench-ring-dot[data-status="cooled"] span { background: transparent; box-shadow: inset 0 0 0 1px var(--status-idle); }

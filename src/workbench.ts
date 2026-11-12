@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { ActivityLog } from "./cooling.ts";
 import type { Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { LaunchInfo } from "./types.ts";
@@ -43,6 +44,8 @@ export class WorkbenchHub {
     launcher: Launcher; store: ProfileStore;
     canControl?: (id: string) => boolean | Promise<boolean>;
     adapter?: (launch: LaunchInfo) => WorkbenchAdapter;
+    /** Input and focus here count as the user working in that browser, so it is never cooled meanwhile. */
+    activity?: ActivityLog;
   }) {}
   acquireFrame(): boolean { if (this.captures >= 3) return false; this.captures++; return true; }
   releaseFrame(): void { this.captures--; }
@@ -77,6 +80,7 @@ export class WorkbenchConnection {
   private keys = new Map<string, Extract<WorkbenchInput, { kind: "key" }>>();
   private pointer?: Extract<WorkbenchInput, { kind: "pointer" }>;
   private tabsSignature = "";
+  private releaseFocus?: () => void;
 
   constructor(private hub: WorkbenchHub, launch: LaunchInfo, private adapter: WorkbenchAdapter) {
     this.generation = workbenchGeneration(launch); this.profileId = launch.profileId;
@@ -139,6 +143,8 @@ export class WorkbenchConnection {
       this.visible = message.visible === true; this.focused = message.focused === true;
       this.tier = this.visible ? message.tier === "edge" ? "edge" : message.tier === "interactive" || this.focused ? "interactive" : "visible" : "hidden";
       this.frozen = message.frozen === true; this.following = message.following === true;
+      if (this.focused && !this.releaseFocus) this.releaseFocus = this.hub.options.activity?.hold(this.profileId);
+      else if (!this.focused) { this.releaseFocus?.(); this.releaseFocus = undefined; }
       this.captureEpoch++;
       if (!this.visible && !this.following) await this.releaseInput();
       this.schedule();
@@ -148,12 +154,13 @@ export class WorkbenchConnection {
     if (message.action === "input") {
       if ((!this.visible && !this.following) || message.targetId !== this.targetId || !validWorkbenchInput(message.input)) return;
       const input: WorkbenchInput = message.input;
+      this.hub.options.activity?.touch(this.profileId);
       if (input.kind === "key") { if (input.event === "down") this.keys.set(input.code, input); else this.keys.delete(input.code); }
       if (input.kind === "pointer") this.pointer = input.buttons ? input : undefined;
       await this.adapter.input(input); return;
     }
     if (!["refresh", "select", "new", "close"].includes(message.action)) return;
-    if (message.action !== "refresh") await this.releaseInput();
+    if (message.action !== "refresh") { await this.releaseInput(); this.hub.options.activity?.touch(this.profileId); }
     if (message.action === "new") { const id = await this.adapter.newTab(); await this.adapter.select(id); this.targetId = id; }
     if (message.action === "select") {
       if (typeof message.targetId !== "string") return;
@@ -181,6 +188,7 @@ export class WorkbenchConnection {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true; clearTimeout(this.frameTimer); clearInterval(this.heartbeat);
+    this.releaseFocus?.(); this.releaseFocus = undefined;
     await this.releaseInput(); await this.adapter.dispose();
   }
 }

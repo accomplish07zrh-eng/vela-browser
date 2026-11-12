@@ -55,6 +55,7 @@ import { validAgentAuthorization } from "./agent-control.ts";
 import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
 import type { PythonRuntime } from "./python-runtime.ts";
 import { runtimeDownloads } from "./runtime-download.ts";
+import { COOLING_DEFAULTS, normalizeCoolingSettings } from "./cooling.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -66,6 +67,8 @@ export interface UiHealthMetadata {
 /** Redacted, dashboard-safe view of a profile + its live status. */
 export interface UiProfile {
   id: string;
+  /** Closed by cooling when memory ran short; its tile stays on the workbench until it starts again. */
+  cooled?: boolean;
   name: string;
   /** Browser family. Legacy profiles without a value are Chromium. */
   engine: "chromium" | "firefox" | "webkit";
@@ -137,7 +140,7 @@ function openResponse(
  * from the launches table, which is authoritative for every browser THIS manager
  * started — campaign-launched or dashboard-launched alike (one manager per box).
  */
-export function listUiProfiles(store: ProfileStore): UiProfile[] {
+export function listUiProfiles(store: ProfileStore, cooledAt?: (id: string) => number | undefined): UiProfile[] {
   const launches = new Map(store.listLaunches().map((l) => [l.profileId, l]));
   const meta = store.listProfileMeta();
   const pendingCookies = store.pendingCookieCounts();
@@ -164,6 +167,7 @@ export function listUiProfiles(store: ProfileStore): UiProfile[] {
       customNo: p.customNo ?? "",
       mobilePersona: isMobileUserAgent(p.ua),
       running: !!l,
+      ...(!l && cooledAt?.(p.id) ? { cooled: true } : {}),
       ...(l && launchIdentityChanged(p, l) ? { restartPending: true } : {}),
       ...(pendingCookies.get(p.id) ? { pendingCookieCount: pendingCookies.get(p.id) } : {}),
       ...(profileEngine(p) === "chromium" ? { debugPort: l?.debugPort } : {}),
@@ -456,6 +460,9 @@ export interface UiRuntimeOptions {
   appConfig?: AppConfigStore;
   /** Re-applies taskbar-hidden mode right after the setting changes. */
   taskbarMode?: import("./taskbar.ts").TaskbarMode;
+  /** Desktop: cools idle browsers when memory runs short. */
+  cooling?: import("./cooling.ts").CoolingMonitor;
+  activity?: import("./cooling.ts").ActivityLog;
   paths?: StatePaths;
 
 
@@ -622,6 +629,7 @@ export async function handleUiRequest(
       ...(!remote && supportsChromium155Host(process.platform, process.arch) ? { defaultChromiumRuntime: "aliasmode" } : {}),
       ...(!remote ? { defaultEngine: defaultProfileEngine(), webkitAvailable: webkitSupported() } : {}),
       ...(taskbarModeSupported() ? { taskbarModeSupported: true } : {}),
+      ...(options.cooling ? { coolingSupported: true, cooling: config.cooling ?? COOLING_DEFAULTS, memoryUse: options.cooling.usage() } : {}),
     });
   }
 
@@ -634,6 +642,18 @@ export async function handleUiRequest(
     const saved = options.appConfig.write(body.hidden ? { ...rest, hideFromTaskbar: true } : rest);
     await options.taskbarMode?.sweep();
     return noStoreJson({ ok: true, hidden: saved.hideFromTaskbar === true });
+  }
+
+  if (pathname === "/ui/api/desktop/cooling" && req.method === "POST") {
+    if (!options.appConfig || !options.cooling) return noStoreJson({ ok: false, error: "Not available on this computer" }, 404);
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body !== "object") return noStoreJson({ ok: false, error: "Invalid cooling settings" }, 400);
+    const current = options.appConfig.read();
+    const cooling = normalizeCoolingSettings({ ...(current.cooling ?? COOLING_DEFAULTS), ...body });
+    const saved = options.appConfig.write({ ...current, cooling });
+    return noStoreJson({ ok: true, cooling: saved.cooling ?? cooling });
   }
 
   if (pathname === "/ui/api/shell-language" && req.method === "GET") {
@@ -729,7 +749,7 @@ export async function handleUiRequest(
       // otherwise show "running" forever and hide the Open action. reconcileOrphans
       // probes active() per launch and drops dead rows (it never kills processes).
       await launcher.reconcileOrphans();
-      return Response.json({ profiles: listUiProfiles(store), healthSources: [], groups: store.listGroups(), folders: store.listFolders() });
+      return Response.json({ profiles: listUiProfiles(store, options.cooling && ((id) => options.cooling!.cooledAt(id))), healthSources: [], groups: store.listGroups(), folders: store.listFolders() });
     } catch (error) {
       // Bun renders an uncaught route exception as an HTML 500 page. The React
       // client then cannot expose the actual hub/reconciliation error and only
@@ -1630,11 +1650,13 @@ export async function handleUiRequest(
     if (!profile) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
     try {
       if (action[2] === "open") {
+        options.activity?.touch(id);
         const r = await launcher.start(id);
         return openResponse(profile, r);
       }
       if (action[2] === "close") {
         const launch = store.getLaunch(id);
+        options.cooling?.forget(id);
         await launcher.captureLocalSession(id);
         return (await launcher.stop(id, launch ?? undefined))
           ? Response.json({ ok: true })

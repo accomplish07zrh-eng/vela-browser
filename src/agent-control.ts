@@ -44,6 +44,8 @@ export interface AgentControlDeps {
   admission: LifecycleAdmissionController;
   firefoxCall?: (owner: FirefoxOwner, operation: string, payload: Record<string, unknown>) => Promise<unknown>;
   remote?: RemoteCoordinator | null;
+  /** AI actions count as work in that browser, so cooling leaves it alone. */
+  activity?: import("./cooling.ts").ActivityLog;
 
 
   log?: (message: string) => void;
@@ -237,7 +239,15 @@ export class AgentControlSession {
     return this.cleanup;
   }
 
+  /** True while this connection opened or attached to the browser and has not let it go. */
+  holds(profileId: string): boolean {
+    return !this.closed && (this.openedByConnection.has(profileId) || this.attachedExisting.has(profileId));
+  }
+
+  get isClosed(): boolean { return this.closed; }
+
   private async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
+    if (typeof params.profileId === "string" && params.profileId) this.deps.activity?.touch(params.profileId.trim());
     switch (method) {
       case "profiles.list":
         return { profiles: await this.listProfiles() };
@@ -511,8 +521,21 @@ export class AgentControlHub {
 
   constructor(private readonly deps: AgentControlDeps) {}
 
+  private readonly sessions = new Set<AgentControlSession>();
+
   connect(): AgentControlSession {
-    return new AgentControlSession(this.deps);
+    const session = new AgentControlSession(this.deps);
+    this.sessions.add(session);
+    return session;
+  }
+
+  /** True while any live AI connection holds this browser. */
+  holds(profileId: string): boolean {
+    for (const session of [...this.sessions]) {
+      if (session.isClosed) this.sessions.delete(session);
+      else if (session.holds(profileId)) return true;
+    }
+    return false;
   }
 
   cleanupTemporaryProfiles(): Promise<void> {

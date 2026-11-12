@@ -35,6 +35,8 @@ import {
   type AppModeConfig,
   fetchAppMode,
   saveTaskbarHidden,
+  saveCooling,
+  type CoolingSettings,
   fetchRuntimeDownloads,
   type RuntimeDownload,
   fetchProfiles,
@@ -263,6 +265,7 @@ const ICONS = {
   warning: <><path d="M10.3 4.2L2.8 17a2 2 0 001.7 3h15a2 2 0 001.7-3L13.7 4.2a2 2 0 00-3.4 0z" /><path d="M12 9.5v4M12 17v.3" /></>,
   check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
   activity: <path d="M3 12h4l3 8 4-16 3 8h4" />,
+  snow: <path d="M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9M9.5 4.5 12 6.5l2.5-2M9.5 19.5 12 17.5l2.5 2M4 10.6l3.3-.6-.9-3.2M20 13.4l-3.3.6.9 3.2M4 13.4l3.3.6-.9 3.2M20 10.6l-3.3-.6.9-3.2" />,
   // The wall: two lanes of live pages, the lower one running off both edges.
   wall: <><rect x="3" y="4.5" width="8" height="6.5" rx="1.5" /><rect x="13" y="4.5" width="8" height="6.5" rx="1.5" /><rect x="7.5" y="13" width="9" height="6.5" rx="1.5" /><path d="M3 13.5v5.5M21 13.5v5.5" /></>,
   globe: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.6 2.5 4 5.6 4 9s-1.4 6.5-4 9c-2.6-2.5-4-5.6-4-9s1.4-6.5 4-9z" /></>,
@@ -3392,6 +3395,48 @@ function App() {
               </div>
             </section>
           )}
+          {appMode?.coolingSupported && appMode.cooling && (() => {
+            const cooling = appMode.cooling;
+            const save = (change: Partial<CoolingSettings>) => {
+              const previous = cooling;
+              setAppMode({ ...appMode, cooling: { ...cooling, ...change } });
+              saveCooling(change)
+                .then((saved) => setAppMode((current) => current && { ...current, cooling: saved }))
+                .catch((error) => {
+                  setAppMode((current) => current && { ...current, cooling: previous });
+                  flash(error instanceof Error ? error.message : String(error));
+                });
+            };
+            return (
+              <section className="settings-card">
+                <header><Icon name="snow" className="sm" /><h2>{t("Cooling")}</h2></header>
+                <div className="card-body">
+                  <p>{t("When memory runs short, the browser you have left alone the longest closes safely. It keeps its place on the workbench and wakes signed in, with its tabs. Browsers you are using, or that a script or AI is driving, are never cooled.")}</p>
+                  <div className="segmented" role="radiogroup" aria-label={t("Cooling")}>
+                    {([[true, "On"], [false, "Off"]] as const).map(([enabled, label]) => (
+                      <button key={label} type="button" role="radio" aria-checked={cooling.enabled === enabled}
+                        className={cooling.enabled === enabled ? "active" : ""} onClick={() => save({ enabled })}>{t(label)}</button>
+                    ))}
+                  </div>
+                  {cooling.enabled && (
+                    <div className="cooling-fields">
+                      <label className="fld"><span>{t("Start cooling at memory use")}</span>
+                        <select className="select" value={cooling.threshold} onChange={(event) => save({ threshold: Number(event.target.value) })}>
+                          {[...new Set([70, 75, 80, 85, 90, 95, cooling.threshold])].sort((a, b) => a - b).map((value) => <option key={value} value={value}>{value}%</option>)}
+                        </select>
+                      </label>
+                      <label className="fld"><span>{t("Only browsers left alone for")}</span>
+                        <select className="select" value={cooling.idleMinutes} onChange={(event) => save({ idleMinutes: Number(event.target.value) })}>
+                          {[...new Set([5, 10, 15, 30, 60, cooling.idleMinutes])].sort((a, b) => a - b).map((value) => <option key={value} value={value}>{t("{count} min", { count: value })}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  )}
+                  {typeof appMode.memoryUse === "number" && <p className="formnote">{t("Memory in use now: {value}%", { value: Math.round(appMode.memoryUse) })}</p>}
+                </div>
+              </section>
+            );
+          })()}
 
             </>
           )}
