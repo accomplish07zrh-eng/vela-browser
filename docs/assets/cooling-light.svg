@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 420" width="1600" height="420">
+<style>
+.level { animation: level 16s infinite; transform-box: fill-box; transform-origin: bottom; }
+@keyframes level {
+  0% { transform: scaleY(.62); animation-timing-function: cubic-bezier(.5,0,.8,.6); }
+  34% { transform: scaleY(.91); }
+  40% { transform: scaleY(.91); animation-timing-function: cubic-bezier(.2,.8,.3,1); }
+  50% { transform: scaleY(.68); }
+  74% { transform: scaleY(.68); animation-timing-function: ease-in-out; }
+  84% { transform: scaleY(.74); }
+  96% { transform: scaleY(.74); animation-timing-function: ease-in-out; }
+  100% { transform: scaleY(.62); }
+}
+.hot { animation: hot 16s infinite; }
+@keyframes hot {
+  0% { opacity: 0; }
+  28% { opacity: 0; }
+  31% { opacity: 1; }
+  44% { opacity: 1; }
+  48% { opacity: 0; }
+  100% { opacity: 0; }
+}
+.cool { animation: cool 16s infinite; }
+@keyframes cool {
+  0% { opacity: 1; }
+  35% { opacity: 1; animation-timing-function: ease-in-out; }
+  42% { opacity: .32; }
+  76% { opacity: .32; animation-timing-function: ease-out; }
+  80% { opacity: 1; }
+  100% { opacity: 1; }
+}
+.cool-dot { animation: cool-dot 16s infinite; }
+@keyframes cool-dot {
+  0% { fill-opacity: 1; }
+  37% { fill-opacity: 1; }
+  39% { fill-opacity: 0; }
+  78% { fill-opacity: 0; }
+  80% { fill-opacity: 1; }
+  100% { fill-opacity: 1; }
+}
+.snow { animation: snow 16s infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes snow {
+  0% { opacity: 0; transform: rotate(-40deg) scale(.5); }
+  37% { opacity: 0; transform: rotate(-40deg) scale(.5); animation-timing-function: ease-out; }
+  46% { opacity: 1; transform: rotate(0deg) scale(1); }
+  74% { opacity: 1; transform: rotate(0deg) scale(1); animation-timing-function: ease-in; }
+  79% { opacity: 0; transform: rotate(25deg) scale(.5); }
+  100% { opacity: 0; }
+}
+.drift { animation: drift 16s infinite; }
+@keyframes drift {
+  0% { transform: translate(0,0); opacity: 0; }
+  40% { transform: translate(0,0); opacity: 0; }
+  41% { transform: translate(0,0); opacity: .9; animation-timing-function: cubic-bezier(.3,.1,.3,1); }
+  54% { transform: translate(var(--dx),-70px); opacity: 0; }
+  100% { opacity: 0; }
+}
+.cur { animation: cur 16s infinite; }
+@keyframes cur {
+  0% { transform: translate(150px,120px); opacity: 0; }
+  58% { transform: translate(150px,120px); opacity: 0; }
+  60% { transform: translate(150px,120px); opacity: 1; animation-timing-function: cubic-bezier(.45,.05,.2,1); }
+  69% { transform: translate(-4px,3px); opacity: 1; animation-timing-function: cubic-bezier(.3,.6,.4,1); }
+  72% { transform: translate(0px,0px); opacity: 1; }
+  86% { transform: translate(0px,0px); opacity: 1; }
+  90% { transform: translate(0px,0px); opacity: 0; }
+  100% { opacity: 0; }
+}
+.wake { animation: wake 16s infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes wake {
+  0% { transform: scale(.2); opacity: 0; }
+  73% { transform: scale(.2); opacity: 0; }
+  73.5% { transform: scale(.25); opacity: .75; animation-timing-function: ease-out; }
+  82% { transform: scale(1.6); opacity: 0; }
+  76.5% { transform: scale(1.6); opacity: 0; }
+  77.0% { transform: scale(.25); opacity: .75; animation-timing-function: ease-out; }
+  81.5% { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+.live { animation: live 3.2s ease-in-out infinite; }
+@keyframes live { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+</style>
+<rect width="1600" height="420" fill="#f6f3ed"/>
+<rect x="200" y="70" width="46" height="280" rx="14" fill="#efebe3" stroke="#d9d4ca"/>
+<rect class="level" x="206" y="76" width="34" height="268" rx="9" fill="#cfc7b8"/>
+<g class="hot"><rect class="level" x="206" y="76" width="34" height="268" rx="9" fill="#9a7424"/></g>
+<path d="M182 112.0 H264" stroke="#9a7424" stroke-width="2" stroke-dasharray="5 5"/>
+<path d="M270 112.0 l12 -7 v14 z" fill="#9a7424"/>
+<g class="cool"><rect x="380" y="150" width="190" height="124" rx="14" fill="#fbf9f5" stroke="#d9d4ca"/><rect x="394" y="164" width="146" height="10" rx="5" fill="#e6e0d4"/><circle class="cool-dot" cx="552" cy="169" r="4" fill="#9a7424" stroke="#9a7424" stroke-width="1.5"/><rect x="394" y="192" width="126.4" height="7" rx="3" fill="#e6e0d4"/><rect x="394" y="208" width="100.4" height="7" rx="3" fill="#e6e0d4"/><rect x="394" y="224" width="113.4" height="7" rx="3" fill="#e6e0d4"/></g>
+<g transform="translate(454.0 194.0) scale(1.75)"><path class="snow" d="M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9M9.5 4.5 12 6.5l2.5-2M9.5 19.5 12 17.5l2.5 2M4 10.6l3.3-.6-.9-3.2M20 13.4l-3.3.6.9 3.2M4 13.4l3.3.6-.9 3.2M20 10.6l-3.3-.6.9-3.2" fill="none" stroke="#1a1814" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></g>
+<circle class="drift" cx="410" cy="142" r="3.5" fill="#9a7424" style="--dx:-60px; animation-delay:0.0s"/>
+<circle class="drift" cx="454" cy="142" r="3.5" fill="#9a7424" style="--dx:-90px; animation-delay:0.18s"/>
+<circle class="drift" cx="498" cy="142" r="3.5" fill="#9a7424" style="--dx:-120px; animation-delay:0.36s"/>
+<circle class="drift" cx="542" cy="142" r="3.5" fill="#9a7424" style="--dx:-150px; animation-delay:0.54s"/>
+<circle class="wake" cx="475.0" cy="218.2" r="20" fill="none" stroke="#9a7424" stroke-width="2"/>
+<g transform="translate(475.0 218.2)"><g class="cur"><path d="M0 0 L0 22 L6 16.5 L10.5 25 L14 23.4 L9.8 15 L17 15 Z" fill="#1a1814" stroke="#fbf9f5" stroke-width="1.2" stroke-linejoin="round"/></g></g>
+<g class=""><rect x="592" y="150" width="190" height="124" rx="14" fill="#fbf9f5" stroke="#d9d4ca"/><rect x="606" y="164" width="146" height="10" rx="5" fill="#e6e0d4"/><circle class="live" cx="764" cy="169" r="4" fill="#9a7424" stroke="#9a7424" stroke-width="1.5"/><rect x="606" y="192" width="126.4" height="7" rx="3" fill="#e6e0d4"/><rect x="606" y="208" width="100.4" height="7" rx="3" fill="#e6e0d4"/><rect x="606" y="224" width="113.4" height="7" rx="3" fill="#e6e0d4"/></g>
+<g class=""><rect x="804" y="150" width="190" height="124" rx="14" fill="#fbf9f5" stroke="#d9d4ca"/><rect x="818" y="164" width="146" height="10" rx="5" fill="#e6e0d4"/><circle class="live" cx="976" cy="169" r="4" fill="#9a7424" stroke="#9a7424" stroke-width="1.5"/><rect x="818" y="192" width="126.4" height="7" rx="3" fill="#e6e0d4"/><rect x="818" y="208" width="100.4" height="7" rx="3" fill="#e6e0d4"/><rect x="818" y="224" width="113.4" height="7" rx="3" fill="#e6e0d4"/></g>
+<g class=""><rect x="1016" y="150" width="190" height="124" rx="14" fill="#fbf9f5" stroke="#d9d4ca"/><rect x="1030" y="164" width="146" height="10" rx="5" fill="#e6e0d4"/><circle class="live" cx="1188" cy="169" r="4" fill="#9a7424" stroke="#9a7424" stroke-width="1.5"/><rect x="1030" y="192" width="126.4" height="7" rx="3" fill="#e6e0d4"/><rect x="1030" y="208" width="100.4" height="7" rx="3" fill="#e6e0d4"/><rect x="1030" y="224" width="113.4" height="7" rx="3" fill="#e6e0d4"/></g>
+<g class=""><rect x="1228" y="150" width="190" height="124" rx="14" fill="#fbf9f5" stroke="#d9d4ca"/><rect x="1242" y="164" width="146" height="10" rx="5" fill="#e6e0d4"/><circle class="live" cx="1400" cy="169" r="4" fill="#9a7424" stroke="#9a7424" stroke-width="1.5"/><rect x="1242" y="192" width="126.4" height="7" rx="3" fill="#e6e0d4"/><rect x="1242" y="208" width="100.4" height="7" rx="3" fill="#e6e0d4"/><rect x="1242" y="224" width="113.4" height="7" rx="3" fill="#e6e0d4"/></g>
+</svg>
