@@ -17,6 +17,7 @@ import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
 import { TitleBar, usesOwnTitleBar } from "./titlebar.tsx";
 import { Select } from "./select.tsx";
+import { DockBlob } from "./dock-blob.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
 import { localeTimezoneMismatch } from "../src/profile-locale.ts";
 import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
@@ -1054,6 +1055,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
 
 function App() {
   const { t, language, setLanguage } = useTranslation();
+  const dockNav = useRef<HTMLElement>(null);
   const [profiles, setProfiles] = useState<UiProfile[]>([]);
   const [registeredGroups, setRegisteredGroups] = useState<string[]>([]);
   const [localFolders, setLocalFolders] = useState<FolderInfo[]>([]);
@@ -2534,7 +2536,8 @@ function App() {
           ><Icon name="fileImport" /><span className="navlabel">{t("Import profiles")}</span></button>
         </div>
 
-        <nav className="sidenav" aria-label={t("Sections")}>
+        <nav className="sidenav" aria-label={t("Sections")} ref={dockNav}>
+          <DockBlob nav={dockNav} active={`${view}:${group}:${sharedOnly}`} />
           <button type="button" className={`navitem${view === "workbench" ? " active" : ""}`} data-tip={t("Multi-view workbench")} title={t("Multi-view workbench")} onClick={() => setView("workbench")}>
             <Icon name="wall" /><span className="navlabel">{t("Multi-view workbench")}</span>
           </button>
