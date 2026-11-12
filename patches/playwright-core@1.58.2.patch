@@ -1,21 +1,79 @@
-diff --git a/lib/utilsBundle.js b/lib/utilsBundle.js
-index 188aa33465d8f91ca457237873952f966be4272e..7324a9f0d4b7f7d9370d428216952ba26cf82dfc 100644
---- a/lib/utilsBundle.js
-+++ b/lib/utilsBundle.js
-@@ -58,8 +58,9 @@ const program = require("./utilsBundleImpl").program;
- const ProgramOption = require("./utilsBundleImpl").ProgramOption;
- const progress = require("./utilsBundleImpl").progress;
- const SocksProxyAgent = require("./utilsBundleImpl").SocksProxyAgent;
--const ws = require("./utilsBundleImpl").ws;
--const wsServer = require("./utilsBundleImpl").wsServer;
-+const _rawWs = require("ws");
-+const ws = _rawWs.default || _rawWs;
-+const wsServer = _rawWs.WebSocketServer || _rawWs.Server;
- const wsReceiver = require("./utilsBundleImpl").wsReceiver;
- const wsSender = require("./utilsBundleImpl").wsSender;
- const yaml = require("./utilsBundleImpl").yaml;
+diff --git a/lib/server/browserContext.js b/lib/server/browserContext.js
+index 2fd11d94dfe68bec9747b207a6b713e47156d60d..d147a880367f5a9473d28468e2ffc410b5f3f8f5 100644
+--- a/lib/server/browserContext.js
++++ b/lib/server/browserContext.js
+@@ -214,6 +214,10 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
+     return await this.doGetCookies(urls);
+   }
+   async clearCookies(options) {
++    if (!options.name && !options.domain && !options.path) {
++      await this.doClearCookies();
++      return;
++    }
+     const currentCookies = await this.cookies();
+     await this.doClearCookies();
+     const matches = (cookie, prop, value) => {
+diff --git a/lib/server/chromium/chromium.js b/lib/server/chromium/chromium.js
+index adff861ecad0049a45b2fe91b36802a73c3a4d82..91b9483930c4a0d4612a13c3e8e56766e930188d 100644
+--- a/lib/server/chromium/chromium.js
++++ b/lib/server/chromium/chromium.js
+@@ -98,7 +98,11 @@ class Chromium extends import_browserType.BrowserType {
+       const wsEndpoint = await urlToWSEndpoint(progress, endpointURL, headersMap);
+       chromeTransport = await import_transport.WebSocketTransport.connect(progress, wsEndpoint, { headers: headersMap });
+       const browserProcess = { close: doClose, kill: doClose };
+-      const persistent = { noDefaultViewport: true };
++      // Attaching to the user's browser never changes the colour scheme, motion, forced colours or
++      // contrast its open pages see: Playwright's defaults would emulate light, no-preference and none.
++      // Nor does it take over downloads: Playwright's default would save every file the user
++      // downloads into its own temporary folder under a random name, deleted when it detaches.
++      const persistent = { noDefaultViewport: true, colorScheme: "no-override", reducedMotion: "no-override", forcedColors: "no-override", contrast: "no-override", acceptDownloads: "internal-browser-default" };
+       const browserOptions = {
+         slowMo: options.slowMo,
+         name: "chromium",
+diff --git a/lib/server/chromium/crBrowser.js b/lib/server/chromium/crBrowser.js
+index 9cf6f63d155b7c8e230871d9f11fa7bf748e0fb8..4e135ff38d2c087f5ba2e906392cb499fd50642f 100644
+--- a/lib/server/chromium/crBrowser.js
++++ b/lib/server/chromium/crBrowser.js
+@@ -315,7 +315,7 @@ class CRBrowserContext extends import_browserContext.BrowserContext {
+     return this._crPages().map((crPage) => crPage._page);
+   }
+   async doCreateNewPage() {
+-    const { targetId } = await this._browser._session.send("Target.createTarget", { url: "about:blank", browserContextId: this._browserContextId });
++    const { targetId } = await this._browser._session.send("Target.createTarget", { url: "about:blank", browserContextId: this._browserContextId, background: true });
+     return this._browser._crPages.get(targetId)._page;
+   }
+   async doGetCookies(urls) {
+diff --git a/lib/server/chromium/crPage.js b/lib/server/chromium/crPage.js
+index 422b2f0f6bf47c0d42c544edd04d7851e3b83d4c..b07321d690b85fac950330521d0621407fc814b2 100644
+--- a/lib/server/chromium/crPage.js
++++ b/lib/server/chromium/crPage.js
+@@ -408,7 +408,9 @@ class FrameSession {
+     if (!this._page.isStorageStatePage) {
+       if (this._crPage._browserContext.needsPlaywrightBinding())
+         promises.push(this.exposePlaywrightBinding());
+-      if (this._isMainFrame())
++      // Focus emulation makes every attached tab read document.hasFocus() as true and fire focus
++      // and blur events. AliasMode's own helpers turn it off, so the user's tabs never see them.
++      if (this._isMainFrame() && globalThis[Symbol.for("aliasmode.playwrightFocusEmulation")] !== false)
+         promises.push(this._client.send("Emulation.setFocusEmulationEnabled", { enabled: true }));
+       const options = this._crPage._browserContext._options;
+       if (options.bypassCSP)
+diff --git a/lib/server/firefox/ffBrowser.js b/lib/server/firefox/ffBrowser.js
+index 118018e155d72dcff80ea17bd673de4ec9033a1c..91017a2524cbd9bea7a25be73a251412f91087d0 100644
+--- a/lib/server/firefox/ffBrowser.js
++++ b/lib/server/firefox/ffBrowser.js
+@@ -221,7 +221,8 @@ class FFBrowserContext extends import_browserContext.BrowserContext {
+   }
+   async doCreateNewPage() {
+     const { targetId } = await this._browser.session.send("Browser.newPage", {
+-      browserContextId: this._browserContextId
++      browserContextId: this._browserContextId,
++      ...this._creatingStorageStatePage ? { hidden: true } : {}
+     }).catch((e) => {
+       if (e.message.includes("Failed to override timezone"))
+         throw new Error(`Invalid timezone ID: ${this._options.timezoneId}`);
 diff --git a/lib/server/transport.js b/lib/server/transport.js
-index 2502a8e..211c914 100644
+index 2502a8e4270f2607e9e2704001fcab506ac6ed6a..cf0602092b6ae1bc5d5a96bb040f4e903cc9bdda 100644
 --- a/lib/server/transport.js
 +++ b/lib/server/transport.js
 @@ -25,21 +25,22 @@ module.exports = __toCommonJS(transport_exports);
@@ -154,69 +212,19 @@ index 2502a8e..211c914 100644
      await promise;
    }
  }
-diff --git a/lib/server/browserContext.js b/lib/server/browserContext.js
---- a/lib/server/browserContext.js
-+++ b/lib/server/browserContext.js
-@@ -214,6 +214,10 @@ class BrowserContext extends import_instrumentation.SdkObject {
-     return await this.doGetCookies(urls);
-   }
-   async clearCookies(options) {
-+    if (!options.name && !options.domain && !options.path) {
-+      await this.doClearCookies();
-+      return;
-+    }
-     const currentCookies = await this.cookies();
-     await this.doClearCookies();
-     const matches = (cookie, prop, value) => {
-diff --git a/lib/server/chromium/crPage.js b/lib/server/chromium/crPage.js
---- a/lib/server/chromium/crPage.js
-+++ b/lib/server/chromium/crPage.js
-@@ -408,7 +408,9 @@ class FrameSession {
-     if (!this._page.isStorageStatePage) {
-       if (this._crPage._browserContext.needsPlaywrightBinding())
-         promises.push(this.exposePlaywrightBinding());
--      if (this._isMainFrame())
-+      // Focus emulation makes every attached tab read document.hasFocus() as true and fire focus
-+      // and blur events. AliasMode's own helpers turn it off, so the user's tabs never see them.
-+      if (this._isMainFrame() && globalThis[Symbol.for("aliasmode.playwrightFocusEmulation")] !== false)
-         promises.push(this._client.send("Emulation.setFocusEmulationEnabled", { enabled: true }));
-       const options = this._crPage._browserContext._options;
-       if (options.bypassCSP)
-diff --git a/lib/server/chromium/crBrowser.js b/lib/server/chromium/crBrowser.js
---- a/lib/server/chromium/crBrowser.js
-+++ b/lib/server/chromium/crBrowser.js
-@@ -315,7 +315,7 @@ class CRBrowserContext extends import_browserContext.BrowserContext {
-     return this._crPages().map((crPage) => crPage._page);
-   }
-   async doCreateNewPage() {
--    const { targetId } = await this._browser._session.send("Target.createTarget", { url: "about:blank", browserContextId: this._browserContextId });
-+    const { targetId } = await this._browser._session.send("Target.createTarget", { url: "about:blank", browserContextId: this._browserContextId, background: true });
-     return this._browser._crPages.get(targetId)._page;
-   }
-   async doGetCookies(urls) {diff --git a/lib/server/firefox/ffBrowser.js b/lib/server/firefox/ffBrowser.js
---- a/lib/server/firefox/ffBrowser.js
-+++ b/lib/server/firefox/ffBrowser.js
-@@ -221,7 +221,8 @@ class FFBrowserContext extends import_browserContext.BrowserContext {
-   }
-   async doCreateNewPage() {
-     const { targetId } = await this._browser.session.send("Browser.newPage", {
--      browserContextId: this._browserContextId
-+      browserContextId: this._browserContextId,
-+      ...this._creatingStorageStatePage ? { hidden: true } : {}
-     }).catch((e) => {
-       if (e.message.includes("Failed to override timezone"))
-         throw new Error(`Invalid timezone ID: ${this._options.timezoneId}`);
-diff --git a/lib/server/chromium/chromium.js b/lib/server/chromium/chromium.js
---- a/lib/server/chromium/chromium.js
-+++ b/lib/server/chromium/chromium.js
-@@ -98,7 +98,9 @@
-       const wsEndpoint = await urlToWSEndpoint(progress, endpointURL, headersMap);
-       chromeTransport = await import_transport.WebSocketTransport.connect(progress, wsEndpoint, { headers: headersMap });
-       const browserProcess = { close: doClose, kill: doClose };
--      const persistent = { noDefaultViewport: true };
-+      // Attaching to the user's browser never changes the colour scheme, motion, forced colours or
-+      // contrast its open pages see: Playwright's defaults would emulate light, no-preference and none.
-+      const persistent = { noDefaultViewport: true, colorScheme: "no-override", reducedMotion: "no-override", forcedColors: "no-override", contrast: "no-override" };
-       const browserOptions = {
-         slowMo: options.slowMo,
-         name: "chromium",
+diff --git a/lib/utilsBundle.js b/lib/utilsBundle.js
+index 188aa33465d8f91ca457237873952f966be4272e..7324a9f0d4b7f7d9370d428216952ba26cf82dfc 100644
+--- a/lib/utilsBundle.js
++++ b/lib/utilsBundle.js
+@@ -58,8 +58,9 @@ const program = require("./utilsBundleImpl").program;
+ const ProgramOption = require("./utilsBundleImpl").ProgramOption;
+ const progress = require("./utilsBundleImpl").progress;
+ const SocksProxyAgent = require("./utilsBundleImpl").SocksProxyAgent;
+-const ws = require("./utilsBundleImpl").ws;
+-const wsServer = require("./utilsBundleImpl").wsServer;
++const _rawWs = require("ws");
++const ws = _rawWs.default || _rawWs;
++const wsServer = _rawWs.WebSocketServer || _rawWs.Server;
+ const wsReceiver = require("./utilsBundleImpl").wsReceiver;
+ const wsSender = require("./utilsBundleImpl").wsSender;
+ const yaml = require("./utilsBundleImpl").yaml;
