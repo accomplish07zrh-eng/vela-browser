@@ -6,7 +6,7 @@ import type { LaunchInfo } from "./types.ts";
 import { callWebKitOwner } from "./webkit-runtime.ts";
 import { callFirefoxOwner } from "./firefox-runtime.ts";
 import { CdpWorkbench } from "./workbench-cdp.ts";
-import { validWorkbenchInput, workbenchFrameInterval, type WorkbenchRefreshTier, type WorkbenchAdapter, type WorkbenchFrame, type WorkbenchInput, type WorkbenchTab } from "./workbench-protocol.ts";
+import { validWorkbenchInput, workbenchFrameInterval, workbenchFrameWidth, workbenchStreamInterval, type WorkbenchRefreshTier, type WorkbenchAdapter, type WorkbenchFrame, type WorkbenchInput, type WorkbenchStreamOptions, type WorkbenchTab } from "./workbench-protocol.ts";
 
 export const WORKBENCH_PATH = "/ui/api/workbench/connect";
 export const WORKBENCH_PROTOCOL = "vela-workbench-v1";
@@ -33,6 +33,29 @@ class ContextAdapter implements WorkbenchAdapter {
   newTab(): Promise<string> { return this.run("new"); }
   closeTab(targetId: string): Promise<void> { return this.run("close", { targetId }); }
   frame(focused: boolean): Promise<WorkbenchFrame> { return this.run("frame", { focused }); }
+  /** The owner answers each request as soon as the page paints a newer frame, so this is a push in all but name. */
+  async stream(options: WorkbenchStreamOptions, onFrame: (frame: WorkbenchFrame) => void): Promise<() => Promise<void>> {
+    const targetId = this.target;
+    let active = true, since = 0;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    // The first answer must be a frame, or the caller falls back to polling.
+    const first = await this.call<any>(this.owner, "workbench", { action: "frame", targetId, stream: true, since, wait: 1000, ...options }, { timeoutMs: 3500 });
+    if (!first?.data) throw new Error("No live frames for this tab");
+    since = first.seq; onFrame({ data: first.data, width: first.width, height: first.height });
+    void (async () => {
+      while (active && this.target === targetId) {
+        const started = Date.now();
+        try {
+          const next = await this.call<any>(this.owner, "workbench", { action: "frame", targetId, stream: true, since, wait: 1500, ...options }, { timeoutMs: 3500 });
+          if (!active) break;
+          if (next?.data && next.seq > since) { since = next.seq; onFrame({ data: next.data, width: next.width, height: next.height }); }
+        } catch { if (active) await sleep(500); }
+        const rest = options.minInterval - (Date.now() - started);
+        if (rest > 0 && active) await sleep(rest);
+      }
+    })();
+    return async () => { active = false; await this.run("stop-stream").catch(() => {}); };
+  }
   viewport(): Promise<{ width: number; height: number }> { return this.run("viewport"); }
   async input(input: WorkbenchInput): Promise<void> { await this.run("input", { input }); }
   dispose(): void { /* The owner and its persistent context belong to the launcher. */ }
@@ -47,7 +70,8 @@ export class WorkbenchHub {
     /** Input and focus here count as the user working in that browser, so it is never cooled meanwhile. */
     activity?: ActivityLog;
   }) {}
-  acquireFrame(): boolean { if (this.captures >= 3) return false; this.captures++; return true; }
+  // Polled frames are scaled to their card, so more of them can be in flight at once.
+  acquireFrame(): boolean { if (this.captures >= 6) return false; this.captures++; return true; }
   releaseFrame(): void { this.captures--; }
   async connect(id: string): Promise<WorkbenchConnection> {
     if (!this.options.store.getProfile(id) || !await this.allowed(id) || !await this.options.launcher.certifiedActive(id)) throw new Error("Environment is unavailable");
@@ -81,6 +105,14 @@ export class WorkbenchConnection {
   private pointer?: Extract<WorkbenchInput, { kind: "pointer" }>;
   private tabsSignature = "";
   private releaseFocus?: () => void;
+  /** Device-pixel width of the card, so frames arrive at the size they are shown. */
+  private frameWidth?: number;
+  private streamKey = "";
+  private stopStream?: () => Promise<void>;
+  private streaming = false;
+  /** Tabs that sent no live frame (a tab the browser is not painting): they are polled instead. */
+  private polledTargets = new Set<string>();
+  private streamChange = Promise.resolve();
 
   constructor(private hub: WorkbenchHub, launch: LaunchInfo, private adapter: WorkbenchAdapter) {
     this.generation = workbenchGeneration(launch); this.profileId = launch.profileId;
@@ -115,11 +147,13 @@ export class WorkbenchConnection {
   private async capture(): Promise<void> {
     if (this.disposed) return;
     if (!this.current()) { this.emit({ type: "ended", profileId: this.profileId, generation: this.generation }); await this.dispose(); return; }
+    // A live stream is pushing frames; polling would only repeat them.
+    if (this.streaming) { this.schedule(); return; }
     if (!this.visible || this.frozen || !this.targetId || !this.hub.acquireFrame()) { this.schedule(); return; }
     const targetId = this.targetId, epoch = this.captureEpoch, started = performance.now();
     this.capturing = true;
     try {
-      const frame = await this.adapter.frame(this.focused);
+      const frame = await this.adapter.frame(this.focused, this.frameWidth);
       if (targetId === this.targetId && this.visible && !this.frozen && epoch === this.captureEpoch) this.send({ type: "frame", targetId, ...frame });
     } catch { this.send({ type: "frame-error", targetId, error: "Waiting for the browser…" }); }
     finally { this.capturing = false; this.hub.releaseFrame(); this.schedule(performance.now() - started); }
@@ -143,10 +177,12 @@ export class WorkbenchConnection {
       this.visible = message.visible === true; this.focused = message.focused === true;
       this.tier = this.visible ? message.tier === "edge" ? "edge" : message.tier === "interactive" || this.focused ? "interactive" : "visible" : "hidden";
       this.frozen = message.frozen === true; this.following = message.following === true;
+      this.frameWidth = workbenchFrameWidth(message.width);
       if (this.focused && !this.releaseFocus) this.releaseFocus = this.hub.options.activity?.hold(this.profileId);
       else if (!this.focused) { this.releaseFocus?.(); this.releaseFocus = undefined; }
       this.captureEpoch++;
       if (!this.visible && !this.following) await this.releaseInput();
+      this.syncStream();
       this.schedule();
       return;
     }
@@ -173,11 +209,48 @@ export class WorkbenchConnection {
     const tabs = await this.adapter.tabs();
     if (!tabs.length) { this.targetId = ""; this.send({ type: "tabs", tabs, targetId: "" }); return; }
     if (!tabs.some((tab) => tab.id === this.targetId)) { await this.releaseInput(); this.targetId = tabs[0]!.id; await this.adapter.select(this.targetId); }
+    this.syncStream();
     const signature = JSON.stringify(tabs);
     if (signature !== this.tabsSignature || message.action !== "refresh") {
       const viewport = await this.adapter.viewport?.().catch(() => undefined);
       this.tabsSignature = signature; this.send({ type: "tabs", tabs, targetId: this.targetId, viewport });
     }
+  }
+  /**
+   * Keeps one live stream matching what the card shows: its tab, refresh tier and width. Streams
+   * stop while the card is hidden or the wall is being moved, and resume where they were.
+   */
+  private syncStream(): void {
+    const adapter = this.adapter;
+    const want = !!adapter.stream && this.visible && !this.frozen && !!this.targetId && !this.disposed && !this.polledTargets.has(this.targetId);
+    const key = want ? JSON.stringify([this.targetId, this.tier, this.frameWidth]) : "";
+    if (key === this.streamKey) return;
+    this.streamKey = key;
+    const targetId = this.targetId, tier = this.tier, epoch = ++this.captureEpoch;
+    this.streamChange = this.streamChange.then(async () => {
+      const stop = this.stopStream; this.stopStream = undefined; this.streaming = false;
+      await stop?.().catch(() => {});
+      if (!key || this.streamKey !== key || this.disposed) return;
+      const options: WorkbenchStreamOptions = { quality: tier === "interactive" ? 80 : 65, minInterval: workbenchStreamInterval(tier), ...(this.frameWidth ? { maxWidth: this.frameWidth } : {}) };
+      let received = false;
+      const onFrame = (frame: WorkbenchFrame) => {
+        received = true;
+        if (targetId === this.targetId && this.visible && !this.frozen && this.streamKey === key && frame.width > 0) this.send({ type: "frame", targetId, ...frame });
+      };
+      try {
+        const stop = await adapter.stream!(options, onFrame);
+        if (this.streamKey !== key || this.disposed) { await stop().catch(() => {}); return; }
+        this.stopStream = stop; this.streaming = true;
+        // A tab the browser is not painting sends nothing: show it by polling instead.
+        setTimeout(() => {
+          if (received || this.streamKey !== key || this.disposed) return;
+          // A key that matches nothing makes syncStream stop this stream rather than keep it.
+          this.polledTargets.add(targetId); this.streamKey = "stalled"; this.syncStream(); this.schedule();
+        }, 1200);
+      } catch {
+        if (this.streamKey === key && epoch <= this.captureEpoch) { this.polledTargets.add(targetId); this.streamKey = ""; this.schedule(); }
+      }
+    }).catch(() => {});
   }
   private async releaseInput(): Promise<void> {
     for (const key of this.keys.values()) await this.adapter.input({ ...key, event: "up", modifiers: 0 }).catch(() => {});
@@ -188,6 +261,8 @@ export class WorkbenchConnection {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true; clearTimeout(this.frameTimer); clearInterval(this.heartbeat);
+    this.streamKey = ""; this.streaming = false;
+    const stop = this.stopStream; this.stopStream = undefined; await stop?.().catch(() => {});
     this.releaseFocus?.(); this.releaseFocus = undefined;
     await this.releaseInput(); await this.adapter.dispose();
   }

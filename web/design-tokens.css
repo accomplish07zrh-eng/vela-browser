@@ -120,7 +120,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .viewport-tab { border-radius: 4px; }
 .viewport-tab.active { background: var(--surface-hover); box-shadow: none; }
 .viewport-message { background: var(--surface-sunken); }
-.browser-viewport.expanded .viewport-surface img { width: 100%; height: 100%; object-fit: contain; }
+.browser-viewport.expanded .viewport-surface :is(img, canvas) { width: 100%; height: 100%; object-fit: contain; }
 .browser-viewport .viewport-surface, .browser-viewport .viewport-footer { animation: viewport-arrive 360ms var(--spring-layout) var(--arrival-delay, 0ms) backwards; }
 @keyframes viewport-arrive { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .viewport-skeleton { width: 70%; max-width: 240px; display: grid; gap: 12px; margin: 8px 0; }
@@ -138,7 +138,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .workbench-batch-editor input:focus-visible, .workbench-batch-editor select:focus-visible { outline-offset: 3px; }
 :lang(zh) .workbench-count, :lang(zh) .pagehead h1 { letter-spacing: 0; }
 :root[data-theme="dark"] .viewport-surface { background: #353026; }
-:root[data-theme="dark"] .viewport-surface img { opacity: .92; }
+:root[data-theme="dark"] .viewport-surface :is(img, canvas) { opacity: .92; }
 :root[data-theme="dark"] .viewport-controls { background: rgba(30,27,21,.9); }
 ::view-transition-group(*) { animation-duration: 420ms; animation-timing-function: var(--spring-layout); }
 ::view-transition-old(*) { animation-duration: 180ms; animation-timing-function: var(--spring-control); }

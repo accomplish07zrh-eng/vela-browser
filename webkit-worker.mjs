@@ -161,8 +161,12 @@ async function run() {
     try {
       const value = await readJson(request);
       if (value.version !== VERSION || typeof value.operation !== "string" || !value.payload || typeof value.payload !== "object" || Array.isArray(value.payload)) throw error("invalid_request");
-      const pending = value.operation === "status" ? operate(value.operation, value.payload) : queue.then(() => operate(value.operation, value.payload));
-      if (value.operation !== "status") queue = pending.catch(() => {});
+      // Reading the workbench never waits behind, or holds up, the actions in the queue: a live
+      // frame request may wait for the page to paint.
+      const concurrent = value.operation === "status"
+        || (value.operation === "workbench" && ["tabs", "viewport", "frame"].includes(value.payload.action));
+      const pending = concurrent ? operate(value.operation, value.payload) : queue.then(() => operate(value.operation, value.payload));
+      if (!concurrent) queue = pending.catch(() => {});
       const result = await pending;
       if (value.operation === "close") { closing = true; await closeOfficial(); devtools.dispose(); await context.close(); }
       send(response, 200, { ok: true, result });

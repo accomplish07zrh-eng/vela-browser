@@ -232,7 +232,7 @@
   box-shadow: 0 0 0 1px rgba(var(--ink-rgb), .08), var(--rest);
   transition: transform 320ms var(--spring-layout), box-shadow 220ms var(--spring-control), opacity 420ms var(--spring-layout);
 }
-.app .wall .viewport-surface img { opacity: 1; }
+.app .wall .viewport-surface :is(img, canvas) { opacity: 1; }
 .app .wall .browser-viewport:hover .viewport-surface { transform: translateY(-4px) scale(1.012); box-shadow: 0 0 0 1px rgba(var(--ink-rgb), .2), var(--lift); }
 .app .wall .browser-viewport:focus-visible .viewport-surface { box-shadow: 0 0 0 2px var(--gold), var(--rest); }
 .app .wall .browser-viewport[data-dim] .viewport-surface { opacity: var(--dim); }
@@ -242,7 +242,7 @@
 .app .wall .browser-viewport.master .viewport-surface { box-shadow: 0 0 0 2px var(--gold), 0 0 44px -6px var(--gold), var(--lift); }
 .app .wall .browser-viewport[data-status="proxy-error"] .viewport-surface { box-shadow: 0 0 0 2px var(--status-warning), 0 0 40px -8px var(--status-warning), var(--rest); }
 .app .wall .browser-viewport[data-status="disconnected"] .viewport-surface { filter: none; opacity: 1; box-shadow: 0 0 0 2px var(--status-error), 0 0 40px -8px var(--status-error), var(--rest); }
-.app .wall .browser-viewport[data-status="disconnected"] .viewport-surface img { filter: grayscale(1) opacity(.5); }
+.app .wall .browser-viewport[data-status="disconnected"] .viewport-surface :is(img, canvas) { filter: grayscale(1) opacity(.5); }
 .app .wall .browser-viewport.expanded .viewport-surface, .app .wall .browser-viewport.expanded:hover .viewport-surface { transform: none; border-radius: 14px; box-shadow: 0 0 0 1px rgba(var(--ink-rgb), .16), 0 60px 140px -30px rgba(var(--sh-rgb), calc(1.4 * var(--sh-k))); }
 .app .wall .browser-viewport.obscured { opacity: .18; filter: blur(6px) saturate(.6); }
 
@@ -331,7 +331,7 @@
 
 /* ── Smoothness: keep moving things on their own layers and off the main thread ── */
 .app .wall .browser-viewport { backface-visibility: hidden; }
-.app .wall .viewport-surface img { image-rendering: auto; backface-visibility: hidden; }
+.app .wall .viewport-surface :is(img, canvas) { image-rendering: auto; backface-visibility: hidden; }
 .app .wall .workbench[data-moving="true"] .viewport-surface { transition: none; }
 .app .wall .workbench[data-moving="true"] .browser-viewport:hover .viewport-surface { transform: none; }
 .app .wall .workbench-scroll.moving { cursor: grabbing; user-select: none; }
@@ -408,7 +408,7 @@
 }
 
 /* Cooled: the browser closed to free memory. Its last picture stays, quietly, until it wakes. */
-.app .wall .browser-viewport[data-status="cooled"] .viewport-surface img { opacity: .32; }
+.app .wall .browser-viewport[data-status="cooled"] .viewport-surface :is(img, canvas) { opacity: .32; }
 .app .wall .viewport-message.cooled { gap: 6px; background: color-mix(in srgb, var(--surface-sunken) 72%, transparent); color: var(--ink-soft); }
 .app .wall .viewport-cooled-title { font-size: 13px; font-weight: 600; color: var(--ink); letter-spacing: .01em; }
 .app .wall .viewport-message.cooled small { max-width: 36ch; text-wrap: balance; font-size: 11.5px; line-height: 1.45; color: var(--muted); }

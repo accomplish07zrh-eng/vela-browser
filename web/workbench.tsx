@@ -37,6 +37,33 @@ function viewStatus(profile: UiProfile, state?: ViewportState): ViewStatus {
   return !state?.frame ? "loading" : "running";
 }
 interface ViewportHandle { element: HTMLElement; client: { current: ViewportClient | null }; state: { current: ViewportState } }
+
+/**
+ * A frame is decoded off the main thread and drawn only once it is ready, so the previous frame
+ * stays on screen until the next replaces it. Swapping an <img> source instead can show a blank
+ * (white) frame for an instant while the new image decodes: the wall's flicker.
+ */
+export function FrameCanvas({ data, className = "viewport-frame" }: { data: string; className?: string }) {
+  const canvas = useRef<HTMLCanvasElement>(null), latest = useRef(data);
+  latest.current = data;
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const blob = await (await fetch(`data:image/jpeg;base64,${data}`)).blob();
+        const bitmap = await createImageBitmap(blob);
+        const element = canvas.current;
+        if (cancelled || latest.current !== data || !element) { bitmap.close(); return; }
+        // Resizing clears a canvas; it happens in the same task as the draw, so it never shows.
+        if (element.width !== bitmap.width || element.height !== bitmap.height) { element.width = bitmap.width; element.height = bitmap.height; }
+        element.getContext("2d")?.drawImage(bitmap, 0, 0);
+        bitmap.close();
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [data]);
+  return <canvas ref={canvas} className={className} aria-hidden="true" />;
+}
 interface SyncSession { master: string; generations: Map<string, string> }
 
 const BrowserViewport = memo(function BrowserViewport({ profile, order, selected, focused, obscured, master, following, script, register, onState, onSelect, onFocus, onMaster, onAction, onInput, onHover }: {
@@ -109,7 +136,7 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
         if (p) sendInput({ kind: "pointer", event: "up", ...p, button: pointerButton.current, buttons: event.buttons, clicks: Math.min(3, event.detail || 1), modifiers: modifiers(event) });
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       }} onPointerCancel={() => client.current?.release()}>
-      {state.frame && <img src={`data:image/jpeg;base64,${state.frame.data}`} alt="" draggable={false} decoding="async" />}
+      {state.frame && <FrameCanvas data={state.frame.data} />}
     </div>
     {focused && <textarea ref={input} className="viewport-input" aria-label={t("Type in {name}", { name: profile.name })} autoCapitalize="off" autoCorrect="off" spellCheck={false}
       onKeyDown={(event) => key(event, "down")} onKeyUp={(event) => key(event, "up")}
@@ -283,7 +310,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       if (obscured || document.hidden || coveredRef.current) tier = "hidden";
       else if (visible && (focusId === id || hoveredCard.current === id)) tier = "interactive";
       if (tier !== last.tier) record.element.dataset.refreshTier = last.tier = tier;
-      record.client.current?.activity(tier, frozen, !!syncRef.current?.generations.has(id) && syncRef.current.master !== id);
+      record.client.current?.activity(tier, frozen, !!syncRef.current?.generations.has(id) && syncRef.current.master !== id, box.width * (window.devicePixelRatio || 1));
     }
     if (frozen !== movingAttribute.current) { root.current?.setAttribute("data-moving", String(frozen)); movingAttribute.current = frozen; }
   }, []);
@@ -635,7 +662,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
           onPointerEnter={() => setPreview(profile.id)} onPointerLeave={() => setPreview(null)} onFocus={() => setPreview(profile.id)} onBlur={() => setPreview(null)}
           onClick={() => { locate(profile.id); setSelected(new Set([profile.id])); }}><span /></button>)}
       </div>
-      {previewProfile && <div className="workbench-ring-preview" role="tooltip">{previewFrame && <img src={`data:image/jpeg;base64,${previewFrame.data}`} alt="" />}<span>{previewProfile.name}<small>#{numberOf(previewProfile)}</small></span></div>}
+      {previewProfile && <div className="workbench-ring-preview" role="tooltip">{previewFrame && <FrameCanvas data={previewFrame.data} className="workbench-ring-frame" />}<span>{previewProfile.name}<small>#{numberOf(previewProfile)}</small></span></div>}
     </div>}
     {selected.size > 0 && !focused && <div className="workbench-batch" aria-label={t("Selected environments")}>
       <span>{t("{count} selected", { count: selected.size })}</span>

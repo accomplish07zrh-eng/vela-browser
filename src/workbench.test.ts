@@ -121,6 +121,68 @@ test("rotation freezes capture and rejects a frame already in flight", async () 
   } finally { finish(); await a.dispose(); }
 });
 
+test("a live stream replaces polling, sized to the card, and restarts when the card changes", async () => {
+  const f = fixture();
+  const original = f.hub.options.adapter!;
+  const streams: any[] = [], polled: Array<number | undefined> = [];
+  let push: (data: string) => void = () => {};
+  f.hub.options.adapter = (launch) => ({
+    ...original(launch),
+    frame: async (_focused: boolean, maxWidth?: number) => { polled.push(maxWidth); return { data: "polled", width: 1280, height: 720 }; },
+    stream: async (options: any, onFrame: any) => {
+      const record = { options, stopped: false };
+      streams.push(record);
+      push = (data) => { if (!record.stopped) onFrame({ data, width: 1280, height: 720 }); };
+      push("first");
+      return async () => { record.stopped = true; };
+    },
+  });
+  const a = await f.hub.connect("a"), messages: any[] = [];
+  try {
+    await a.start((message) => messages.push(message));
+    await a.enqueue({ action: "visibility", generation: a.generation, visible: true, tier: "visible", width: 500 });
+    await Bun.sleep(30);
+    expect(streams).toHaveLength(1);
+    // Frames are asked for at the card's width, in 64-pixel steps, at the calm rate of the wall.
+    expect(streams[0].options).toMatchObject({ maxWidth: 512, minInterval: 160, quality: 65 });
+    push("second");
+    expect(messages.filter((message) => message.type === "frame").map((message) => message.data)).toEqual(["first", "second"]);
+    await Bun.sleep(400);
+    expect(polled).toEqual([]);
+    // Working in the browser: the stream restarts at the interactive rate.
+    await a.enqueue({ action: "visibility", generation: a.generation, visible: true, tier: "interactive", focused: true, width: 1500 });
+    await Bun.sleep(30);
+    expect(streams).toHaveLength(2);
+    expect(streams[0].stopped).toBe(true);
+    expect(streams[1].options).toMatchObject({ maxWidth: 1536, minInterval: 33, quality: 80 });
+    // Hidden: the stream stops, and nothing is polled either.
+    await a.enqueue({ action: "visibility", generation: a.generation, visible: false });
+    await Bun.sleep(30);
+    expect(streams[1].stopped).toBe(true);
+    expect(polled).toEqual([]);
+  } finally { await a.dispose(); }
+});
+
+test("a tab that streams nothing is polled instead, at its card's size", async () => {
+  const f = fixture();
+  const original = f.hub.options.adapter!;
+  const polled: Array<number | undefined> = [];
+  f.hub.options.adapter = (launch) => ({
+    ...original(launch),
+    frame: async (_focused: boolean, maxWidth?: number) => { polled.push(maxWidth); return { data: "polled", width: 1280, height: 720 }; },
+    stream: async () => async () => {},
+  });
+  const a = await f.hub.connect("a"), messages: any[] = [];
+  try {
+    await a.start((message) => messages.push(message));
+    await a.enqueue({ action: "visibility", generation: a.generation, visible: true, tier: "interactive", focused: true, width: 900 });
+    await Bun.sleep(1500);
+    expect(polled.length).toBeGreaterThan(0);
+    expect(polled[0]).toBe(960);
+    expect(messages.some((message) => message.type === "frame" && message.data === "polled")).toBe(true);
+  } finally { await a.dispose(); }
+});
+
 test("explicit synchronization can control an offscreen follower without capturing it", async () => {
   const f = fixture(), a = await f.hub.connect("a"), messages: any[] = [];
   try {
