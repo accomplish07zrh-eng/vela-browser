@@ -6,6 +6,10 @@
 </p>
 
 <p align="center">
+  <b>中文</b>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/accomplish07zrh-eng/vela-browser/releases">启航</a>
   &nbsp;·&nbsp;
   <a href="#wall">一面墙</a>
@@ -17,8 +21,6 @@
   <a href="#plugins">工具</a>
   &nbsp;·&nbsp;
   <a href="#build">造船</a>
-  &nbsp;·&nbsp;
-  <a href="#in-english">English</a>
 </p>
 
 <br>
@@ -380,41 +382,7 @@ Vela Browser 是 [AliasMode](https://github.com/aliasmode/aliasmode) 的独立�
 
 <br>
 
-## In English
-
 <p align="center"><i>
 Every window keeps its own lamp.<br>
-The people beneath them never meet,<br>
-and never need to.
+<a href="README.en.md">The whole book, in English</a>
 </i></p>
-
-<p align="center">
-You keep many windows.<br>
-Behind each one lives a whole person:<br>
-a fingerprint like the rings of a tree,<br>
-a way home like the tide,<br>
-cookies like a letter left half-written in a drawer.
-</p>
-
-<p align="center">
-They never call on one another.<br>
-Each lights a lamp, and each goes to sleep.
-</p>
-
-<p align="center">
-When the night runs long and memory runs thin,<br>
-the window left alone the longest goes dark.<br>
-Frost on the glass; the letter folded away.<br>
-Come back, and the tea is still warm.
-</p>
-
-<p align="center">
-One thought, three pairs of hands,<br>
-each writing in its own hand,<br>
-none reaching for another's pen.<br>
-And the mouse on your desk does not move.
-</p>
-
-*Vela* is Latin for sails, and a southern constellation. Vela Browser is a local-first anti-detect browser: every environment carries its own fingerprint, proxy, cookies and sessions, and all running environments live on one wall of live views. There are no accounts and no cloud. Idle browsers cool when memory runs short and wake signed in. AI agents connect over MCP with human-like input and a pointer and keyboard per window, and can read and write what F12 shows while each environment keeps its isolation, proxy and fingerprint. Plugins add tools of your own in every engine; see [`docs/plugins.md`](docs/plugins.md). A local HTTP API in the style of AdsPower's `/api/v1` serves scripts.
-
-Vela Browser is an independent fork of [AliasMode](https://github.com/aliasmode/aliasmode) under the Apache License 2.0, and is not affiliated with or endorsed by the upstream project. See [`NOTICE`](NOTICE) for third-party terms.
