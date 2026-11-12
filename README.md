@@ -6,17 +6,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/accomplish07zrh-eng/vela-browser/releases">下载</a>
+  <a href="https://github.com/accomplish07zrh-eng/vela-browser/releases">启航</a>
   &nbsp;·&nbsp;
-  <a href="#一面墙">工作台</a>
+  <a href="#wall">一面墙</a>
   &nbsp;·&nbsp;
-  <a href="#熄灯不散场">冷却</a>
+  <a href="#cooling">熄灯</a>
   &nbsp;·&nbsp;
-  <a href="#交给-ai">AI 操控</a>
+  <a href="#agents">三双手</a>
   &nbsp;·&nbsp;
-  <a href="#插件">插件</a>
+  <a href="#plugins">工具</a>
   &nbsp;·&nbsp;
-  <a href="#从源码构建">从源码构建</a>
+  <a href="#build">造船</a>
   &nbsp;·&nbsp;
   <a href="#in-english">English</a>
 </p>
@@ -29,59 +29,118 @@
 也不必相识。
 </i></p>
 
-<br>
-
-Vela，拉丁文里的「帆」，也是南天的船帆座。
-
-每个环境都是一扇窗，\
-窗里住着一个完整的人：\
-自己的指纹，自己的代理，自己的 Cookie 和登录，\
-各自关在各自的屋里，从不串门。
-
-所有的窗都开在同一面墙上，\
-你看得见每一盏灯，伸手就能推开。
-
-而这一切只留在你的电脑里：\
-没有账号，没有云端，\
-不必向谁报到。
+<p align="center"><sub>VELA　拉丁文里的「帆」，南天的船帆座</sub></p>
 
 <br>
 
-## 一面墙
+## 序
+
+<p align="center">
+你有许多扇窗。<br>
+每一扇后面，都住着一个完整的人：<br>
+他的指纹是一圈一圈的年轮，<br>
+他的来路，是涨了又退的潮汐，<br>
+他的 Cookie，是抽屉里一封没写完的信。
+</p>
+
+<p align="center">
+他们从不串门。<br>
+隔着一堵墙，各自点灯，各自睡去。
+</p>
+
+<p align="center">· · ·</p>
+
+<p align="center">
+而这面墙，就钉在你的书桌上。<br>
+没有账号，没有云端，<br>
+没有谁在远方，替你保管钥匙。
+</p>
+
+<br>
+
+<a name="wall"></a>
+
+## 壹　一面墙
+
+<p align="center"><sub>THE WALL</sub></p>
 
 <p align="center"><i>
 一个分组是一行，一行是一条河。<br>
-相邻的两条河逆向而流，<br>
-岸上的灯火，隔水相望。
+相邻的河逆向而流，<br>
+灯火在两岸，隔水相望。
 </i></p>
 
-打开 Vela，墙就在眼前。\
-每一块都是活的：一个正在运行的浏览器，此刻的样子。
+慢一点，再慢一点，\
+像深夜的车窗外，一列对开的火车，\
+一格一格，把别人的灯火拉过去。
 
-- **双击，它便迎上来。** 放大之后点击、输入、滚动，和真的窗口没有两样。
-- **一人领唱，众人相和。** 把一个环境设为主控，其余的跟着它点击、键入；横幅第一行那几圈同时泛开的涟漪，就是这样来的。
-- **只看这一行。** 或者让眼下这一行在墙上多占些地方。
-- **不在任务栏留名。** Windows 上，环境窗口可以不出现在任务栏。只是少了那个按钮，窗口本身，和网页能读到的一切，都不变。
+　　然后你双击了其中一扇。
 
-导航收在底部的浮动坞里，别的页面从下方升起；\
-按 <kbd>Esc</kbd>，回到墙上。\
-白天是纸白，入夜换上深色。
+它朝你迎上来，\
+整个世界缩成一个方框：\
+可以点，可以写，可以一页一页往下翻，\
+和真的窗口，没有两样。
 
-## 每个环境，一套身份
+你在一扇窗里落笔，\
+别的窗也跟着落笔：一人领唱，众人相和，\
+涟漪在同一个瞬间泛开。
+
+<details>
+<summary><b>灯下细看</b></summary>
+<br>
+
+- **直接操作**：双击墙上任意一块即可放大，在里面点击、输入、滚动，和操作真实窗口一样。
+- **同步**：把一个环境设为主控，其余环境跟随它的点击和键入。横幅第一行那几圈一起泛开的涟漪就是它。
+- **分组**：一个分组占一行，行可以首尾相接、循环流动，相邻两行反向漂移。可以只看某一行，或让它在墙上占据更大的位置。
+- **安静**：Windows 上可以让环境窗口不出现在任务栏。只去掉任务栏按钮，窗口本身和网页能读到的一切都不变。
+- **浮动坞**：导航收在底部，其他页面从下方升起，按 <kbd>Esc</kbd> 回到墙上。白天是纸白色，入夜有深色。
+
+</details>
+
+<br>
+
+## 贰　千种来路
+
+<p align="center"><sub>IDENTITIES</sub></p>
 
 <p align="center"><i>
-同一台电脑，千种来路。<br>
-各自的口音，各自的指纹，<br>
-各自回家的路。
+同一台电脑，千种来路。
 </i></p>
 
-- **三种内核，任选其一。** Vela Chromium 155、CloakBrowser、Vela Firefox，每个环境自己挑；WebKit 还在试航。
-- **一张脸，从生到灭。** 屏幕、字体、语音、媒体设备、WebGL、WebRTC，按环境生成；从第一次打开到最后一次关闭，始终是同一张脸。
-- **一条自己的路。** 每个环境配自己的 HTTP、HTTPS 或 SOCKS5 代理，通不通可以先测。它往外发的请求，连同 AI 和插件替它发的，都只走这一条路。
-- **合上，再打开，一切如旧。** 关闭时收好 Cookie 和本地存储，下次原样摊开。
-- **成群地照料。** 分组、导入导出、回收站、定时任务。
+有人从东京的雨里来，有人从柏林的雪里来，\
+有人只说英文，有人开口就是吴侬软语。
 
-## 熄灯，不散场
+屏幕有多宽，抽屉里有几种字体，\
+声卡里藏着哪一副嗓子，\
+显卡上落着什么颜色的灰，\
+都记在他自己的名下，\
+从第一次睁眼，到最后一次合眼，不改一笔。
+
+　　他出门只走自己那条路，\
+　　　　连替他跑腿的人，也走那一条。
+
+门一关，信原样躺在抽屉里。\
+下次推门，墨迹还没干。
+
+<details>
+<summary><b>灯下细看</b></summary>
+<br>
+
+- **内核**：Vela Chromium 155、CloakBrowser、Vela Firefox，每个环境单独选择；WebKit 处于实验阶段。
+- **指纹**：屏幕、字体、语音、媒体设备、WebGL、WebRTC 等参数按环境生成，在整个生命周期内保持一致。
+- **代理**：每个环境配置自己的 HTTP、HTTPS 或 SOCKS5 代理，可以检测连通性。环境往外发的请求，包括 AI 和插件替它发的，都只走这一条。
+- **会话**：关闭时保存 Cookie 和本地存储，下次打开原样恢复。
+- **批量**：分组、导入导出、回收站和定时任务。
+
+</details>
+
+<br>
+
+<a name="cooling"></a>
+
+## 叁　熄灯，不散场
+
+<p align="center"><sub>COOLING</sub></p>
 
 <p align="center">
   <picture>
@@ -91,21 +150,44 @@ Vela，拉丁文里的「帆」，也是南天的船帆座。
 </p>
 
 <p align="center"><i>
-夜深了，最久没人照看的那扇窗先熄灯。<br>
-你回来的时候，茶还温着，<br>
+夜深了。<br>
+最久没人照看的那扇窗，先熄了灯。
+</i></p>
+
+不是告别。
+
+信折好了，收进抽屉；\
+钥匙压在门口的花盆底下。\
+屋子还挂在墙上，只是暗着，\
+窗玻璃上结了一朵小小的霜花。
+
+　　水位落下去，\
+　　　　整台电脑，轻轻舒了一口气。
+
+<p align="center"><i>
+你回来的时候，<br>
+茶还温着，<br>
 书还翻在那一页。
 </i></p>
 
-窗开得多了，内存总有不够的时候。\
-当占用接连越过那条线，Vela 就找出闲置最久的那一扇，\
-像你亲手点下「关闭」那样：先把会话收好，再轻轻合上，\
-把内存还给这台电脑。
+<details>
+<summary><b>灯下细看</b></summary>
+<br>
 
-- **它不会离开墙。** 只是暗下去，标着「已冷却」。点「唤醒」或者双击它，登录还在，标签页也还在。
-- **有人在的窗不熄。** 你正用着的，脚本或 AI 正操作着的，刚刚才碰过的，都不会被冷却。
-- **那条线由你来画。** 默认是内存占用 85%、闲置 10 分钟；两项都能在设置里改，也可以整个关掉。
+- **何时**：系统内存占用连续越过阈值时，Vela 挑出闲置最久的那个浏览器，像你点「关闭」那样，先保存会话再关掉，把内存还给系统。
+- **仍在墙上**：它不会从工作台消失，只是变暗，标着「已冷却」。点「唤醒」或双击它，登录状态和标签页都还在。
+- **不会冷却**：你正在用的、脚本或 AI 正在操作的、刚刚动过的浏览器。
+- **由你调**：默认内存占用 85%、闲置 10 分钟时开始；两项都能在设置里修改，也可以整个关掉。
 
-## 交给 AI
+</details>
+
+<br>
+
+<a name="agents"></a>
+
+## 肆　一个念头，三双手
+
+<p align="center"><sub>AGENTS</sub></p>
 
 <p align="center">
   <picture>
@@ -120,29 +202,58 @@ Vela，拉丁文里的「帆」，也是南天的船帆座。
 谁也不碰谁的笔。
 </i></p>
 
-Vela 自带 MCP 服务。\
-让 Claude Code、Cursor 这样的 AI 接上来，它就能建环境、开浏览器，在网页里做事。
+指针走路的样子，像人：
 
-- **一双像人的手。** 指针沿着有快有慢的曲线走，走得远了，有时会略过头再拉回来；落点散在元素里，不总在正中。字一个键一个键地敲，逢着标点会停一停。每个环境的手速和习惯定下来就不再变，环境与环境之间各不相同。
-- **一扇窗，一只鼠标。** 每个窗口有自己的指针和键盘。AI 可以同时照看好几扇窗，互不争抢，也不会碰你桌上的那只鼠标。
-- **F12 里的东西，它都看得见。** 控制台与异常堆栈、网络请求与原始响应、WebSocket 消息、DOM 与样式、Cookie 与站点存储，都能读；运行 JavaScript、改存储、借环境自己的网络发请求，都能写；Chromium 上还能直接下发 CDP 命令。三个内核用的都是环境原本的那一个上下文，隔离、代理、指纹，一样不少。
-- **动手之前，先问一声。** 只读的工具和会改动东西的工具分开标注，AI 客户端可以据此先问过你。读 Cookie 时，默认只给当前页面会带上的那些；要整个环境的，得另外开口。
-- **快慢由你。** 用 `aliasmode_humanize` 关掉拟人输入，或者调整整体的速度。
+起步，有一点迟疑，\
+　　半途，快了起来，\
+　　　　偶尔走过了头，\
+　　　　　　又折回来，落定。
 
-还有一套本地 HTTP 接口，和 AdsPower 的 `/api/v1` 说同一种话：\
-从脚本里启动环境，再用 Playwright 或 Puppeteer 接上。\
-JS 脚本也能用 `devtools.call(...)`，翻看运行期间的控制台和网络记录。
+敲字也像人：\
+一个键，　一个键，\
+逢着句读，停下来，想一想。
 
-## 插件
+<p align="center">· · ·</p>
+
+窗外下着很大的雨。\
+三扇窗里，三只鼠标同时在写信，\
+而你桌上的那一只，一动不动。
+
+F12 底下那条暗河，它也看得见：\
+控制台里的低语，网络上往来的信件，\
+WebSocket 里一刻不停的电报。
+
+　　但每一扇门，它都先敲一敲。
+
+<details>
+<summary><b>灯下细看</b></summary>
+<br>
+
+- **接入**：Vela 自带 MCP 服务。Claude Code、Cursor 等 AI 工具接入后，可以创建环境、打开浏览器、操作网页。
+- **拟人输入**：指针沿带加减速的曲线移动，长距离时偶尔略过头再修正，落点散在元素内部；需要时用滚轮滚动；文字逐键输入，节奏有快有慢，逢标点停顿。每个环境的手速和习惯固定，环境之间各不相同。用 `aliasmode_humanize` 可以关闭或调速。
+- **一窗一鼠标**：每个浏览器窗口有自己的指针和键盘。AI 可以同时操作多个窗口，彼此不抢占，也不会移动你电脑上的鼠标。
+- **开发者工具**：读取控制台与异常堆栈、网络请求与原始响应、WebSocket 消息、DOM 与样式、Cookie 与站点存储；执行 JavaScript、修改存储、经由环境自身网络发出请求；Chromium 上可直接下发 CDP 命令。三个内核都连接环境原本的上下文，隔离、代理和指纹不变。
+- **先问一声**：只读工具和会修改的工具分开标注，AI 客户端可以据此在调用前征求你的同意。读取 Cookie 时默认只返回当前页面会带上的那些，要整个环境的需要显式请求。
+- **脚本**：本地 HTTP 接口与 AdsPower 的 `/api/v1` 风格兼容，可从脚本启动环境，再用 Playwright 或 Puppeteer 连接；JS 脚本可以用 `devtools.call(...)` 读取运行期间的控制台和网络记录。
+
+</details>
+
+<br>
+
+<a name="plugins"></a>
+
+## 伍　趁手的工具
+
+<p align="center"><sub>PLUGINS</sub></p>
 
 <p align="center"><i>
-给 AI 添一件趁手的工具，<br>
-只在它此刻站着的<br>
-那扇窗里用。
+给远行的人，塞一把小刀，<br>
+一卷绳子，一盏马灯。
 </i></p>
 
-在数据目录的 `plugins` 里放一个文件夹，\
-一份清单，一个模块，AI 就多会一样事：
+在 `plugins` 里放一个文件夹，\
+一份清单，一段代码，\
+AI 就多会一样手艺：
 
 ```js
 // plugins/page-info/index.mjs
@@ -157,36 +268,63 @@ export default function setup(vela) {
 }
 ```
 
-AI 看见的名字是 `plugin_page_info_summary`。
+它只在此刻站着的那扇窗里用：\
+拿那间屋子的钥匙，走那间屋子的路，\
+合不上窗，也翻不进隔壁。
 
-插件只在 AI 选中的那个环境里干活，\
-用的是那里的登录、那里的代理、那里的指纹；\
-它合不上浏览器，也串不到别的窗里去。\
-Chromium、Firefox、WebKit，处处可用。
+　　Chromium、Firefox、WebKit，\
+　　　　三种灯，同一把小刀。
 
-「设置 → 高级 → 插件」里，每个插件和它的工具都摆在那儿，可以逐个开关，也可以一键放进一个示例。\
-写法见 [`docs/plugins.md`](docs/plugins.md)。\
-插件是在你电脑上运行的代码，只请信得过的进门。
+<details>
+<summary><b>灯下细看</b></summary>
+<br>
 
-## 安装
+- **放在哪**：数据目录下的 `plugins/<插件名>/`，包含 `vela-plugin.json` 清单和一个 JS 模块；模块的 `setup(vela)` 为每个工具返回一个函数。上面的例子，AI 看到的工具名是 `plugin_page_info_summary`。
+- **在哪运行**：在 AI 选中的环境里运行，使用该环境自己的上下文、登录、代理和指纹；不能关闭浏览器，各环境的插件状态互不相通。
+- **设置**：「设置 → 高级 → 插件」列出每个插件和它的工具，可以逐个开关、打开插件文件夹，或一键添加示例插件。
+- **写法**：见 [`docs/plugins.md`](docs/plugins.md)。插件是在你电脑上运行的代码，只安装你信任的。
+
+</details>
+
+<br>
+
+## 陆　启航
+
+<p align="center"><sub>INSTALL</sub></p>
 
 <p align="center"><i>
-一个安装包，或者一行命令。
+帆已经挂好了。<br>
+风从哪边来，都行。
 </i></p>
 
-在 [Releases](https://github.com/accomplish07zrh-eng/vela-browser/releases) 下载 Windows 安装包。macOS 和 Linux 可以用安装脚本：
+Windows：在 [Releases](https://github.com/accomplish07zrh-eng/vela-browser/releases) 下载安装包。
+
+macOS：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/accomplish07zrh-eng/vela-browser/main/scripts/install-macos.sh | bash
 ```
 
+Linux：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/accomplish07zrh-eng/vela-browser/main/scripts/install-linux.sh | bash
 ```
 
-应用内更新有自己的签名，只认本仓库发出的版本。
+<p align="center"><sub>应用内更新有自己的签名，只认本仓库发出的版本。</sub></p>
 
-## 从源码构建
+<br>
+
+<a name="build"></a>
+
+## 柒　造船
+
+<p align="center"><sub>BUILD FROM SOURCE</sub></p>
+
+<p align="center"><i>
+想亲手造一条船，<br>
+先备好木料与钉子。
+</i></p>
 
 需要 [Bun](https://bun.sh) 1.4.1 或更高版本；构建桌面版还需要 Rust 和 [Tauri](https://tauri.app) 的依赖。
 
@@ -203,10 +341,11 @@ bun run desktop:prepare
 bun run desktop:build:nsis
 ```
 
-这页上会动的图，出自 `python scripts/make-readme-art.py`，是几张带 CSS 动画的 SVG。\
-系统若开了「减少动态效果」，它们便安静地停在原地。
+<p align="center"><sub>这一页会动的画，出自 <code>python scripts/make-readme-art.py</code>。<br>若你的系统请求减少动态效果，它们便安静地停在原地。</sub></p>
 
-## 目录
+<details>
+<summary><b>船上的物件</b></summary>
+<br>
 
 | 位置 | 内容 |
 | --- | --- |
@@ -218,7 +357,15 @@ bun run desktop:build:nsis
 | `docs/` | 插件与开发者工具说明，本地 API 和 MCP 工具的公开说明 |
 | 根目录 `*.mjs` | 浏览器后台进程；打包后与 `agent/` 同层，所以留在根目录 |
 
-## 致谢与许可
+</details>
+
+<br>
+
+## 跋
+
+<p align="center"><i>
+这条船的龙骨，来自另一条船。
+</i></p>
 
 Vela Browser 是 [AliasMode](https://github.com/aliasmode/aliasmode) 的独立分支，与上游项目及其维护者没有隶属或背书关系。
 
@@ -226,6 +373,10 @@ Vela Browser 是 [AliasMode](https://github.com/aliasmode/aliasmode) 的独立�
 - AliasMode Firefox 内核采用 MPL-2.0，AliasMode Chromium 内核采用 GPL-3.0。
 - CloakBrowser 是第三方内核，适用其自身的许可条款。
 - 字体、语音与媒体设备数据等第三方资源的版权和许可见 [`NOTICE`](NOTICE)。
+
+<br>
+
+<p align="center">· · ·</p>
 
 <br>
 
@@ -237,27 +388,33 @@ The people beneath them never meet,<br>
 and never need to.
 </i></p>
 
-*Vela* is Latin for sails, and the name of a southern constellation.
+<p align="center">
+You keep many windows.<br>
+Behind each one lives a whole person:<br>
+a fingerprint like the rings of a tree,<br>
+a way home like the tide,<br>
+cookies like a letter left half-written in a drawer.
+</p>
 
-Every environment is a window,\
-and behind it lives a whole person:\
-their own fingerprint, their own proxy, their own cookies and sign-ins,\
-each kept in its own room, never visiting the next.
+<p align="center">
+They never call on one another.<br>
+Each lights a lamp, and each goes to sleep.
+</p>
 
-All the windows open onto one wall.\
-You can see every lamp, and reach any of them.\
-Nothing leaves your computer: no accounts, no cloud, no one to report to.
+<p align="center">
+When the night runs long and memory runs thin,<br>
+the window left alone the longest goes dark.<br>
+Frost on the glass; the letter folded away.<br>
+Come back, and the tea is still warm.
+</p>
 
-When memory runs short, the window left alone the longest goes dark.\
-Its session is saved before it closes, and it stays on the wall.\
-Wake it, and it comes back signed in, with its tabs.
+<p align="center">
+One thought, three pairs of hands,<br>
+each writing in its own hand,<br>
+none reaching for another's pen.<br>
+And the mouse on your desk does not move.
+</p>
 
-AI agents connect through the built-in MCP server.\
-Every window has its own pointer and keyboard, moving and typing like a hand,\
-so one agent can work many windows at once and never touch your mouse.\
-It can read and write what F12 shows (console, network, WebSocket frames, DOM, storage, JavaScript, and CDP on Chromium)\
-while each environment keeps its isolation, proxy and fingerprint.\
-Plugins in the `plugins` folder give it tools of your own, in every engine; see [`docs/plugins.md`](docs/plugins.md).\
-A local HTTP API in the style of AdsPower's `/api/v1` serves scripts.
+*Vela* is Latin for sails, and a southern constellation. Vela Browser is a local-first anti-detect browser: every environment carries its own fingerprint, proxy, cookies and sessions, and all running environments live on one wall of live views. There are no accounts and no cloud. Idle browsers cool when memory runs short and wake signed in. AI agents connect over MCP with human-like input and a pointer and keyboard per window, and can read and write what F12 shows while each environment keeps its isolation, proxy and fingerprint. Plugins add tools of your own in every engine; see [`docs/plugins.md`](docs/plugins.md). A local HTTP API in the style of AdsPower's `/api/v1` serves scripts.
 
 Vela Browser is an independent fork of [AliasMode](https://github.com/aliasmode/aliasmode) under the Apache License 2.0, and is not affiliated with or endorsed by the upstream project. See [`NOTICE`](NOTICE) for third-party terms.
