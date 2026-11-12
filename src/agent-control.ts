@@ -48,7 +48,8 @@ export interface AgentControlDeps {
   remote?: RemoteCoordinator | null;
   /** AI actions count as work in that browser, so cooling leaves it alone. */
   activity?: import("./cooling.ts").ActivityLog;
-
+  /** The enabled plugins, read from the plugins folder each time an AI lists or calls tools. */
+  plugins?: () => import("./plugins.ts").PluginSpec[];
 
   log?: (message: string) => void;
 }
@@ -265,22 +266,24 @@ export class AgentControlSession {
         return await this.openProfile(params);
       case "browser.status":
         return await this.profileStatus(stringParam(params, "profileId"));
+      case "plugins.list":
+        return { plugins: this.pluginSpecs() };
       case "firefox.tools.list":
-        return { tools: await this.firefoxCall(stringParam(params, "profileId"), "mcp-list", {}) };
+        return { tools: await this.firefoxCall(stringParam(params, "profileId"), "mcp-list", this.withPlugins({})) };
       case "firefox.tools.call":
-        return await this.firefoxCall(stringParam(params, "profileId"), "mcp-call", {
+        return await this.firefoxCall(stringParam(params, "profileId"), "mcp-call", this.withPlugins({
           name: stringParam(params, "name"),
           ...(params.arguments === undefined ? {} : { arguments: object(params.arguments) }),
           ...(params.humanize === undefined ? {} : { humanize: humanizeParam(params.humanize) }),
-        });
+        }));
       case "webkit.tools.list":
-        return { tools: await this.webkitCall(stringParam(params, "profileId"), "mcp-list", {}) };
+        return { tools: await this.webkitCall(stringParam(params, "profileId"), "mcp-list", this.withPlugins({})) };
       case "webkit.tools.call":
-        return await this.webkitCall(stringParam(params, "profileId"), "mcp-call", {
+        return await this.webkitCall(stringParam(params, "profileId"), "mcp-call", this.withPlugins({
           name: stringParam(params, "name"),
           ...(params.arguments === undefined ? {} : { arguments: object(params.arguments) }),
           ...(params.humanize === undefined ? {} : { humanize: humanizeParam(params.humanize) }),
-        });
+        }));
       case "browser.detach":
         return this.detachProfile(stringParam(params, "profileId"));
       case "browser.close":
@@ -302,6 +305,16 @@ export class AgentControlSession {
       throw agentError("browser_not_running", "This Firefox profile is not safely running");
     }
     return await (this.deps.firefoxCall ?? callFirefoxOwner)(launch.firefoxOwner, operation, payload);
+  }
+
+  private pluginSpecs(): import("./plugins.ts").PluginSpec[] {
+    try { return this.deps.plugins?.() ?? []; } catch { return []; }
+  }
+
+  /** Firefox and WebKit run plugin tools in their own owner process, so the list travels with each call. */
+  private withPlugins(payload: Record<string, unknown>): Record<string, unknown> {
+    const plugins = this.pluginSpecs();
+    return plugins.length ? { ...payload, plugins } : payload;
   }
 
   private async webkitCall(profileId: string, operation: string, payload: Record<string, unknown>): Promise<unknown> {

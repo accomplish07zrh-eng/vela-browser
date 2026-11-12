@@ -14,7 +14,7 @@ Each environment keeps its existing persistent context, process, cookies, proxy,
 | `browser_devtools_events` | WebSocket frames, socket errors, downloads, navigation, crashes and page/worker lifecycle |
 | `browser_devtools_evaluate` | JavaScript expressions, function source or statements, with an argument, in a selected page, iframe or worker |
 | `browser_devtools_element` | Element markup, text, attributes, rectangle and computed CSS |
-| `browser_devtools_storage` | Profile cookies, selected origin's local/session storage, IndexedDB database names and Cache Storage keys |
+| `browser_devtools_storage` | The cookies the selected page or frame would send (other sites with `urls`, the whole profile with `allCookies`), its local/session storage, IndexedDB database names and Cache Storage keys |
 | `browser_devtools_storage_edit` | Set, remove and clear cookies or local/session storage; JavaScript can modify IndexedDB and Cache Storage |
 | `browser_devtools_fetch` | HTTP requests through the actual page/frame's browser network stack, including text or binary POST data |
 | `browser_devtools_protocol` | Any native CDP command supported by the existing Chromium engine, including commands that change the page |
@@ -42,6 +42,8 @@ Storage changes affect that profile immediately. Cookie objects support `httpOnl
 
 Firefox and WebKit observers start with their native owner; Chromium capture starts when MCP attaches. Earlier messages are not reconstructed. Queries do not consume records. Use `nextCursor` as `since` to continue; network records get a new sequence when their status changes. History retains up to 2,000 events, 1,000 requests and 8 MiB of event data. Capture time, eviction counts and payload truncation are reported explicitly.
 
-Response bodies are read on demand from the original request, without replaying it or altering caching. Byte chunks default to 64 KiB and can be up to 1 MiB per call. Append the decoded `base64` chunks, advancing `offset` to `nextOffset`, until `hasMore` is false. Text is a convenience field; base64 preserves exact byte boundaries. Live streaming responses report that their bodies are not finished rather than blocking subsequent diagnostics. WebSocket frames retain the first 64 KiB with original byte count and truncation metadata.
+Response bodies are read on demand from the original request, without replaying it or altering caching. Byte chunks default to 64 KiB and can be up to 1 MiB per call. Append the decoded `base64` chunks, advancing `offset` to `nextOffset`, until `hasMore` is false. Text is a convenience field; base64 preserves exact byte boundaries. Live streaming responses report that their bodies are not finished rather than blocking subsequent diagnostics. WebSocket frames retain the first 64 KiB with original byte count and truncation metadata: binary frames as base64, text frames as their exact text (the first 65,536 characters). Once frames hold half of the history, their own oldest records are evicted first, so a busy socket cannot push console errors and exceptions out. A JavaScript expression with a trailing semicolon, as typed in the Console, returns its value.
+
+Plugins add their own tools next to these, in every engine; see [plugins.md](plugins.md). JavaScript scripts can read the same developer record through `devtools.call(...)`.
 
 The existing navigation, snapshots, screenshots, input, file upload, arbitrary evaluation/run-code, tracing and lifecycle tools remain available. Lifecycle actions still go through Vela so session persistence, profile ownership and idle cooling continue to work.

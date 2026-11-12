@@ -1,7 +1,7 @@
 /** Real pinned engines, two fresh profiles each, through the public MCP host and manager. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
@@ -15,6 +15,7 @@ import { LifecycleAdmissionController } from "../src/lifecycle-admission.ts";
 import { ProfileStore } from "../src/store.ts";
 import { Launcher } from "../src/launcher.ts";
 import { buildNewProfile } from "../src/create.ts";
+import { scanPlugins } from "../src/plugins.ts";
 import { fingerprintProbe, type FingerprintSample } from "../src/diagnose.ts";
 import { runPlaywrightWorker } from "../src/playwright-runtime.ts";
 import type { ProfileEngine } from "../src/types.ts";
@@ -91,7 +92,28 @@ const launcher = new Launcher({ store, dataRoot: join(root, "profiles"), chromiu
   firefoxBinaryPath: binaries.firefox, expectedFirefoxBinarySha256: firefoxMetadata.sha256,
   ensureAliasmodeChromium: async () => binaries.chromium, ensureWebKit: async () => binaries.webkit,
   log: message => console.log(message) });
-const manager = new AgentControlSession({ store, launcher, admission: new LifecycleAdmissionController() });
+// A plugin that reports where it ran, tries to close its browser, and fetches through its page.
+const pluginRoot = join(root, "plugins");
+mkdirSync(join(pluginRoot, "vela-check"), { recursive: true });
+writeFileSync(join(pluginRoot, "vela-check", "vela-plugin.json"), JSON.stringify({ id: "vela-check", name: "Vela check", version: "1.0.0",
+  tools: [{ name: "inspect", description: "Reports the environment it runs in.", inputSchema: { type: "object", properties: { marker: { type: "string" } } } }] }));
+writeFileSync(join(pluginRoot, "vela-check", "index.mjs"), `export default (vela) => {
+  let calls = 0;
+  return { async inspect({ marker }) {
+    let closeRefused = false;
+    try { await vela.context.close(); } catch { closeRefused = true; }
+    const pages = await vela.devtools("pages");
+    // vela.test resolves only through the environment's configured upstream proxy.
+    const page = await vela.context.newPage();
+    try {
+      await page.goto("http://vela.test/?plugin=" + marker);
+      const fetched = await page.evaluate(async marker => (await fetch("/data", { method: "POST", body: "plugin-" + marker, headers: { "x-vela-test": "plugin-" + marker } })).json(), marker);
+      return { profileId: vela.profileId, engine: vela.engine, calls: ++calls, closeRefused, browser: vela.context.browser(), fetched, pageCount: pages.pages.length };
+    } finally { await page.close(); }
+  } };
+};
+`);
+const manager = new AgentControlSession({ store, launcher, admission: new LifecycleAdmissionController(), plugins: () => scanPlugins(pluginRoot).specs });
 let requestNumber = 0;
 const runtime = { async call(method: string, params: any = {}) {
   const response = await manager.enqueue(JSON.stringify({ protocol: AGENT_CONTROL_PROTOCOL, id: ++requestNumber, method, params }));
@@ -150,6 +172,18 @@ try {
     const targets = pages.map(listing => listing.pages.find((page: any) => page.url === `${origin}/`));
     assert.ok(targets.every(Boolean), "existing pages remain attached");
     const a = { profileId: profiles[0]!.id, pageId: targets[0].pageId }, b = { profileId: profiles[1]!.id, pageId: targets[1].pageId };
+    check(`${engine}: plugin tools are listed with honest write hints`, tools.some(tool => tool.name === "plugin_vela_check_inspect" && tool.annotations?.destructiveHint === true));
+    const pluginHits = proxyHits.length;
+    const [pluginA, pluginB] = await Promise.all([call("plugin_vela_check_inspect", { profileId: a.profileId, marker: "a" }), call("plugin_vela_check_inspect", { profileId: b.profileId, marker: "b" })]);
+    const pluginAgain = await call("plugin_vela_check_inspect", { profileId: a.profileId, marker: "a" });
+    evidence.plugin = { pluginA, pluginB, proxyHits: proxyHits.slice(pluginHits) };
+    check(`${engine}: a plugin runs in the environment it was called for`, pluginA.profileId === a.profileId && pluginB.profileId === b.profileId && pluginA.engine === engine && pluginA.pageCount >= 1);
+    check(`${engine}: plugin state stays within its environment`, pluginA.calls === 1 && pluginB.calls === 1 && pluginAgain.calls === 2);
+    check(`${engine}: a plugin cannot close or reach the browser`, pluginA.closeRefused === true && pluginA.browser === null
+      && (await Promise.all(profiles.map(profile => call("aliasmode_browser_status", { profileId: profile.id })))).every((status: any) => status.running));
+    check(`${engine}: plugin requests use the environment's own cookies and authenticated proxy`, pluginA.fetched.marker === "plugin-a" && pluginB.fetched.marker === "plugin-b"
+      && proxyHits.slice(pluginHits).some(hit => hit.authorization === `Basic ${Buffer.from("mcp-a:fixture-only").toString("base64")}`)
+      && proxyHits.slice(pluginHits).some(hit => hit.authorization === `Basic ${Buffer.from("mcp-b:fixture-only").toString("base64")}`));
     const evaluate = async (target: any, expression: string, argument?: any) => (await developer("evaluate", { ...target, expression, ...(argument === undefined ? {} : { argument }) })).value;
     await Promise.all([evaluate(a, "() => { console.debug('private-a-debug'); console.warn('private-a-warning'); setTimeout(() => { throw new Error('private-a-uncaught'); }, 0); document.querySelector('#target').textContent='edited'; }"),
       evaluate(b, "() => console.log('private-b-log')")]);

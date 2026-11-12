@@ -264,6 +264,32 @@ test("Firefox MCP relays official schemas and calls through the authenticated ma
   ]);
 });
 
+test("enabled plugins are listed for Chromium and travel with Firefox and WebKit tool calls", async () => {
+  const plugins = [{ id: "fixture", name: "Fixture", version: "1", description: "", module: "/plugins/fixture/index.mjs", revision: "r",
+    tools: [{ name: "read", toolName: "plugin_fixture_read", title: "Fixture: read", description: "Reads.", inputSchema: { type: "object" }, readOnly: true, timeoutSeconds: 120 }] }];
+  const firefox = harness({ active: true, firefox: true });
+  const calls: Array<{ operation: string; payload: Record<string, unknown> }> = [];
+  const session = new AgentControlSession({ ...firefox.deps, plugins: () => plugins,
+    firefoxCall: async (_owner, operation, payload) => { calls.push({ operation, payload }); return operation === "mcp-list" ? [] : { content: [] }; } });
+  expect(await session.enqueue(wire("plugins.list", {}))).toMatchObject({ ok: true, result: { plugins } });
+  await session.enqueue(wire("firefox.tools.list", { profileId: "profile1" }));
+  await session.enqueue(wire("firefox.tools.call", { profileId: "profile1", name: "plugin_fixture_read", arguments: { a: 1 } }));
+  expect(calls).toEqual([
+    { operation: "mcp-list", payload: { plugins } },
+    { operation: "mcp-call", payload: { name: "plugin_fixture_read", arguments: { a: 1 }, plugins } },
+  ]);
+  const webkit = harness({ active: true, webkit: true });
+  const webkitCalls: any[] = [];
+  const webkitSession = new AgentControlSession({ ...webkit.deps, plugins: () => plugins,
+    webkitCall: async (_owner, operation, payload) => { webkitCalls.push({ operation, payload }); return []; } });
+  await webkitSession.enqueue(wire("webkit.tools.list", { profileId: "profile1" }));
+  expect(webkitCalls[0]).toEqual({ operation: "mcp-list", payload: { plugins } });
+  // A plugins folder that cannot be read lists nothing instead of failing every tool call.
+  const broken = new AgentControlSession({ ...firefox.deps, plugins: () => { throw new Error("unreadable"); } });
+  expect(await broken.enqueue(wire("plugins.list", {}))).toMatchObject({ ok: true, result: { plugins: [] } });
+  await session.disconnect(); await webkitSession.disconnect(); await broken.disconnect();
+});
+
 test("WebKit agent status and open disclose capabilities and keep the native owner private", async () => {
   const h = harness({ active: true, webkit: true });
   for (const method of ["browser.status", "browser.open"]) {

@@ -56,6 +56,7 @@ import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervis
 import type { PythonRuntime } from "./python-runtime.ts";
 import { runtimeDownloads } from "./runtime-download.ts";
 import { COOLING_DEFAULTS, normalizeCoolingSettings } from "./cooling.ts";
+import { PLUGIN_ID, pluginsDirectory, scanPlugins, writeExamplePlugin } from "./plugins.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -654,6 +655,44 @@ export async function handleUiRequest(
     const cooling = normalizeCoolingSettings({ ...(current.cooling ?? COOLING_DEFAULTS), ...body });
     const saved = options.appConfig.write({ ...current, cooling });
     return noStoreJson({ ok: true, cooling: saved.cooling ?? cooling });
+  }
+
+  if (pathname.startsWith("/ui/api/plugins")) {
+    // Plugins are code on this computer, so they belong to the local desktop app only.
+    if (!options.paths || !options.appConfig || remote) return noStoreJson({ ok: false, error: "Plugins are not available here" }, 404);
+    const directory = pluginsDirectory(options.paths.root);
+    const listing = () => ({ ok: true, directory, plugins: scanPlugins(directory, options.appConfig!.read().disabledPlugins ?? []).infos });
+    if (pathname === "/ui/api/plugins" && req.method === "GET") return noStoreJson(listing());
+    if (req.method !== "POST") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (pathname === "/ui/api/plugins/state") {
+      if (typeof body.id !== "string" || !PLUGIN_ID.test(body.id) || typeof body.enabled !== "boolean") {
+        return noStoreJson({ ok: false, error: "id and enabled are required" }, 400);
+      }
+      const current = options.appConfig.read();
+      const disabled = new Set(current.disabledPlugins ?? []);
+      if (body.enabled) disabled.delete(body.id); else disabled.add(body.id);
+      const { disabledPlugins: _previous, ...rest } = current;
+      options.appConfig.write(disabled.size ? { ...rest, disabledPlugins: [...disabled] } : rest);
+      return noStoreJson(listing());
+    }
+    if (pathname === "/ui/api/plugins/example") {
+      mkdirSync(directory, { recursive: true });
+      writeExamplePlugin(directory);
+      return noStoreJson(listing());
+    }
+    if (pathname === "/ui/api/plugins/open") {
+      mkdirSync(directory, { recursive: true });
+      // Only ever the plugins folder itself; the request carries no path.
+      const opener = process.platform === "win32" ? ["explorer.exe", directory]
+        : process.platform === "darwin" ? ["open", directory] : ["xdg-open", directory];
+      try { Bun.spawn(opener, { stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref(); }
+      catch (error) { return noStoreJson({ ok: false, error: `Could not open the folder: ${error instanceof Error ? error.message : String(error)}` }, 500); }
+      return noStoreJson({ ok: true, directory });
+    }
+    return noStoreJson({ ok: false, error: "Not found" }, 404);
   }
 
   if (pathname === "/ui/api/shell-language" && req.method === "GET") {

@@ -32,7 +32,11 @@ class Context extends EventEmitter {
   cdpDetaches = 0;
   pages() { return [this.page]; }
   serviceWorkers() { return []; }
-  async cookies() { return this.cookieJar; }
+  async cookies(urls?: string[]) {
+    if (!urls) return this.cookieJar;
+    const hosts = urls.map(url => new URL(url).hostname);
+    return this.cookieJar.filter(cookie => hosts.some(host => host === cookie.domain.replace(/^\./, "") || host.endsWith(cookie.domain)));
+  }
   async addCookies(cookies: any[]) { this.cookieJar.push(...cookies); }
   async clearCookies(filter?: any) {
     this.cookieJar = filter ? this.cookieJar.filter(cookie => !Object.entries(filter).every(([k, v]) => cookie[k] === v)) : [];
@@ -247,5 +251,71 @@ test("Firefox developer execution uses its native page-world channel and keeps a
     const argument = { text: "引号 ' \" 反引号 ` ${literal} 换行\n" };
     expect((await call("evaluate", { expression: "input => input.text", argument })).value).toBe(argument.text);
     expect(sent.startsWith("mw:")).toBe(true);
+  } finally { observer.dispose(); }
+});
+
+test("an expression typed with a trailing semicolon still returns its value", async () => {
+  const { observer, call } = setup();
+  try {
+    expect((await call("evaluate", { expression: "20 + 22;" })).value).toBe(42);
+    expect((await call("evaluate", { expression: "  'title' ;; " })).value).toBe("title");
+    // Several statements still run as a body; it returns what it returns.
+    expect((await call("evaluate", { expression: "const a = 1; return a + 1;" })).value).toBe(2);
+  } finally { observer.dispose(); }
+});
+
+test("text websocket frames are kept exactly without a base64 copy", async () => {
+  const { context, observer, call } = setup();
+  try {
+    const socket = Object.assign(new EventEmitter(), { url: () => "wss://fixture.test/socket" });
+    context.page.emit("websocket", socket);
+    socket.emit("framesent", { payload: "你好 frame" });
+    socket.emit("framereceived", { payload: "x".repeat(70_000) });
+    const [sent] = (await call("events", { kind: "websocket-sent" })).records;
+    expect(sent).toMatchObject({ binary: false, encoding: "text", text: "你好 frame", totalBytes: Buffer.byteLength("你好 frame"), truncated: false, hasMore: false });
+    expect(sent.base64).toBeUndefined();
+    const [long] = (await call("events", { kind: "websocket-received" })).records;
+    expect(long.text).toHaveLength(65536);
+    expect(long).toMatchObject({ totalCharacters: 70_000, truncated: true, hasMore: true });
+  } finally { observer.dispose(); }
+});
+
+test("a busy websocket gives up its own oldest frames before console history", async () => {
+  const { context, observer, call } = setup({ maxEvents: 10 });
+  try {
+    context.page.emit("console", consoleMessage("error", "the error that matters", context.page));
+    const socket = Object.assign(new EventEmitter(), { url: () => "wss://fixture.test/socket" });
+    context.page.emit("websocket", socket);
+    for (let i = 0; i < 50; i++) socket.emit("framereceived", { payload: `tick ${i}` });
+    expect((await call("console")).records.map((r: any) => r.text)).toEqual(["the error that matters"]);
+    const frames = (await call("events", { kind: "websocket-received" })).records.map((r: any) => r.text);
+    expect(frames.at(-1)).toBe("tick 49");
+    expect(frames.length).toBeGreaterThanOrEqual(5);
+    // With few frames, a new one is still kept instead of evicting itself.
+    const quiet = setup({ maxEvents: 4 });
+    for (let i = 0; i < 4; i++) quiet.context.page.emit("console", consoleMessage("log", String(i), quiet.context.page));
+    const quietSocket = Object.assign(new EventEmitter(), { url: () => "wss://fixture.test/quiet" });
+    quiet.context.page.emit("websocket", quietSocket);
+    quietSocket.emit("framereceived", { payload: "rare frame" });
+    expect((await quiet.call("events", { kind: "websocket-received" })).records.map((r: any) => r.text)).toEqual(["rare frame"]);
+    quiet.observer.dispose();
+  } finally { observer.dispose(); }
+});
+
+test("cookies default to the selected page's site; other sites and the whole profile are explicit", async () => {
+  const { context, observer, call } = setup();
+  try {
+    // The page-side storage read runs in the browser; here it only needs to answer.
+    context.page.frame.evaluate = async () => ({ origin: "https://fixture.test", localStorage: { value: {} }, sessionStorage: { value: {} } });
+    context.cookieJar.push({ name: "here", value: "1", domain: "fixture.test", path: "/" },
+      { name: "elsewhere", value: "2", domain: "other.test", path: "/" });
+    const own = await call("storage");
+    expect(own.cookieScope).toBe("frame");
+    expect(own.cookies.map((c: any) => c.name)).toEqual(["here"]);
+    expect((await call("storage", { urls: ["https://other.test/"] })).cookies.map((c: any) => c.name)).toEqual(["elsewhere"]);
+    const all = await call("storage", { allCookies: true });
+    expect(all.cookieScope).toBe("profile");
+    expect(all.cookies.map((c: any) => c.name)).toEqual(["here", "elsewhere"]);
+    await expect(call("storage", { urls: "https://other.test/" })).rejects.toThrow(/urls/);
   } finally { observer.dispose(); }
 });

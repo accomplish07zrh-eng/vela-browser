@@ -37,6 +37,11 @@ import {
   saveTaskbarHidden,
   saveCooling,
   type CoolingSettings,
+  fetchPlugins,
+  setPluginEnabled,
+  addExamplePlugin,
+  openPluginsFolder,
+  type PluginListing,
   fetchRuntimeDownloads,
   type RuntimeDownload,
   fetchProfiles,
@@ -280,7 +285,76 @@ const ICONS = {
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
   moon: <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />,
   help: <><circle cx="12" cy="12" r="9" /><path d="M9.4 9.1a2.7 2.7 0 015.3.7c0 1.8-2.7 2.2-2.7 3.7" /><path d="M12 16.8v.3" /></>,
+  // A plug: what a plugin adds to the AI's tools.
+  plug: <path d="M9 3v5M15 3v5M6.5 8h11v3.5a5.5 5.5 0 01-11 0zM12 17v4" />,
 } as const;
+
+/** Settings: plugins add tools the AI can call; each one is a folder in the plugins folder. */
+function PluginsCard({ flash }: { flash: (message: string) => void }) {
+  const { t } = useTranslation();
+  const [listing, setListing] = useState<PluginListing | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = (task: () => Promise<PluginListing | void>) => {
+    setBusy(true);
+    task()
+      .then((next) => { if (next) setListing(next); setError(null); })
+      .catch((caught) => flash(caught instanceof Error ? caught.message : String(caught)))
+      .finally(() => setBusy(false));
+  };
+  useEffect(() => {
+    fetchPlugins().then(setListing).catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)));
+  }, []);
+  if (error) return null;
+  const plugins = listing?.plugins ?? [];
+  return (
+    <section className="settings-card plugins-card">
+      <header><Icon name="plug" className="sm" /><h2>{t("Plugins")}</h2></header>
+      <div className="card-body">
+        <p>{t("A plugin adds tools the AI can call. It works inside the environment the AI has selected, with that environment's own sign-ins, proxy and fingerprint, and cannot start or close a browser. Plugins are code that runs on this computer, so add only ones you trust.")}</p>
+        <div className="plugin-actions">
+          <button type="button" className="btn" disabled={busy} onClick={() => run(openPluginsFolder)}><Icon name="folder" className="sm" />{t("Open plugins folder")}</button>
+          <button type="button" className="btn" disabled={busy} onClick={() => run(fetchPlugins)}><Icon name="refresh" className="sm" />{t("Refresh")}</button>
+        </div>
+        {listing && plugins.length === 0 && (
+          <div className="plugins-empty">
+            <p className="formnote">{t("No plugins yet. Put a plugin's folder in the plugins folder, or start from the example.")}</p>
+            <button type="button" className="btn" disabled={busy} onClick={() => run(addExamplePlugin)}><Icon name="plus" className="sm" />{t("Add the example plugin")}</button>
+          </div>
+        )}
+        {plugins.length > 0 && (
+          <ul className="plugin-list">
+            {plugins.map((plugin) => (
+              <li key={plugin.id} className={plugin.error ? "plugin has-error" : plugin.enabled ? "plugin" : "plugin off"}>
+                <div className="plugin-head">
+                  <strong>{plugin.name ?? plugin.id}</strong>
+                  {plugin.version && <span className="mono plugin-version">{plugin.version}</span>}
+                  <label className="plugin-switch">
+                    <input type="checkbox" role="switch" aria-label={plugin.name ?? plugin.id} checked={plugin.enabled} disabled={busy}
+                      onChange={(event) => run(() => setPluginEnabled(plugin.id, event.target.checked))} />
+                    <span>{plugin.enabled ? t("On") : t("Off")}</span>
+                  </label>
+                </div>
+                {plugin.description && <p className="plugin-description">{plugin.description}</p>}
+                {plugin.error
+                  ? <p className="plugin-error" role="alert">{t("Cannot load: {reason}", { reason: plugin.error })}</p>
+                  : plugin.tools && (
+                    <ul className="plugin-tools">
+                      {plugin.tools.map((tool) => (
+                        <li key={tool.name}><code>{tool.toolName}</code><span className={tool.readOnly ? "tag" : "tag warn"}>{tool.readOnly ? t("Reads only") : t("Can change things")}</span></li>
+                      ))}
+                    </ul>
+                  )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {listing?.directory && <p className="cardnote">{t("Plugins folder")}: <span className="mono">{listing.directory}</span></p>}
+        <p className="cardnote">{t("Changes reach the AI the next time it selects a browser.")}</p>
+      </div>
+    </section>
+  );
+}
 
 type IconName = keyof typeof ICONS;
 
@@ -3443,6 +3517,7 @@ function App() {
 
           {settingsTab === "advanced" && (
             <>
+              {!appMode?.legacyRemote && <PluginsCard flash={flash} />}
               <h2 className="sect-title">{t("Updates and diagnostics")}</h2>
 <section className="settings-card update-settings">
             <header><Icon name="import" className="sm" /><h2>{t("Updates")}</h2></header>

@@ -240,6 +240,42 @@ function isUpgrade(lines: string[]): boolean {
     && lines.some(line => /^connection\s*:/i.test(line) && line.slice(line.indexOf(":") + 1).split(",").some(token => token.trim().toLowerCase() === "upgrade"));
 }
 
+/** After an upgrade request, waits for the answer. 101 turns the connection into a duplex tunnel.
+ *  Anything else is the only response this connection carries: it goes back marked
+ *  Connection: close and later bytes from the browser are dropped, so the browser can never
+ *  reuse a connection that is still bound to the first request's destination. */
+function bridgeUpgrade(client: net.Socket, upSock: net.Socket): void {
+  client.pause();
+  let buffered = Buffer.alloc(0);
+  const onData = (chunk: Buffer) => {
+    buffered = Buffer.concat([buffered, chunk]);
+    const end = buffered.indexOf("\r\n\r\n");
+    if (end < 0) {
+      if (buffered.length > MAX_HEAD) { upSock.destroy(); client.destroy(); }
+      return;
+    }
+    upSock.removeListener("data", onData);
+    upSock.pause();
+    const [status = "", ...headers] = buffered.subarray(0, end).toString("latin1").split("\r\n");
+    const body = buffered.subarray(end + 4);
+    if (/^HTTP\/\d(?:\.\d)?\s+101(?:\s|$)/i.test(status)) {
+      client.write(buffered);
+      upSock.pipe(client);
+      client.pipe(upSock);
+      return;
+    }
+    const kept = headers.filter((line) => line !== "" && !/^(connection|keep-alive|proxy-connection)\s*:/i.test(line));
+    client.write([status, ...kept, "Connection: close", "Proxy-Connection: close", "", ""].join("\r\n"));
+    if (body.length) client.write(body);
+    upSock.pipe(client);
+    client.on("data", () => {});
+    client.resume();
+  };
+  upSock.on("data", onData);
+  // The SOCKS handshake leaves its socket paused; a data listener alone would not resume it.
+  upSock.resume();
+}
+
 /** Plain HTTP reinjects auth per request. An HTTP upgrade keeps its duplex tunnel,
  *  so proxied WebSocket traffic uses the same upstream instead of losing its handshake. */
 function plainHttp(
@@ -280,6 +316,7 @@ function plainHttp(
   upSock.once(up.type === "https" ? "secureConnect" : "connect", () => {
     upSock.write(rebuilt);
     if (rest.length) upSock.write(rest);
+    if (upgrading) { bridgeUpgrade(client, upSock); return; }
     upSock.pipe(client);
     client.pipe(upSock);
   });
@@ -341,6 +378,7 @@ async function plainHttpViaSocks(
     upSock.on("close", () => client.destroy());
     upSock.write(rebuilt);
     if (rest.length) upSock.write(rest);
+    if (upgrading) { bridgeUpgrade(client, upSock); return; }
     upSock.pipe(client);
     client.pipe(upSock);
   } catch (error) {
