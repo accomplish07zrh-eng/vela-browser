@@ -183,7 +183,7 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 
 #root { height: 100%; }
 
-button, input, select, textarea { font: inherit; color: inherit; }
+button, input, :is(select, .vselect), textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
 
@@ -200,9 +200,15 @@ button:disabled { cursor: default; }
    Shared primitives
    ========================================================================== */
 
-.icon { width: 16px; height: 16px; flex: 0 0 auto; display: block; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.icon { width: 16px; height: 16px; flex: 0 0 auto; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .icon.sm { width: 14px; height: 14px; }
 .icon.lg { width: 20px; height: 20px; }
+/* Two-tone icons: a soft fill of the icon's own colour under its outline, so an active gold icon
+   glows gold and a quiet one only hints at its shape. */
+.icon .duo { fill: currentColor; stroke: none; opacity: .14; transition: opacity 180ms ease; }
+:root[data-theme="dark"] .icon .duo { opacity: .2; }
+:is(button, a):hover > .icon .duo, .active > .icon .duo { opacity: .24; }
+:root[data-theme="dark"] :is(button, a):hover > .icon .duo, :root[data-theme="dark"] .active > .icon .duo { opacity: .3; }
 
 .mono { font-family: var(--mono); font-size: 12px; font-variant-ligatures: none; letter-spacing: -0.01em; }
 .muted { color: var(--faint); }
@@ -1143,7 +1149,7 @@ td.col-tags .chip + .chip { margin-left: 5px; }
   color: var(--muted); font-size: 13px; font-weight: 500; letter-spacing: 0.01em; padding-left: 2px;
 }
 .fld > span .muted { color: var(--faint); font-weight: 400; }
-.fld input, .fld select {
+.fld input, .fld :is(select, .vselect) {
   height: 44px; padding: 0 14px;
   color: var(--ink); background: var(--field-bg);
   border: 1px solid transparent; border-radius: 14px; outline: none;
@@ -1151,7 +1157,7 @@ td.col-tags .chip + .chip { margin-left: 5px; }
   font-size: 14.5px;
   transition: background .13s var(--ease), border-color .13s var(--ease), box-shadow .13s var(--ease);
 }
-.fld select { padding-right: 32px; cursor: pointer; appearance: none; -webkit-appearance: none;
+.fld :is(select, .vselect) { padding-right: 32px; cursor: pointer; appearance: none; -webkit-appearance: none;
   background-image: var(--chevron);
   background-repeat: no-repeat; background-position: right 10px center; }
 .fld textarea {
@@ -1162,8 +1168,8 @@ td.col-tags .chip + .chip { margin-left: 5px; }
   font: 12.5px/1.6 var(--mono);
   transition: background .13s var(--ease), border-color .13s var(--ease), box-shadow .13s var(--ease);
 }
-.fld input:hover:not(:disabled), .fld select:hover, .fld textarea:hover { background: var(--field-bg-focus); }
-.fld input:focus, .fld select:focus, .fld textarea:focus { background: var(--field-bg-focus); border-color: var(--line-strong); box-shadow: var(--ring); }
+.fld input:hover:not(:disabled), .fld :is(select, .vselect):hover, .fld textarea:hover { background: var(--field-bg-focus); }
+.fld input:focus, .fld :is(select, .vselect):focus, .fld textarea:focus { background: var(--field-bg-focus); border-color: var(--line-strong); box-shadow: var(--ring); }
 .fld input.ro { color: var(--muted); background: var(--surface-sunken); cursor: default; }
 .fld small { color: var(--muted); font-size: 12px; line-height: 1.5; padding-left: 2px; }
 .fld small.count-ok { color: var(--success-ink); font-weight: 600; }
@@ -1190,7 +1196,7 @@ td.col-tags .chip + .chip { margin-left: 5px; }
 .inputwrap input:focus + .inline-action { color: var(--ink); }
 
 .grouppick { display: flex; gap: 8px; }
-.grouppick input, .grouppick select { flex: 1; min-width: 0; }
+.grouppick input, .grouppick :is(select, .vselect) { flex: 1; min-width: 0; }
 .grouppick .gp-back { width: 42px; height: 44px; flex: 0 0 auto; }
 
 .proxy-paste-row { display: flex; align-items: flex-end; gap: 10px; }
@@ -1835,7 +1841,7 @@ td.col-tags .chip + .chip { margin-left: 5px; }
   --warn: var(--status-warning); --warn-ink: #d5a35d; --warn-soft: rgba(213,163,93,.1); --warn-line: rgba(213,163,93,.22);
   --danger: var(--status-error); --danger-ink: #e2827d; --danger-soft: rgba(226,130,125,.1); --danger-line: rgba(226,130,125,.22);
 }
-button, input, textarea, select { font-synthesis: none; }
+button, input, textarea, :is(select, .vselect) { font-synthesis: none; }
 .btn, .iconbtn, .select, input:not([type="checkbox"]):not([type="radio"]), textarea { border-radius: 8px; }
 .btn { font-weight: 500; }
 .btn:not(.primary):not(.solid-danger):not(.ghost):not(.danger):not(.accent) { border: 1px solid var(--line-strong); box-shadow: none; background: transparent; }

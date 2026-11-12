@@ -1,4 +1,6 @@
-import type { WorkbenchAdapter, WorkbenchFrame, WorkbenchInput, WorkbenchTab } from "./workbench-protocol.ts";
+import type { WorkbenchAdapter, WorkbenchFrame, WorkbenchInput, WorkbenchStreamOptions, WorkbenchTab } from "./workbench-protocol.ts";
+
+interface LiveStream { session: string; onFrame(frame: WorkbenchFrame): void; minInterval: number; lastAck: number; stopped: boolean }
 
 /** One control socket belongs to exactly one browser launch. */
 export class CdpWorkbench implements WorkbenchAdapter {
@@ -9,6 +11,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
   private session?: string;
   private target?: string;
   private disposed = false;
+  private live?: LiveStream;
 
   constructor(endpoint: string) {
     const url = new URL(endpoint);
@@ -24,6 +27,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
     this.socket.addEventListener("message", (event) => {
       let message: any;
       try { message = JSON.parse(String(event.data)); } catch { return; }
+      if (message.method === "Page.screencastFrame") { this.onScreencastFrame(message); return; }
       const call = this.pending.get(message.id);
       if (!call) return;
       clearTimeout(call.timer); this.pending.delete(message.id);
@@ -55,6 +59,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
     if (!(await this.tabs()).some((tab) => tab.id === targetId)) throw new Error("Tab no longer exists");
     const previous = this.session;
     const { sessionId } = await this.send("Target.attachToTarget", { targetId, flatten: true });
+    await this.stopStream();
     this.session = sessionId; this.target = targetId;
     if (previous) await this.send("Target.detachFromTarget", { sessionId: previous }).catch(() => {});
   }
@@ -68,13 +73,58 @@ export class CdpWorkbench implements WorkbenchAdapter {
     if (this.target === targetId) { this.target = undefined; this.session = undefined; }
   }
 
-  async frame(focused: boolean): Promise<WorkbenchFrame> {
+  async frame(focused: boolean, maxWidth?: number): Promise<WorkbenchFrame> {
     if (!this.session) throw new Error("Select a tab first");
     const session = this.session;
     const metrics = await this.send("Page.getLayoutMetrics", {}, session);
     const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
-    const { data } = await this.send("Page.captureScreenshot", { format: "jpeg", quality: focused ? 85 : 65, fromSurface: true, captureBeyondViewport: false }, session);
+    // Captured at the size the card shows it, not the page's full size: far fewer bytes per frame.
+    const scale = maxWidth && viewport.clientWidth > maxWidth ? maxWidth / viewport.clientWidth : undefined;
+    const { data } = await this.send("Page.captureScreenshot", {
+      format: "jpeg", quality: focused ? 85 : 65, fromSurface: true, captureBeyondViewport: false,
+      ...(scale ? { clip: { x: viewport.pageX ?? 0, y: viewport.pageY ?? 0, width: viewport.clientWidth, height: viewport.clientHeight, scale } } : {}),
+    }, session);
     return { data, width: viewport.clientWidth, height: viewport.clientHeight };
+  }
+
+  /**
+   * Chromium's own screencast: the compositor pushes a frame whenever the page paints, already
+   * scaled to the card. Nothing reaches the page. The next frame comes only after this one is
+   * acknowledged, which is held back to the card's rate, so a busy wall never floods the app.
+   */
+  async stream(options: WorkbenchStreamOptions, onFrame: (frame: WorkbenchFrame) => void): Promise<() => Promise<void>> {
+    if (!this.session) throw new Error("Select a tab first");
+    const session = this.session;
+    await this.stopStream();
+    const live: LiveStream = { session, onFrame, minInterval: options.minInterval, lastAck: 0, stopped: false };
+    this.live = live;
+    await this.send("Page.startScreencast", {
+      format: "jpeg", quality: options.quality, everyNthFrame: 1,
+      ...(options.maxWidth ? { maxWidth: options.maxWidth, maxHeight: options.maxWidth * 4 } : {}),
+    }, session);
+    return async () => { if (this.live === live) await this.stopStream(); };
+  }
+
+  private async stopStream(): Promise<void> {
+    const live = this.live;
+    if (!live) return;
+    live.stopped = true; this.live = undefined;
+    await this.send("Page.stopScreencast", {}, live.session).catch(() => {});
+  }
+
+  private onScreencastFrame(message: any): void {
+    const live = this.live, params = message.params;
+    if (!live || live.stopped || message.sessionId !== live.session || !params) return;
+    const metadata = params.metadata ?? {};
+    live.onFrame({ data: params.data, width: Math.round(metadata.deviceWidth ?? 0), height: Math.round(metadata.deviceHeight ?? 0) });
+    // Chromium keeps more than one frame in flight, so each acknowledgement takes the next free
+    // slot one interval after the last: the card receives frames at its rate, not the page's.
+    const at = Math.max(Date.now(), live.lastAck + live.minInterval);
+    live.lastAck = at;
+    setTimeout(() => {
+      if (live.stopped || this.disposed) return;
+      try { this.socket.send(JSON.stringify({ id: ++this.nextId, method: "Page.screencastFrameAck", params: { sessionId: params.sessionId }, sessionId: live.session })); } catch {}
+    }, at - Date.now());
   }
 
   async viewport(): Promise<{ width: number; height: number }> {
@@ -103,6 +153,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.live) { this.live.stopped = true; this.live = undefined; }
     for (const call of this.pending.values()) { clearTimeout(call.timer); call.reject(new Error("Browser disconnected")); }
     this.pending.clear();
     this.socket.close();

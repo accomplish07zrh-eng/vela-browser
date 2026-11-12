@@ -66,6 +66,8 @@ test("Firefox owner passes native proxy preferences", () => {
       "media.peerconnection.ice.no_host": true,
       // Response bodies and WebSocket frames for Playwright stay off until a script or MCP client attaches.
       "juggler.networkDetail": false,
+      // A browser left in the background is not starved of timers after a while.
+      "dom.timeout.enable_budget_timer_throttling": false,
     },
   });
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe", proxy })).not.toHaveProperty("firefoxUserPrefs.browser.startup.page");
@@ -80,6 +82,7 @@ test("Firefox owner passes native proxy preferences", () => {
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe" }).firefoxUserPrefs).toEqual({
     "media.peerconnection.ice.default_address_only": true,
     "juggler.networkDetail": false,
+    "dom.timeout.enable_budget_timer_throttling": false,
   });
 });
 

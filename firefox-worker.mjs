@@ -177,6 +177,10 @@ function send(response, status, body) {
 // WebSocket-heavy sites (Telegram Web) several times slower. The app reads neither; a script or MCP
 // client may, so the owner turns this on while one is attached (Browser.setNetworkDetail).
 const NETWORK_DETAIL_OFF = { "juggler.networkDetail": false };
+// Firefox's budget throttling is its counterpart of Chrome's intensive throttling: a tab hidden for
+// a while gets only a sliver of timer time, which stalls a browser left behind the workbench. The
+// ordinary once-a-second clamp of background timers stays as in stock Firefox.
+const BACKGROUND_TIMERS = { "dom.timeout.enable_budget_timer_throttling": false };
 
 export function firefoxLaunchOptions(input) {
   // A stored graphics identity must show on every computer, also where the browser would turn WebGL off.
@@ -198,11 +202,12 @@ export function firefoxLaunchOptions(input) {
         "media.peerconnection.ice.default_address_only": true,
         "media.peerconnection.ice.no_host": true,
         ...NETWORK_DETAIL_OFF,
+        ...BACKGROUND_TIMERS,
         ...graphics,
       },
     } : {
       // No proxy: keep WebRTC on the default route so a system VPN's IP is used, not the real NIC.
-      firefoxUserPrefs: { "media.peerconnection.ice.default_address_only": true, ...NETWORK_DETAIL_OFF, ...graphics },
+      firefoxUserPrefs: { "media.peerconnection.ice.default_address_only": true, ...NETWORK_DETAIL_OFF, ...BACKGROUND_TIMERS, ...graphics },
     }),
     ...(input.headless === undefined ? {} : { headless: input.headless }),
     ...(input.args ? { args: input.args } : {}),
@@ -424,6 +429,8 @@ async function run() {
       humanizer ??= createHumanizer({
         context,
         profileId: input.profileId,
+        // Its pointer reaches Vela Browser with the workbench frames, to be drawn over the card.
+        onPointer: (event) => workbench.live.pointer(event),
         callOfficial: (tool, args) => official ? official.client.callTool({ name: tool, arguments: args ?? {} }) : callOfficial(tool, args),
       });
       humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });

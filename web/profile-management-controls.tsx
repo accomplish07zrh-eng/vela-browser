@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Select } from "./select.tsx";
 import { useTranslation } from "./i18n.tsx";
 import { trapDialogTab } from "./dialog-focus.ts";
 import {
@@ -54,12 +55,12 @@ export function SavedProfileViews({ scope, filters, onApply }: { scope: string; 
   };
   return <div className="saved-profile-views">
     <div className="saved-view-actions">
-      <select className="select quiet-select" aria-label={t("Saved views")} value={active?.id ?? ""} onChange={(event) => {
+      <Select className="select quiet-select" aria-label={t("Saved views")} value={active?.id ?? ""} onChange={(event) => {
         const item = items.find((entry) => entry.id === event.target.value); if (item) onApply({ ...item.filters });
       }}>
         <option value="">{t("Saved views")}{items.length ? ` · ${items.length}` : ""}</option>
         {items.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-      </select>
+      </Select>
       {active && <button type="button" className="iconbtn" title={t("Remove saved view")} aria-label={t("Remove saved view")} onClick={() => persist(items.filter((item) => item.id !== active.id))}><CloseGlyph /></button>}
       <button type="button" className="btn ghost" aria-expanded={naming} disabled={items.length >= MAX_SAVED_PROFILE_ITEMS} onClick={() => { setNaming(!naming); setError(""); }}>{t("Save view")}</button>
     </div>
@@ -92,7 +93,7 @@ export function ProfileTemplateBar({ scope, settings, disabled, available, onApp
   };
   return <div className="profile-template-bar">
     <div className="profile-template-actions">
-      <select className="select quiet-select" aria-label={t("Profile template")} value={chosen} disabled={disabled} onChange={(event) => {
+      <Select className="select quiet-select" aria-label={t("Profile template")} value={chosen} disabled={disabled} onChange={(event) => {
         const item = items.find((entry) => entry.id === event.target.value);
         if (!item) { setChosen(""); return; }
         if (!available(item.settings)) { setError(t("This template uses a browser or folder that is unavailable in this workspace.")); return; }
@@ -100,7 +101,7 @@ export function ProfileTemplateBar({ scope, settings, disabled, available, onApp
       }}>
         <option value="">{t("Start from a template")}</option>
         {items.map((item) => <option key={item.id} value={item.id} disabled={!available(item.settings)}>{item.name}</option>)}
-      </select>
+      </Select>
       {chosen && <button type="button" className="iconbtn" disabled={disabled} title={t("Remove template")} aria-label={t("Remove template")} onClick={() => {
         if (persist(items.filter((item) => item.id !== chosen))) { setChosen(""); setSaved(false); }
       }}><CloseGlyph /></button>}

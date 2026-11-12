@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Select } from "./select.tsx";
 import { flushSync } from "react-dom";
 import { folderScope, folderTree, type FolderInfo } from "../src/folders.ts";
 import { closeProfile, fetchScriptRun, moveProfiles, openProfile, raiseProfile, updateProfile, type UiProfile, type ScriptRun } from "./api.ts";
@@ -6,6 +7,7 @@ import { parsePastedProxy } from "./proxy-input.ts";
 import type { WorkbenchInput, WorkbenchRefreshTier } from "../src/workbench-protocol.ts";
 import { useTranslation } from "./i18n.tsx";
 import { ViewportClient, type ViewportState } from "./workbench-client.ts";
+import { VirtualCursor } from "./virtual-cursor.tsx";
 import { workbenchLayout, workbenchPosition, workbenchLocate, workbenchSnap, workbenchSpring, workbenchFocusBox, workbenchRefreshTier, viewportPoint, workbenchFollowerInput, type ViewportBox } from "./workbench-layout.ts";
 import "./workbench.css";
 
@@ -37,6 +39,33 @@ function viewStatus(profile: UiProfile, state?: ViewportState): ViewStatus {
   return !state?.frame ? "loading" : "running";
 }
 interface ViewportHandle { element: HTMLElement; client: { current: ViewportClient | null }; state: { current: ViewportState } }
+
+/**
+ * A frame is decoded off the main thread and drawn only once it is ready, so the previous frame
+ * stays on screen until the next replaces it. Swapping an <img> source instead can show a blank
+ * (white) frame for an instant while the new image decodes: the wall's flicker.
+ */
+export function FrameCanvas({ data, className = "viewport-frame" }: { data: string; className?: string }) {
+  const canvas = useRef<HTMLCanvasElement>(null), latest = useRef(data);
+  latest.current = data;
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const blob = await (await fetch(`data:image/jpeg;base64,${data}`)).blob();
+        const bitmap = await createImageBitmap(blob);
+        const element = canvas.current;
+        if (cancelled || latest.current !== data || !element) { bitmap.close(); return; }
+        // Resizing clears a canvas; it happens in the same task as the draw, so it never shows.
+        if (element.width !== bitmap.width || element.height !== bitmap.height) { element.width = bitmap.width; element.height = bitmap.height; }
+        element.getContext("2d")?.drawImage(bitmap, 0, 0);
+        bitmap.close();
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [data]);
+  return <canvas ref={canvas} className={className} aria-hidden="true" />;
+}
 interface SyncSession { master: string; generations: Map<string, string> }
 
 const BrowserViewport = memo(function BrowserViewport({ profile, order, selected, focused, obscured, master, following, script, register, onState, onSelect, onFocus, onMaster, onAction, onInput, onHover }: {
@@ -109,7 +138,8 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
         if (p) sendInput({ kind: "pointer", event: "up", ...p, button: pointerButton.current, buttons: event.buttons, clicks: Math.min(3, event.detail || 1), modifiers: modifiers(event) });
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       }} onPointerCancel={() => client.current?.release()}>
-      {state.frame && <img src={`data:image/jpeg;base64,${state.frame.data}`} alt="" draggable={false} decoding="async" />}
+      {state.frame && <FrameCanvas data={state.frame.data} />}
+      {state.generation && <VirtualCursor client={client} surface={surface} state={snapshot} focused={focusedRef} generation={state.generation} />}
     </div>
     {focused && <textarea ref={input} className="viewport-input" aria-label={t("Type in {name}", { name: profile.name })} autoCapitalize="off" autoCorrect="off" spellCheck={false}
       onKeyDown={(event) => key(event, "down")} onKeyUp={(event) => key(event, "up")}
@@ -283,7 +313,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       if (obscured || document.hidden || coveredRef.current) tier = "hidden";
       else if (visible && (focusId === id || hoveredCard.current === id)) tier = "interactive";
       if (tier !== last.tier) record.element.dataset.refreshTier = last.tier = tier;
-      record.client.current?.activity(tier, frozen, !!syncRef.current?.generations.has(id) && syncRef.current.master !== id);
+      record.client.current?.activity(tier, frozen, !!syncRef.current?.generations.has(id) && syncRef.current.master !== id, box.width * (window.devicePixelRatio || 1));
     }
     if (frozen !== movingAttribute.current) { root.current?.setAttribute("data-moving", String(frozen)); movingAttribute.current = frozen; }
   }, []);
@@ -565,10 +595,10 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     onPointerEnter={(event) => { if (event.pointerType !== "touch") hovered.current = true; }}
     onPointerLeave={() => { hovered.current = false; hoveredCard.current = null; motion.current.resumeAfter = performance.now() + 900; paintRef.current(); }}>
     <div className="workbench-toolbar">
-      <select className="select" aria-label={t("Workbench group")} value={group} onChange={(event) => onGroupChange(event.target.value)}>
+      <Select className="select" aria-label={t("Workbench group")} value={group} onChange={(event) => onGroupChange(event.target.value)}>
         <option value="all">{t("All groups")}</option><option value="">{t("Ungrouped")}</option>
         {folderTree<FolderInfo>(folders.length ? folders : groups.map((name) => ({ name }))).map((folder) => <option key={folder.name} value={folder.name}>{"　".repeat(folder.depth)}{folder.label ?? folder.name}</option>)}
-      </select>
+      </Select>
       <div className="workbench-search">
         <Glyph name="search" /><input type="search" placeholder={t("Find an environment…")} aria-label={t("Find an environment…")} value={query} onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter" && matches[0]) { locate(matches[0].id); setSelected(new Set([matches[0].id])); setQuery(""); scroller.current?.focus(); } if (event.key === "Escape") setQuery(""); }} />
@@ -635,7 +665,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
           onPointerEnter={() => setPreview(profile.id)} onPointerLeave={() => setPreview(null)} onFocus={() => setPreview(profile.id)} onBlur={() => setPreview(null)}
           onClick={() => { locate(profile.id); setSelected(new Set([profile.id])); }}><span /></button>)}
       </div>
-      {previewProfile && <div className="workbench-ring-preview" role="tooltip">{previewFrame && <img src={`data:image/jpeg;base64,${previewFrame.data}`} alt="" />}<span>{previewProfile.name}<small>#{numberOf(previewProfile)}</small></span></div>}
+      {previewProfile && <div className="workbench-ring-preview" role="tooltip">{previewFrame && <FrameCanvas data={previewFrame.data} className="workbench-ring-frame" />}<span>{previewProfile.name}<small>#{numberOf(previewProfile)}</small></span></div>}
     </div>}
     {selected.size > 0 && !focused && <div className="workbench-batch" aria-label={t("Selected environments")}>
       <span>{t("{count} selected", { count: selected.size })}</span>
@@ -648,7 +678,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     {batchMode && <div className="workbench-batch-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setBatchMode(null); }}>
       <div ref={batchEditor} className="workbench-batch-editor" role="dialog" aria-modal="true" tabIndex={-1} aria-label={t(batchMode === "group" ? "Move to group" : "Change proxy")}>
         <h2>{t(batchMode === "group" ? "Move to group" : "Change proxy")}</h2>
-        {batchMode === "group" ? <select className="select" autoFocus aria-label={t("Target group")} value={batchValue} onChange={(event) => setBatchValue(event.target.value)}><option value="">{t("Ungrouped")}</option>{groups.map((name) => <option key={name} value={name}>{name}</option>)}</select> :
+        {batchMode === "group" ? <Select className="select" autoFocus aria-label={t("Target group")} value={batchValue} onChange={(event) => setBatchValue(event.target.value)}><option value="">{t("Ungrouped")}</option>{groups.map((name) => <option key={name} value={name}>{name}</option>)}</Select> :
           <><input autoFocus type="text" aria-label={t("New proxy")} placeholder="http://host:port" value={batchValue} onChange={(event) => setBatchValue(event.target.value)} /><p>{t("Stop the selected environments before replacing their proxy.")}</p></>}
         <div><button type="button" className="btn ghost" onClick={() => setBatchMode(null)}>{t("Cancel")}</button><button type="button" className="btn primary" disabled={busy || batchMode === "proxy" && !batchValue.trim()} onClick={() => void applyBatch()}>{t(busy ? "Processing…" : "Apply")}</button></div>
       </div>

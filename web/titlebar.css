@@ -1,0 +1,33 @@
+/* The app's own title bar: the stage colour all the way to the top edge, so the window reads as one
+   surface. The page below moves down by its height. */
+:root { --titlebar-h: 0px; }
+:root[data-titlebar] { --titlebar-h: 34px; }
+:root[data-titlebar] #root { box-sizing: border-box; padding-top: var(--titlebar-h); }
+
+.titlebar {
+  position: fixed; inset: 0 0 auto; z-index: 1000; height: var(--titlebar-h);
+  display: flex; align-items: stretch; justify-content: flex-end;
+  background: #f6f3ed; color: #1a1814;
+  user-select: none; -webkit-user-select: none;
+}
+:root[data-theme="dark"] .titlebar { background: #12110f; color: #efe9df; }
+
+.titlebar-controls { display: flex; align-items: stretch; }
+.titlebar-controls button {
+  display: grid; place-items: center; width: 46px; height: 100%; padding: 0; border: 0; border-radius: 0;
+  background: transparent; color: inherit; opacity: .62; cursor: default;
+  transition: background-color 140ms ease, opacity 140ms ease, color 140ms ease;
+}
+.titlebar-controls button:hover { opacity: 1; background: rgba(26, 24, 20, .065); }
+.titlebar-controls button:active { background: rgba(26, 24, 20, .11); }
+:root[data-theme="dark"] .titlebar-controls button:hover { background: rgba(239, 233, 223, .08); }
+:root[data-theme="dark"] .titlebar-controls button:active { background: rgba(239, 233, 223, .13); }
+.titlebar-controls button.close:hover { background: #c2452d; color: #fff; opacity: 1; }
+.titlebar-controls button.close:active { background: #a83a25; color: #fff; }
+.titlebar-controls button:focus-visible { outline: 2px solid #9a7424; outline-offset: -2px; opacity: 1; }
+.titlebar-controls svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.05; stroke-linecap: round; stroke-linejoin: round; }
+
+/* A window that loses focus quiets its controls, as the system's do. */
+.titlebar:not(:hover) .titlebar-controls button { transition-delay: 0ms; }
+
+@media (prefers-reduced-motion: reduce) { .titlebar-controls button { transition: none; } }

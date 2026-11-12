@@ -369,6 +369,67 @@ test("browser actions require one selected profile", async () => {
   await host.close();
 });
 
+class ActingPlaywright extends FakePlaywright {
+  calls: Array<{ name: string; args: unknown }> = [];
+  override tools = ["browser_snapshot", "browser_click", "browser_type"].map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} } })) as any;
+  override async callTool(name: string, args?: any) {
+    this.calls.push({ name, args });
+    if (args?.fail) return { isError: true, content: [{ type: "text", text: "element not found" }] };
+    return { content: [{ type: "text", text: `${name} done, snapshot after ${this.calls.length}` }] };
+  }
+}
+
+test("browser_batch runs several actions in one call and returns only the last snapshot", async () => {
+  const runtime = new FakeRuntime();
+  const playwright = new ActingPlaywright();
+  const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright });
+  const client = new Client({ name: "test", version: "1" }, { capabilities: {} });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    await client.callTool({ name: "aliasmode_browser_select", arguments: { profileId: "profile-1" } });
+    const tools = (await client.listTools()).tools;
+    expect(tools.find((tool) => tool.name === "browser_batch")).toBeTruthy();
+    // The descriptions steer the AI away from snapshots it already has.
+    expect(tools.find((tool) => tool.name === "browser_click")!.description).toContain("no separate browser_snapshot is needed");
+    expect(tools.find((tool) => tool.name === "browser_snapshot")!.description).toContain("only to look before the first action");
+
+    const result: any = await client.callTool({ name: "browser_batch", arguments: { steps: [
+      { tool: "browser_type", arguments: { ref: "e1", text: "a@b.c", profileId: "ignored" } },
+      { tool: "browser_type", arguments: { ref: "e2", text: "secret" } },
+      { tool: "browser_click", arguments: { ref: "e3" } },
+    ] } });
+    expect(result.isError).toBeUndefined();
+    expect(playwright.calls.map((call) => call.name)).toEqual(["browser_type", "browser_type", "browser_click"]);
+    expect(playwright.calls[0]!.args).toEqual({ ref: "e1", text: "a@b.c" });
+    expect(result.content.map((part: any) => part.text)).toEqual([
+      "Ran 3 steps: 1. browser_type, 2. browser_type, 3. browser_click. The last step's result follows.",
+      "browser_click done, snapshot after 3",
+    ]);
+
+    // A failing step stops the batch and names itself.
+    playwright.calls = [];
+    const failed: any = await client.callTool({ name: "browser_batch", arguments: { steps: [
+      { tool: "browser_click", arguments: { ref: "e1" } }, { tool: "browser_click", arguments: { fail: true } }, { tool: "browser_click" },
+    ] } });
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toBe("Done: 1. browser_click. Step 2 (browser_click) failed: element not found");
+    expect(playwright.calls).toHaveLength(2);
+
+    // Lifecycle, nested batches and unknown tools never run, and nothing runs before the check.
+    playwright.calls = [];
+    for (const tool of ["browser_close", "browser_batch", "aliasmode_browser_close", "browser_nope"]) {
+      const refused: any = await client.callTool({ name: "browser_batch", arguments: { steps: [{ tool: "browser_click" }, { tool }] } });
+      expect(refused.isError).toBe(true);
+      expect(refused.content[0].text).toContain("step 2");
+    }
+    expect(playwright.calls).toEqual([]);
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
 test("MCP cannot call retired account tools or forward them to the runtime", async () => {
     const runtime = new FakeRuntime();
     const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright: new FakePlaywright() });

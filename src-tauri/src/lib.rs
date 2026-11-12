@@ -584,7 +584,15 @@ pub fn run() {
                     .permission("allow-runtime-ready")
                     .permission("allow-script-capability")
                     .permission("allow-workbench-capability")
-                    .permission("allow-update-bridge"),
+                    .permission("allow-update-bridge")
+                    // The window draws its own title bar in the app's colours (Windows and Linux):
+                    // moving, minimizing, maximizing and closing it, nothing else.
+                    .permission("core:window:allow-start-dragging")
+                    .permission("core:window:allow-internal-toggle-maximize")
+                    .permission("core:window:allow-minimize")
+                    .permission("core:window:allow-toggle-maximize")
+                    .permission("core:window:allow-is-maximized")
+                    .permission("core:window:allow-close"),
             ) {
                 return Err(error.into());
             }
@@ -601,6 +609,10 @@ pub fn run() {
                 .visible(!background)
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(960.0, 640.0)
+                // Windows and Linux: the app draws its own title bar in its own colours instead of the
+                // system's white one. The window keeps its shadow, rounded corners and resize edges.
+                // macOS keeps its native title bar.
+                .decorations(cfg!(target_os = "macos"))
                 .on_page_load(move |window, payload| {
                     if !matches!(payload.event(), PageLoadEvent::Finished) {
                         return;

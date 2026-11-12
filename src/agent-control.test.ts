@@ -264,6 +264,19 @@ test("Firefox MCP relays official schemas and calls through the authenticated ma
   ]);
 });
 
+test("the AI's pointer is passed to the workbench, and malformed pointers are refused", async () => {
+  const h = harness({ active: true });
+  const seen: unknown[] = [];
+  const session = new AgentControlSession({ ...h.deps, pointer: (profileId, pointer) => { seen.push({ profileId, ...pointer }); } });
+  expect(await session.enqueue(wire("workbench.pointer", { profileId: "profile1", x: 12.5, y: 40, phase: "down" }))).toMatchObject({ ok: true });
+  expect(seen).toEqual([{ profileId: "profile1", x: 12.5, y: 40, phase: "down" }]);
+  for (const bad of [{ x: "1", y: 2, phase: "move" }, { x: 1, y: 2, phase: "wave" }, { x: Infinity, y: 2, phase: "move" }, { x: 1, y: 99999, phase: "up" }]) {
+    expect(await session.enqueue(wire("workbench.pointer", { profileId: "profile1", ...bad }))).toMatchObject({ ok: false });
+  }
+  expect(seen).toHaveLength(1);
+  await session.disconnect();
+});
+
 test("enabled plugins are listed for Chromium and travel with Firefox and WebKit tool calls", async () => {
   const plugins = [{ id: "fixture", name: "Fixture", version: "1", description: "", module: "/plugins/fixture/index.mjs", revision: "r",
     tools: [{ name: "read", toolName: "plugin_fixture_read", title: "Fixture: read", description: "Reads.", inputSchema: { type: "object" }, readOnly: true, timeoutSeconds: 120 }] }];

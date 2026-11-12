@@ -140,6 +140,8 @@ async function run() {
       const bridge = await initializeOfficial();
       if (!bridge.tools.some(tool => tool.name === payload.name && !/pdf/i.test(tool.name))) throw error("invalid_request");
       humanizer ??= createHumanizer({ context, profileId: input.profileId,
+        // Its pointer reaches Vela Browser with the workbench frames, to be drawn over the card.
+        onPointer: (event) => workbench.live.pointer(event),
         callOfficial: (tool, args) => official.client.callTool({ name: tool, arguments: args ?? {} }) });
       humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });
       return humanizer.call(payload.name, payload.arguments ?? {});
@@ -161,8 +163,12 @@ async function run() {
     try {
       const value = await readJson(request);
       if (value.version !== VERSION || typeof value.operation !== "string" || !value.payload || typeof value.payload !== "object" || Array.isArray(value.payload)) throw error("invalid_request");
-      const pending = value.operation === "status" ? operate(value.operation, value.payload) : queue.then(() => operate(value.operation, value.payload));
-      if (value.operation !== "status") queue = pending.catch(() => {});
+      // Reading the workbench never waits behind, or holds up, the actions in the queue: a live
+      // frame request may wait for the page to paint.
+      const concurrent = value.operation === "status"
+        || (value.operation === "workbench" && ["tabs", "viewport", "frame"].includes(value.payload.action));
+      const pending = concurrent ? operate(value.operation, value.payload) : queue.then(() => operate(value.operation, value.payload));
+      if (!concurrent) queue = pending.catch(() => {});
       const result = await pending;
       if (value.operation === "close") { closing = true; await closeOfficial(); devtools.dispose(); await context.close(); }
       send(response, 200, { ok: true, result });

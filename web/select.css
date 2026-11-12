@@ -1,0 +1,38 @@
+/* The closed control: the field it replaces, with its text kept on one line. */
+.vselect { display: inline-flex; align-items: center; gap: 8px; text-align: left; white-space: nowrap; overflow: hidden; background-image: none !important; padding-right: 10px !important; }
+.vselect .vselect-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The chevron is part of the control, so focus styles cannot drop it, and it turns as the list opens. */
+.vselect-chevron { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; opacity: .55; transition: transform 220ms cubic-bezier(.2, 1.1, .3, 1), opacity 140ms ease; }
+.vselect:hover .vselect-chevron, .vselect.open .vselect-chevron { opacity: .9; }
+.vselect.open .vselect-chevron { transform: rotate(180deg); }
+.vselect.open { background-color: var(--field-bg-focus); border-color: var(--line-strong); box-shadow: var(--ring); }
+
+/* The open list: a floating sheet in the app's own glass, rising from the field. */
+.vselect-panel {
+  position: fixed; z-index: 1200; box-sizing: border-box; padding: 6px; overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 14px; border: 1px solid var(--glass-line, rgba(26, 24, 20, .1));
+  background: var(--glass-heavy, rgba(253, 251, 247, .94)); color: var(--ink, #1a1814);
+  backdrop-filter: blur(24px) saturate(1.4); -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .5) inset, 0 18px 44px rgba(43, 35, 23, .16), 0 2px 8px rgba(43, 35, 23, .08);
+  transform-origin: top center;
+  animation: vselect-in 220ms cubic-bezier(.2, 1.1, .3, 1) both;
+  scrollbar-width: thin;
+}
+.vselect-panel.up { transform: translateY(-100%); transform-origin: bottom center; animation-name: vselect-in-up; }
+@keyframes vselect-in { from { opacity: 0; transform: translateY(-4px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes vselect-in-up { from { opacity: 0; transform: translateY(calc(-100% + 4px)) scale(.97); } to { opacity: 1; transform: translateY(-100%); } }
+:root[data-theme="dark"] .vselect-panel { box-shadow: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 22px 54px rgba(0, 0, 0, .55), 0 2px 8px rgba(0, 0, 0, .3); }
+
+.vselect-option {
+  display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 10px 0 12px; border-radius: 9px;
+  font: 400 13.5px/20px var(--font); cursor: pointer; transition: background-color 90ms ease;
+}
+.vselect-option .vselect-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vselect-option.active { background: rgba(var(--ink-rgb, 26, 24, 20), .07); }
+.vselect-option.selected { font-weight: 550; }
+.vselect-option.disabled { opacity: .4; cursor: default; }
+.vselect-check { flex: none; width: 15px; height: 15px; fill: none; stroke: var(--gold, #9a7424); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transform: scale(.6); transition: opacity 120ms ease, transform 160ms cubic-bezier(.2, 1.3, .3, 1); }
+.vselect-option.selected .vselect-check { opacity: 1; transform: none; }
+.vselect-group { padding: 8px 12px 4px; font: 500 11px/16px var(--font); letter-spacing: .04em; text-transform: uppercase; color: var(--faint, #a49b8f); }
+
+@media (prefers-reduced-motion: reduce) { .vselect-panel, .vselect-panel.up { animation: none; } .vselect-check, .vselect-chevron { transition: none; } }

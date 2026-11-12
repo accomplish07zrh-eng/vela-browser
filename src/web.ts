@@ -246,6 +246,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
         activity,
         // Plugins are code on this computer; a remotely coordinated runtime offers none.
         ...(opts.paths && !opts.remote ? { plugins: () => scanPlugins(pluginsDirectory(opts.paths!.root), opts.appConfig?.read().disabledPlugins ?? []).specs } : {}),
+        // The AI's pointer in a Chromium browser, drawn over that browser's card.
+        pointer: (profileId, pointer) => workbenchHub?.pointer(profileId, pointer),
         log,
       })
     : undefined;

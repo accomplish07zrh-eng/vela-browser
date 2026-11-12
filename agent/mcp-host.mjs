@@ -215,8 +215,47 @@ const ALIAS_TOOLS = [
       },
       additionalProperties: false,
     },
-  }
+  },
+  {
+    name: "browser_batch",
+    description: "Run several browser actions in one call, in order, each exactly as if called on its own (human-like input included). For example: type into two fields, then click the button. Stops at the first step that fails and says which one. Returns the last step's result, with its page snapshot, after a one-line summary of the steps before it. Prefer this to calling actions one at a time.",
+    annotations: toolAnnotations("Several browser actions in one call", { destructive: true, openWorld: true }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        profileId: PROFILE_ID,
+        steps: {
+          type: "array", minItems: 1, maxItems: 25,
+          description: "Each step names a browser tool listed by this server and its arguments, as you would call it alone.",
+          items: {
+            type: "object",
+            properties: { tool: { type: "string" }, arguments: { type: "object" } },
+            required: ["tool"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["steps"],
+      additionalProperties: false,
+    },
+  },
 ];
+
+/** Tools whose result already carries the updated page snapshot. */
+const SNAPSHOT_RETURNING = /^browser_(click|type|fill_form|select_option|press_key|hover|drag|navigate|navigate_back|handle_dialog|file_upload|wait_for|tabs)$/;
+/** Tools a batch never runs: lifecycle belongs to Vela Browser, and a batch does not nest. */
+const NOT_IN_BATCH = new Set(["browser_batch", "browser_close", "browser_install", "aliasmode_browser_close"]);
+
+/** Tells the AI where the extra calls go, so it does not take a snapshot it already has. */
+function guideTool(tool) {
+  if (tool.name === "browser_snapshot") {
+    return { ...tool, description: `${tool.description} Actions such as browser_click and browser_type already return the updated snapshot: take one only to look before the first action.` };
+  }
+  if (SNAPSHOT_RETURNING.test(tool.name)) {
+    return { ...tool, description: `${tool.description} Returns the updated page snapshot, so no separate browser_snapshot is needed. Several actions in a row go faster as one browser_batch call.` };
+  }
+  return tool;
+}
 
 function toolResult(value) {
   return {
@@ -296,6 +335,29 @@ export async function createVelaBrowserMcp(options = {}) {
     },
   });
 
+  /**
+   * Sends the humanizer's pointer to Vela Browser, which draws it over this browser's card on the
+   * workbench (never in the page). Moves go at most about 30 a second; presses always go. An app
+   * that does not know the method is not asked again.
+   */
+  let pointerSupported = true;
+  const pointerReporter = (profileId) => {
+    let last = 0, pending = null, timer = null;
+    const send = (event) => {
+      if (!pointerSupported) return;
+      runtime.call("workbench.pointer", { profileId, x: Math.round(event.x * 10) / 10, y: Math.round(event.y * 10) / 10, phase: event.phase })
+        .catch((error) => { if (/unknown|unsupported|invalid_request/i.test(String(error?.message ?? error))) pointerSupported = false; });
+    };
+    return (event) => {
+      if (!pointerSupported) return;
+      if (event.phase !== "move") { clearTimeout(timer); timer = null; pending = null; last = Date.now(); send(event); return; }
+      const wait = 33 - (Date.now() - last);
+      if (wait <= 0) { last = Date.now(); send(event); return; }
+      pending = event;
+      timer ??= setTimeout(() => { timer = null; if (pending) { last = Date.now(); send(pending); pending = null; } }, wait);
+    };
+  };
+
   const detachSession = async (profileId) => {
     const session = sessions.get(profileId);
     if (!session) return;
@@ -327,6 +389,7 @@ export async function createVelaBrowserMcp(options = {}) {
       context: proxy.context,
       profileId,
       callOfficial: (tool, toolArgs) => proxy.callTool(tool, toolArgs),
+      onPointer: pointerReporter(profileId),
     }) : undefined;
     humanizer?.configure({ ...humanize, pasteOver: humanize.pasteOver ?? null });
     const session = { engine, ws: status.ws, proxy, humanizer, lane: Promise.resolve() };
@@ -379,7 +442,7 @@ export async function createVelaBrowserMcp(options = {}) {
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...ALIAS_TOOLS, ...toolsFor(sessions.get(selectedProfileId)).map(withTarget)],
+    tools: [...ALIAS_TOOLS, ...toolsFor(sessions.get(selectedProfileId)).map(withTarget).map(guideTool)],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -458,12 +521,44 @@ export async function createVelaBrowserMcp(options = {}) {
       const target = typeof requested === "string" && requested ? requested : selectedProfileId;
       if (!target) throw new Error("select an open Vela Browser browser first");
       const session = await sessionFor(target);
-      if (!toolsFor(session).some((tool) => tool.name === name)) {
-        throw new Error(`unknown Vela Browser tool: ${name}`);
+      const known = (tool) => toolsFor(session).some((entry) => entry.name === tool);
+      const actOne = (tool, toolArguments) => session.engine !== "chromium"
+        ? runtime.call(`${session.engine}.tools.call`, { profileId: target, name: tool, arguments: toolArguments, humanize })
+        : session.humanizer ? session.humanizer.call(tool, toolArguments) : session.proxy.callTool(tool, toolArguments);
+      let act;
+      if (name === "browser_batch") {
+        const steps = Array.isArray(toolArgs.steps) ? toolArgs.steps : [];
+        if (!steps.length || steps.length > 25) throw new Error("browser_batch takes 1 to 25 steps");
+        for (const [index, step] of steps.entries()) {
+          const tool = step?.tool;
+          if (typeof tool !== "string" || NOT_IN_BATCH.has(tool) || tool.startsWith("aliasmode_") || !known(tool)) {
+            throw new Error(`step ${index + 1}: ${typeof tool === "string" ? tool : "a step"} cannot run in a batch`);
+          }
+          if (step.arguments !== undefined && (typeof step.arguments !== "object" || step.arguments === null || Array.isArray(step.arguments))) {
+            throw new Error(`step ${index + 1}: arguments must be an object`);
+          }
+        }
+        // The whole batch holds this browser's lane, so no other call lands between its steps.
+        act = async () => {
+          const done = [];
+          let result;
+          for (const [index, step] of steps.entries()) {
+            const { profileId: _ignored, ...stepArguments } = step.arguments ?? {};
+            try { result = await actOne(step.tool, stepArguments); }
+            catch (error) { result = errorResult(error); }
+            if (result?.isError) {
+              const reason = (result.content ?? []).map((part) => part.text).filter(Boolean).join(" ") || "failed";
+              return { isError: true, content: [{ type: "text", text: `${done.length ? `Done: ${done.join(", ")}. ` : ""}Step ${index + 1} (${step.tool}) failed: ${reason}` }] };
+            }
+            done.push(`${index + 1}. ${step.tool}`);
+          }
+          const summary = steps.length > 1 ? [{ type: "text", text: `Ran ${steps.length} steps: ${done.join(", ")}. The last step's result follows.` }] : [];
+          return { ...result, content: [...summary, ...(result?.content ?? [])] };
+        };
+      } else {
+        if (!known(name)) throw new Error(`unknown Vela Browser tool: ${name}`);
+        act = () => actOne(name, toolArgs);
       }
-      const act = () => session.engine !== "chromium"
-        ? runtime.call(`${session.engine}.tools.call`, { profileId: target, name, arguments: toolArgs, humanize })
-        : session.humanizer ? session.humanizer.call(name, toolArgs) : session.proxy.callTool(name, toolArgs);
       const run = session.lane.then(act);
       session.lane = run.then(() => undefined, () => undefined);
       return await run;

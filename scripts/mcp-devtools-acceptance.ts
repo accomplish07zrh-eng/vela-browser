@@ -173,6 +173,11 @@ try {
     assert.ok(targets.every(Boolean), "existing pages remain attached");
     const a = { profileId: profiles[0]!.id, pageId: targets[0].pageId }, b = { profileId: profiles[1]!.id, pageId: targets[1].pageId };
     check(`${engine}: plugin tools are listed with honest write hints`, tools.some(tool => tool.name === "plugin_vela_check_inspect" && tool.annotations?.destructiveHint === true));
+    const batch: any = await client.callTool({ name: "browser_batch", arguments: { profileId: b.profileId, steps: [
+      { tool: "browser_navigate", arguments: { url: `${origin}/` } },
+      { tool: "browser_snapshot" },
+    ] } });
+    check(`${engine}: several actions run as one browser_batch call`, !batch.isError && String(batch.content?.[0]?.text).startsWith("Ran 2 steps"));
     const pluginHits = proxyHits.length;
     const [pluginA, pluginB] = await Promise.all([call("plugin_vela_check_inspect", { profileId: a.profileId, marker: "a" }), call("plugin_vela_check_inspect", { profileId: b.profileId, marker: "b" })]);
     const pluginAgain = await call("plugin_vela_check_inspect", { profileId: a.profileId, marker: "a" });

@@ -18,6 +18,9 @@ export class ViewportClient {
   private frozen = false;
   private following = false;
   private presentation = "";
+  private width?: number;
+  /** The AI's pointer goes straight to whoever draws it, outside React, many times a second. */
+  readonly pointerListeners = new Set<(pointer: { x: number; y: number; phase: "move" | "down" | "up" }) => void>();
   private state: ViewportState = { status: "connecting", generation: "", targetId: "", tabs: [] };
   constructor(private profileId: string, private update: (state: ViewportState) => void) { void this.connect(); }
   private publish(change: Partial<ViewportState>): void { if (!this.disposed) { this.state = { ...this.state, ...change }; this.update(this.state); } }
@@ -39,7 +42,7 @@ export class ViewportClient {
         if (message.profileId !== this.profileId) return;
         if (message.type === "ready") {
           this.publish({ status: this.visible ? "live" : "paused", generation: message.generation, targetId: message.targetId, tabs: message.tabs, viewport: message.viewport, error: undefined });
-          this.presentation = ""; this.activity(this.tier, this.frozen, this.following); return;
+          this.presentation = ""; this.activity(this.tier, this.frozen, this.following, this.width); return;
         }
         if (message.type === "error" && !this.state.generation) { this.publish({ status: "error", error: message.error }); return; }
         if (message.generation !== this.state.generation) return;
@@ -48,6 +51,9 @@ export class ViewportClient {
         if (message.type === "error") this.publish({ status: "error", error: message.error });
         if (message.type === "ended") { this.publish({ status: "ended", error: "This environment has stopped or restarted." }); socket.close(); }
         if (message.type === "frame-error" && !this.state.frame) this.publish({ error: message.error });
+        if (message.type === "pointer" && (!message.targetId || message.targetId === this.state.targetId)) {
+          for (const listener of this.pointerListeners) listener({ x: message.x, y: message.y, phase: message.phase });
+        }
       };
       socket.onerror = () => this.publish({ status: "error", error: "Browser connection lost. Reconnect to try again." });
       socket.onclose = () => { if (this.state.status !== "ended") this.publish({ status: "error", error: "Browser connection lost. Reconnect to try again." }); };
@@ -62,13 +68,16 @@ export class ViewportClient {
   visibility(visible: boolean, focused: boolean): void {
     this.activity(visible ? focused ? "interactive" : "visible" : "hidden");
   }
-  activity(tier: WorkbenchRefreshTier, frozen = false, following = false): void {
+  /** width: the card's width in device pixels, rounded so small resizes send nothing. */
+  activity(tier: WorkbenchRefreshTier, frozen = false, following = false, width?: number): void {
     this.tier = tier; this.frozen = frozen; this.following = following;
     this.visible = tier !== "hidden"; this.focused = tier === "interactive";
-    const signature = JSON.stringify([tier, frozen, following]);
+    const step = width && width > 0 ? Math.ceil(width / 64) * 64 : undefined;
+    if (step !== undefined) this.width = step;
+    const signature = JSON.stringify([tier, frozen, following, this.width]);
     if (signature !== this.presentation && this.state.generation) {
       this.presentation = signature;
-      this.command("visibility", { visible: this.visible, focused: this.focused, tier, frozen, following });
+      this.command("visibility", { visible: this.visible, focused: this.focused, tier, frozen, following, ...(this.width ? { width: this.width } : {}) });
     }
     if (!this.visible && this.state.status === "live") this.publish({ status: "paused" });
   }
