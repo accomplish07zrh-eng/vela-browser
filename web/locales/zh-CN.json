@@ -846,5 +846,8 @@
   "Reads only": "只读",
   "Can change things": "会修改",
   "Plugins folder": "插件文件夹",
-  "Changes reach the AI the next time it selects a browser.": "改动在 AI 下次选中浏览器时生效。"
+  "Changes reach the AI the next time it selects a browser.": "改动在 AI 下次选中浏览器时生效。",
+  "Minimize": "最小化",
+  "Maximize": "最大化",
+  "Restore": "还原"
 }

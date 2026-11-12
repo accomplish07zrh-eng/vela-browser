@@ -15,6 +15,7 @@ import { batchProfileNames, matchesProfileFilters, runProfileCreation, type Batc
 import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
+import { TitleBar, usesOwnTitleBar } from "./titlebar.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
 import { localeTimezoneMismatch } from "../src/profile-locale.ts";
 import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
@@ -4307,6 +4308,7 @@ rootElement.addEventListener("click", (event) => {
 const root = createRoot(rootElement);
 root.render(
   <I18nProvider>
+    {usesOwnTitleBar() && <TitleBar />}
     <App />
   </I18nProvider>
 );
