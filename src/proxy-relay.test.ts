@@ -3,6 +3,8 @@ import net from "node:net";
 import { startProxyRelay } from "./proxy-relay.ts";
 
 const EXPECTED_AUTH = "Basic " + Buffer.from("puser:ppass").toString("base64");
+/** A site that declines the WebSocket upgrade and would keep the connection open. */
+const REFUSED_UPGRADE = "HTTP/1.1 403 Forbidden\r\nContent-Length: 2\r\nConnection: keep-alive\r\nKeep-Alive: timeout=30\r\n\r\nno";
 
 /** A fake upstream proxy that requires Proxy-Authorization. Records the auth it saw. CONNECT with the
  *  right auth → 200 then echo; plain HTTP with the right auth → a fixed 200 body; wrong/no auth → 407. */
@@ -24,7 +26,10 @@ function fakeUpstream(requireAuth = true): Promise<{ port: number; close(): void
       lastAuth = authLine ? authLine.split(/:\s*/).slice(1).join(": ") : null;
       const ok = !requireAuth || lastAuth === EXPECTED_AUTH;
       if (!ok) { sock.end("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"); return; }
-      if (/^upgrade:\s*websocket/im.test(head) && /^connection:\s*upgrade/im.test(head)) {
+      if (/\/refuse\s/.test(firstLine)) {
+        sock.write(REFUSED_UPGRADE);
+        sock.on("data", data => sock.write(data));
+      } else if (/^upgrade:\s*websocket/im.test(head) && /^connection:\s*upgrade/im.test(head)) {
         sock.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
         sock.on("data", data => sock.write(data));
       } else if (/^CONNECT\s/i.test(firstLine)) {
@@ -111,6 +116,7 @@ function fakeSocksUpstream(requireAuth = true): Promise<{
           if (end < 0) return;
           const head = consume(end + 4).toString("latin1");
           httpHeads.push(head);
+          if (/\/refuse\s/.test(head.split("\r\n")[0] ?? "")) { sock.write(REFUSED_UPGRADE); continue; }
           if (/^upgrade:\s*websocket/im.test(head) && /^connection:\s*upgrade/im.test(head)) {
             sock.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
           } else sock.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi");
@@ -220,6 +226,34 @@ test.each(["http", "socks5"] as const)("%s relay preserves authenticated WebSock
       expect(upstream.httpHeads()[0]).toContain("Connection: Upgrade");
       expect(upstream.httpHeads()[0]).not.toContain("Proxy-Authorization");
     }
+  } finally { client.destroy(); relay.close(); upstream.close(); }
+});
+
+test.each(["http", "socks5"] as const)("%s relay closes a refused upgrade so the connection is never reused", async (type) => {
+  const upstream = type === "http" ? await fakeUpstream() : await fakeSocksUpstream();
+  const relay = await startProxyRelay({ type, host: "127.0.0.1", port: upstream.port, user: "puser", pass: "ppass" });
+  const client = net.connect(relay.port, "127.0.0.1");
+  try {
+    const text = await new Promise<string>((resolve, reject) => {
+      let text = "", followed = false;
+      client.on("error", reject);
+      client.on("connect", () => client.write("GET http://socket.test:8080/refuse HTTP/1.1\r\nHost: socket.test:8080\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"));
+      client.on("data", chunk => {
+        text += chunk.toString();
+        if (!followed && text.endsWith("no")) {
+          followed = true;
+          // A browser that ignored Connection: close and reused the socket for another site.
+          client.write("GET http://other.test/ HTTP/1.1\r\nHost: other.test\r\n\r\n");
+          setTimeout(() => resolve(text), 300);
+        }
+      });
+      setTimeout(() => reject(new Error("refused upgrade timed out")), 3000);
+    });
+    expect(text.startsWith("HTTP/1.1 403 Forbidden\r\n")).toBe(true);
+    expect(text).toContain("Connection: close");
+    expect(text).not.toMatch(/keep-alive/i);
+    expect(text.endsWith("\r\n\r\nno")).toBe(true);
+    if (!("lastHead" in upstream)) expect(upstream.httpHeads()).toHaveLength(1);
   } finally { client.destroy(); relay.close(); upstream.close(); }
 });
 

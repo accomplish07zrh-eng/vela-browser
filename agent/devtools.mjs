@@ -37,7 +37,10 @@ export const DEVTOOLS_TOOLS = [
     styles: { type: "array", items: string }, offset: { type: "integer", minimum: 0, default: 0 },
     characters: { type: "integer", minimum: 1, maximum: 1048576, default: 65536 },
   }, ["selector"]),
-  tool("browser_devtools_storage", "Read this profile's cookies and the selected page/frame's localStorage, sessionStorage, IndexedDB database names and Cache Storage keys. Opens no helper pages and changes no storage, permissions or browser identity.", { pageId, frameId: string }),
+  tool("browser_devtools_storage", "Read the selected page/frame's cookies, localStorage, sessionStorage, IndexedDB database names and Cache Storage keys. Cookies default to those that page or frame would send, like the DevTools Application panel; pass urls for other sites or allCookies for every cookie in the profile. Opens no helper pages and changes no storage, permissions or browser identity.", {
+    pageId, frameId: string, urls: { type: "array", items: string, description: "Return the cookies these URLs would send instead of the selected page's." },
+    allCookies: { type: "boolean", default: false, description: "Return every cookie in this profile, across all sites." },
+  }),
   tool("browser_devtools_storage_edit", "Write, remove or clear cookies, localStorage or sessionStorage in the selected existing profile. Cookie writes accept Playwright cookie objects (url or domain/path, httpOnly, secure, sameSite, expires); name/domain/path filter cookie removal. Page storage writes take string-valued entries, removals take keys. JavaScript evaluation can edit IndexedDB and Cache Storage.", {
     pageId, frameId: string, storage: { type: "string", enum: ["cookies", "localStorage", "sessionStorage"] },
     action: { type: "string", enum: ["set", "remove", "clear"] },
@@ -92,7 +95,9 @@ function evaluateSource(target, expression, argument, mainWorld = false) {
   // browser needs no eval(), injected helper, or CSP change.
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   let compiled;
-  try { compiled = new AsyncFunction("argument", `const value = (${expression}\n); return typeof value === 'function' ? value(argument) : value;`); }
+  // A single expression typed the way the Console accepts it, `document.title;`, still returns its value.
+  const single = expression.trim().replace(/;+$/, "");
+  try { compiled = new AsyncFunction("argument", `const value = (${single}\n); return typeof value === 'function' ? value(argument) : value;`); }
   catch { compiled = new AsyncFunction("argument", expression); }
   return evaluate(target, compiled, argument, mainWorld);
 }
@@ -182,8 +187,18 @@ export class BrowserDevtools {
     }
     const size = Buffer.byteLength(JSON.stringify(entry));
     this.events.push({ entry, size }); this.eventBytes += size;
+    // A busy socket can send thousands of frames a minute. Once frames hold half the history,
+    // their oldest leave first, so they never push out the console errors and exceptions a
+    // developer came to read; below that share, the oldest record of any kind leaves.
     while (this.events.length > this.maxEvents || this.eventBytes > this.maxEventBytes) {
-      const removed = this.events.shift(); this.eventBytes -= removed.size; this.droppedEvents++;
+      let frames = 0, frameBytes = 0, oldestFrame = -1;
+      this.events.forEach((e, index) => {
+        if (e.entry.kind !== "websocket-sent" && e.entry.kind !== "websocket-received") return;
+        frames++; frameBytes += e.size; if (oldestFrame < 0) oldestFrame = index;
+      });
+      const crowding = oldestFrame >= 0 && (frames * 2 >= this.events.length || frameBytes * 2 >= this.eventBytes);
+      const [removed] = this.events.splice(crowding ? oldestFrame : 0, 1);
+      this.eventBytes -= removed.size; this.droppedEvents++;
     }
     return entry;
   }
@@ -219,8 +234,15 @@ export class BrowserDevtools {
       const socketId = `${this.id}-socket-${++this.counters.socket}`;
       this.log("websocket-open", page, { socketId, url: socket.url() });
       for (const [event, kind] of [["framesent", "websocket-sent"], ["framereceived", "websocket-received"]]) this.listen(socket, event, frame => {
-        const buffer = Buffer.isBuffer(frame.payload) ? frame.payload : Buffer.from(String(frame.payload));
-        this.log(kind, page, { socketId, url: socket.url(), binary: Buffer.isBuffer(frame.payload), ...chunk(buffer, {}, Buffer.isBuffer(frame.payload) ? "" : "text/plain"), truncated: buffer.length > 65536 });
+        if (Buffer.isBuffer(frame.payload)) {
+          this.log(kind, page, { socketId, url: socket.url(), binary: true, ...chunk(frame.payload, {}), truncated: frame.payload.length > 65536 });
+          return;
+        }
+        // A text frame arrives as a string. Cutting it by characters keeps it exact, so it needs
+        // no base64 copy; that halves what each frame costs in the shared history.
+        const text = String(frame.payload), kept = text.slice(0, 65536), returnedBytes = Buffer.byteLength(kept), totalBytes = Buffer.byteLength(text);
+        this.log(kind, page, { socketId, url: socket.url(), binary: false, encoding: "text", text: kept, totalBytes, totalCharacters: text.length,
+          returnedBytes, hasMore: kept.length < text.length, truncated: kept.length < text.length });
       });
       this.listen(socket, "socketerror", text => this.log("websocket-error", page, { socketId, text }));
       this.listen(socket, "close", () => { this.log("websocket-close", page, { socketId }); this.unlisten(socket); });
@@ -387,7 +409,15 @@ export class BrowserDevtools {
           sessionStorage: read(() => Object.fromEntries(Object.entries(sessionStorage))),
           indexedDB: await readAsync(() => indexedDB.databases()), caches: await readAsync(() => caches.keys()) };
       }, undefined, this.mainWorld);
-      return result({ pageId: this.pageIds.get(page), frameId: this.frameId(frame, page), ...value, cookies: await this.context.cookies() });
+      // Like the DevTools Application panel, cookies default to those the selected page or frame
+      // would send. A whole profile's cookies cover every account signed in there, so they are
+      // returned only when asked for by name.
+      if (args.urls !== undefined && (!Array.isArray(args.urls) || args.urls.some(url => typeof url !== "string"))) throw new Error("urls must be an array of URLs");
+      const frameUrl = frame.url();
+      const scope = args.allCookies === true ? "profile" : args.urls?.length ? "urls" : /^https?:/i.test(frameUrl) ? "frame" : "profile";
+      const cookies = scope === "profile" ? await this.context.cookies() : await this.context.cookies(scope === "urls" ? args.urls : [frameUrl]);
+      return result({ pageId: this.pageIds.get(page), frameId: this.frameId(frame, page), ...value, cookieScope: scope,
+        ...(scope === "frame" ? { cookieUrl: frameUrl } : {}), cookies });
     }
     if (name === "browser_devtools_storage_edit") {
       if (!["set", "remove", "clear"].includes(args.action)) throw new Error("Unknown storage action");
