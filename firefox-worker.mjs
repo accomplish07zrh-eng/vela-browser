@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs";
 import { createHumanizer } from "./agent/humanize.mjs";
 import { BrowserDevtools, DEVTOOLS_TOOLS, DEVTOOLS_TOOL_NAMES } from "./agent/devtools.mjs";
+import { PluginHost, isPluginTool, pluginTools } from "./agent/plugins.mjs";
 import { MAX_BYTES, VERSION, operatePersistentContext } from "./playwright-worker.mjs";
 import { FirefoxWorkbench } from "./workbench-firefox.mjs";
 
@@ -274,6 +275,7 @@ async function run() {
   const hasPages = trackFirefoxPages(context);
   const workbench = new FirefoxWorkbench(context);
   const devtools = new BrowserDevtools(context, { engine: "firefox" });
+  const plugins = new PluginHost({ context, engine: "firefox", profileId: input.profileId, devtools });
   let humanizer;
   let official;
   let closed = false;
@@ -407,10 +409,11 @@ async function run() {
     }
     if (name === "mcp-list") {
       const bridge = await initializeOfficial();
-      return [...bridge.tools.filter((tool) => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS];
+      return [...bridge.tools.filter((tool) => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS, ...pluginTools(payload.plugins)];
     }
     if (name === "mcp-call") {
       if (typeof payload.name !== "string" || /pdf/i.test(payload.name)) throw typed("invalid_request");
+      if (isPluginTool(payload.name)) return plugins.call(payload.plugins, payload.name, payload.arguments ?? {});
       const bridge = await initializeOfficial();
       if (DEVTOOLS_TOOL_NAMES.has(payload.name)) return devtools.call(payload.name, payload.arguments ?? {}).catch(error => ({ isError: true, content: [{ type: "text", text: error.message }] }));
       if (!bridge.tools.some((tool) => tool.name === payload.name && !/pdf/i.test(tool.name))) throw typed("invalid_request");

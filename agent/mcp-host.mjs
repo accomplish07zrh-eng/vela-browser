@@ -10,6 +10,7 @@ import {
 import { discoverRuntime } from "./runtime-client.mjs";
 import { PlaywrightToolProxy } from "./playwright-proxy.mjs";
 import { createHumanizer } from "./humanize.mjs";
+import { pluginTools } from "./plugins.mjs";
 
 const VERSION = process.env.ALIASMODE_APP_VERSION || "0.1.0-beta.32";
 const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
@@ -263,7 +264,17 @@ export async function createVelaBrowserMcp(options = {}) {
   const newProxy = options.createPlaywright ?? (() => options.playwright ?? new PlaywrightToolProxy(VERSION));
   let closing;
 
-  const toolsFor = (session) => session && session.engine !== "chromium" ? session.tools : playwright.listTools();
+  // Plugins are read by Vela Browser; an older app without them simply lists none.
+  const enabledPlugins = () => runtime.call("plugins.list", {})
+    .then(result => Array.isArray(result?.plugins) ? result.plugins : [], () => []);
+  const toolsFor = (session) => session && session.engine !== "chromium"
+    ? session.tools : [...playwright.listTools(), ...pluginTools(session?.proxy?.pluginSpecs ?? [])];
+  /** Picks up plugins added, changed or switched off since this browser was attached. */
+  const refreshPlugins = async (profileId, session) => {
+    if (session.engine === "chromium") { if (session.proxy) session.proxy.pluginSpecs = await enabledPlugins(); return; }
+    const result = await runtime.call(`${session.engine}.tools.list`, { profileId }).catch(() => undefined);
+    if (Array.isArray(result?.tools)) session.tools = firefoxTools(result.tools);
+  };
   let advertisedTools = JSON.stringify(toolsFor(undefined));
   const publishTools = async () => {
     const current = JSON.stringify(toolsFor(sessions.get(selectedProfileId)));
@@ -310,7 +321,8 @@ export async function createVelaBrowserMcp(options = {}) {
     if (proxy === playwright) {
       for (const [id, other] of [...sessions]) if (other.proxy === playwright) await detachSession(id);
     }
-    await proxy.attach(status.ws);
+    await proxy.attach(status.ws, { profileId });
+    proxy.pluginSpecs = await enabledPlugins();
     const humanizer = proxy.context ? createHumanizer({
       context: proxy.context,
       profileId,
@@ -326,7 +338,10 @@ export async function createVelaBrowserMcp(options = {}) {
     const status = knownStatus ?? await runtime.call("browser.status", { profileId });
     if (!status.running) throw new Error("open this Vela Browser profile before selecting it");
     selectedProfileId = undefined;
+    const previous = sessions.get(profileId);
     const session = await attachSession(profileId, status);
+    // Selecting a browser again is how plugin changes reach a browser that stayed attached.
+    if (session === previous) await refreshPlugins(profileId, session);
     selectedProfileId = profileId;
     if (session.engine !== "chromium") return safeBrowserResult({ ...status, selected: true });
     return {

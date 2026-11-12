@@ -132,6 +132,32 @@ export interface AppModeConfig {
 
 export interface CoolingSettings { enabled: boolean; threshold: number; idleMinutes: number }
 
+export interface PluginInfo {
+  id: string;
+  folder: string;
+  enabled: boolean;
+  name?: string;
+  version?: string;
+  description?: string;
+  tools?: { name: string; toolName: string; description: string; readOnly: boolean }[];
+  /** Why the plugin cannot load, when it cannot. */
+  error?: string;
+}
+export interface PluginListing { directory: string; plugins: PluginInfo[] }
+
+async function pluginRequest(path: string, body?: Record<string, unknown>): Promise<PluginListing> {
+  const response = await fetch(`/ui/api/plugins${path}`, body === undefined ? { cache: "no-store" } : {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  const result = await response.json().catch(() => ({})) as { ok?: boolean; error?: string } & Partial<PluginListing>;
+  if (!response.ok || !result.ok) throw new Error(result.error || "Plugins could not be loaded");
+  return { directory: result.directory ?? "", plugins: result.plugins ?? [] };
+}
+export const fetchPlugins = () => pluginRequest("");
+export const setPluginEnabled = (id: string, enabled: boolean) => pluginRequest("/state", { id, enabled });
+export const addExamplePlugin = () => pluginRequest("/example", {});
+export const openPluginsFolder = () => pluginRequest("/open", {}).then(() => undefined);
+
 export async function saveCooling(settings: Partial<CoolingSettings>): Promise<CoolingSettings> {
   const response = await fetch("/ui/api/desktop/cooling", {
     method: "POST",

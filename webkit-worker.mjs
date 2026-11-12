@@ -8,6 +8,7 @@ import { FirefoxWorkbench as ContextWorkbench } from "./workbench-firefox.mjs";
 import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs";
 import { createHumanizer } from "./agent/humanize.mjs";
 import { BrowserDevtools, DEVTOOLS_TOOLS, DEVTOOLS_TOOL_NAMES } from "./agent/devtools.mjs";
+import { PluginHost, isPluginTool, pluginTools } from "./agent/plugins.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const error = (code) => Object.assign(new Error(`WebKit owner ${code.replaceAll("_", " ")}`), { code });
@@ -54,6 +55,7 @@ async function run() {
   if (!Number.isSafeInteger(browserPid) || browserPid <= 0) { await context.close(); throw error("runtime_unavailable"); }
   const workbench = new ContextWorkbench(context);
   const devtools = new BrowserDevtools(context);
+  const plugins = new PluginHost({ context, engine: "webkit", profileId: input.profileId, devtools });
   let official, humanizer;
   const closeOfficial = async () => {
     const current = official; official = undefined;
@@ -127,9 +129,10 @@ async function run() {
       ...payload.captureSeed, origins: [...new Set([...(payload.captureSeed?.origins ?? []), ...(payload.captureSeed?.openTabsOnly ? [] : origins)])],
     } };
     if (name === "session-restore") storageCache.clear();
-    if (name === "mcp-list") return [...(await initializeOfficial()).tools.filter(tool => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS];
+    if (name === "mcp-list") return [...(await initializeOfficial()).tools.filter(tool => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS, ...pluginTools(payload.plugins)];
     if (name === "mcp-call") {
       if (typeof payload.name !== "string") throw error("invalid_request");
+      if (isPluginTool(payload.name)) return plugins.call(payload.plugins, payload.name, payload.arguments ?? {});
       if (DEVTOOLS_TOOL_NAMES.has(payload.name)) return devtools.call(payload.name, payload.arguments ?? {}).catch(caught => ({ isError: true, content: [{ type: "text", text: caught.message }] }));
       const bridge = await initializeOfficial();
       if (!bridge.tools.some(tool => tool.name === payload.name && !/pdf/i.test(tool.name))) throw error("invalid_request");

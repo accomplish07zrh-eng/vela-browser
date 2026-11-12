@@ -415,4 +415,35 @@
 .app .wall .viewport-cooled-actions { display: flex; gap: 6px; margin-top: 8px; }
 .app .wall .viewport-dot.cooled { background: transparent; box-shadow: inset 0 0 0 1.5px var(--status-idle); }
 .app .main .cooling-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; max-width: 520px; }
+/* Plugins: one row per plugin folder, its tools listed under it by the name the AI sees. */
+.app .main .plugin-actions, .app .main .plugins-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.app .main .plugins-empty { flex-direction: column; align-items: flex-start; gap: 10px; }
+.app .main .plugin-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line-soft); }
+.app .main .plugin-list > .plugin { display: flex; flex-direction: column; gap: 6px; padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
+/* A switched-off plugin recedes, but its switch stays legible so it can be turned back on. */
+.app .main .plugin-list > .plugin.off :is(.plugin-head strong, .plugin-version, .plugin-description, .plugin-tools) { opacity: .55; }
+.app .main .plugin-head { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.app .main .plugin-head strong { color: var(--ink); font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.app .main .plugin-version { color: var(--faint); font-size: 11.5px; }
+/* The same sliding switch the Proxies page uses. */
+.app .main .plugin-switch { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; align-self: center; color: var(--muted); font-size: 12px; cursor: pointer; }
+.app .main .plugin-switch input[type=checkbox] {
+  position: relative; flex-shrink: 0; width: 36px; height: 20px; margin: 0; border-radius: var(--r-pill, 999px); background: var(--line-strong);
+  -webkit-appearance: none; appearance: none; cursor: pointer; transition: background .18s var(--ease, ease);
+}
+.app .main .plugin-switch input[type=checkbox]::before {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .2); transition: transform .18s cubic-bezier(.22, 1.3, .36, 1), background .18s var(--ease, ease);
+}
+.app .main .plugin-switch input[type=checkbox]:checked { background: var(--accent-fill); }
+.app .main .plugin-switch input[type=checkbox]:checked::before { transform: translateX(16px); background: var(--on-fill); }
+.app .main .plugin-switch input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.app .main .plugin-switch input[type=checkbox]:disabled { cursor: default; opacity: .6; }
+.app .main .plugin-description { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.app .main .plugin-error { margin: 0; padding-left: 10px; border-left: 2px solid var(--ink); color: var(--ink); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.app .main .plugin-tools { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 0; padding: 0; list-style: none; }
+.app .main .plugin-tools li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.app .main .plugin-tools code { font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; color: var(--ink); overflow-wrap: anywhere; }
+.app .main .plugin-tools .tag { padding: 1px 7px; border-radius: 999px; background: var(--surface-sunken); color: var(--muted); font-size: 11px; }
+.app .main .plugin-tools .tag.warn { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); color: var(--ink); }
 .app .wall .workbench-ring-dot[data-status="cooled"] span { background: transparent; box-shadow: inset 0 0 0 1px var(--status-idle); }

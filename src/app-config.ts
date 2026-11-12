@@ -16,6 +16,8 @@ export interface AppConfig {
   hideFromTaskbar?: boolean;
   /** Cooling of idle browsers when memory runs short. Absent means the defaults. */
   cooling?: CoolingSettings;
+  /** Plugins in the plugins folder that the user switched off. Every other plugin there is on. */
+  disabledPlugins?: string[];
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -47,6 +49,8 @@ export function parseAppConfig(value: unknown): AppConfig {
     ...(raw.servicesHidden === true ? { servicesHidden: true } : {}),
     ...(raw.hideFromTaskbar === true ? { hideFromTaskbar: true } : {}),
     ...(raw.cooling !== undefined ? { cooling: normalizeCoolingSettings(raw.cooling) } : {}),
+    ...(Array.isArray(raw.disabledPlugins) && raw.disabledPlugins.some(id => typeof id === "string")
+      ? { disabledPlugins: [...new Set(raw.disabledPlugins.filter((id): id is string => typeof id === "string" && id.length <= 64))].sort() } : {}),
   };
 }
 

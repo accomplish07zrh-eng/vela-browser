@@ -94,6 +94,7 @@ function workspace(): string {
     "mcp-host.mjs",
     "playwright-proxy.mjs",
     "devtools.mjs",
+    "plugins.mjs",
     "humanize.mjs",
     "playwright-runner.mjs",
     "script-runner.mjs",

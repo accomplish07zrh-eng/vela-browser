@@ -836,5 +836,15 @@
   "Start cooling at memory use": "内存占用达到多少时开始冷却",
   "Only browsers left alone for": "只冷却闲置超过",
   "{count} min": "{count} 分钟",
-  "Memory in use now: {value}%": "当前内存占用：{value}%"
+  "Memory in use now: {value}%": "当前内存占用：{value}%",
+  "Plugins": "插件",
+  "A plugin adds tools the AI can call. It works inside the environment the AI has selected, with that environment's own sign-ins, proxy and fingerprint, and cannot start or close a browser. Plugins are code that runs on this computer, so add only ones you trust.": "插件给 AI 增加可调用的工具。它在 AI 选中的环境里工作，用的是这个环境自己的登录状态、代理和指纹，不能开关浏览器。插件是在这台电脑上运行的代码，只装你信得过的。",
+  "Open plugins folder": "打开插件文件夹",
+  "No plugins yet. Put a plugin's folder in the plugins folder, or start from the example.": "还没有插件。把插件的文件夹放进插件文件夹，或者从示例开始。",
+  "Add the example plugin": "添加示例插件",
+  "Cannot load: {reason}": "无法加载：{reason}",
+  "Reads only": "只读",
+  "Can change things": "会修改",
+  "Plugins folder": "插件文件夹",
+  "Changes reach the AI the next time it selects a browser.": "改动在 AI 下次选中浏览器时生效。"
 }

@@ -16,6 +16,7 @@ function nodeRuntime(root: string): string {
   const runner = join(root, "agent", "script-runner.mjs");
   mkdirSync(join(root, "agent"), { recursive: true });
   cpSync(nodeRunner, runner);
+  cpSync(join(ROOT, "devtools.mjs"), join(root, "agent", "devtools.mjs"));
   const playwright = join(root, "node_modules", "playwright-core");
   mkdirSync(playwright, { recursive: true });
   writeFileSync(join(playwright, "package.json"), JSON.stringify({ type: "module", exports: "./index.mjs" }));
@@ -132,6 +133,28 @@ test("Node script runner passes the CDP objects and user data without a completi
       stderr: "",
       stdout: "connected ws://127.0.0.1:9222/devtools/browser/test\nprofile-1 hello user first-page\ndetached\n",
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Node scripts can read the developer record; one that cannot start fails only when read", async () => {
+  const root = workspace();
+  try {
+    const runner = nodeRuntime(root);
+    const script = join(root, "script.mjs");
+    // The fake pages here are not real Playwright pages, so the record cannot start.
+    writeFileSync(script, `
+      export default async ({ devtools, log }) => {
+        log(typeof devtools.call, Object.isFrozen(devtools));
+        try { await devtools.call("console"); } catch (error) { log(error.message.split(":")[0]); }
+      };
+    `);
+    const child = Bun.spawn(["node", runner, script], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child.stdin.write(`${JSON.stringify(input)}\n`);
+    const result = await output(child);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("function true\nThe developer record is unavailable\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

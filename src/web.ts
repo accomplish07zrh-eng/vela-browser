@@ -27,6 +27,7 @@ import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
+import { pluginsDirectory, scanPlugins } from "./plugins.ts";
 import { WorkbenchHub, WORKBENCH_PATH, WORKBENCH_PROTOCOL, validWorkbenchAuthorization, type WorkbenchConnection } from "./workbench.ts";
 
 import {
@@ -243,7 +244,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
         admission,
         remote: opts.remote,
         activity,
-
+        // Plugins are code on this computer; a remotely coordinated runtime offers none.
+        ...(opts.paths && !opts.remote ? { plugins: () => scanPlugins(pluginsDirectory(opts.paths!.root), opts.appConfig?.read().disabledPlugins ?? []).specs } : {}),
         log,
       })
     : undefined;
