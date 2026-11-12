@@ -50,7 +50,12 @@ export class LiveFrames {
     this.start = start; this.page = null; this.key = ""; this.stopStream = null; this.seq = 0;
     this.latest = null; this.waiters = new Set(); this.viewport = null; this.measured = 0; this.idle = null;
   }
-  async next(page, { maxWidth = undefined, quality = 70, since = 0, wait = 1500, minInterval = 0 } = {}) {
+  /**
+   * @param {any} page
+   * @param {{ maxWidth?: number, quality?: number, since?: number, wait?: number, minInterval?: number }} [options]
+   */
+  async next(page, options = {}) {
+    const { maxWidth, quality = 70, since = 0, wait = 1500, minInterval = 0 } = options;
     if (!this.viewport || this.page !== page || Date.now() - this.measured > 2000) {
       this.viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
       this.measured = Date.now();
