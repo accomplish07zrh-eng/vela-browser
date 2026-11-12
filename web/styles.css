@@ -200,9 +200,15 @@ button:disabled { cursor: default; }
    Shared primitives
    ========================================================================== */
 
-.icon { width: 16px; height: 16px; flex: 0 0 auto; display: block; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.icon { width: 16px; height: 16px; flex: 0 0 auto; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .icon.sm { width: 14px; height: 14px; }
 .icon.lg { width: 20px; height: 20px; }
+/* Two-tone icons: a soft fill of the icon's own colour under its outline, so an active gold icon
+   glows gold and a quiet one only hints at its shape. */
+.icon .duo { fill: currentColor; stroke: none; opacity: .14; transition: opacity 180ms ease; }
+:root[data-theme="dark"] .icon .duo { opacity: .2; }
+:is(button, a):hover > .icon .duo, .active > .icon .duo { opacity: .24; }
+:root[data-theme="dark"] :is(button, a):hover > .icon .duo, :root[data-theme="dark"] .active > .icon .duo { opacity: .3; }
 
 .mono { font-family: var(--mono); font-size: 12px; font-variant-ligatures: none; letter-spacing: -0.01em; }
 .muted { color: var(--faint); }
