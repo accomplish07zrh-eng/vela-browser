@@ -150,6 +150,7 @@ describe("Playwright CDP compatibility patch", () => {
   test("attaching to an open tab never emulates its colour scheme, and Vela Browser's helpers not its focus", async () => {
     // A browser with one open tab, as Vela Browser's helpers find it after a launch.
     const tabMethods: string[] = [];
+    const browserMethods: string[] = [];
     const emulatedMedia: unknown[] = [];
     const server = Bun.serve({
       port: 0,
@@ -157,7 +158,7 @@ describe("Playwright CDP compatibility patch", () => {
       websocket: {
         message(ws, raw) {
           const { id, method, sessionId, params } = JSON.parse(String(raw));
-          if (sessionId) tabMethods.push(method);
+          if (sessionId) tabMethods.push(method); else browserMethods.push(method);
           if (method === "Emulation.setEmulatedMedia") emulatedMedia.push(params);
           const result = method === "Browser.getVersion"
             ? { product: "Chrome/155.0.0.0", userAgent: "Chrome/155.0.0.0" }
@@ -199,6 +200,10 @@ describe("Playwright CDP compatibility patch", () => {
       for (const sent of emulatedMedia) {
         expect(sent).toEqual({ media: "", features: ["prefers-color-scheme", "prefers-reduced-motion", "forced-colors", "prefers-contrast"].map((name) => ({ name, value: "" })) });
       }
+      // Nor does any attach take over downloads: files the user downloads keep going where the
+      // browser puts them, not into Playwright's temporary folder.
+      expect(browserMethods).toContain("Target.setAutoAttach");
+      expect(browserMethods).not.toContain("Browser.setDownloadBehavior");
     } finally {
       server.stop(true);
     }

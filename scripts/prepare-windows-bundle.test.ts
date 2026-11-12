@@ -95,6 +95,7 @@ function workspace(): string {
     "playwright-proxy.mjs",
     "devtools.mjs",
     "plugins.mjs",
+    "downloads.mjs",
     "humanize.mjs",
     "playwright-runner.mjs",
     "script-runner.mjs",

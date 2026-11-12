@@ -9,6 +9,7 @@ import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs
 import { createHumanizer } from "./agent/humanize.mjs";
 import { BrowserDevtools, DEVTOOLS_TOOLS, DEVTOOLS_TOOL_NAMES } from "./agent/devtools.mjs";
 import { PluginHost, isPluginTool, pluginTools } from "./agent/plugins.mjs";
+import { keepDownloads } from "./agent/downloads.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const error = (code) => Object.assign(new Error(`WebKit owner ${code.replaceAll("_", " ")}`), { code });
@@ -56,6 +57,8 @@ async function run() {
   const workbench = new ContextWorkbench(context);
   const devtools = new BrowserDevtools(context);
   const plugins = new PluginHost({ context, engine: "webkit", profileId: input.profileId, devtools });
+  // What the user downloads lands in their Downloads folder, not in Playwright's temporary one.
+  keepDownloads(context);
   let official, humanizer;
   const closeOfficial = async () => {
     const current = official; official = undefined;
