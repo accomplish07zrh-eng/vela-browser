@@ -450,7 +450,7 @@ test.each(["firefox", "webkit"] as const)("%s active status is usable without ex
   if (engine === "webkit") {
     expect(body.data.experimental).toBe(true);
     expect(body.data.capabilities).toContain("workbench");
-    expect(body.data.capabilities).not.toContain("mcp");
+    expect(body.data.capabilities).toContain("mcp");
   }
   expect(JSON.stringify(body)).not.toContain("ws");
   expect(JSON.stringify(body)).not.toContain("9444");

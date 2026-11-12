@@ -70,7 +70,7 @@ test("one sidecar program also runs the MCP helper behind the aliasmode-mcp laun
   expect(tauri.bundle.externalBin).toEqual(["binaries/aliasmode-sidecar"]);
   const cargo = readFileSync(join(repo, "src-tauri", "Cargo.toml"), "utf8");
   expect(cargo).toContain(`default-run = "aliasmode"`);
-  expect(cargo).toContain(`name = "aliasmode-mcp"\npath = "src/bin/aliasmode-mcp.rs"`);
+  expect(cargo).toMatch(/name = "aliasmode-mcp"\r?\npath = "src\/bin\/aliasmode-mcp.rs"/);
   const launcher = readFileSync(join(repo, "src-tauri", "src", "bin", "aliasmode-mcp.rs"), "utf8");
   expect(launcher).toContain(`const MCP_MODE: &str = "${MCP_MODE}";`);
 
@@ -93,6 +93,7 @@ function workspace(): string {
   for (const file of [
     "mcp-host.mjs",
     "playwright-proxy.mjs",
+    "devtools.mjs",
     "humanize.mjs",
     "playwright-runner.mjs",
     "script-runner.mjs",

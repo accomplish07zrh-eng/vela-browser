@@ -102,7 +102,7 @@ const ALIAS_TOOLS = [
         name: { type: "string" },
         group: { type: "string" },
         platform: { type: "string" },
-        engine: { type: "string", enum: ["chromium", "firefox"] },
+        engine: { type: "string", enum: ["chromium", "firefox", "webkit"] },
         chromiumRuntime: {
           type: "string",
           enum: ["aliasmode", "cloakbrowser"],
@@ -248,7 +248,7 @@ export async function createVelaBrowserMcp(options = {}) {
   const runtime = discovered.client;
   const server = new Server(
     { name: "aliasmode", version: VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: { listChanged: true } } },
   );
   let selectedProfileId;
   const humanize = { enabled: true, speed: 1 };
@@ -263,7 +263,14 @@ export async function createVelaBrowserMcp(options = {}) {
   const newProxy = options.createPlaywright ?? (() => options.playwright ?? new PlaywrightToolProxy(VERSION));
   let closing;
 
-  const toolsFor = (session) => session?.engine === "firefox" ? session.tools : playwright.listTools();
+  const toolsFor = (session) => session && session.engine !== "chromium" ? session.tools : playwright.listTools();
+  let advertisedTools = JSON.stringify(toolsFor(undefined));
+  const publishTools = async () => {
+    const current = JSON.stringify(toolsFor(sessions.get(selectedProfileId)));
+    if (current === advertisedTools) return;
+    advertisedTools = current;
+    await server.sendToolListChanged().catch(() => {});
+  };
   const withTarget = (tool) => ({
     ...tool,
     inputSchema: {
@@ -287,13 +294,12 @@ export async function createVelaBrowserMcp(options = {}) {
   };
 
   const attachSession = async (profileId, status) => {
-    const engine = status.engine === "firefox" ? "firefox" : "chromium";
+    const engine = ["firefox", "webkit"].includes(status.engine) ? status.engine : "chromium";
     const existing = sessions.get(profileId);
-    if (existing && existing.engine === engine && (engine === "firefox" || existing.ws === status.ws)) return existing;
+    if (existing && existing.engine === engine && (engine !== "chromium" || (existing.ws === status.ws && existing.proxy.browser?.isConnected?.() !== false))) return existing;
     await detachSession(profileId);
-    if (status.engine === "webkit") throw new Error("WebKit MCP automation is not available in this experimental runtime");
-    if (engine === "firefox") {
-      const result = await runtime.call("firefox.tools.list", { profileId });
+    if (engine !== "chromium") {
+      const result = await runtime.call(`${engine}.tools.list`, { profileId });
       const session = { engine, tools: firefoxTools(result.tools ?? []), lane: Promise.resolve() };
       sessions.set(profileId, session);
       return session;
@@ -322,7 +328,7 @@ export async function createVelaBrowserMcp(options = {}) {
     selectedProfileId = undefined;
     const session = await attachSession(profileId, status);
     selectedProfileId = profileId;
-    if (session.engine === "firefox") return safeBrowserResult({ ...status, selected: true });
+    if (session.engine !== "chromium") return safeBrowserResult({ ...status, selected: true });
     return {
       profileId,
       selected: true,
@@ -334,7 +340,7 @@ export async function createVelaBrowserMcp(options = {}) {
 
   const sessionFor = async (profileId) => {
     const existing = sessions.get(profileId);
-    if (existing) return existing;
+    if (existing && existing.proxy?.browser?.isConnected?.() !== false) return existing;
     const status = await runtime.call("browser.status", { profileId });
     if (!status.running) throw new Error("open this Vela Browser profile before acting on it");
     return attachSession(profileId, status);
@@ -440,14 +446,16 @@ export async function createVelaBrowserMcp(options = {}) {
       if (!toolsFor(session).some((tool) => tool.name === name)) {
         throw new Error(`unknown Vela Browser tool: ${name}`);
       }
-      const act = () => session.engine === "firefox"
-        ? runtime.call("firefox.tools.call", { profileId: target, name, arguments: toolArgs, humanize })
+      const act = () => session.engine !== "chromium"
+        ? runtime.call(`${session.engine}.tools.call`, { profileId: target, name, arguments: toolArgs, humanize })
         : session.humanizer ? session.humanizer.call(name, toolArgs) : session.proxy.callTool(name, toolArgs);
       const run = session.lane.then(act);
       session.lane = run.then(() => undefined, () => undefined);
       return await run;
     } catch (error) {
       return errorResult(error);
+    } finally {
+      if (["aliasmode_browser_open", "aliasmode_browser_select", "aliasmode_browser_close", "browser_close"].includes(name)) await publishTools();
     }
   });
 

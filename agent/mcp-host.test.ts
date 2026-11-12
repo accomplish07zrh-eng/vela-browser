@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createVelaBrowserMcp, sanitizeEnvironment } from "./mcp-host.mjs";
+import { DEVTOOLS_TOOLS } from "./devtools.mjs";
 
 class FakeRuntime {
   events: string[] = [];
@@ -54,26 +56,28 @@ class FakeRuntime {
 }
 
 class FirefoxRuntime extends FakeRuntime {
+  constructor(readonly engine = "firefox") { super(); }
   override async call(method: string, params: Record<string, unknown> = {}) {
     this.events.push(`${method}:${params.profileId ?? ""}`);
     this.calls.push({ method, params: structuredClone(params) });
     if (method === "browser.open") return {
-      profileId: params.profileId, engine: "firefox", capabilities: ["firefox-native", "mcp"],
+      profileId: params.profileId, engine: this.engine, capabilities: [`${this.engine}-native`, "mcp"],
       headless: false, alreadyOpen: false, ownedByConnection: true,
     };
     if (method === "browser.status") return {
-      profileId: params.profileId, running: true, engine: "firefox", capabilities: ["firefox-native", "mcp"], headless: false,
+      profileId: params.profileId, running: true, engine: this.engine, capabilities: [`${this.engine}-native`, "mcp"], headless: false,
     };
-    if (method === "firefox.tools.list") return {
+    if (method === `${this.engine}.tools.list`) return {
       tools: [
+        ...DEVTOOLS_TOOLS,
         { name: "browser_snapshot", description: "native snapshot", inputSchema: { type: "object" } },
         { name: "browser_pdf_save", description: "PDF", inputSchema: { type: "object" } },
         { name: "browser_install", description: "install", inputSchema: { type: "object" } },
         { name: "browser_close", description: "close", inputSchema: { type: "object" } },
       ],
     };
-    if (method === "firefox.tools.call") return { content: [{ type: "text", text: "native snapshot" }] };
-    if (method === "browser.close") return { profileId: params.profileId, closed: true, deleted: false, engine: "firefox" };
+    if (method === `${this.engine}.tools.call`) return { content: [{ type: "text", text: "native snapshot" }] };
+    if (method === "browser.close") return { profileId: params.profileId, closed: true, deleted: false, engine: this.engine };
     return await super.call(method, params);
   }
 }
@@ -183,7 +187,7 @@ test("MCP profile creation forwards the selected browser engine", async () => {
   expect(tool?.inputSchema).toMatchObject({
     additionalProperties: false,
     properties: {
-      engine: { type: "string", enum: ["chromium", "firefox"] },
+      engine: { type: "string", enum: ["chromium", "firefox", "webkit"] },
       chromiumRuntime: { type: "string", enum: ["aliasmode", "cloakbrowser"] },
     },
   });
@@ -272,6 +276,29 @@ test("MCP host relays Firefox native tools without transport, PDF, or lifecycle 
 
   await client.close();
   await host.close();
+});
+
+test.each(["firefox", "webkit"])("%s developer tools retain profile targeting and default write access", async (engine) => {
+  const runtime = new FirefoxRuntime(engine);
+  const proxy = new FakePlaywright();
+  const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright: proxy });
+  const client = new Client({ name: "test", version: "1" }, { capabilities: {} });
+  let updates = 0;
+  client.setNotificationHandler(ToolListChangedNotificationSchema, async () => { updates++; });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    expect((await client.callTool({ name: "aliasmode_browser_open", arguments: { profileId: "a" } })).isError).not.toBe(true);
+    expect(updates).toBe(1);
+    const names = new Set((await client.listTools()).tools.map(tool => tool.name));
+    for (const tool of DEVTOOLS_TOOLS) expect(names.has(tool.name)).toBe(true);
+    const input = { profileId: "b", expression: "() => { document.title = 'edited'; return document.title; }" };
+    expect((await client.callTool({ name: "browser_devtools_evaluate", arguments: input })).isError).not.toBe(true);
+    expect(runtime.calls.at(-1)).toMatchObject({ method: `${engine}.tools.call`, params: {
+      profileId: "b", name: "browser_devtools_evaluate", arguments: { expression: input.expression }, humanize: { enabled: true },
+    } });
+    expect(proxy.events.some(event => event.startsWith("attach:"))).toBe(false);
+  } finally { await client.close(); await host.close(); }
 });
 
 test("MCP shutdown closes owned browsers but preserves pre-existing browsers", async () => {

@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import { PlaywrightToolProxy } from "./playwright-proxy.mjs";
+import { DEVTOOLS_TOOLS } from "./devtools.mjs";
 
 test("Playwright proxy exposes stable annotated actions without a browser", async () => {
   let browserClosed = false;
+  const context = Object.assign(new EventEmitter(), { pages: () => [] });
   const proxy = new PlaywrightToolProxy("1", async () => ({
-    contexts: () => [{}],
+    contexts: () => [context],
     close: async () => { browserClosed = true; },
   }) as any);
   await proxy.initialize();
@@ -25,6 +28,7 @@ test("Playwright proxy exposes stable annotated actions without a browser", asyn
   }
   expect(names.has("browser_close")).toBe(false);
   expect(names.has("browser_install")).toBe(false);
+  for (const tool of DEVTOOLS_TOOLS) expect(names.has(tool.name)).toBe(true);
   for (const tool of tools) {
     expect(typeof tool.annotations?.title).toBe("string");
     expect(typeof tool.annotations?.readOnlyHint).toBe("boolean");
@@ -38,4 +42,5 @@ test("Playwright proxy exposes stable annotated actions without a browser", asyn
   await proxy.detach();
   expect(proxy.listTools()).toEqual(tools);
   expect(browserClosed).toBe(true);
+  expect(context.eventNames()).toEqual([]);
 });

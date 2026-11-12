@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs";
 import { createHumanizer } from "./agent/humanize.mjs";
+import { BrowserDevtools, DEVTOOLS_TOOLS, DEVTOOLS_TOOL_NAMES } from "./agent/devtools.mjs";
 import { MAX_BYTES, VERSION, operatePersistentContext } from "./playwright-worker.mjs";
 import { FirefoxWorkbench } from "./workbench-firefox.mjs";
 
@@ -222,7 +223,9 @@ export function trackFirefoxPages(context) {
 
 async function launchOwner(input) {
   if (await sha256File(input.executablePath) !== input.executableSha256) throw typed("operation_failed");
-  camouEnvironment(input.config, input.prefs);
+  // Native page-world execution is part of the default developer tools. The engine
+  // keeps ordinary automation in its original isolated world until an mw: call is made.
+  camouEnvironment({ ...input.config, allowMainWorld: true }, input.prefs);
   process.env.ALIASMODE_FIREFOX_SESSION_GENERATION = input.sessionGeneration ?? input.owner.generation;
   let runtime;
   try { runtime = await import(pathToFileURL(join(ROOT, "node_modules", "playwright-core", "index.mjs")).href); } catch { throw typed("runtime_unavailable"); }
@@ -270,6 +273,7 @@ async function run() {
   context.on?.("page", observePage);
   const hasPages = trackFirefoxPages(context);
   const workbench = new FirefoxWorkbench(context);
+  const devtools = new BrowserDevtools(context, { engine: "firefox" });
   let humanizer;
   let official;
   let closed = false;
@@ -341,6 +345,7 @@ async function run() {
       await closeOfficial();
       await closePlaywrightServer().catch(() => {});
       await context.close();
+      devtools.dispose();
     } catch (error) {
       closing = false;
       closed = false;
@@ -402,11 +407,12 @@ async function run() {
     }
     if (name === "mcp-list") {
       const bridge = await initializeOfficial();
-      return bridge.tools.filter((tool) => !/pdf/i.test(tool.name));
+      return [...bridge.tools.filter((tool) => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS];
     }
     if (name === "mcp-call") {
       if (typeof payload.name !== "string" || /pdf/i.test(payload.name)) throw typed("invalid_request");
       const bridge = await initializeOfficial();
+      if (DEVTOOLS_TOOL_NAMES.has(payload.name)) return devtools.call(payload.name, payload.arguments ?? {}).catch(error => ({ isError: true, content: [{ type: "text", text: error.message }] }));
       if (!bridge.tools.some((tool) => tool.name === payload.name && !/pdf/i.test(tool.name))) throw typed("invalid_request");
       const callOfficial = (tool, args) => bridge.client.callTool({ name: tool, arguments: args ?? {} });
       humanizer ??= createHumanizer({

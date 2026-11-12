@@ -270,7 +270,7 @@ test("WebKit agent status and open disclose capabilities and keep the native own
     const result = await h.session.enqueue(wire(method, { profileId: "profile1" }));
     expect(result).toMatchObject({ ok: true, result: { engine: "webkit", experimental: true } });
     expect((result.result as any).capabilities).toContain("workbench");
-    expect((result.result as any).capabilities).not.toContain("mcp");
+    expect((result.result as any).capabilities).toContain("mcp");
     const text = JSON.stringify(result);
     for (const privateValue of ["private-token", "private-generation", "webkitOwner", "webkit://", "9444", '"ws"', '"port"', "debugPort"]) {
       expect(text).not.toContain(privateValue);
@@ -280,6 +280,24 @@ test("WebKit agent status and open disclose capabilities and keep the native own
   expect(unsupported.ok).toBe(false);
   await h.session.disconnect();
   expect(h.events).toEqual([]);
+});
+
+test("WebKit developer calls use the current profile's certified owner and retain writes", async () => {
+  const h = harness({ active: true, webkit: true });
+  const calls: any[] = [];
+  const session = new AgentControlSession({ ...h.deps,
+    webkitCall: async (owner, operation, payload) => { calls.push({ owner, operation, payload }); return { content: [] }; },
+  });
+  const params = { profileId: "profile1", name: "browser_devtools_storage_edit", arguments: { storage: "localStorage", action: "set", entries: { key: "value" } } };
+  expect(await session.enqueue(wire("webkit.tools.call", params))).toMatchObject({ ok: true });
+  expect(calls[0]).toMatchObject({ owner: { generation: "private-generation", token: "private-token" }, operation: "mcp-call", payload: {
+    name: params.name, arguments: params.arguments,
+  } });
+  // The owner generation must be rechecked for every call, including after an external close.
+  h.deps.launcher.certifiedActive = async () => false;
+  expect(await session.enqueue(wire("webkit.tools.call", params))).toMatchObject({ ok: false, error: { code: "browser_not_running" } });
+  expect(calls).toHaveLength(1);
+  await session.disconnect();
 });
 
 test("an existing browser rejects a launch-mode change", async () => {
