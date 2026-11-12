@@ -43,8 +43,10 @@
 .app:not([data-view="workbench"]) .wall::after { opacity: 1; }
 
 /* ── Sheets: every section except the wall ── */
+/* A sheet is as tall as what it holds: short sections leave the wall showing above them, long ones stop under the top bar. */
 .app .main {
-  position: absolute; inset: 64px 0 0; z-index: 10; min-width: 0;
+  position: absolute; inset: auto 0 0; z-index: 10; min-width: 0;
+  max-height: calc(100% - 64px); min-height: min(440px, calc(100% - 64px));
   display: flex; flex-direction: column; overflow: hidden;
   padding-bottom: 92px;
   background: var(--bg); border-radius: 22px 22px 0 0;
@@ -270,13 +272,14 @@
 .modal { border-radius: 20px; box-shadow: var(--sh-modal); animation: modal-arrive 420ms var(--spring-layout); }
 @keyframes modal-arrive { from { opacity: 0; transform: translateY(16px) scale(.98); } to { opacity: 1; transform: none; } }
 
-/* ── The way back: the strip of wall above a sheet is a handle ── */
-.app .sheet-dismiss {
-  position: absolute; inset: 0 0 auto 220px; z-index: 11; height: 64px; padding: 0; border: 0; background: none; cursor: pointer;
-  display: grid; place-items: end center;
+/* ── The way back: all the wall above a sheet is a handle, and the sheet carries a grabber ── */
+.app .sheet-dismiss { position: absolute; inset: 0; z-index: 9; padding: 0; border: 0; background: none; cursor: pointer; }
+.app .sheet-dismiss span { display: none; }
+.app:not([data-view="workbench"]) .main::before {
+  content: ""; position: absolute; top: 9px; left: 50%; z-index: 1; width: 44px; height: 5px; margin-left: -22px; border-radius: 999px; pointer-events: none;
+  background: rgba(var(--ink-rgb), .16); transition: width 320ms var(--spring-layout), margin 320ms var(--spring-layout), background-color 180ms var(--spring-control);
 }
-.app .sheet-dismiss span { width: 44px; height: 5px; margin-bottom: 9px; border-radius: 999px; background: rgba(var(--ink-rgb), .22); transition: width 320ms var(--spring-layout), background-color 180ms var(--spring-control); }
-.app .sheet-dismiss:hover span, .app .sheet-dismiss:focus-visible span { width: 72px; background: rgba(var(--ink-rgb), .5); }
+.app .sheet-dismiss:hover + .main::before, .app .sheet-dismiss:focus-visible + .main::before { width: 72px; margin-left: -36px; background: rgba(var(--ink-rgb), .42); }
 .app .sheet-dismiss:active { transform: none; }
 .app .sheet-dismiss:focus-visible { outline: 0; }
 .app .main { transition: transform 320ms var(--spring-layout); }
@@ -346,6 +349,39 @@
 .popover { border-radius: 14px; animation: modal-arrive 220ms var(--spring-control); transform-origin: 50% 0; }
 .pop-item { border-radius: 8px; }
 
+/* A lane that wraps carries pictures under its name, so the name keeps a strip of wall behind it. */
+.app .wall .workbench-lane.wraps::before {
+  content: ""; position: absolute; inset: 0 -48px -32px 0; z-index: -1; pointer-events: none;
+  background: radial-gradient(120% 90% at 50% -10%, var(--stage-glow) 0%, var(--stage) 48%, var(--stage-edge) 100%) fixed;
+  mask-image: linear-gradient(to right, #000 64px, transparent);
+}
+
+/* ── Sheets: every page keeps the title's left edge ── */
+.app .main .workspace.proxy-page { max-width: none; margin-left: 0; margin-right: 0; padding-left: 32px; padding-right: 32px; }
+.app .main .workspace.scripts-page { max-width: none; padding-left: 0; padding-right: 0; }
+/* A primary action that cannot run yet recedes instead of turning into a grey slab. */
+.app .main .btn.primary:disabled { opacity: 1; color: var(--faint); background: var(--field-bg-focus); border-color: transparent; box-shadow: none; }
+/* A dialog over the wall gets a deeper scrim; blurring twelve live pages would cost every frame. */
+.app .modal-backdrop { background: rgba(var(--sh-rgb, 43, 35, 23), calc(.24 + .2 * var(--sh-k, .34))); }
+/* Tool panels are laid out as cards, so they keep a card's surface. */
+.app .main .tools-panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-xl); box-shadow: var(--sh-xs); }
+.app .main .scripts-note { margin: 0; color: var(--muted); font: 400 13px/20px var(--font); }
+.app .main .scripts-list > .formnote { padding: 18px 12px; background: none; color: var(--faint); text-align: center; }
+/* Notes read as notes: a hairline at the side, never the filled shape a field has. */
+.app .main .formnote { margin: 0; padding: 2px 0 2px 14px; border-radius: 0; background: none; border-left: 2px solid var(--line-strong); color: var(--muted); }
+.app .main .scripts-list > .formnote { border-left: 0; }
+
+/* Settings and Extensions use the whole sheet: the section name on the left, its controls on the right. */
+.app .main .settingspage { max-width: none; padding-bottom: 32px; mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent); }
+@media (min-width: 1000px) {
+  .app .main .settingspage { gap: 0; }
+  .app .main .settings-card { display: grid; grid-template-columns: minmax(200px, 300px) minmax(0, 760px); column-gap: 64px; align-items: start; border-top: 1px solid var(--line-soft); }
+  .app .main .settingspage > .settings-card:first-child, .app .main .settingspage > :not(.settings-card) + .settings-card { border-top: 0; }
+  .app .main .settings-card > header { position: sticky; top: 0; padding: 28px 0; border-bottom: 0; }
+  .app .main .settings-card .card-body { padding: 28px 0 32px; }
+}
+.app .main .name-cell .sub { font-family: var(--font); letter-spacing: 0; }
+
 @media (max-width: 1100px) {
   .app .wall .workbench-count, .app .wall .workbench-gesture { display: none; }
 }
@@ -361,6 +397,7 @@
   .app .wall .workbench-toolbar { top: 60px; left: 12px; right: 12px; }
   .app .wall .workbench-stage { top: 104px; }
   .app .main .pagehead { padding-left: 16px; padding-right: 16px; }
+  .app .main .workspace.proxy-page { padding-left: 16px; padding-right: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .app .main { animation: none; }

@@ -213,7 +213,7 @@ export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => v
   return (
     <div className="workspace scripts-page">
       <div className="scripts-head">
-        <div><h2 className="sect-title">{t("Scripts")}</h2><p className="formnote">{t("Scripts, runs and logs stay on this computer.")}</p></div>
+        <p className="scripts-note">{t("Scripts, runs and logs stay on this computer.")}</p>
         {tab === "mine" && <button className="btn primary" type="button" disabled={busy} onClick={() => importRef.current?.click()}>{t("Import script")}</button>}
       </div>
       <div className="tabs scripts-tabs" role="tablist" aria-label={t("Script library")}>

@@ -481,7 +481,7 @@ const PLATFORM_MARKS: Record<string, { key: string; path: string }> = {
 };
 
 const KNOWN_PLATFORMS: { value: string; label: string }[] = [
-  { value: "", label: "(none)" },
+  { value: "", label: "No platform" },
   { value: "x.com", label: "Twitter / X" },
   { value: "instagram.com", label: "Instagram" },
   { value: "facebook.com", label: "Facebook" },
@@ -562,7 +562,7 @@ function PlatformPicker({ value, onChange }: { value: string; onChange: (v: stri
   }
   return (
     <select value={value} onChange={(e) => { if (e.target.value === "__new__") { setCreating(true); onChange(""); } else onChange(e.target.value); }}>
-      {KNOWN_PLATFORMS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+      {KNOWN_PLATFORMS.map((p) => <option key={p.value} value={p.value}>{p.value ? p.label : t(p.label)}</option>)}
       <option value="__new__">{t("New platform…")}</option>
     </select>
   );
@@ -1562,7 +1562,8 @@ function App() {
   const selectedFilteredCount = filtered.filter((p) => selected.has(p.id)).length;
   const selectedOutsideFilter = selected.size - selectedFilteredCount;
   const allFilteredSelected = filtered.length > 0 && selectedFilteredCount === filtered.length && selectedOutsideFilter === 0;
-  const selectionScope = `${filtered.length.toLocaleString()} ${q ? t("matching profiles") : t("profiles")}${group === "all" ? "" : ` in “${group}”`}`;
+  const scopeCount = q ? t("{count} matching profiles", { count: filtered.length.toLocaleString() }) : t("{count} profiles", { count: filtered.length.toLocaleString() });
+  const selectionScope = group === "all" ? scopeCount : t("{scope} in “{group}”", { scope: scopeCount, group });
   const selectAllFiltered = () => setSelected(new Set(filtered.map((p) => p.id)));
   const toggleAll = () =>
     setSelected((s) => {
@@ -3190,7 +3191,6 @@ function App() {
       ) : view === "extensions" ? (
       <div className="workspace">
         <div className="settingspage">
-          <h2 className="sect-title">{t("Extensions")}</h2>
           {extErr && <div className="modal-err"><Icon name="alert" className="sm" />{extErr}</div>}
           <section className="settings-card">
             <header><Icon name="puzzle" className="sm" /><h2>{t("Install from Chrome Web Store")}</h2></header>
@@ -3209,14 +3209,14 @@ function App() {
                   <Icon name="plus" className="sm" />{extInstallBusy ? t("Installing…") : t("Install")}
                 </button>
               </form>
+              <p className="formnote">{t("The in-browser Store button does not work in CloakBrowser. Paste the Store link above, or upload a ZIP/CRX archive. Chrome extensions apply only to CloakBrowser profiles.")}</p>
+              <ol className="steps">
+                <li>{t("Install the extension here. New installs stay unassigned.")}</li>
+                <li>{t("Use")} <b>{t("Edit > Extensions")}</b> {t("to assign it to a profile, or assign many at once from the roster toolbar.")}</li>
+                <li>{t("Reopen the profile. Vela Browser loads the extension when the browser starts.")}</li>
+              </ol>
             </div>
           </section>
-          <p className="formnote">{t("The in-browser Store button does not work in CloakBrowser. Paste the Store link above, or upload a ZIP/CRX archive. Chrome extensions apply only to CloakBrowser profiles.")}</p>
-          <ol className="steps">
-            <li>{t("Install the extension here. New installs stay unassigned.")}</li>
-            <li>{t("Use")} <b>{t("Edit > Extensions")}</b> {t("to assign it to a profile, or assign many at once from the roster toolbar.")}</li>
-            <li>{t("Reopen the profile. Vela Browser loads the extension when the browser starts.")}</li>
-          </ol>
           <section className="settings-card">
             <header><Icon name="folder" className="sm" /><h2>{t("Group defaults")}</h2></header>
             <div className="card-body">
@@ -3271,6 +3271,16 @@ function App() {
               )}
             </div>
           </section>
+          <section className="settings-card">
+            <header>
+              <Icon name="puzzle" className="sm" /><h2>{t("Installed extensions")}</h2>
+              {extensions.length > 0 && (
+                <button className="btn" type="button" disabled={extBusy || extInstallBusy} onClick={() => extFileRef.current?.click()}>
+                  <Icon name="plus" className="sm" />{extBusy ? t("Uploading…") : t("Upload ZIP/CRX")}
+                </button>
+              )}
+            </header>
+            <div className="card-body">
           {extensions.length === 0 ? (
             <div className="emptystate">
               <span className="glyph"><Icon name="puzzle" /></span>
@@ -3292,6 +3302,8 @@ function App() {
               ))}
             </div>
           )}
+            </div>
+          </section>
           <input
             ref={extFileRef}
             type="file"
@@ -3301,14 +3313,6 @@ function App() {
             onChange={(e) => { if (e.target.files) doUploadExtensions(e.target.files); e.target.value = ""; }}
           />
         </div>
-        <footer className="pagefoot">
-          <span className="spacer" />
-          {extensions.length > 0 && (
-            <button className="btn primary" type="button" disabled={extBusy || extInstallBusy} onClick={() => extFileRef.current?.click()}>
-              <Icon name="plus" className="sm" />{extBusy ? t("Uploading…") : t("Upload ZIP/CRX")}
-            </button>
-          )}
-        </footer>
       </div>
       ) : view === "settings" ? (
       <div className="workspace">
@@ -3330,18 +3334,10 @@ function App() {
 
           {settingsTab === "general" && (
             <>
-              <h2 className="sect-title">{t("General")}</h2>
 <section className="settings-card">
             <header><Icon name="sun" className="sm" /><h2>{t("Appearance")}</h2></header>
             <div className="card-body">
               <p>{t("Choose how Vela Browser looks. System follows your operating system setting.")}</p>
-              <label className="fld"><span>{t("language.label")}</span>
-                <select className="select" value={language} onChange={(event) => setLanguage(event.target.value)}>
-                  {availableLanguages().map((lang) => (
-                    <option key={lang} value={lang}>{languageNativeName(lang)}</option>
-                  ))}
-                </select>
-              </label>
               <div className="segmented" role="radiogroup" aria-label={t("Theme")}>
                 {THEMES.map((option) => (
                   <button
@@ -3356,6 +3352,13 @@ function App() {
                   </button>
                 ))}
               </div>
+              <label className="fld"><span>{t("language.label")}</span>
+                <select className="select" value={language} onChange={(event) => setLanguage(event.target.value)}>
+                  {availableLanguages().map((lang) => (
+                    <option key={lang} value={lang}>{languageNativeName(lang)}</option>
+                  ))}
+                </select>
+              </label>
             </div>
           </section>
           {appMode?.taskbarModeSupported && (
@@ -3451,10 +3454,6 @@ function App() {
           )}
 
         </div>
-        <footer className="pagefoot">
-          <span className="spacer" />
-          <button className="btn primary" type="button" onClick={() => setView("profiles")}>{t("Done")}</button>
-        </footer>
       </div>
       ) : null}
       </div>
@@ -3650,7 +3649,7 @@ function App() {
                       value={form.customNo}
                       inputMode="numeric"
                       maxLength={MAX_CUSTOM_NO}
-                      placeholder="auto"
+                      placeholder={t("auto")}
                       onChange={(e) => setF("customNo", e.target.value.replace(/\D/g, "").slice(0, MAX_CUSTOM_NO))}
                     />
                   </label>
@@ -4078,7 +4077,7 @@ function App() {
                 <label className="fld grow">
                   <span>{t("Platform")}</span>
                   <select value={bulkPlatform} onChange={(e) => setBulkPlatform(e.target.value)}>
-                    {KNOWN_PLATFORMS.map((platform) => <option key={platform.value} value={platform.value}>{platform.label}</option>)}
+                    {KNOWN_PLATFORMS.map((platform) => <option key={platform.value} value={platform.value}>{platform.value ? platform.label : t(platform.label)}</option>)}
                   </select>
                 </label>
               </div>
