@@ -27,8 +27,8 @@ test("a name already used, on disk or by a save in progress, gets a number", () 
   expect(uniquePath(dir, "a.pdf", taken)).toBe(join(dir, "a (1).pdf"));
   expect(uniquePath(dir, "a.pdf", taken)).toBe(join(dir, "a (2).pdf"));
   expect(uniquePath(dir, "b", taken)).toBe(join(dir, "b"));
-  // Windows and macOS compare names without case.
-  expect(uniquePath(dir, "A.PDF", taken)).toBe(join(dir, "A (3).PDF"));
+  // Windows and macOS compare names without case, so A.PDF is the a.pdf already there; Linux does not.
+  expect(uniquePath(dir, "A.PDF", taken)).toBe(join(dir, process.platform === "linux" ? "A.PDF" : "A (3).PDF"));
 });
 
 test("the Downloads folder is the one the system names, wherever the user moved it", () => {
