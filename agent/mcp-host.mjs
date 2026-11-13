@@ -267,6 +267,21 @@ function guideTool(tool) {
   return tool;
 }
 
+/**
+ * The name of the AI driving this connection, as its client introduces itself ("claude-code",
+ * "codex-mcp-client"…), for the label on the pointer Vela Browser draws over the card.
+ */
+export function agentLabel(info) {
+  const raw = String(info?.title || info?.name || "").trim();
+  if (/claude[\s_-]*code/i.test(raw)) return "Claude Code";
+  for (const [pattern, label] of [[/claude/i, "Claude"], [/codex/i, "Codex"], [/openclaw/i, "OpenClaw"], [/hermes/i, "Hermes"],
+    [/cursor/i, "Cursor"], [/gemini/i, "Gemini"], [/windsurf/i, "Windsurf"], [/cline/i, "Cline"], [/goose/i, "Goose"]]) {
+    if (pattern.test(raw)) return label;
+  }
+  const clean = raw.replace(/[^\p{L}\p{N} ._-]/gu, "").replace(/[-_.]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 24);
+  return clean ? clean.replace(/(^|\s)\p{Ll}/gu, (letter) => letter.toUpperCase()) : "AI";
+}
+
 function toolResult(value) {
   return {
     content: [{ type: "text", text: JSON.stringify(value) }],
@@ -353,11 +368,12 @@ export async function createVelaBrowserMcp(options = {}) {
    * that does not know the method is not asked again.
    */
   let pointerSupported = true;
+  const agent = () => agentLabel(server.getClientVersion());
   const pointerReporter = (profileId) => {
     let last = 0, pending = null, timer = null;
     const send = (event) => {
       if (!pointerSupported) return;
-      runtime.call("workbench.pointer", { profileId, x: Math.round(event.x * 10) / 10, y: Math.round(event.y * 10) / 10, phase: event.phase })
+      runtime.call("workbench.pointer", { profileId, x: Math.round(event.x * 10) / 10, y: Math.round(event.y * 10) / 10, phase: event.phase, agent: agent() })
         .catch((error) => { if (/unknown|unsupported|invalid_request/i.test(String(error?.message ?? error))) pointerSupported = false; });
     };
     return (event) => {
@@ -535,7 +551,7 @@ export async function createVelaBrowserMcp(options = {}) {
       const session = await sessionFor(target);
       const known = (tool) => toolsFor(session).some((entry) => entry.name === tool);
       const actOne = (tool, toolArguments) => session.engine !== "chromium"
-        ? runtime.call(`${session.engine}.tools.call`, { profileId: target, name: tool, arguments: toolArguments, humanize })
+        ? runtime.call(`${session.engine}.tools.call`, { profileId: target, name: tool, arguments: toolArguments, humanize: { ...humanize, agent: agent() } })
         : session.humanizer ? session.humanizer.call(tool, toolArguments) : session.proxy.callTool(tool, toolArguments);
       let act;
       if (name === "browser_batch") {

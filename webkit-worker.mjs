@@ -60,6 +60,8 @@ async function run() {
   // What the user downloads lands in their Downloads folder, not in Playwright's temporary one.
   keepDownloads(context);
   let official, humanizer;
+  // The AI driving the current call, named on the pointer drawn over the card.
+  let pointerAgent;
   const closeOfficial = async () => {
     const current = official; official = undefined;
     await current?.client.close().catch(() => {});
@@ -141,8 +143,9 @@ async function run() {
       if (!bridge.tools.some(tool => tool.name === payload.name && !/pdf/i.test(tool.name))) throw error("invalid_request");
       humanizer ??= createHumanizer({ context, profileId: input.profileId,
         // Its pointer reaches Vela Browser with the workbench frames, to be drawn over the card.
-        onPointer: (event) => workbench.live.pointer(event),
+        onPointer: (event) => workbench.live.pointer({ ...event, agent: pointerAgent }),
         callOfficial: (tool, args) => official.client.callTool({ name: tool, arguments: args ?? {} }) });
+      pointerAgent = typeof payload.humanize?.agent === "string" ? payload.humanize.agent : undefined;
       humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });
       return humanizer.call(payload.name, payload.arguments ?? {});
     }

@@ -3,7 +3,7 @@ import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { callWebKitOwner, type WebKitOwner } from "./webkit-runtime.ts";
-import { validWorkbenchPointer } from "./workbench.ts";
+import { pointerAgent, validWorkbenchPointer } from "./workbench.ts";
 import { attachTimezones } from "./geoip.ts";
 import {
   BrowserLaunchError,
@@ -57,11 +57,12 @@ export interface AgentControlDeps {
   log?: (message: string) => void;
 }
 
-function humanizeParam(value: unknown): { enabled: boolean; speed: number; pasteOver: number | null } {
+function humanizeParam(value: unknown): { enabled: boolean; speed: number; pasteOver: number | null; agent?: string } {
   const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   const speed = typeof input.speed === "number" && Number.isFinite(input.speed) ? Math.min(2.5, Math.max(0.4, input.speed)) : 1;
   const pasteOver = typeof input.pasteOver === "number" && Number.isInteger(input.pasteOver) && input.pasteOver >= 0 ? Math.min(input.pasteOver, 100_000) : null;
-  return { enabled: input.enabled !== false, speed, pasteOver };
+  const agent = pointerAgent(input.agent);
+  return { enabled: input.enabled !== false, speed, pasteOver, ...(agent ? { agent } : {}) };
 }
 
 const FIREFOX_CAPABILITIES = ["firefox-native", "cookies", "navigation", "sessions", "mcp", "scripts"] as const;
@@ -272,7 +273,8 @@ export class AgentControlSession {
       case "plugins.list":
         return { plugins: this.pluginSpecs() };
       case "workbench.pointer": {
-        const pointer = { x: params.x, y: params.y, phase: params.phase };
+        const agent = pointerAgent(params.agent);
+        const pointer = { x: params.x, y: params.y, phase: params.phase, ...(agent ? { agent } : {}) };
         if (!validWorkbenchPointer(pointer)) throw agentError("invalid_request", "Invalid pointer");
         this.deps.pointer?.(stringParam(params, "profileId"), pointer);
         return {};

@@ -285,6 +285,8 @@ async function run() {
   // What the user downloads lands in their Downloads folder, not in Playwright's temporary one.
   keepDownloads(context);
   let humanizer;
+  // The AI driving the current call, named on the pointer drawn over the card.
+  let pointerAgent;
   let official;
   let closed = false;
   let closing = false;
@@ -430,9 +432,10 @@ async function run() {
         context,
         profileId: input.profileId,
         // Its pointer reaches Vela Browser with the workbench frames, to be drawn over the card.
-        onPointer: (event) => workbench.live.pointer(event),
+        onPointer: (event) => workbench.live.pointer({ ...event, agent: pointerAgent }),
         callOfficial: (tool, args) => official ? official.client.callTool({ name: tool, arguments: args ?? {} }) : callOfficial(tool, args),
       });
+      pointerAgent = typeof payload.humanize?.agent === "string" ? payload.humanize.agent : undefined;
       humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });
       return humanizer.call(payload.name, payload.arguments ?? {});
     }

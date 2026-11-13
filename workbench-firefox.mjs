@@ -94,7 +94,8 @@ export class LiveFrames {
    */
   pointer(event) {
     if (!this.stopStream || (event.page && this.page && event.page !== this.page)) return;
-    (this.pointers ??= []).push({ x: Math.round(event.x * 10) / 10, y: Math.round(event.y * 10) / 10, phase: event.phase });
+    const agent = typeof event.agent === "string" && event.agent ? event.agent.slice(0, 24) : undefined;
+    (this.pointers ??= []).push({ x: Math.round(event.x * 10) / 10, y: Math.round(event.y * 10) / 10, phase: event.phase, ...(agent ? { agent } : {}) });
     if (this.pointers.length > 64) this.pointers.splice(0, this.pointers.length - 64);
     if (!this.waiters.size) return;
     const answer = this.withPointer({ unchanged: true, seq: this.seq, ...this.viewport });
