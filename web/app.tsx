@@ -4025,7 +4025,7 @@ function App() {
                       </Select>
                     </label>
                     <label className="fld grow">
-                      <span>Proxy</span>
+                      <span>{t("Proxy")}</span>
                       <input value={editForm.proxy ?? ""} placeholder="host:port:username:password" onChange={(e) => setEF("proxy", e.target.value)} />
                       <small>{t("Leave blank to launch on a direct connection.")}</small>
                     </label>

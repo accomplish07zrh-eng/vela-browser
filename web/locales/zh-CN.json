@@ -466,7 +466,6 @@
   "Public library": "公共库",
   "{scriptName}: {status}. View run": "{scriptName}：{status}。查看运行",
   "Saved scripts": "已保存脚本",
-  "No scripts yet.": "暂无脚本。",
   "Published": "已发布",
   "Title": "标题",
   "Description": "描述",
@@ -476,7 +475,6 @@
   "No description": "暂无描述",
   "Source": "源码",
   "Select a script": "选择一个脚本",
-  "Import a .js, .mjs, or .py file to begin.": "导入 .js、.mjs 或 .py 文件开始。",
   "Search public scripts": "搜索公共脚本",
   "Search scripts": "搜索脚本",
   "Script language": "脚本语言",
@@ -874,5 +872,14 @@
   "Delete group “{group}”?": "删除分组“{group}”？",
   "Its {count} profile(s) move to Ungrouped and are not deleted.": "其中的 {count} 个环境会移到“未分组”，不会被删除。",
   "Convert {count} selected mobile persona(s) to stable desktop personas?": "将选中的 {count} 个移动端身份转换为稳定的桌面身份？",
-  "Account data, sessions, proxies, timezones and fingerprint seeds are preserved. Android keeps the Windows desktop family used by older Vela Browser; iPhone/iPad keeps macOS. A website may request device verification on first launch.": "账号数据、会话、代理、时区和指纹种子都会保留。Android 沿用旧版 Vela Browser 使用的 Windows 桌面系列，iPhone/iPad 沿用 macOS。网站可能在第一次启动时要求验证设备。"
+  "Account data, sessions, proxies, timezones and fingerprint seeds are preserved. Android keeps the Windows desktop family used by older Vela Browser; iPhone/iPad keeps macOS. A website may request device verification on first launch.": "账号数据、会话、代理、时区和指纹种子都会保留。Android 沿用旧版 Vela Browser 使用的 Windows 桌面系列，iPhone/iPad 沿用 macOS。网站可能在第一次启动时要求验证设备。",
+  "No scripts yet": "还没有脚本",
+  "A script drives the browsers you choose, one profile after another or many at once: it opens pages, fills in forms and reads what it finds.": "脚本替你驱动选中的浏览器，可以一个接一个，也可以很多个同时跑：打开网页、填写表单、读出页面上的内容。",
+  "Browse the public library": "看看公共库",
+  "JavaScript (.js, .mjs) or Python (.py), written with Playwright.": "支持 JavaScript（.js、.mjs）和 Python（.py），用 Playwright 编写。",
+  "Example language": "示例语言",
+  "Runs once in every profile you choose.": "在你选中的每个环境里各运行一次。",
+  "What it does, in a line": "用一句话说明它做什么",
+  "{count} lines": "{count} 行",
+  "Its source, title and description open here.": "在左侧选一个脚本，它的源码、标题和说明会显示在这里。"
 }

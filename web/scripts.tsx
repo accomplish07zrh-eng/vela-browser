@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Select } from "./select.tsx";
+import "./scripts.css";
 import { confirmDialog } from "./dialog.tsx";
 import { NumberInput } from "./controls.tsx";
 import type {
@@ -51,6 +52,78 @@ type ScriptsTab = "mine" | "library";
 
 function languageName(language: ScriptLanguage): string {
   return language === "python" ? "Python" : "JavaScript";
+}
+
+/** Scripts that run as they are; the comment above each is written in the reader's language. */
+const SAMPLES: Record<ScriptLanguage, { file: string; comment: string; source: string }> = {
+  javascript: {
+    file: "title.mjs",
+    comment: "//",
+    source: `export default async ({ page, inputs, log }) => {
+  await page.goto(inputs.url ?? "https://example.com");
+  log(await page.title());
+};`,
+  },
+  python: {
+    file: "title.py",
+    comment: "#",
+    source: `async def run(*, page, inputs, log, **_):
+    await page.goto(inputs.get("url", "https://example.com"))
+    log(await page.title())`,
+  },
+};
+
+const KEYWORDS = /^(?:export|default|async|await|const|let|return|if|else|for|of|in|new|def|import|from|as|None|True|False|null|undefined|true|false)$/;
+
+/** Source with quiet colouring: comments, strings, keywords and numbers. Text only, never HTML. */
+export function CodeBlock({ source, className = "" }: { source: string; className?: string }) {
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  return <pre className={`script-code ${className}`.trim()}><code>{lines.map((line, index) => <span className="code-line" key={index}>{tokens(line)}{"\n"}</span>)}</code></pre>;
+}
+
+function tokens(line: string): ReactNode[] {
+  const parts: ReactNode[] = [];
+  const pattern = /(\/\/.*$|#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)/g;
+  let last = 0;
+  for (const match of line.matchAll(pattern)) {
+    const at = match.index ?? 0;
+    if (at > last) parts.push(line.slice(last, at));
+    const [text, comment, string, number, word] = match;
+    const kind = comment ? "comment" : string ? "string" : number ? "number" : word && KEYWORDS.test(word) ? "keyword" : null;
+    parts.push(kind ? <span className={`tok-${kind}`} key={at}>{text}</span> : text);
+    last = at + text.length;
+  }
+  if (last < line.length) parts.push(line.slice(last));
+  return parts;
+}
+
+function ScriptsWelcome({ busy, onImport, onLibrary }: { busy: boolean; onImport: () => void; onLibrary: () => void }) {
+  const { t } = useTranslation();
+  const [language, setLanguage] = useState<ScriptLanguage>("javascript");
+  const sample = SAMPLES[language];
+  return <section className="scripts-welcome">
+    <div className="scripts-welcome-text">
+      <div className="scripts-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect className="duo" x="3" y="4" width="18" height="16" rx="3.6" /><rect x="3" y="4" width="18" height="16" rx="3.6" /><path d="M9.6 9.4 7 12l2.6 2.6M14.4 9.4 17 12l-2.6 2.6M12.9 8.4l-1.8 7.2" /></svg>
+      </div>
+      <h2>{t("No scripts yet")}</h2>
+      <p>{t("A script drives the browsers you choose, one profile after another or many at once: it opens pages, fills in forms and reads what it finds.")}</p>
+      <div className="scripts-welcome-actions">
+        <button className="btn primary" type="button" disabled={busy} onClick={onImport}>{t("Import script")}</button>
+        <button className="btn ghost" type="button" onClick={onLibrary}>{t("Browse the public library")}</button>
+      </div>
+      <p className="scripts-welcome-hint">{t("JavaScript (.js, .mjs) or Python (.py), written with Playwright.")}</p>
+    </div>
+    <figure className="scripts-sample">
+      <figcaption>
+        <span className="scripts-sample-file">{sample.file}</span>
+        <span className="scripts-sample-tabs" role="tablist" aria-label={t("Example language")}>
+          {(["javascript", "python"] as const).map((item) => <button key={item} type="button" role="tab" aria-selected={language === item} className={language === item ? "active" : ""} onClick={() => setLanguage(item)}>{languageName(item)}</button>)}
+        </span>
+      </figcaption>
+      <CodeBlock source={`${sample.comment} ${t("Runs once in every profile you choose.")}\n${sample.source}`} />
+    </figure>
+  </section>;
 }
 
 
@@ -215,43 +288,52 @@ export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => v
   const detailsChanged = !!script && (script.name !== savedScript?.name || script.description !== savedScript?.description);
   return (
     <div className="workspace scripts-page">
-      <div className="scripts-head">
-        <p className="scripts-note">{t("Scripts, runs and logs stay on this computer.")}</p>
-        {tab === "mine" && <button className="btn primary" type="button" disabled={busy} onClick={() => importRef.current?.click()}>{t("Import script")}</button>}
-      </div>
-      <div className="tabs scripts-tabs" role="tablist" aria-label={t("Script library")}>
-        <button className={`tab${tab === "mine" ? " active" : ""}`} role="tab" aria-selected={tab === "mine"} type="button" onClick={() => setTab("mine")}>{t("My scripts")}</button>
-        <button className={`tab${tab === "library" ? " active" : ""}`} role="tab" aria-selected={tab === "library"} type="button" onClick={() => setTab("library")}>{t("Public library")}</button>
+      <div className="scripts-toolbar">
+        <div className="segmented scripts-tabs" role="tablist" aria-label={t("Script library")}>
+          <button className={tab === "mine" ? "active" : ""} role="tab" aria-selected={tab === "mine"} type="button" onClick={() => setTab("mine")}>
+            {t("My scripts")}{scripts.length > 0 && <span className="scripts-count">{scripts.length}</span>}
+          </button>
+          <button className={tab === "library" ? "active" : ""} role="tab" aria-selected={tab === "library"} type="button" onClick={() => setTab("library")}>{t("Public library")}</button>
+        </div>
+        <p className="scripts-note">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2.2" /><path d="M8 11V8a4 4 0 1 1 8 0v3" /></svg>
+          {t("Scripts, runs and logs stay on this computer.")}
+        </p>
+        {tab === "mine" && scripts.length > 0 && <button className="btn primary" type="button" disabled={busy} onClick={() => importRef.current?.click()}>{t("Import script")}</button>}
       </div>
       {error && <div className="modal-err" role="alert">{error}</div>}
       {tab === "library" ? <PublicLibrary onImported={imported} /> : <>
         {currentRun && <button className="scripts-run-note" type="button" onClick={onViewRun}>{t("{scriptName}: {status}. View run", { scriptName: currentRun.scriptName, status: currentRun.status })}</button>}
         <PythonRuntimeNote status={python} onDownload={downloadPython} />
-        <div className="scripts-layout">
+        {scripts.length === 0 ? <ScriptsWelcome busy={busy} onImport={() => importRef.current?.click()} onLibrary={() => setTab("library")} /> : <div className="scripts-layout">
           <div className="scripts-list" aria-label={t("Saved scripts")}>
-            {scripts.length === 0 ? <p className="formnote">{t("No scripts yet.")}</p> : scripts.map((item) => (
+            {scripts.map((item) => (
               <button className={`script-row${script?.id === item.id ? " active" : ""}`} type="button" key={item.id} disabled={busy} onClick={() => void select(item.id)}>
-                <b>{item.name}</b><span>{languageName(item.language)}</span>
-                {item.description && <small>{item.description}</small>}
+                <span className={`script-lang ${item.language}`} aria-hidden="true">{item.language === "python" ? "PY" : "JS"}</span>
+                <span className="script-row-text"><b>{item.name}</b>{item.description ? <small>{item.description}</small> : <small>{languageName(item.language)}</small>}</span>
               </button>
             ))}
           </div>
           {script ? (
-            <section className="settings-card script-detail">
-              <header><h2>{script.name}</h2><span className="chip">{languageName(script.language)}</span></header>
-              <div className="card-body">
-                <label className="fld"><span>{t("Title")}</span><input className="input" value={script.name} onChange={(event) => setScript({ ...script, name: event.target.value })} /></label>
-                <label className="fld"><span>{t("Description")}</span><input className="input" value={script.description} onChange={(event) => setScript({ ...script, description: event.target.value })} /></label>
+            <section className="script-detail">
+              <header className="script-detail-head">
+                <span className={`script-lang ${script.language}`} aria-hidden="true">{script.language === "python" ? "PY" : "JS"}</span>
+                <div className="script-detail-title"><h2>{savedScript?.name ?? script.name}</h2><span>{languageName(script.language)}</span></div>
                 <div className="script-actions">
-                  <button className="btn primary" type="button" disabled={busy} onClick={() => void saveDetails()}>{busy ? t("Saving…") : t("Save details")}</button>
-                  <button className="btn" type="button" disabled={busy} onClick={() => replaceRef.current?.click()}>{t("Replace file")}</button>
-                  <button className="btn danger" type="button" disabled={busy} onClick={() => void remove()}>{t("Delete")}</button>
+                  <button className="btn ghost" type="button" disabled={busy} onClick={() => replaceRef.current?.click()}>{t("Replace file")}</button>
+                  <button className="btn ghost danger" type="button" disabled={busy} onClick={() => void remove()}>{t("Delete")}</button>
                 </div>
-                <label className="fld"><span>{t("Source")}</span><pre className="script-source">{script.source}</pre></label>
+              </header>
+              <div className="script-fields">
+                <label className="fld"><span>{t("Title")}</span><input className="input" value={script.name} onChange={(event) => setScript({ ...script, name: event.target.value })} /></label>
+                <label className="fld"><span>{t("Description")}</span><input className="input" value={script.description} placeholder={t("What it does, in a line")} onChange={(event) => setScript({ ...script, description: event.target.value })} /></label>
+                {detailsChanged && <button className="btn primary script-save" type="button" disabled={busy} onClick={() => void saveDetails()}>{busy ? t("Saving…") : t("Save details")}</button>}
               </div>
+              <div className="script-source-head"><span>{t("Source")}</span><small>{t("{count} lines", { count: script.source.split("\n").length })}</small></div>
+              <CodeBlock source={script.source} className="script-source" />
             </section>
-          ) : <div className="emptystate"><b>{t("Select a script")}</b><p>{t("Import a .js, .mjs, or .py file to begin.")}</p></div>}
-        </div>
+          ) : <div className="script-pick"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg><b>{t("Select a script")}</b><p>{t("Its source, title and description open here.")}</p></div>}
+        </div>}
       </>}
       <input ref={importRef} type="file" accept=".js,.mjs,.py,text/javascript,text/x-python" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); event.target.value = ""; }} />
       <input ref={replaceRef} type="file" accept=".js,.mjs,.py,text/javascript,text/x-python" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void replaceFile(file); event.target.value = ""; }} />
@@ -338,21 +420,22 @@ function PublicLibrary({ onImported }: { onImported: (script: ScriptRecord) => P
       <div className="scripts-list" aria-label={t("Public scripts")}>
         {busy && scripts.length === 0 ? <p className="formnote">{t("Loading scripts…")}</p> : scripts.length === 0 ? <p className="formnote">{t("No public scripts found.")}</p> : scripts.map((item) => (
           <button className={`script-row${script?.id === item.id ? " active" : ""}`} type="button" key={item.id} disabled={busy} onClick={() => void select(item.id)}>
-            <b>{item.name}</b><span>{item.authorName} · {languageName(item.language)} · {new Date(item.updatedAt).toLocaleDateString()}</span>
-            {item.description && <small>{item.description}</small>}
+            <span className={`script-lang ${item.language}`} aria-hidden="true">{item.language === "python" ? "PY" : "JS"}</span>
+            <span className="script-row-text"><b>{item.name}</b><small>{item.description || `${item.authorName} · ${new Date(item.updatedAt).toLocaleDateString()}`}</small></span>
           </button>
         ))}
-        <div className="script-library-pager"><button className="btn" type="button" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>{t("Previous")}</button><button className="btn" type="button" disabled={busy || nextOffset === null} onClick={() => setOffset(nextOffset ?? offset)}>{t("Next")}</button></div>
+        {(offset > 0 || nextOffset !== null) && <div className="script-library-pager"><button className="btn ghost" type="button" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>{t("Previous")}</button><button className="btn ghost" type="button" disabled={busy || nextOffset === null} onClick={() => setOffset(nextOffset ?? offset)}>{t("Next")}</button></div>}
       </div>
-      {script ? <section className="settings-card script-detail">
-        <header><h2>{script.name}</h2><span className="chip">{languageName(script.language)}</span></header>
-        <div className="card-body">
-          <p>{script.description || t("No description")}</p>
-          <p className="formnote">{t("By {authorName}", { authorName: script.authorName })}{script.authorEmail && <> · {script.authorEmail}</>} · {new Date(script.updatedAt).toLocaleDateString()}</p>
-          <button className="btn primary" type="button" disabled={busy} onClick={() => void importScript()}>{t("Add to my scripts")}</button>
-          <label className="fld"><span>{t("Source")}</span><pre className="script-source">{script.source}</pre></label>
-        </div>
-      </section> : <div className="emptystate"><b>{t("Select a public script")}</b><p>{t("Choose a script to view its details and source.")}</p></div>}
+      {script ? <section className="script-detail">
+        <header className="script-detail-head">
+          <span className={`script-lang ${script.language}`} aria-hidden="true">{script.language === "python" ? "PY" : "JS"}</span>
+          <div className="script-detail-title"><h2>{script.name}</h2><span>{t("By {authorName}", { authorName: script.authorName })}{script.authorEmail && <> · {script.authorEmail}</>} · {new Date(script.updatedAt).toLocaleDateString()}</span></div>
+          <div className="script-actions"><button className="btn primary" type="button" disabled={busy} onClick={() => void importScript()}>{t("Add to my scripts")}</button></div>
+        </header>
+        <p className="script-description">{script.description || t("No description")}</p>
+        <div className="script-source-head"><span>{t("Source")}</span><small>{t("{count} lines", { count: script.source.split("\n").length })}</small></div>
+        <CodeBlock source={script.source} className="script-source" />
+      </section> : <div className="script-pick"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg><b>{t("Select a public script")}</b><p>{t("Choose a script to view its details and source.")}</p></div>}
     </div>
   </div>;
 }

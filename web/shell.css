@@ -463,3 +463,23 @@
 .app .main .plugin-tools .tag { padding: 1px 7px; border-radius: 999px; background: var(--surface-sunken); color: var(--muted); font-size: 11px; }
 .app .main .plugin-tools .tag.warn { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); color: var(--ink); }
 .app .wall .workbench-ring-dot[data-status="cooled"] span { background: transparent; box-shadow: inset 0 0 0 1px var(--status-idle); }
+
+/* ── Wide windows: pages of forms and cards keep a readable measure, centred, their title with them.
+   The profile table and the wall still use the whole width. ── */
+.app:is([data-view="settings"], [data-view="extensions"], [data-view="scripts"], [data-view="proxies"], [data-view="trash"]) .main {
+  --page-pad: max(32px, calc((100% - 1240px) / 2));
+}
+.app:is([data-view="settings"], [data-view="extensions"], [data-view="scripts"], [data-view="proxies"], [data-view="trash"]) .main .pagehead {
+  padding-left: var(--page-pad); padding-right: var(--page-pad);
+}
+.app:is([data-view="settings"], [data-view="extensions"], [data-view="scripts"]) .main .workspace:not(.proxy-page) {
+  width: auto; margin-left: var(--page-pad); margin-right: var(--page-pad);
+}
+.app:is([data-view="proxies"], [data-view="trash"]) .main .workspace.proxy-page {
+  padding-left: var(--page-pad); padding-right: var(--page-pad);
+}
+@media (min-width: 1000px) {
+  /* Inside the measure the controls take the room the section gives them, up to a comfortable width. */
+  .app .main .settings-card { grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); column-gap: 56px; }
+  .app .main .settings-card > .card-body { max-width: 860px; }
+}

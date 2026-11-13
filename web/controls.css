@@ -88,19 +88,35 @@
 @keyframes vprogress-run { from { background-position: 120% 0, 0 0; } to { background-position: -120% 0, 0 0; } }
 
 /* ---- Disclosures: one chevron that turns, in place of the system triangle ---- */
-.app details > summary:not(.fingerprint-settings > summary) {
+/* Layout stays low in the cascade, so a section that spaces its own summary keeps doing so. */
+:where(.app) details > summary {
   list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px;
   border-radius: 6px; transition: color .14s var(--ease, ease);
 }
 .app details > summary::-webkit-details-marker { display: none; }
-.app details > summary:not(.fingerprint-settings > summary)::before {
-  content: ""; flex: none; width: 12px; height: 12px; background: currentColor; opacity: .55;
+.app details > summary::marker { content: ""; }
+.app details > summary::before {
+  content: ""; flex: none; width: 12px; height: 12px; border: 0; background: currentColor; opacity: .55;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M4.5 3 7.5 6l-3 3' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M4.5 3 7.5 6l-3 3' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
   transition: transform .26s var(--spring-control, cubic-bezier(.3, 1.4, .5, 1)), opacity .14s var(--ease, ease);
 }
-.app details[open] > summary:not(.fingerprint-settings > summary)::before { transform: rotate(90deg); opacity: .8; }
-.app details > summary:not(.fingerprint-settings > summary):hover::before { opacity: .9; }
+.app details[open] > summary::before { transform: rotate(90deg); opacity: .8; }
+.app details > summary:hover::before { opacity: .9; }
+
+/* ---- Quiet dropdowns (filters, templates): as wide as their words, the chevron right after them ---- */
+.app .quiet-select.vselect {
+  width: auto; flex: none; max-width: 260px; gap: 6px; padding: 0 10px 0 12px !important;
+  border-radius: 999px; transition: background .14s var(--ease, ease), color .14s var(--ease, ease);
+}
+.app .quiet-select.vselect .vselect-value { flex: 0 1 auto; }
+.app .quiet-select.vselect:hover, .app .quiet-select.vselect.open { background-color: var(--field-bg) !important; }
+.app .profile-filters { gap: 4px 6px; }
+.app .profile-filters .profile-filter-count { margin-left: 10px; }
+
+/* ---- A field for one small number does not stretch across the page ---- */
+.app .vnumber { max-width: 220px; }
+.app .fld-row .vnumber { max-width: none; }
 .app details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---- File pickers: the system's own button, drawn like the app's ---- */
@@ -120,4 +136,40 @@
 
 @media (prefers-reduced-motion: reduce) {
   :where(.app) progress:indeterminate { animation-duration: 4s; }
+}
+
+/* ---- Scroll bars: the app's slim rounded bar, never the system bar with its arrow buttons ----
+   Chromium draws its own bar with arrows as soon as scrollbar-width or scrollbar-color is set,
+   and then ignores ::-webkit-scrollbar; engines that know the webkit bar keep it. */
+@supports selector(::-webkit-scrollbar) {
+  .app, .app * { scrollbar-width: auto !important; scrollbar-color: auto !important; }
+}
+.app ::-webkit-scrollbar { width: 12px; height: 12px; background: transparent; }
+.app ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+.app ::-webkit-scrollbar-track, .app ::-webkit-scrollbar-corner { background: transparent; }
+.app ::-webkit-scrollbar-thumb {
+  border: 3px solid transparent; border-radius: 999px; background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.app ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--ink) 34%, transparent); }
+.app ::-webkit-scrollbar-thumb:active { background-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+
+/* ---- Focus: a light ring that follows the control's shape, only for the keyboard ---- */
+.app :focus:not(:focus-visible) { outline: none; }
+.app .tabs .tab:focus-visible, .app .segmented button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px;
+}
+
+/* ---- Text fields: one soft ring when they take focus, never a ring around a ring ---- */
+.app :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), textarea, select, .vselect):focus-visible { outline: none; }
+.app :is(.input, .fld input, .fld textarea, .fld :is(select, .vselect), .select):is(:focus, :focus-visible):not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+  border-color: color-mix(in srgb, var(--focus-accent, var(--accent)) 50%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus-accent, var(--accent)) 16%, transparent);
+}
+
+/* ---- Dialogs that scroll: their content fades under the footer instead of being cut off ---- */
+.app .modal > .modal-body {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  padding-bottom: 26px;
 }
