@@ -35,6 +35,11 @@ if (-not $env:VELA_LEAK_FIREFOX) {
 }
 $node = Join-Path $env:LOCALAPPDATA 'Vela Browser\playwright\node'
 if (Test-Path $node) { $env:PATH = "$node;$env:PATH" }
+# The fingerprint test also launches a deliberately unhardened baseline, which does resolve names.
+# It writes its probe ids here; its packets are a second positive control, not a product leak.
+$baselineIds = Join-Path $WorkDir 'baseline-ids.txt'
+New-Item -ItemType File -Force -Path $baselineIds | Out-Null
+$env:VELA_LEAK_BASELINE_IDS = $baselineIds
 
 pktmon filter remove | Out-Null
 foreach ($port in 53, 853, 5353, 5355, 137) { pktmon filter add "port$port" -p $port | Out-Null }
@@ -52,18 +57,25 @@ try {
 }
 pktmon etl2pcap $etl --out $pcap | Out-Null
 
-# DNS names travel as labels: 9 "vela-leak" 4 "test".
+# DNS names travel as labels: <len> "turn-1d3c313f" 9 "vela-leak" 4 "test".
 $bytes = [System.IO.File]::ReadAllBytes($pcap)
 $text = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($bytes)
-$label = [char]9 + 'vela-leak' + [char]4 + 'test'
-$hits = ([regex]::Matches($text, [regex]::Escape($label))).Count
-$plain = ([regex]::Matches($text, 'vela-leak')).Count
+$baseline = @(Get-Content $baselineIds -ErrorAction SilentlyContinue | Where-Object { $_ -match '^[0-9a-f]{8}$' })
+$named = [regex]::Matches($text, '[\x01-\x3f]([a-z0-9-]+)\x09vela-leak\x04test')
+$hits = 0; $baselineHits = 0
+foreach ($m in $named) {
+  $id = [regex]::Match($m.Groups[1].Value, '[0-9a-f]{8}$').Value
+  if ($id -and $baseline -contains $id) { $baselineHits++ } else { $hits++ }
+}
+# Any other appearance of the probe domain (not in label form) is counted as a leak too.
+$plain = ([regex]::Matches($text, 'vela-leak')).Count - $named.Count
 $control = ([regex]::Matches($text, [regex]::Escape([char]9 + 'vela-ctrl' + [char]4 + 'test'))).Count
 Write-Output "probe test exit code: $testExit"
 Write-Output "positive control packets: $control"
 if ($control -eq 0) { Write-Output 'INVALID: the capture missed the control lookup, so it proves nothing.'; exit 2 }
 Write-Output "capture: $pcap ($([math]::Round($bytes.Length / 1KB)) KB)"
-Write-Output "packets carrying a probe name: $hits (any 'vela-leak' bytes: $plain)"
+Write-Output "baseline (deliberately unhardened, not product) packets: $baselineHits from ids $($baseline -join ', ')"
+Write-Output "product packets carrying a probe name: $hits (other 'vela-leak' bytes: $plain)"
 if ($hits -gt 0 -or $plain -gt 0) { Write-Output 'LEAK: this computer sent a DNS-family packet for a probe name.'; exit 1 }
 Write-Output 'no DNS-family packet carried a probe name'
 exit $testExit

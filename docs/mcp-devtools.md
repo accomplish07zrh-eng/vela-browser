@@ -64,6 +64,8 @@ Unlike the developer tools, changing a profile's proxy needs the user's consent,
 - **Allow pool proxies without asking.**
 - **Never allow**: the call fails with `approval_denied`.
 
+`vela_profiles_list` and `vela_browser_status` say which proxy each profile uses: `proxyNodeId` for a pool proxy, with `proxyNodeName` and `proxyCountry` when known (a name that contains an address or a credential is left out), or only `proxyType` for any other proxy.
+
 The setting applies to every MCP client; the client's name, as it introduces itself, is shown on the card and kept in the profile's proxy history (`mcp:<name>`).
 
 After approval the change is the same as one made in the dashboard. The new proxy is checked first and nothing changes if the check fails (`switch_check_failed`). A closed profile uses the proxy from its next start (`"applied": "next_launch"`). An open browser saves its session, closes, and reopens on the new exit with its tabs, timezone and WebRTC address following the new exit (`"applied": "reopened"`); the MCP connection reattaches to it. If the reopened browser's exit turns out to be this computer's own address, it is closed (`exit_is_direct`). One profile can change at most once every 30 seconds (`rate_limited`). Other errors: `node_unavailable`, `pool_exhausted`, `profile_busy`, `teardown_unconfirmed`, `reopen_failed`.
