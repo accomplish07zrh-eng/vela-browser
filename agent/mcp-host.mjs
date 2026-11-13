@@ -199,6 +199,43 @@ const ALIAS_TOOLS = [
     inputSchema: EMPTY_SCHEMA,
   },
 {
+    name: "vela_proxy_pool_list",
+    description: "List the proxies in Vela Browser's proxy pool, to choose one for vela_browser_set_proxy. Each has a nodeId, name, protocol, exit country (from its last check, or its name when never checked), status, and how many profiles use it of how many may. Credentials and subscription links are never returned.",
+    annotations: toolAnnotations("List the proxy pool", { readOnly: true }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        country: { type: "string", pattern: "^[A-Za-z]{2}$", description: "Two-letter exit country, e.g. US." },
+        tag: { type: "string" },
+        status: { type: "string", enum: ["working", "unstable", "failed", "unavailable", "unchecked"] },
+        available: { type: "boolean", description: "Only proxies that are enabled and below their sharing limit." },
+      },
+      additionalProperties: false,
+    },
+  },
+{
+    name: "vela_proxy_pool_check",
+    description: "Check pool proxies now (exit IP country, whether they work). This sends a few requests to an IP lookup service through each proxy. Returns the same entries as vela_proxy_pool_list.",
+    annotations: toolAnnotations("Check pool proxies", { openWorld: true }),
+    inputSchema: {
+      type: "object",
+      properties: { nodeIds: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, maxItems: 50 } },
+      required: ["nodeIds"],
+      additionalProperties: false,
+    },
+  },
+{
+    name: "vela_browser_set_proxy",
+    description: "Give a profile a proxy from the pool (nodeId from vela_proxy_pool_list). Changing a profile's exit shows its sites an IP change, so the user may have to approve it in Vela Browser first (the call waits up to a minute). The new proxy is checked before anything changes. A closed profile uses it from its next start. An open browser saves its session, closes and reopens on the new exit with its tabs (timezone and WebRTC follow the new exit); this connection reattaches to it. Errors: approval_denied, approval_timeout, node_unavailable, pool_exhausted, rate_limited (one change per profile every 30 seconds), profile_busy, switch_check_failed, teardown_unconfirmed, reopen_failed, exit_is_direct.",
+    annotations: toolAnnotations("Change a profile's proxy", { destructive: true, openWorld: true }),
+    inputSchema: {
+      type: "object",
+      properties: { profileId: PROFILE_ID, nodeId: { type: "string", minLength: 1 } },
+      required: ["profileId", "nodeId"],
+      additionalProperties: false,
+    },
+  },
+{
     name: "vela_humanize",
     description: "Turn human-like input on or off for the browsers this connection drives, or change its pace. It is on by default: clicks, hovers, drags, typing and form filling move a pointer on a curved path, land inside the element, scroll with the wheel and type key by key, each profile with its own stable habits. Call without arguments to read the current setting.",
     annotations: toolAnnotations("Human-like input"),
@@ -463,6 +500,30 @@ export async function createVelaBrowserMcp(options = {}) {
     try {
       if (name === "vela_profiles_list") {
         return toolResult(await runtime.call("profiles.list"));
+      }
+      if (name === "vela_proxy_pool_list") {
+        return toolResult(await runtime.call("proxyPool.list", args));
+      }
+      if (name === "vela_proxy_pool_check") {
+        return toolResult(await runtime.call("proxyPool.check", { nodeIds: args.nodeIds }));
+      }
+      if (name === "vela_browser_set_proxy") {
+        const client = server.getClientVersion?.()?.name;
+        const result = await runtime.call("profiles.setProxy", {
+          profileId: args.profileId, nodeId: args.nodeId, ...(client ? { client: String(client) } : {}),
+        });
+        // A reopened browser is a new browser: drop the old connection and attach to the new one.
+        if (result?.applied === "reopened" && sessions.has(args.profileId)) {
+          const wasSelected = selectedProfileId === args.profileId;
+          await detachSession(args.profileId).catch(() => {});
+          const status = await runtime.call("browser.status", { profileId: args.profileId }).catch(() => undefined);
+          if (status?.running) {
+            if (wasSelected) await selectBrowser(args.profileId, status).catch(() => {});
+            else await attachSession(args.profileId, status).catch(() => {});
+          }
+          await publishTools().catch(() => {});
+        }
+        return toolResult(result);
       }
       if (name === "vela_profile_create") {
         return toolResult(await runtime.call("profiles.create", profileInput(args)));

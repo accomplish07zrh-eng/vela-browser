@@ -472,6 +472,14 @@ interface ProxyNode {
   6. 记录切换历史：时间、发起方（`dashboard` 或 `mcp:<连接名>`）、新旧节点、结果、出口国家。
 - **入口**：编辑环境弹窗里的"从代理池选择"。环境运行中时，按钮显示"更换并重开浏览器"，并先弹确认；下面显示最近一次更换记录。
 - **真实验收**：A（trojan）和 B（shadowsocks）两个节点各接一个假出口，浏览器运行中从 A 换到 B。换完后 A 的出口没再收到任何请求，换之前 B 的出口也一个没有；重开后恢复的页面经 B 加载；全程没有本机解析、没有非回环连接，金丝雀什么都没收到。
+
+**阶段 4 的实际做法**（`src/proxy-approvals.ts`、`src/agent-control.ts`、`agent/mcp-host.mjs`）：
+
+- **三个工具**按 §6.1 实现。返回的节点字段是 `nodeId, name, protocol, country, city, status, checkMs, rotatingIp, certificateNotChecked, noLongerInSubscription, disabled, assignedProfiles, maxProfiles, sameExitAsNodes`，没有地址、密码和订阅链接。`vela_browser_set_proxy` 不带 `reload` 参数：现在一律走自动重开，没有"只换不刷新"的情况。
+- **审批是全局设置**，不按连接分：云端连接（`mcp.connectors`）已经删掉，没有可挂的连接记录。设置存在 `config.json` 的 `aiProxyChanges`（缺省 = 每次询问，`allow_pool`，`deny`），界面在"代理 → 代理池"最下面的"AI 换代理"。连接名取 MCP 客户端握手时报的名字，显示在卡片上，并写进切换历史（`mcp:<名字>`）。
+- **关闭的环境也要审批**（和 §6.2 原稿不同）：换代理后下次启动的出口照样会变，对账号网站的效果一样，所以不区分。
+- **审批卡片**挂在界面最外层，不管当前在哪一页都会弹出；60 秒没人回答按拒绝处理。同一环境有新请求时，旧的未答请求直接作废（按拒绝返回）。
+- **批准之后**和界面里换代理是同一条路径（`switchProfileProxy`）：预检、互斥、30 秒限频、确认关闭、复核出口、记历史都一样。重开后 MCP 这边断开旧连接，重新接上新浏览器；原来选中的环境仍保持选中。
 | **4 · MCP** | 三个工具、审批卡片、按连接的权限设置、频率限制；`docs/mcp-devtools.md` 和公开文档同步 | MCP 用例通过；`docs:public:check` 通过 |
 
 每个阶段单独开 PR，先合到 beta 分支给测试用户，不直接合 main（合 main 就等于发给所有人）。

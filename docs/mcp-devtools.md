@@ -47,3 +47,23 @@ Response bodies are read on demand from the original request, without replaying 
 Plugins add their own tools next to these, in every engine; see [plugins.md](plugins.md). JavaScript scripts can read the same developer record through `devtools.call(...)`.
 
 The existing navigation, snapshots, screenshots, input, file upload, arbitrary evaluation/run-code, tracing and lifecycle tools remain available. Lifecycle actions still go through Vela so session persistence, profile ownership and idle cooling continue to work.
+
+## Proxies from the pool
+
+Three tools let an AI work with the proxy pool the user set up in Vela Browser (Proxies → Proxy pool). They never return credentials or subscription links, and they accept only proxies already in the pool: an AI cannot add a proxy or a subscription, so a page cannot talk it into routing a profile through an address of its choosing.
+
+| Tool | Capability |
+| --- | --- |
+| `vela_proxy_pool_list` | Pool proxies with `nodeId`, name, protocol, exit country and city, status, check time, and how many profiles use each of how many may; filter by `country`, `tag`, `status` or `available` |
+| `vela_proxy_pool_check` | Check up to 50 proxies now (exit IP and country). Sends a few requests to an IP lookup service through each |
+| `vela_browser_set_proxy` | Give a profile a pool proxy by `nodeId` |
+
+Unlike the developer tools, changing a profile's proxy needs the user's consent, because the profile's sites see its IP change. Under Proxies → Proxy pool → AI proxy changes the user chooses:
+
+- **Ask me each time** (default): Vela Browser shows a card naming the AI client, the profile, and the old and new proxy, with Allow and Deny. The call waits; without an answer within 60 seconds it fails with `approval_timeout` and nothing changes.
+- **Allow pool proxies without asking.**
+- **Never allow**: the call fails with `approval_denied`.
+
+The setting applies to every MCP client; the client's name, as it introduces itself, is shown on the card and kept in the profile's proxy history (`mcp:<name>`).
+
+After approval the change is the same as one made in the dashboard. The new proxy is checked first and nothing changes if the check fails (`switch_check_failed`). A closed profile uses the proxy from its next start (`"applied": "next_launch"`). An open browser saves its session, closes, and reopens on the new exit with its tabs, timezone and WebRTC address following the new exit (`"applied": "reopened"`); the MCP connection reattaches to it. If the reopened browser's exit turns out to be this computer's own address, it is closed (`exit_is_direct`). One profile can change at most once every 30 seconds (`rate_limited`). Other errors: `node_unavailable`, `pool_exhausted`, `profile_busy`, `teardown_unconfirmed`, `reopen_failed`.

@@ -16,6 +16,10 @@ import {
   ProxyReplacementInputError,
 } from "./proxy-replacements.ts";
 import type { ProfileStore } from "./store.ts";
+import { poolNodeViews, type PoolNodeView } from "./proxy-pool.ts";
+import { runPoolChecks } from "./proxy-pool-api.ts";
+import { ProxySwitchError, proxyLabel, saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
+import type { AiProxyPolicy, ProxyApprovalQueue } from "./proxy-approvals.ts";
 
 export const AGENT_CONTROL_PROTOCOL = "aliasmode-agent-v1";
 export const AGENT_CONTROL_PATH = "/api/agent/v1/connect";
@@ -51,6 +55,15 @@ export interface AgentControlDeps {
   activity?: import("./cooling.ts").ActivityLog;
   /** The enabled plugins, read from the plugins folder each time an AI lists or calls tools. */
   plugins?: () => import("./plugins.ts").PluginSpec[];
+  /** People approve proxy changes an AI asks for here. Without it, such changes are refused unless allowed. */
+  proxyApprovals?: ProxyApprovalQueue;
+  /** The user's choice for AI proxy changes. Defaults to asking each time. */
+  aiProxyPolicy?: () => AiProxyPolicy;
+  /** Injectable exit check for proxy changes (tests). */
+  proxySwitchCheck?: import("./proxy-switch.ts").SwitchDeps["check"];
+  proxySwitchDirect?: import("./proxy-switch.ts").SwitchDeps["direct"];
+  /** Injectable exit-timezone lookup for proxy changes (tests). */
+  proxyTimezoneFetch?: import("./geoip.ts").FetchLike;
   /** The AI's human-like pointer, drawn over the browser's card on the workbench. */
   pointer?: (profileId: string, pointer: import("./workbench.ts").WorkbenchPointer) => void;
 
@@ -271,6 +284,12 @@ export class AgentControlSession {
         return await this.profileStatus(stringParam(params, "profileId"));
       case "plugins.list":
         return { plugins: this.pluginSpecs() };
+      case "proxyPool.list":
+        return { nodes: this.listPoolNodes(params) };
+      case "proxyPool.check":
+        return { nodes: await this.checkPoolNodes(params) };
+      case "profiles.setProxy":
+        return await this.setProfileProxy(params);
       case "workbench.pointer": {
         const pointer = { x: params.x, y: params.y, phase: params.phase };
         if (!validWorkbenchPointer(pointer)) throw agentError("invalid_request", "Invalid pointer");
@@ -304,6 +323,100 @@ export class AgentControlSession {
         throw agentError("accounts_removed", "Cloud connectors have been removed from Vela Browser");
       default:
         throw agentError("unknown_method", `unknown agent method: ${method}`);
+    }
+  }
+
+  /** The pool as an AI sees it: no credentials, no subscription links. */
+  private poolViews(): PoolNodeView[] {
+    const profiles = this.deps.store.listProfiles().map(({ id, name, group, proxy }) => ({ id, name, group, proxy }));
+    return poolNodeViews(this.deps.store.proxyPool.list(), profiles);
+  }
+
+  private static aiNode(view: PoolNodeView) {
+    const country = view.check?.country?.toUpperCase() ?? view.regionHint;
+    return {
+      nodeId: view.id,
+      name: view.name,
+      protocol: view.protocol,
+      ...(country ? { country } : {}),
+      ...(view.check?.city ? { city: view.check.city } : {}),
+      status: view.check?.status ?? "unchecked",
+      ...(view.check?.durationMs !== undefined ? { checkMs: view.check.durationMs } : {}),
+      ...(view.check?.rotating ? { rotatingIp: true } : {}),
+      ...(view.insecureTls ? { certificateNotChecked: true } : {}),
+      ...(view.removedFromSource ? { noLongerInSubscription: true } : {}),
+      ...(view.disabled ? { disabled: true } : {}),
+      assignedProfiles: view.profiles.length,
+      maxProfiles: view.maxProfiles,
+      ...(view.sameExitAs.length ? { sameExitAsNodes: view.sameExitAs } : {}),
+    };
+  }
+
+  private listPoolNodes(params: Record<string, unknown>) {
+    const country = typeof params.country === "string" && params.country.trim() ? params.country.trim().toUpperCase() : undefined;
+    const tag = typeof params.tag === "string" && params.tag.trim() ? params.tag.trim() : undefined;
+    const status = typeof params.status === "string" ? params.status : undefined;
+    return this.poolViews()
+      .filter((view) => (!tag || view.tags.includes(tag))
+        && (params.available !== true || (!view.disabled && (view.maxProfiles === null || view.profiles.length < view.maxProfiles))))
+      .map(AgentControlSession.aiNode)
+      .filter((node) => (!country || node.country === country) && (!status || node.status === status));
+  }
+
+  private async checkPoolNodes(params: Record<string, unknown>) {
+    const ids = params.nodeIds;
+    if (!Array.isArray(ids) || !ids.length || ids.length > 50 || ids.some((id) => typeof id !== "string")) {
+      throw agentError("invalid_request", "nodeIds must list 1 to 50 node ids");
+    }
+    const wanted = new Set(ids as string[]);
+    const nodes = this.deps.store.proxyPool.list().filter((node) => wanted.has(node.id));
+    await runPoolChecks(this.deps.store, nodes, {
+      kernels: this.deps.launcher.kernels,
+      ...(this.deps.proxySwitchCheck ? { check: this.deps.proxySwitchCheck } : {}),
+      ...(this.deps.proxySwitchDirect ? { direct: this.deps.proxySwitchDirect } : {}),
+    });
+    return this.poolViews().filter((view) => wanted.has(view.id)).map(AgentControlSession.aiNode);
+  }
+
+  /**
+   * An AI asks to change a profile's exit. The user's setting decides: never, pool nodes freely,
+   * or (by default) a person approves this one change on the dashboard. Then it is the same
+   * switch as the dashboard's, recorded as made by this AI client.
+   */
+  private async setProfileProxy(params: Record<string, unknown>) {
+    const profileId = stringParam(params, "profileId");
+    const nodeId = stringParam(params, "nodeId");
+    const client = (typeof params.client === "string" && params.client.trim() ? params.client.trim() : "AI").slice(0, 60);
+    const { store, launcher } = this.deps;
+    const profile = store.getProfile(profileId);
+    if (!profile) throw agentError("no_such_profile", "no such profile");
+    const node = store.proxyPool.get(nodeId);
+    if (!node || node.disabled) throw agentError("node_unavailable", "This proxy is not available in the pool");
+    const policy = this.deps.aiProxyPolicy?.() ?? "ask";
+    if (policy === "deny") throw agentError("approval_denied", "AI proxy changes are turned off in Vela Browser");
+    if (policy === "ask") {
+      if (!this.deps.proxyApprovals) throw agentError("approval_denied", "No one can approve this proxy change now");
+      const outcome = await this.deps.proxyApprovals.request({
+        profileId, profileName: profile.name || profileId, client,
+        from: proxyLabel(store, profile.proxy), to: `${node.protocol} · ${node.name}`,
+        reopens: !!store.getLaunch(profileId),
+      });
+      if (outcome === "timeout") throw agentError("approval_timeout", "No one approved this proxy change in time; nothing was changed");
+      if (outcome === "denied") throw agentError("approval_denied", "The proxy change was not approved; nothing was changed");
+    }
+    try {
+      const result = await switchProfileProxy({
+        store, launcher, assign: (id, proxy) => saveProfileProxy(store, id, proxy, this.deps.proxyTimezoneFetch),
+        ...(this.deps.proxySwitchCheck ? { check: this.deps.proxySwitchCheck } : {}),
+        ...(this.deps.proxySwitchDirect ? { direct: this.deps.proxySwitchDirect } : {}),
+        log: (msg) => this.deps.log?.(msg),
+      }, { profileId, nodeId, by: `mcp:${client}` });
+      return { profileId, ...result };
+    } catch (error) {
+      if (error instanceof ProxySwitchError) {
+        throw agentError(error.code, error.message + ("retryAfterMs" in error.detail ? ` (retry after ${Math.ceil(Number(error.detail.retryAfterMs) / 1000)} s)` : ""));
+      }
+      throw error;
     }
   }
 

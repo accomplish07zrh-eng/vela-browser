@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
-import { PoolNodeField, PoolProxyPicker } from "./proxy-pool.tsx";
+import { PoolNodeField, PoolProxyPicker, ProxyApprovalPrompts } from "./proxy-pool.tsx";
 import { WorkbenchPage } from "./workbench.tsx";
 import { CommandPalette, type SearchTarget } from "./command-palette.tsx";
 import "./design-tokens.css";
@@ -2522,6 +2522,7 @@ function App() {
 
   return (
     <>
+    <ProxyApprovalPrompts />
     <div
       className="app"
       data-view={view}

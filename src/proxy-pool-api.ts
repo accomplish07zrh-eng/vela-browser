@@ -169,6 +169,46 @@ export async function handleProxyPoolRequest(
   }
 }
 
+/**
+ * Check pool nodes and record the results. Kernel-protocol nodes go through one temporary kernel,
+ * one inbound each, which carries no profile's traffic and stops when the checks end; without a
+ * kernel they report "unavailable".
+ */
+export async function runPoolChecks(
+  store: ProfileStore,
+  nodes: PoolNode[],
+  opts: {
+    kernels?: Pick<KernelSupervisor, "startTemporary">;
+    check?: (proxy: ProxySpec, direct: import("./egress.ts").EgressInfo | null) => Promise<import("./proxy-check.ts").ProxyCheckResult>;
+    direct?: () => Promise<import("./egress.ts").EgressInfo | null>;
+    cancelled?: () => boolean;
+    onResult?: (node: PoolNode) => void;
+  } = {},
+): Promise<void> {
+  const kernelNodes = nodes.filter((node) => node.outbound);
+  let temporary: Awaited<ReturnType<KernelSupervisor["startTemporary"]>> | undefined;
+  try {
+    if (kernelNodes.length && opts.kernels) {
+      temporary = await opts.kernels.startTemporary(kernelNodes.map((node) => ({ tag: node.id, outbound: node.outbound! })));
+    }
+  } catch { /* each kernel node below reports "unavailable" */ }
+  const route = (node: PoolNode): ProxySpec | null => node.outbound ? temporary?.specs.get(node.id) ?? null : node.proxy;
+  try {
+    await checkPoolNodes(store.proxyPool, nodes, {
+      check: async (_proxy, checkOpts, node) => {
+        const via = route(node!);
+        if (!via) throw new Error("no kernel");
+        return opts.check ? opts.check(via, checkOpts.direct) : checkProxy(via, { direct: checkOpts.direct });
+      },
+      direct: opts.direct ?? (() => fetchDirectEgress()),
+      ...(opts.cancelled ? { cancelled: opts.cancelled } : {}),
+      ...(opts.onResult ? { onResult: opts.onResult } : {}),
+    });
+  } finally {
+    temporary?.process.stop();
+  }
+}
+
 /** Fetch a subscription and bring its nodes in line. The link never appears in the answer. */
 async function refreshSubscription(store: ProfileStore, id: string, deps: ProxyPoolRouteDeps) {
   const pool = store.proxyPool;
@@ -205,24 +245,10 @@ function streamChecks(store: ProfileStore, nodes: PoolNode[], options: UiRuntime
       };
       let completed = 0;
       send({ type: "progress", completed, total: nodes.length });
-      // Kernel-protocol nodes are checked through one temporary kernel, one inbound each, which
-      // carries no profile's traffic and stops when the checks end.
-      const kernelNodes = nodes.filter((node) => node.outbound);
-      let temporary: Awaited<ReturnType<KernelSupervisor["startTemporary"]>> | undefined;
       try {
-        if (kernelNodes.length && deps.kernels) {
-          temporary = await deps.kernels.startTemporary(kernelNodes.map((node) => ({ tag: node.id, outbound: node.outbound! })));
-        }
-      } catch { /* each kernel node below reports "unavailable" */ }
-      const route = (node: PoolNode): ProxySpec | null => node.outbound ? temporary?.specs.get(node.id) ?? null : node.proxy;
-      try {
-        await checkPoolNodes(store.proxyPool, nodes, {
-          check: async (_proxy, opts, node) => {
-            const via = route(node!);
-            if (!via) throw new Error("no kernel");
-            return options.proxyCheck ? options.proxyCheck(via) : checkProxy(via, { direct: opts.direct });
-          },
-          direct: options.proxyCheck ? async () => null : () => fetchDirectEgress(),
+        await runPoolChecks(store, nodes, {
+          ...(deps.kernels ? { kernels: deps.kernels } : {}),
+          ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
           cancelled: () => gone || signal.aborted,
           onResult: (node) => {
             send({ type: "node", node: views(store, [store.proxyPool.get(node.id) ?? node])[0] });
@@ -233,7 +259,6 @@ function streamChecks(store: ProfileStore, nodes: PoolNode[], options: UiRuntime
       } catch {
         send({ type: "error", error: "Proxy check failed" });
       } finally {
-        temporary?.process.stop();
         try { controller.close(); } catch {}
       }
     },

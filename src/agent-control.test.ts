@@ -462,3 +462,88 @@ test.each([
     ["firefox", undefined],
   ]);
 });
+
+// ---- Proxy pool and proxy changes for AI clients ----
+
+import { ProfileStore } from "./store.ts";
+import { ProxyApprovalQueue, type AiProxyPolicy } from "./proxy-approvals.ts";
+
+function poolHarness(policy: AiProxyPolicy) {
+  const store = new ProfileStore(":memory:");
+  store.upsertProfile({ ...buildNewProfile({ name: "Shop", group: "g", proxy: { type: "http", host: "old.example", port: "8080" } }, () => false), id: "profile1" });
+  const [node] = store.proxyPool.importText("203.0.113.40:8080:pool-user:pool-secret#🇺🇸 LA").added;
+  store.proxyPool.recordCheck(node!.id, { status: "working", country: "US", checkedAt: 1 });
+  const approvals = new ProxyApprovalQueue();
+  const launcher = {
+    kernels: { startTemporary: async () => { throw new Error("no kernel nodes here"); } },
+    start: async () => ({ ws: "ws://x", port: 1 }),
+    stop: async () => true,
+    captureLocalSession: async () => {},
+  };
+  const session = new AgentControlSession({
+    launcher: launcher as any, store, admission: {} as any,
+    proxyApprovals: approvals, aiProxyPolicy: () => policy,
+    proxySwitchCheck: async () => ({ status: "working", attempts: 3, successes: 3, ip: "203.0.113.41", country: "US" }),
+    proxySwitchDirect: async () => null,
+    proxyTimezoneFetch: async () => new Response("{}"),
+  });
+  return { store, node: node!, approvals, session, close: () => store.close() };
+}
+
+test("an AI lists the pool without credentials and can filter it", async () => {
+  const h = poolHarness("ask");
+  const listed = await h.session.enqueue(wire("proxyPool.list", { country: "us", available: true }));
+  expect(listed.ok).toBe(true);
+  expect(listed.result).toEqual({ nodes: [{ nodeId: h.node.id, name: "🇺🇸 LA", protocol: "http", country: "US", status: "working", assignedProfiles: 0, maxProfiles: 1 }] });
+  expect(JSON.stringify(listed)).not.toContain("pool-secret");
+  expect(((await h.session.enqueue(wire("proxyPool.list", { country: "JP" }))).result as any).nodes).toEqual([]);
+  expect((await h.session.enqueue(wire("proxyPool.check", { nodeIds: [] }))).error?.code).toBe("invalid_request");
+  h.close();
+});
+
+test("by default a person approves an AI's proxy change; a refusal or silence changes nothing", async () => {
+  const h = poolHarness("ask");
+  const pending = h.session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: h.node.id, client: "Claude Code" }));
+  await new Promise((r) => setTimeout(r, 20));
+  const [question] = h.approvals.list();
+  expect(question).toMatchObject({ profileId: "profile1", profileName: "Shop", client: "Claude Code", from: "http://old.example:8080", to: "http · 🇺🇸 LA", reopens: false });
+  h.approvals.answer(question!.id, false);
+  expect((await pending).error?.code).toBe("approval_denied");
+  expect(h.store.getProfile("profile1")!.proxy!.host).toBe("old.example");
+
+  const approved = h.session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: h.node.id, client: "Claude Code" }));
+  await new Promise((r) => setTimeout(r, 20));
+  h.approvals.answer(h.approvals.list()[0]!.id, true);
+  const answer = await approved;
+  expect(answer.ok).toBe(true);
+  expect(answer.result).toMatchObject({ profileId: "profile1", applied: "saved", next: "http · 🇺🇸 LA" });
+  expect(h.store.getProfile("profile1")!.proxy!.host).toBe("203.0.113.40");
+  expect(h.store.proxyPool.switchHistory("profile1")[0]).toMatchObject({ by: "mcp:Claude Code", outcome: "saved" });
+  expect(JSON.stringify(answer)).not.toContain("pool-secret");
+  h.close();
+});
+
+test("the user's setting can let pool changes through or turn them off", async () => {
+  const allowed = poolHarness("allow_pool");
+  const ok = await allowed.session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: allowed.node.id }));
+  expect(ok.ok).toBe(true);
+  expect(allowed.approvals.list()).toEqual([]);
+  // The switch's own limits still hold: one change per profile every 30 seconds.
+  const again = await allowed.session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: allowed.node.id }));
+  expect(again.error?.code).toBe("rate_limited");
+  allowed.close();
+
+  const denied = poolHarness("deny");
+  const refused = await denied.session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: denied.node.id }));
+  expect(refused.error?.code).toBe("approval_denied");
+  expect(denied.store.getProfile("profile1")!.proxy!.host).toBe("old.example");
+  denied.close();
+});
+
+test("an unknown node or profile is refused before anyone is asked", async () => {
+  const h = poolHarness("ask");
+  expect((await h.session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: "missing" }))).error?.code).toBe("node_unavailable");
+  expect((await h.session.enqueue(wire("profiles.setProxy", { profileId: "nobody", nodeId: h.node.id }))).error?.code).toBe("no_such_profile");
+  expect(h.approvals.list()).toEqual([]);
+  h.close();
+});
