@@ -1022,5 +1022,7 @@
   "Refused automatically in {seconds} s.": "{seconds} 秒后自动拒绝。",
   "Deny": "拒绝",
   "Allow": "允许",
-  "Request failed": "请求失败"
+  "Request failed": "请求失败",
+  "This subscription link cannot be read on this computer. Remove it and add it again": "这个订阅链接在这台电脑上读不出来（数据来自别的电脑或账户）。请删除后重新添加。",
+  "Encrypted storage is unavailable right now": "加密存储暂时不可用，请稍后再试"
 }

@@ -29,6 +29,7 @@ const SERVER_MESSAGES = new Set([
   "The subscription format is not recognised", "The subscription lists no usable node", "The subscription is not valid YAML",
   "The subscription is not valid JSON", "The subscription has no proxies", "The subscription has no outbounds",
   "The subscription link redirects too many times", "The subscription link redirects to an insecure address",
+  "This subscription link cannot be read on this computer. Remove it and add it again", "Encrypted storage is unavailable right now",
 ]);
 
 /** A failure's message for the page: a known server message, translated, or `fallback`. */
