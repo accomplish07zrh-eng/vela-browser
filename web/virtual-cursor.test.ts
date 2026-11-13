@@ -16,3 +16,11 @@ test("a page point lands where the card shows it, the inverse of mapping a click
   }
   expect(cardPoint({ x: 1, y: 1 }, card, { width: 0, height: 0 }, "width")).toBeNull();
 });
+
+test("each AI keeps one colour, and known AIs keep theirs", async () => {
+  const { cursorColor } = await import("./virtual-cursor.tsx");
+  expect(cursorColor("Claude Code")).toBe(cursorColor("Claude Code"));
+  expect(cursorColor("Codex")).not.toBe(cursorColor("Claude Code"));
+  expect(cursorColor("Some Agent")).toMatch(/^#[0-9a-f]{6}$/);
+  expect(cursorColor("Some Agent")).toBe(cursorColor("Some Agent"));
+});

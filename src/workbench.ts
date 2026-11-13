@@ -64,11 +64,18 @@ class ContextAdapter implements WorkbenchAdapter {
   dispose(): void { /* The owner and its persistent context belong to the launcher. */ }
 }
 
-export interface WorkbenchPointer { x: number; y: number; phase: "move" | "down" | "up" }
+/** `agent` names the AI moving it ("Claude Code"), for the label drawn beside the pointer. */
+export interface WorkbenchPointer { x: number; y: number; phase: "move" | "down" | "up"; agent?: string }
 export function validWorkbenchPointer(value: unknown): value is WorkbenchPointer {
   const v = value as WorkbenchPointer;
   return !!v && typeof v === "object" && Number.isFinite(v.x) && Number.isFinite(v.y) && Math.abs(v.x) <= 32_768 && Math.abs(v.y) <= 32_768
-    && ["move", "down", "up"].includes(v.phase);
+    && ["move", "down", "up"].includes(v.phase) && (v.agent === undefined || pointerAgent(v.agent) === v.agent);
+}
+/** An AI's name as a short label: printable, at most 24 characters; anything else is no label. */
+export function pointerAgent(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const clean = value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "").trim().slice(0, 24).trim();
+  return clean || undefined;
 }
 
 export class WorkbenchHub {
@@ -152,7 +159,7 @@ export class WorkbenchConnection {
     if (!this.disposed && this.current()) this.emit({ ...value, profileId: this.profileId, generation: this.generation });
   }
   showPointer(pointer: WorkbenchPointer): void {
-    if (this.visible || this.following) this.send({ type: "pointer", targetId: this.targetId, x: pointer.x, y: pointer.y, phase: pointer.phase });
+    if (this.visible || this.following) this.send({ type: "pointer", targetId: this.targetId, x: pointer.x, y: pointer.y, phase: pointer.phase, ...(pointer.agent ? { agent: pointer.agent } : {}) });
   }
   async start(emit: (value: object) => void): Promise<void> {
     this.emit = emit;
