@@ -61,7 +61,7 @@ jobs:
           # The app folder is the package's /usr tree: bin/ beside lib/Vela Browser, where Tauri finds resources.
           cp -a "$data/usr" "$app"
           find "$app" -maxdepth 4 -not -path "*/lib/Vela Browser/*" | sort
-          for file in aliasmode aliasmode-sidecar aliasmode-mcp; do
+          for file in aliasmode aliasmode-sidecar vela-browser-mcp aliasmode-mcp; do
             test -x "$app/bin/$file"
           done
           test -x "$app/lib/Vela Browser/firefox/aliasmode"
@@ -162,7 +162,7 @@ jobs:
           set -euo pipefail
           root="$HOME/.local/share/aliasmode"
           data="$HOME/.local/share/com.velabrowser.desktop"
-          helper="$root/bin/aliasmode-mcp"
+          helper="$root/bin/vela-browser-mcp"
           evidence="$RUNNER_TEMP/evidence"
           mkdir -p "$evidence" "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
@@ -310,8 +310,8 @@ jobs:
               '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
             sleep 20
           } | "$helper" serve > "$evidence/mcp.jsonl"
-          grep -q '"aliasmode_profiles_list"' "$evidence/mcp.jsonl"
-          grep -q '"aliasmode_browser_open"' "$evidence/mcp.jsonl"
+          grep -q '"vela_profiles_list"' "$evidence/mcp.jsonl"
+          grep -q '"vela_browser_open"' "$evidence/mcp.jsonl"
 
           # Remote MCP: the tunnel must start the packaged MCP host and pass messages both ways.
           # A local server takes the place of Vela Cloud.
@@ -349,7 +349,7 @@ jobs:
             const names = await tools;
             await tunnel.stop();
             server.close();
-            if (!names.includes("aliasmode_profiles_list") || !names.includes("aliasmode_browser_open")) throw new Error("the tool list is not complete");
+            if (!names.includes("vela_profiles_list") || !names.includes("vela_browser_open")) throw new Error("the tool list is not complete");
             console.log("Remote MCP tunnel listed " + names.length + " tools");
           '
 
@@ -570,7 +570,7 @@ jobs:
           evidence="$RUNNER_TEMP/update-evidence"
           mkdir -p "$evidence"
           root="$HOME/.local/share/aliasmode"
-          helper="$root/bin/aliasmode-mcp"
+          helper="$root/bin/vela-browser-mcp"
           data="$HOME/.local/share/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
@@ -620,7 +620,7 @@ jobs:
           ! kill -0 "$old_pid" 2>/dev/null
           jq -e --arg from "$CURRENT" --arg to "$SUCCESSOR" '.state == "succeeded" and .sourceVersion == $from and .expectedVersion == $to' "$data/update-attempt.json"
           # The new folder replaced the old one in place, and the profile data survived.
-          "$root/bin/aliasmode-mcp" version | grep -q "\"$SUCCESSOR\""
+          "$root/bin/vela-browser-mcp" version | grep -q "\"$SUCCESSOR\""
           ls -a "$(dirname "$root")" | tee "$evidence/data-home.txt"
           ! grep -q "^\.aliasmode-" "$evidence/data-home.txt"
           "$helper" profiles list | grep -q "\"$kept\""

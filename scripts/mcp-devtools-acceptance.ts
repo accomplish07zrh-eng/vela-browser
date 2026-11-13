@@ -164,7 +164,7 @@ try {
       const required = ["canvasPixelsHash", "webglHash", "fontsHash", "textMetricsHash", ...(engine === "webkit" ? [] : ["audioSampleHash"])];
       check(`${engine}/${profile.id}: baseline covers native fingerprint surfaces`, required.every(key => !!(sample as any)[key]));
     }
-    for (const profile of profiles) await call("aliasmode_browser_select", { profileId: profile.id });
+    for (const profile of profiles) await call("vela_browser_select", { profileId: profile.id });
     const tools = (await client.listTools()).tools;
     check(`${engine}: all developer tools are available by default`, DEVTOOLS_TOOLS.every(tool => tools.some(candidate => candidate.name === tool.name)));
     const pages = await Promise.all(profiles.map(profile => developer("pages", { profileId: profile.id })));
@@ -185,7 +185,7 @@ try {
     check(`${engine}: a plugin runs in the environment it was called for`, pluginA.profileId === a.profileId && pluginB.profileId === b.profileId && pluginA.engine === engine && pluginA.pageCount >= 1);
     check(`${engine}: plugin state stays within its environment`, pluginA.calls === 1 && pluginB.calls === 1 && pluginAgain.calls === 2);
     check(`${engine}: a plugin cannot close or reach the browser`, pluginA.closeRefused === true && pluginA.browser === null
-      && (await Promise.all(profiles.map(profile => call("aliasmode_browser_status", { profileId: profile.id })))).every((status: any) => status.running));
+      && (await Promise.all(profiles.map(profile => call("vela_browser_status", { profileId: profile.id })))).every((status: any) => status.running));
     check(`${engine}: plugin requests use the environment's own cookies and authenticated proxy`, pluginA.fetched.marker === "plugin-a" && pluginB.fetched.marker === "plugin-b"
       && proxyHits.slice(pluginHits).some(hit => hit.authorization === `Basic ${Buffer.from("mcp-a:fixture-only").toString("base64")}`)
       && proxyHits.slice(pluginHits).some(hit => hit.authorization === `Basic ${Buffer.from("mcp-b:fixture-only").toString("base64")}`));
@@ -269,7 +269,7 @@ try {
     await developer("storage_edit", { ...a, storage: "cookies", action: "remove", name: "private_cookie" });
     const removed = await developer("storage", a);
     check(`${engine}: storage remove and clear take effect`, removed.localStorage.value.privateValue === undefined && !removed.cookies.some((cookie: any) => cookie.name === "private_cookie"));
-    for (const profile of profiles) { await call("aliasmode_browser_close", { profileId: profile.id }); }
+    for (const profile of profiles) { await call("vela_browser_close", { profileId: profile.id }); }
   }
 } catch (error) {
   report.fatal = error instanceof Error ? error.stack : String(error); console.error(report.fatal); process.exitCode = 1;

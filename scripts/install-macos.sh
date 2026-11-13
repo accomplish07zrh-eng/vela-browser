@@ -43,7 +43,7 @@ fi
 applications="/Applications"
 [[ -w "$applications" ]] || applications="$HOME/Applications"
 app="$applications/Vela Browser.app"
-helper="$app/Contents/MacOS/aliasmode-mcp"
+helper="$app/Contents/MacOS/vela-browser-mcp"
 
 installed_version() {
   [[ -x "$helper" ]] && "$helper" version 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'

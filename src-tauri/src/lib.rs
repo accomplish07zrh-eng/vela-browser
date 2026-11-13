@@ -537,9 +537,9 @@ pub fn run() {
                     .parent()
                     .ok_or_else(|| boxed("Vela Browser installation directory is unavailable"))?
                     .join(if cfg!(windows) {
-                        "aliasmode-mcp.exe"
+                        "vela-browser-mcp.exe"
                     } else {
-                        "aliasmode-mcp"
+                        "vela-browser-mcp"
                     });
                 if !helper.is_file() {
                     return Err(boxed("installed Vela Browser agent helper is unavailable"));

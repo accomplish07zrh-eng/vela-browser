@@ -124,7 +124,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
     job.indexOf(nextStep),
   );
 
-  expect(ALIASMODE_VERSION).toBe("0.1.6");
+  expect(ALIASMODE_VERSION).toBe("0.1.7");
   expect(packageJson.version).toBe(ALIASMODE_VERSION);
   expect(packageJson.scripts["desktop:build:nsis"]).toBe("bun run desktop:prepare && tauri build --bundles nsis --no-sign");
   expect(tauriConfig.version).toBe(ALIASMODE_VERSION);
@@ -410,8 +410,8 @@ test("release version and updater trust stay aligned across the desktop bundle",
     "runtime-ownership-preexisting",
     "New-OpenPersistentProfile $helper",
     "Select-McpBrowser $mcp $preexistingProfileId",
-    'name = "aliasmode_profile_create"',
-    'name = "aliasmode_browser_open"',
+    'name = "vela_profile_create"',
+    'name = "vela_browser_open"',
     "Disconnect-McpHost $mcp",
     "background desktop did not survive MCP disconnect",
     "runtime descriptor did not survive MCP disconnect",

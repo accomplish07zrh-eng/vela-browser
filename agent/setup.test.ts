@@ -9,7 +9,7 @@ test("setup uses each client's supported MCP registration command", async () => 
     inputs.push([command, args, input]);
     return { found: true, code: 0 };
   };
-  const helper = "C:\\Program Files\\Vela Browser\\aliasmode-mcp.exe";
+  const helper = "C:\\Program Files\\Vela Browser\\vela-browser-mcp.exe";
   const command = "C:\\Program Files\\Vela Browser\\playwright\\node\\node.exe";
   const host = "C:\\Program Files\\Vela Browser\\playwright\\agent\\mcp-host.mjs";
   const result = await configureClients({ helper, command, args: [host], run });
@@ -29,19 +29,19 @@ test("setup uses each client's supported MCP registration command", async () => 
   expect(calls).toContainEqual(["hermes", ["mcp", "remove", "aliasmode"]]);
   expect(calls).toContainEqual([
     "claude",
-    ["mcp", "add", "--scope", "user", "aliasmode", "--", command, host],
+    ["mcp", "add", "--scope", "user", "vela-browser", "--", command, host],
   ]);
   expect(calls).toContainEqual([
     "codex",
-    ["mcp", "add", "aliasmode", "--", command, host],
+    ["mcp", "add", "vela-browser", "--", command, host],
   ]);
   expect(calls).toContainEqual([
     "openclaw",
-    ["mcp", "add", "aliasmode", "--command", command, "--arg", host],
+    ["mcp", "add", "vela-browser", "--command", command, "--arg", host],
   ]);
   expect(calls).toContainEqual([
     "hermes",
-    ["mcp", "add", "aliasmode", "--command", command, "--args", host],
+    ["mcp", "add", "vela-browser", "--command", command, "--args", host],
   ]);
   expect(inputs).toContainEqual([
     "hermes",
@@ -50,11 +50,11 @@ test("setup uses each client's supported MCP registration command", async () => 
   ]);
   expect(inputs).toContainEqual([
     "hermes",
-    ["mcp", "add", "aliasmode", "--command", command, "--args", host],
+    ["mcp", "add", "vela-browser", "--command", command, "--args", host],
     "y\n",
   ]);
   expect(inputs.filter(([client]) => client !== "hermes").every(([, , input]) => input === undefined)).toBe(true);
-  expect(result.generic.mcpServers.aliasmode).toEqual({ command, args: [host] });
+  expect(result.generic.mcpServers["vela-browser"]).toEqual({ command, args: [host] });
 });
 
 test("setup reports a detected client registration failure", async () => {
@@ -63,7 +63,7 @@ test("setup reports a detected client registration failure", async () => {
     code: args[1] === "add" ? 1 : 0,
   });
   const result = await configureClients({
-    helper: "C:\\Vela Browser\\aliasmode-mcp.exe",
+    helper: "C:\\Vela Browser\\vela-browser-mcp.exe",
     clients: ["claude"],
     run,
   });
@@ -83,7 +83,7 @@ test("setup is repeatable and reports clients that are not installed", async () 
     return { found: true, code: 0 };
   };
   const options = {
-    helper: "C:\\Vela Browser\\aliasmode-mcp.exe",
+    helper: "C:\\Vela Browser\\vela-browser-mcp.exe",
     clients: ["claude", "codex"] as const,
     run,
   };
@@ -103,4 +103,16 @@ test("setup is repeatable and reports clients that are not installed", async () 
     reason: "command_not_found",
   });
   expect(calls.some((call) => call.startsWith("codex mcp add"))).toBe(false);
+});
+
+test("setup replaces the pre-0.1.7 aliasmode registration with vela-browser", async () => {
+  const calls: Array<[string, string[]]> = [];
+  const run: CommandRunner = async (command, args) => { calls.push([command, args]); return { found: true, code: 0 }; };
+  await configureClients({ helper: "/opt/vela/vela-browser-mcp", clients: ["codex"], run });
+  expect(calls.map(([, args]) => args.slice(0, 3).join(" "))).toEqual([
+    "--version",
+    "mcp remove aliasmode",
+    "mcp remove vela-browser",
+    "mcp add vela-browser",
+  ]);
 });

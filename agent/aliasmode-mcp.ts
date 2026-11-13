@@ -42,9 +42,9 @@ function runtimeRoot(): string {
   return join(dirname(process.execPath), "playwright");
 }
 
-/** The aliasmode-mcp launcher next to the sidecar program; client configurations keep this path. */
+/** The vela-browser-mcp launcher next to the sidecar program; client configurations keep this path. */
 function helperExecutable(): string {
-  return join(dirname(process.execPath), process.platform === "win32" ? "aliasmode-mcp.exe" : "aliasmode-mcp");
+  return join(dirname(process.execPath), process.platform === "win32" ? "vela-browser-mcp.exe" : "vela-browser-mcp");
 }
 
 function desktopExecutable(): string {
@@ -87,7 +87,7 @@ function childEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 
 function diagnose(message: string): void {
   if (process.env.ALIASMODE_MCP_DIAGNOSTICS === "1") {
-    process.stderr.write(`[aliasmode-mcp] ${message}\n`);
+    process.stderr.write(`[vela-browser-mcp] ${message}\n`);
   }
 }
 

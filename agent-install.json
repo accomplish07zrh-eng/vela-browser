@@ -4,7 +4,7 @@
   "platforms": ["windows-x64"],
   "releaseManifest": "https://github.com/accomplish07zrh-eng/vela-browser/releases/download/v{version}/aliasmode-agent-bootstrap.json",
   "bootstrapScript": "scripts/install-agent.ps1",
-  "installedHelper": "%LOCALAPPDATA%\\Vela Browser\\aliasmode-mcp.exe",
+  "installedHelper": "%LOCALAPPDATA%\\Vela Browser\\vela-browser-mcp.exe",
   "mcp": {
     "transport": "stdio",
     "command": "%LOCALAPPDATA%\\Vela Browser\\playwright\\node\\node.exe",

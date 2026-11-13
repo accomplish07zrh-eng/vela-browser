@@ -336,7 +336,8 @@ test("Firefox records and matches the managed Node owner after PATH changes", as
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
   }
-});
+// It copies and hashes the whole Node program twice, which a slow CI disk takes longer than 5s to do.
+}, 20_000);
 
 test("Firefox supports Darwin arm64, Darwin x64 and Linux x64 personas without changing saved config", async () => {
   for (const [platform, arch] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "x64"]] as const) {

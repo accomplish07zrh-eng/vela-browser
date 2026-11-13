@@ -17,6 +17,9 @@ import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
 import { TitleBar, usesOwnTitleBar } from "./titlebar.tsx";
 import { Select } from "./select.tsx";
+import { DialogHost, confirmDialog, noticeDialog } from "./dialog.tsx";
+import { Tooltips } from "./tooltip.tsx";
+import { guardContextMenu } from "./controls.tsx";
 import { DockBlob } from "./dock-blob.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
 import { localeTimezoneMismatch } from "../src/profile-locale.ts";
@@ -709,6 +712,17 @@ const AUTOMATIC_FINGERPRINT_FIELDS = [
 ] as const;
 
 // A template literal, so the translation key holds the same line breaks as the source.
+/** What an import brought in, for the notice after it. */
+function importedSummary(
+  result: { profiles?: number; files?: number; errors?: readonly unknown[] },
+  t: (source: string, values?: Record<string, string | number>) => string,
+): string {
+  const summary = t("Imported {profiles} profile(s) from {files} file(s).", { profiles: result.profiles ?? 0, files: result.files ?? 0 });
+  return result.errors?.length
+    ? summary + "\n\n" + t("{count} invalid record(s) were reported; invalid proxies were quarantined for repair.", { count: result.errors.length })
+    : summary;
+}
+
 const FINGERPRINT_EDIT_WARNING = `These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.
 
 Save fingerprint changes?`;
@@ -1679,9 +1693,11 @@ function App() {
   const deleteSelected = async () => {
     const ids = [...selected];
     if (ids.length === 0 || deleteInFlight.current) return;
-    if (!confirm(appMode?.legacyRemote
-      ? `Delete ${ids.length} profile(s)? This removes them from the roster (and any saved session). This can't be undone.`
-      : `Move all ${ids.length.toLocaleString()} selected profiles to Trash? This includes every selected page. You can restore them with their saved data.`)) return;
+    const legacy = !!appMode?.legacyRemote;
+    if (!await confirmDialog(legacy
+      ? t("Delete {count} profile(s)?", { count: ids.length.toLocaleString() }) + "\n\n" + t("This removes them from the roster and any saved session. This can't be undone.")
+      : t("Move {count} selected profiles to Trash?", { count: ids.length.toLocaleString() }) + "\n\n" + t("This includes every selected page. You can restore them with their saved data."),
+      { danger: legacy, confirmLabel: legacy ? t("Delete") : t("Move to Trash") })) return;
     deleteInFlight.current = true;
     setDeleting(true);
     setActionErr(null);
@@ -1806,8 +1822,7 @@ function App() {
       const r = await uploadExports(list);
       await load();
       if (r.ok) {
-        const issues = r.errors?.length ? ` Reported ${r.errors.length} invalid record(s); invalid proxies were quarantined for repair.` : "";
-        alert(`Imported ${r.profiles} profile(s) from ${r.files} file(s).${issues}`);
+        await noticeDialog(importedSummary(r, t), { title: t("Import finished") });
       }
       else setActionErr(r.error || "import failed");
     } catch (e) {
@@ -1844,8 +1859,7 @@ function App() {
         closeBulk();
         await load();
         setShowImportOffer(true);
-        const issues = r.errors?.length ? ` Reported ${r.errors.length} invalid record(s); invalid proxies were quarantined for repair.` : "";
-        alert(`Imported ${r.profiles} profile(s) from ${r.files} file(s).${issues}`);
+        await noticeDialog(importedSummary(r, t), { title: t("Import finished") });
       }
       else setBulkErr(r.error || "import failed");
     } catch (e) {
@@ -2108,7 +2122,8 @@ function App() {
     }
   };
   const refreshEditedTimezone = async () => {
-    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError  || !confirm(t(FINGERPRINT_EDIT_WARNING))) return;
+    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError) return;
+    if (!await confirmDialog(t(FINGERPRINT_EDIT_WARNING), { confirmLabel: t("Save") })) return;
     const id = editId;
     const generation = editProxyCheckGeneration.current;
     setTimezoneBusy(true);
@@ -2130,7 +2145,7 @@ function App() {
     const fingerprintEdits = Object.fromEntries(Object.entries(editInitialFingerprint)
       .filter(([key, value]) => editForm[key] !== value)
       .map(([key]) => [key, editForm[key] ?? ""]));
-    if (Object.keys(fingerprintEdits).length && !confirm(t(FINGERPRINT_EDIT_WARNING))) return;
+    if (Object.keys(fingerprintEdits).length && !await confirmDialog(t(FINGERPRINT_EDIT_WARNING), { confirmLabel: t("Save") })) return;
     setEditSaving(true);
     setEditErr(null);
     try {
@@ -2163,11 +2178,14 @@ function App() {
   const convertEditedMobile = async () => {
     if (!editId || !editMobile) return;
     const platform = editMobile.platform === "macos" ? "macOS" : "Windows";
-    const screenNote = editMobile.screenChanged ? ` Its mobile-sized screen will become ${editMobile.resolution}.` : " Its existing desktop-sized screen will be kept.";
-    if (!confirm(
-      `Convert this imported mobile persona to a stable ${platform} desktop persona?\n\n` +
-      `Cookies, login/session, credentials, proxy, timezone, fingerprint seed, tags and extensions are preserved.${screenNote}\n\n` +
-      "The website may treat the first launch as a new desktop device and request verification. Other unsaved edits in this dialog are not included.",
+    const screenNote = editMobile.screenChanged
+      ? t("Its mobile-sized screen will become {resolution}.", { resolution: editMobile.resolution })
+      : t("Its existing desktop-sized screen will be kept.");
+    if (!await confirmDialog(
+      t("Convert this imported mobile persona to a stable {platform} desktop persona?", { platform }) + "\n\n" +
+      t("Cookies, login/session, credentials, proxy, timezone, fingerprint seed, tags and extensions are preserved.") + " " + screenNote + "\n\n" +
+      t("The website may treat the first launch as a new desktop device and request verification. Other unsaved edits in this dialog are not included."),
+      { confirmLabel: t("Convert") },
     )) return;
     setEditSaving(true);
     setEditErr(null);
@@ -2190,11 +2208,11 @@ function App() {
     setGroupDefaultExts((ids) => (ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]));
   const applyGroupExtensionDefault = async () => {
     if (!groupDefaultName) return;
-    if (!confirm(
-      `Apply this extension default to “${groupDefaultName}”?\n\n` +
-      `This replaces extension assignments on ${groupDefaultProfileCount} current profile(s). ` +
-      "New and moved profiles inherit this selection. Individual profile edits can differ later. " +
-      "Reopen browsers to apply the change.",
+    if (!await confirmDialog(
+      t("Apply this extension default to “{group}”?", { group: groupDefaultName }) + "\n\n" +
+      t("This replaces extension assignments on {count} current profile(s). New and moved profiles inherit this selection. Individual profile edits can differ later.", { count: groupDefaultProfileCount }) + "\n\n" +
+      t("Reopen browsers to apply the change."),
+      { confirmLabel: t("Apply") },
     )) return;
     setGroupDefaultBusy(true);
     setExtErr(null);
@@ -2242,8 +2260,10 @@ function App() {
     }
   };
   const doRemoveExtension = async (id: string, name: string) => {
-    const message = `Remove extension "${name}"? It will be unassigned from all profiles.`;
-    if (!confirm(message)) return;
+    if (!await confirmDialog(
+      t("Remove extension “{name}”?", { name }) + "\n\n" + t("It will be unassigned from all profiles."),
+      { danger: true, confirmLabel: t("Remove") },
+    )) return;
     setExtErr(null);
     try {
       const r = await removeExtension(id);
@@ -2310,9 +2330,10 @@ function App() {
   const convertSelectedMobile = async () => {
     const ids = [...selected].filter((id) => profiles.find((p) => p.id === id)?.mobilePersona);
     if (!ids.length) return;
-    if (!confirm(
-      `Convert ${ids.length} selected mobile persona(s) to stable desktop personas?\n\n` +
-      "Account data, sessions, proxies, timezones and fingerprint seeds are preserved. Android keeps the Windows desktop family used by older Vela Browser; iPhone/iPad keeps macOS. A website may request device verification on first launch.",
+    if (!await confirmDialog(
+      t("Convert {count} selected mobile persona(s) to stable desktop personas?", { count: ids.length }) + "\n\n" +
+      t("Account data, sessions, proxies, timezones and fingerprint seeds are preserved. Android keeps the Windows desktop family used by older Vela Browser; iPhone/iPad keeps macOS. A website may request device verification on first launch."),
+      { confirmLabel: t("Convert") },
     )) return;
     setActionErr(null);
     setBusy((b) => { const n = { ...b }; ids.forEach((id) => (n[id] = true)); return n; });
@@ -2436,8 +2457,10 @@ function App() {
   };
   const removeGroup = async (g: string) => {
     const n = countFor(g);
-    const prompt = `Delete group "${g}"?${n ? ` Its ${n} profile(s) move to Ungrouped (not deleted).` : ""}`;
-    if (!confirm(prompt)) return;
+    if (!await confirmDialog(
+      t("Delete group “{group}”?", { group: g }) + (n ? "\n\n" + t("Its {count} profile(s) move to Ungrouped and are not deleted.", { count: n }) : ""),
+      { danger: true, confirmLabel: t("Delete") },
+    )) return;
     setActionErr(null);
     try {
       const r = await deleteGroup(g);
@@ -4309,10 +4332,13 @@ const rootElement = document.getElementById("root")!;
 rootElement.addEventListener("click", (event) => {
   if (event.target instanceof Element && event.target.closest('a[target="_blank"]')) event.stopPropagation();
 });
+guardContextMenu();
 const root = createRoot(rootElement);
 root.render(
   <I18nProvider>
     {usesOwnTitleBar() && <TitleBar />}
     <App />
+    <DialogHost />
+    <Tooltips />
   </I18nProvider>
 );

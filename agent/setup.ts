@@ -9,34 +9,39 @@ export interface CommandResult {
 
 export type CommandRunner = (command: string, args: string[], input?: string) => Promise<CommandResult>;
 
+/** The name the MCP server is registered under in each AI client. */
+export const MCP_SERVER_NAME = "vela-browser";
+/** The name earlier versions used. Setting up again removes it, so the client lists the server once. */
+export const LEGACY_MCP_SERVER_NAMES = ["aliasmode"];
+
 const CLIENTS: Record<SetupClient, {
   command: string;
-  remove: string[];
-  add: (command: string, args: string[]) => string[];
+  remove: (name: string) => string[];
+  add: (name: string, command: string, args: string[]) => string[];
   input?: string;
 }> = {
   claude: {
     command: "claude",
-    remove: ["mcp", "remove", "aliasmode", "--scope", "user"],
-    add: (command, args) => ["mcp", "add", "--scope", "user", "aliasmode", "--", command, ...args],
+    remove: (name) => ["mcp", "remove", name, "--scope", "user"],
+    add: (name, command, args) => ["mcp", "add", "--scope", "user", name, "--", command, ...args],
   },
   codex: {
     command: "codex",
-    remove: ["mcp", "remove", "aliasmode"],
-    add: (command, args) => ["mcp", "add", "aliasmode", "--", command, ...args],
+    remove: (name) => ["mcp", "remove", name],
+    add: (name, command, args) => ["mcp", "add", name, "--", command, ...args],
   },
   openclaw: {
     command: "openclaw",
-    remove: ["mcp", "unset", "aliasmode"],
-    add: (command, args) => [
-      "mcp", "add", "aliasmode", "--command", command,
+    remove: (name) => ["mcp", "unset", name],
+    add: (name, command, args) => [
+      "mcp", "add", name, "--command", command,
       ...args.flatMap((arg) => ["--arg", arg]),
     ],
   },
   hermes: {
     command: "hermes",
-    remove: ["mcp", "remove", "aliasmode"],
-    add: (command, args) => ["mcp", "add", "aliasmode", "--command", command, "--args", ...args],
+    remove: (name) => ["mcp", "remove", name],
+    add: (name, command, args) => ["mcp", "add", name, "--command", command, "--args", ...args],
     input: "y\n",
   },
 };
@@ -88,8 +93,8 @@ export async function configureClients(options: {
       });
       continue;
     }
-    await run(config.command, config.remove, config.input);
-    const added = await run(config.command, config.add(command, commandArgs), config.input);
+    for (const name of [...LEGACY_MCP_SERVER_NAMES, MCP_SERVER_NAME]) await run(config.command, config.remove(name), config.input);
+    const added = await run(config.command, config.add(MCP_SERVER_NAME, command, commandArgs), config.input);
     statuses.push({
       client,
       status: added.code === 0 ? "configured" : "failed",
@@ -104,7 +109,7 @@ export async function configureClients(options: {
     clients: statuses,
     generic: {
       mcpServers: {
-        aliasmode: {
+        [MCP_SERVER_NAME]: {
           command,
           args: commandArgs,
         },

@@ -32,7 +32,7 @@ done
 data_home="${XDG_DATA_HOME:-}"
 [[ "$data_home" == /* ]] || data_home="$HOME/.local/share"
 root="$data_home/aliasmode"
-helper="$root/bin/aliasmode-mcp"
+helper="$root/bin/vela-browser-mcp"
 
 as_root() {
   if command -v sudo >/dev/null; then

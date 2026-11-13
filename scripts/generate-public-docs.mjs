@@ -70,7 +70,7 @@ function publicTool(tool) {
 }
 
 function isVelaBrowserTool(tool) {
-  return tool.name.startsWith("aliasmode_") || tool.name.startsWith("browser_devtools_") || tool.name === "browser_close";
+  return tool.name.startsWith("vela_") || tool.name.startsWith("aliasmode_") || tool.name.startsWith("browser_devtools_") || tool.name === "browser_close";
 }
 
 async function listPlaywrightTools(version) {

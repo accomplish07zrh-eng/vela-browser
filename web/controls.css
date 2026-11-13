@@ -1,0 +1,123 @@
+/* The app's own look for the controls a web view would otherwise draw in its system style. */
+
+/* ---- Check boxes and radio buttons (switches keep their own track and knob) ---- */
+.app input:is([type="checkbox"], [type="radio"]):not(.store-switch input):not(.plugin-switch input):not([role="switch"]) {
+  -webkit-appearance: none; appearance: none; flex: none; display: inline-grid; place-content: center;
+  width: 16px; height: 16px; margin: 0; vertical-align: -3px; cursor: pointer;
+  color: var(--on-fill, #fff); background: var(--ctl, var(--surface));
+  border: 1.5px solid color-mix(in srgb, var(--ink) 26%, transparent); border-radius: 5px;
+  box-shadow: inset 0 1px 1px rgba(var(--sh-rgb, 43, 35, 23), .06);
+  transition: background .16s var(--ease, ease), border-color .16s var(--ease, ease), box-shadow .16s var(--ease, ease);
+}
+.app input[type="radio"]:not([role="switch"]) { border-radius: 50%; }
+.app input:is([type="checkbox"], [type="radio"]):not(.store-switch input):not(.plugin-switch input):not([role="switch"])::before {
+  content: ""; width: 10px; height: 10px; background: currentColor; transform: scale(0);
+  transition: transform .22s var(--spring-control, cubic-bezier(.3, 1.6, .5, 1));
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.8 5.3 4 7.4 8.3 2.7' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.8 5.3 4 7.4 8.3 2.7' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.app input[type="radio"]:not([role="switch"])::before { width: 6px; height: 6px; border-radius: 50%; -webkit-mask: none; mask: none; }
+.app input[type="checkbox"]:indeterminate:not(.store-switch input):not(.plugin-switch input):not([role="switch"])::before {
+  -webkit-mask: none; mask: none; width: 8px; height: 2px; border-radius: 1px;
+}
+.app input:is([type="checkbox"], [type="radio"]):is(:checked, :indeterminate):not(.store-switch input):not(.plugin-switch input):not([role="switch"]) {
+  background: var(--accent-fill, var(--accent)); border-color: var(--accent-fill, var(--accent));
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.app input:is([type="checkbox"], [type="radio"]):is(:checked, :indeterminate):not(.store-switch input):not(.plugin-switch input):not([role="switch"])::before { transform: scale(1); }
+.app input:is([type="checkbox"], [type="radio"]):not(:checked):not(:disabled):not(.store-switch input):not(.plugin-switch input):not([role="switch"]):hover {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.app input:is([type="checkbox"], [type="radio"]):not(.store-switch input):not(.plugin-switch input):not([role="switch"]):focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.app input:is([type="checkbox"], [type="radio"]):not(.store-switch input):not(.plugin-switch input):not([role="switch"]):disabled { opacity: .45; cursor: default; }
+.app input:is([type="checkbox"], [type="radio"]):not(.store-switch input):not(.plugin-switch input):not([role="switch"]):active:not(:disabled) { transform: scale(.9); }
+
+/* ---- Number fields: the app's stepper instead of the system arrows ---- */
+.app input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+.app input[type="number"]::-webkit-inner-spin-button,
+.app input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.vnumber { position: relative; display: flex; min-width: 0; }
+.vnumber > input { flex: 1 1 auto; min-width: 0; width: 100%; padding-right: 30px !important; }
+.vnumber-steps {
+  position: absolute; top: 4px; bottom: 4px; right: 4px; width: 22px;
+  display: flex; flex-direction: column; gap: 2px;
+  opacity: .55; transition: opacity .16s var(--ease, ease);
+}
+.vnumber:hover .vnumber-steps, .vnumber:focus-within .vnumber-steps { opacity: 1; }
+.vnumber.disabled .vnumber-steps { opacity: .25; }
+.vnumber-steps button {
+  flex: 1 1 0; min-height: 0; display: grid; place-items: center; padding: 0; margin: 0;
+  color: var(--muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer;
+  transition: background .14s var(--ease, ease), color .14s var(--ease, ease), transform .14s var(--ease, ease);
+}
+.vnumber-steps button:hover:not(:disabled) { color: var(--ink); background: var(--field-bg-focus, var(--field-bg)); }
+.vnumber-steps button:active:not(:disabled) { transform: scale(.86); color: var(--accent); }
+.vnumber-steps button:disabled { cursor: default; }
+.vnumber-steps svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---- Search fields: the app's clear button ---- */
+.app input[type="search"]::-webkit-search-decoration { -webkit-appearance: none; }
+.app input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none; appearance: none; width: 16px; height: 16px; margin: 0 -2px 0 6px; cursor: pointer;
+  border-radius: 50%; background: color-mix(in srgb, var(--ink) 38%, transparent);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cdefs%3E%3Cmask id='m'%3E%3Ccircle cx='8' cy='8' r='8' fill='white'/%3E%3Cpath d='m5.5 5.5 5 5m0-5-5 5' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/mask%3E%3C/defs%3E%3Crect width='16' height='16' mask='url(%23m)'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cdefs%3E%3Cmask id='m'%3E%3Ccircle cx='8' cy='8' r='8' fill='white'/%3E%3Cpath d='m5.5 5.5 5 5m0-5-5 5' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/mask%3E%3C/defs%3E%3Crect width='16' height='16' mask='url(%23m)'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: background .14s var(--ease, ease);
+}
+.app input[type="search"]::-webkit-search-cancel-button:hover { background: color-mix(in srgb, var(--ink) 62%, transparent); }
+
+/* ---- Progress bars: a soft track with the accent filling it ---- */
+:where(.app) progress {
+  -webkit-appearance: none; appearance: none; display: block; height: 6px; border: 0; border-radius: 999px; overflow: hidden;
+  color: var(--accent); background: var(--field-bg, rgba(127, 127, 127, .14));
+}
+:where(.app) progress::-webkit-progress-bar { background: var(--field-bg, rgba(127, 127, 127, .14)); border-radius: 999px; }
+:where(.app) progress::-webkit-progress-value {
+  border-radius: 999px; transition: width .35s var(--spring-layout, ease);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 78%, transparent), var(--accent));
+}
+:where(.app) progress::-moz-progress-bar { border-radius: 999px; background: var(--accent); }
+/* Without a value the bar has no end yet: a band of light runs along it. */
+:where(.app) progress:indeterminate {
+  background: linear-gradient(90deg, transparent 0 30%, var(--accent) 50%, transparent 70% 100%) 0 0 / 220% 100% no-repeat, var(--field-bg, rgba(127, 127, 127, .14));
+  animation: vprogress-run 1.4s var(--ease, ease) infinite;
+}
+:where(.app) progress:indeterminate::-webkit-progress-bar { background: transparent; }
+@keyframes vprogress-run { from { background-position: 120% 0, 0 0; } to { background-position: -120% 0, 0 0; } }
+
+/* ---- Disclosures: one chevron that turns, in place of the system triangle ---- */
+.app details > summary:not(.fingerprint-settings > summary) {
+  list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  border-radius: 6px; transition: color .14s var(--ease, ease);
+}
+.app details > summary::-webkit-details-marker { display: none; }
+.app details > summary:not(.fingerprint-settings > summary)::before {
+  content: ""; flex: none; width: 12px; height: 12px; background: currentColor; opacity: .55;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M4.5 3 7.5 6l-3 3' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M4.5 3 7.5 6l-3 3' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: transform .26s var(--spring-control, cubic-bezier(.3, 1.4, .5, 1)), opacity .14s var(--ease, ease);
+}
+.app details[open] > summary:not(.fingerprint-settings > summary)::before { transform: rotate(90deg); opacity: .8; }
+.app details > summary:not(.fingerprint-settings > summary):hover::before { opacity: .9; }
+.app details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- File pickers: the system's own button, drawn like the app's ---- */
+.app input[type="file"]::file-selector-button {
+  height: 30px; margin-right: 10px; padding: 0 14px; cursor: pointer;
+  font: inherit; font-weight: 600; color: var(--ink);
+  background: var(--field-bg); border: 0; border-radius: 999px;
+  transition: background .14s var(--ease, ease), transform .14s var(--ease, ease);
+}
+.app input[type="file"]::file-selector-button:hover { background: var(--field-bg-focus, var(--field-bg)); }
+.app input[type="file"]::file-selector-button:active { transform: scale(.96); }
+
+/* ---- Text: selection and caret in the app's accent ---- */
+.app ::selection { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.app :is(input, textarea) { caret-color: var(--accent); }
+.app textarea { resize: vertical; }
+
+@media (prefers-reduced-motion: reduce) {
+  :where(.app) progress:indeterminate { animation-duration: 4s; }
+}

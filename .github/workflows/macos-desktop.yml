@@ -91,7 +91,7 @@ jobs:
           set -euo pipefail
           app="$BUNDLE/macos/Vela Browser.app"
           ls -la "$app/Contents/MacOS" "$app/Contents/Resources"
-          for file in aliasmode aliasmode-sidecar aliasmode-mcp; do
+          for file in aliasmode aliasmode-sidecar vela-browser-mcp aliasmode-mcp; do
             test -x "$app/Contents/MacOS/$file"
           done
           test -x "$app/Contents/Resources/playwright/node/node"
@@ -147,7 +147,7 @@ jobs:
           data="$HOME/Library/Application Support/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
-          helper="$app/Contents/MacOS/aliasmode-mcp"
+          helper="$app/Contents/MacOS/vela-browser-mcp"
 
           open -n "$app"
           for attempt in $(seq 1 120); do
@@ -325,12 +325,12 @@ jobs:
               '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
             sleep 20
           } | "$helper" serve > "$RUNNER_TEMP/evidence/mcp.jsonl"
-          grep -q '"aliasmode_profiles_list"' "$RUNNER_TEMP/evidence/mcp.jsonl"
-          grep -q '"aliasmode_browser_open"' "$RUNNER_TEMP/evidence/mcp.jsonl"
+          grep -q '"vela_profiles_list"' "$RUNNER_TEMP/evidence/mcp.jsonl"
+          grep -q '"vela_browser_open"' "$RUNNER_TEMP/evidence/mcp.jsonl"
 
           # Remote MCP: the tunnel must start the packaged MCP host on a Mac and pass messages both
           # ways. A local server takes the place of Vela Cloud.
-          test -x "$(dirname "$(ps -o comm= -p "$(jq -er .sidecarPid "$data/agent-runtime.json")")")/aliasmode-mcp"
+          test -x "$(dirname "$(ps -o comm= -p "$(jq -er .sidecarPid "$data/agent-runtime.json")")")/vela-browser-mcp"
           HELPER="$helper" bun -e '
             import { WebSocketServer } from "ws";
             import { MCP_TUNNEL_PROTOCOL } from "./contracts/cloud-v1.ts";
@@ -364,7 +364,7 @@ jobs:
             const names = await tools;
             await tunnel.stop();
             server.close();
-            if (!names.includes("aliasmode_profiles_list") || !names.includes("aliasmode_browser_open")) throw new Error("the tool list is not complete");
+            if (!names.includes("vela_profiles_list") || !names.includes("vela_browser_open")) throw new Error("the tool list is not complete");
             console.log("Remote MCP tunnel listed " + names.length + " tools");
           '
 
@@ -516,7 +516,7 @@ jobs:
           work="$RUNNER_TEMP/update"
           mkdir -p "$RUNNER_TEMP/update-evidence"
           app="/Applications/Vela Browser.app"
-          helper="$app/Contents/MacOS/aliasmode-mcp"
+          helper="$app/Contents/MacOS/vela-browser-mcp"
           data="$HOME/Library/Application Support/com.velabrowser.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"

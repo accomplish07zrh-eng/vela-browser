@@ -1,6 +1,6 @@
 [package]
 name = "aliasmode-desktop"
-version = "0.1.6"
+version = "0.1.7"
 description = "Vela Browser Windows desktop shell"
 edition = "2021"
 rust-version = "1.89"
@@ -16,7 +16,12 @@ crate-type = ["rlib"]
 name = "aliasmode"
 path = "src/main.rs"
 
-# Keeps the installed MCP helper path; the helper code runs inside the sidecar program.
+# The installed MCP helper path; the helper code runs inside the sidecar program.
+[[bin]]
+name = "vela-browser-mcp"
+path = "src/bin/vela-browser-mcp.rs"
+
+# The same launcher under its earlier name, for AI clients set up with an earlier version.
 [[bin]]
 name = "aliasmode-mcp"
 path = "src/bin/aliasmode-mcp.rs"

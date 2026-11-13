@@ -58,7 +58,7 @@ function helperEnvironment(): NodeJS.ProcessEnv {
 }
 
 function defaultHelperPath(): string {
-  return join(dirname(process.execPath), process.platform === "win32" ? "aliasmode-mcp.exe" : "aliasmode-mcp");
+  return join(dirname(process.execPath), process.platform === "win32" ? "vela-browser-mcp.exe" : "vela-browser-mcp");
 }
 
 function tunnelUrl(baseUrl: string): string {

@@ -55,8 +55,18 @@
 .tools-alert { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger-ink); }
 .tools-progress .proxy-actions { justify-content: space-between; }
 .tools-progress progress { display: block; width: 100%; height: 5px; margin-top: 10px; accent-color: var(--accent); }
-.proxy-upload { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
-.proxy-upload input { max-width: 250px; font-size: 11px; }
+.proxy-upload {
+  position: relative; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px 0 11px; cursor: pointer;
+  color: var(--ink); background: var(--field-bg); border-radius: 999px; font-size: 12px; font-weight: 600;
+  transition: background .14s var(--ease), transform .14s var(--ease);
+}
+.proxy-upload:hover { background: var(--field-bg-focus, var(--field-bg)); }
+.proxy-upload:active { transform: scale(.97); }
+.proxy-upload:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.proxy-upload.disabled { opacity: .5; cursor: default; pointer-events: none; }
+.proxy-upload svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; color: var(--accent); }
+.proxy-upload svg .duo { fill: currentColor; stroke: none; opacity: .14; }
+.proxy-upload .visually-hidden-file { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
 .proxy-input-panel textarea { font: 12px/1.8 var(--mono); resize: vertical; min-height: 120px; }
 .proxy-input-panel :is(select, .vselect) { max-width: 480px; }
 .proxy-table-wrap { overflow-x: auto; }

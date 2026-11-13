@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$helper = Join-Path $env:LOCALAPPDATA "Vela Browser\aliasmode-mcp.exe"
+$helper = Join-Path $env:LOCALAPPDATA "Vela Browser\vela-browser-mcp.exe"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("aliasmode-agent-" + [Guid]::NewGuid().ToString("N"))
 
 function Fail-Json([string]$Code, [string]$Message) {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Select } from "./select.tsx";
+import { NumberInput } from "./controls.tsx";
 import { useTranslation } from "./i18n.tsx";
 import { folderScope, type FolderInfo } from "../src/folders.ts";
 import type {
@@ -379,9 +380,9 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
           <p className="tools-hint">{mode === "profileId" ? <>{t("Include a header row:")} <code>profileId,type,host,port,user,pass</code>.</>
             : mode === "oldProxy" ? <>{t("Include a header row:")} <code>oldProxy,newProxy</code>. {t("Each old proxy is replaced wherever it appears in the selected folders.")}</>
             : t("Paste one proxy per line. We match them to profiles in profile-ID order. Each proxy is used for the number of profiles you set below. You will see every assignment next.")}</p>
-          {mode === "list" && <label className="fld"><span>{t("Profiles per proxy")}</span><input type="number" aria-label={t("Profiles per proxy")} min={1} step={1} value={perProxy} disabled={!!busy} onChange={(event) => { setPerProxy(Math.max(1, Math.floor(Number(event.target.value)) || 1)); invalidatePreview(); }} /></label>}
+          {mode === "list" && <label className="fld"><span>{t("Profiles per proxy")}</span><NumberInput aria-label={t("Profiles per proxy")} min={1} step={1} value={perProxy} disabled={!!busy} onChange={(event) => { setPerProxy(Math.max(1, Math.floor(Number(event.target.value)) || 1)); invalidatePreview(); }} /></label>}
           <label className="fld"><span>{mode === "list" ? t("Your new proxy list") : t("Your replacement CSV")}</span><textarea aria-label={t("Replacement input")} rows={5} value={input} disabled={!!busy} spellCheck={false} autoComplete="off" placeholder={mode === "list" ? "proxy.example.com:8080:username:password\nsocks5://username:password@proxy.example.com:1080" : mode === "profileId" ? "profileId,type,host,port,user,pass" : "oldProxy,newProxy"} onChange={(event) => { setInput(event.target.value); invalidatePreview(); }} /></label>
-          <div className="tools-result-bar"><label className="proxy-upload">{t("Or upload a file")}<input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void loadFile(file); }} /></label>
+          <div className="tools-result-bar"><label className={`proxy-upload${busy ? " disabled" : ""}`}><svg viewBox="0 0 24 24" aria-hidden="true"><path className="duo" d="M6 4.5A1.5 1.5 0 0 1 7.5 3h6.3L18 7.2v12.3a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19.5z" /><path d="M6 4.5A1.5 1.5 0 0 1 7.5 3h6.3L18 7.2v12.3a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19.5zM13.6 3.2v3.3a1 1 0 0 0 1 1h3.2M12 17.6v-6.4M9.4 13.7 12 11.1l2.6 2.6" /></svg>{t("Or upload a file")}<input type="file" className="visually-hidden-file" accept=".csv,.txt,text/csv,text/plain" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void loadFile(file); }} /></label>
             <button type="button" className="btn primary" disabled={!!busy || !scopeReady || !input.trim()} onClick={() => void makePreview()}>{busy === "preview" ? t("Preparing preview…") : t("Preview changes")}</button></div>
         </div>
       </section>

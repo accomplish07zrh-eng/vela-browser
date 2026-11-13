@@ -1,0 +1,49 @@
+/* Vela Browser's confirm and notice dialogs: the app's glass card, narrower, with a soft mark. */
+.vdialog-backdrop { z-index: 90; }
+.vdialog-backdrop.leaving { animation: vdialog-fade-out 140ms var(--ease, ease) forwards; }
+.modal.vdialog {
+  max-width: 440px; padding: 28px 0 0; align-items: stretch; overflow: visible;
+  animation: vdialog-in 420ms var(--spring-layout, cubic-bezier(.2, .85, .3, 1));
+}
+.modal.vdialog.leaving { animation: vdialog-out 140ms var(--ease, ease) forwards; }
+@keyframes vdialog-in {
+  0% { opacity: 0; transform: translateY(10px) scale(.94); }
+  60% { opacity: 1; }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes vdialog-out { to { opacity: 0; transform: translateY(4px) scale(.97); } }
+@keyframes vdialog-fade-out { to { opacity: 0; } }
+
+.vdialog-mark {
+  align-self: center; display: grid; place-items: center;
+  width: 52px; height: 52px; margin-bottom: 14px; border-radius: 50%;
+  color: var(--accent); background: var(--accent-soft);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-soft) 45%, transparent);
+  animation: vdialog-mark 520ms var(--spring-layout, ease) 60ms backwards;
+}
+.vdialog.danger .vdialog-mark {
+  color: var(--danger-ink); background: var(--danger-soft);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--danger-soft) 45%, transparent);
+}
+.vdialog-mark svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.vdialog-mark svg .duo { fill: currentColor; stroke: none; opacity: .16; }
+@keyframes vdialog-mark { from { opacity: 0; transform: scale(.6); } }
+
+.vdialog-heading {
+  margin: 0; padding: 0 32px; text-align: center; text-wrap: balance;
+  font: 600 17px/1.5 var(--font-title, inherit); letter-spacing: .2px; color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.vdialog-body {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 0 32px;
+  max-height: min(42vh, 320px); overflow-y: auto;
+  color: var(--muted); font-size: 13px; line-height: 1.65; text-align: center; text-wrap: pretty;
+}
+.vdialog-body p { margin: 0; overflow-wrap: anywhere; }
+.modal-foot.vdialog-foot { justify-content: center; gap: 10px; padding: 24px 24px 24px; }
+.modal-foot.vdialog-foot > .btn { flex: 1 1 0; max-width: 180px; margin: 0; }
+.modal-foot.vdialog-foot > .btn:first-child { margin-left: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .modal.vdialog, .vdialog-mark, .modal.vdialog.leaving, .vdialog-backdrop.leaving { animation-duration: 1ms; }
+}

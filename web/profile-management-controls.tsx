@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Select } from "./select.tsx";
+import { NumberInput } from "./controls.tsx";
 import { useTranslation } from "./i18n.tsx";
 import { trapDialogTab } from "./dialog-focus.ts";
 import {
@@ -132,9 +133,9 @@ export function ProfileBatchOptions({ enabled, count, pattern, start, disabled, 
     <label className="batch-toggle"><input type="checkbox" checked={enabled} disabled={disabled} onChange={(event) => onEnabled(event.target.checked)} /><span>{t("Create several profiles")}</span></label>
     {enabled && <div className="batch-options-body">
       <div className="fld-row">
-        <label className="fld batch-count"><span>{t("Quantity")}</span><input type="number" min={1} max={100} step={1} value={count} disabled={disabled} onChange={(event) => onCount(event.target.value)} /></label>
+        <label className="fld batch-count"><span>{t("Quantity")}</span><NumberInput min={1} max={100} step={1} value={count} disabled={disabled} onChange={(event) => onCount(event.target.value)} /></label>
         <label className="fld grow"><span>{t("Naming rule")}</span><input value={pattern} disabled={disabled} maxLength={120} placeholder="Studio {n:2}" onChange={(event) => onPattern(event.target.value)} /></label>
-        <label className="fld batch-start"><span>{t("Start at")}</span><input type="number" min={1} max={999999} step={1} value={start} disabled={disabled} onChange={(event) => onStart(event.target.value)} /></label>
+        <label className="fld batch-start"><span>{t("Start at")}</span><NumberInput min={1} max={999999} step={1} value={start} disabled={disabled} onChange={(event) => onStart(event.target.value)} /></label>
       </div>
       <p className="management-note">{t("Use {n} for a number, or {n:2} for 01, 02… Each profile gets a new identity.")}</p>
       <div className="batch-name-preview" aria-label={t("Name preview")} aria-live="polite">

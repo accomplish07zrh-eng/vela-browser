@@ -1,10 +1,10 @@
 /**
  * Entry point of the compiled desktop program, aliasmode-sidecar. The same program runs the MCP
- * helper when the small aliasmode-mcp launcher next to it starts it with MCP_MODE first, so the
+ * helper when the small vela-browser-mcp launcher next to it starts it with MCP_MODE first, so the
  * desktop app ships one Bun runtime instead of two.
  */
 
-// Keep in step with src-tauri/src/bin/aliasmode-mcp.rs.
+// Keep in step with src-tauri/src/bin/vela-browser-mcp.rs.
 export const MCP_MODE = "__mcp";
 
 if (import.meta.main) {
