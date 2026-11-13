@@ -1009,5 +1009,21 @@
   "Changed. The browser reopened on the new exit ({country}).": "已更换，浏览器已用新出口（{country}）重新打开。",
   "Saved. The profile uses the new exit from its next start.": "已保存，下次启动时使用新出口。",
   "Checking the new exit…": "正在检测新出口…",
-  "Change and reopen": "更换并重开浏览器"
+  "Change and reopen": "更换并重开浏览器",
+  "AI proxy changes": "AI 换代理",
+  "An AI connected through MCP can give a profile a pool proxy. Changing a profile's exit shows its sites an IP change.": "通过 MCP 连接的 AI 可以给环境换成池里的代理。换出口后，该环境登录的网站会看到 IP 变化。",
+  "When an AI asks to change a proxy": "AI 请求换代理时",
+  "Ask me each time": "每次都问我",
+  "Allow pool proxies without asking": "池内代理直接允许",
+  "Never allow": "一律不允许",
+  "{client} wants to change the proxy of {profile}": "{client} 想给「{profile}」换代理",
+  "The open browser will save its tabs, close and reopen on the new exit.": "已打开的浏览器会保存标签页，关闭后用新出口重新打开。",
+  "The profile uses it from its next start.": "环境下次启动时生效。",
+  "Refused automatically in {seconds} s.": "{seconds} 秒后自动拒绝。",
+  "Deny": "拒绝",
+  "Allow": "允许",
+  "Request failed": "请求失败",
+  "This subscription link cannot be read on this computer. Remove it and add it again": "这个订阅链接在这台电脑上读不出来（数据来自别的电脑或账户）。请删除后重新添加。",
+  "Encrypted storage is unavailable right now": "加密存储暂时不可用，请稍后再试",
+  "Subscription nodes such as VLESS, Trojan or Hysteria2 run in sing-box, a separate open-source program (GPL-3.0-or-later, by nekohasekai) that Vela Browser is not associated with. On first use Vela downloads its official release, checks it and runs it unmodified. Source: github.com/SagerNet/sing-box": "VLESS、Trojan、Hysteria2 等订阅节点由 sing-box 运行。它是独立的开源程序（GPL-3.0-or-later，作者 nekohasekai），与 Vela Browser 没有关联。Vela 首次使用时从它的官方发布页下载，校验后原样运行。源码：github.com/SagerNet/sing-box"
 }

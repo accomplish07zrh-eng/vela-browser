@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { fetchDirectEgress } from "../../src/egress.ts";
 import { ensureKernel, KernelSupervisor } from "../../src/kernel.ts";
 import { checkProxy } from "../../src/proxy-check.ts";
-import { fetchSubscription, type ParsedNode } from "../../src/subscription.ts";
+import { fetchSubscription, SubscriptionError, type ParsedNode } from "../../src/subscription.ts";
 
 const links = [1, 2, 3, 4, 5].map((i) => process.env[`VELA_SUB_${i}`]?.trim()).filter((link): link is string => !!link);
 if (!links.length) {
@@ -77,10 +77,16 @@ try {
       }
       console.log(`${label}: ${JSON.stringify(summary)}`);
     } catch (error) {
-      // The message comes from Vela's own fetcher and carries no link.
-      console.log(`${label}: failed: ${error instanceof Error ? error.message : "unknown error"}`);
+      // Vela's own subscription errors are fixed texts. Anything else may quote the address, so
+      // only its kind is printed.
+      const reason = error instanceof SubscriptionError ? error.message : `${error instanceof Error ? error.name : "unknown"} (details withheld)`;
+      console.log(`${label}: failed: ${reason}`);
     }
   }
 } finally {
-  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  // A kernel that was just stopped can hold its folder for a moment on Windows.
+  for (let attempt = 0; ; attempt++) {
+    try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); break; }
+    catch { if (attempt >= 10) { console.log(`note: could not remove the temporary folder ${root}`); break; } await Bun.sleep(500); }
+  }
 }

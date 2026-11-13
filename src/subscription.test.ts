@@ -207,3 +207,45 @@ test("fetching refuses plain http, follows at most three redirects, and caps the
   const big = fakeServer({ "https://sub.example/big": () => new Response("x".repeat(6 * 1024 * 1024)) });
   await expect(fetchSubscription("https://sub.example/big", { fetchFn: big.fetchFn, userAgent: "clash.meta" })).rejects.toThrow("too large");
 });
+
+// Shapes seen in real provider subscriptions (values made up): fields Clash generators add that
+// change nothing, ECH looked up by name, and port hopping written twice.
+const CLASH_REAL_SHAPES = `
+proxies:
+  - { name: vless-extra, type: vless, server: a.node.example, port: 443, uuid: 11111111-2222-3333-4444-555555555555, alterId: 0, cipher: auto, encryption: none, flow: xtls-rprx-vision, network: tcp, tls: true, servername: a.node.example, client-fingerprint: chrome, reality-opts: { public-key: jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0, short-id: 0123abcd } }
+  - { name: vless-flow-null, type: vless, server: g.node.example, port: 443, uuid: 11111111-2222-3333-4444-555555555555, alterId: 0, cipher: auto, flow: null, network: ws, ws-opts: { path: /ws, headers: { Host: g.node.example } }, tls: true, servername: g.node.example }
+  - { name: vless-mlkem, type: vless, server: h.node.example, port: 443, uuid: 11111111-2222-3333-4444-555555555555, flow: xtls-rprx-vision, tls: true, servername: www.example.com, client-fingerprint: chrome, reality-opts: { public-key: jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0, short-id: 0123abcd, support-x25519mlkem768: true } }
+  - { name: vless-aid-1, type: vless, server: b.node.example, port: 443, uuid: 11111111-2222-3333-4444-555555555555, alterId: 1, tls: true }
+  - { name: vless-cipher, type: vless, server: b.node.example, port: 443, uuid: 11111111-2222-3333-4444-555555555555, cipher: aes-128-gcm, tls: true }
+  - { name: vless-ech, type: vless, server: c.node.example, port: 443, uuid: 11111111-2222-3333-4444-555555555555, network: ws, ws-opts: { path: /ws }, tls: true, servername: c.node.example, client-fingerprint: chrome, ech-opts: { enable: true, query-server-name: cloudflare-ech.com } }
+  - { name: vless-ech-off, type: vless, server: c.node.example, port: 443, uuid: 11111111-2222-3333-4444-666666666666, tls: true, ech-opts: { enable: false } }
+  - { name: vless-ech-config, type: vless, server: c.node.example, port: 443, uuid: 11111111-2222-3333-4444-777777777777, tls: true, ech-opts: { enable: true, config: AEX+DQBB } }
+  - { name: hy2-null, type: hysteria2, server: d.node.example, port: 443, password: P, up: null, down: null, obfs: salamander, obfs-password: O, sni: d.node.example }
+  - { name: hy2-mport, type: hysteria2, server: e.node.example, port: 21000, password: P, ports: 21000-21999, mport: 21000-21999, hop-interval: 30, up: 100, down: 100, udp: true }
+  - { name: hy2-mport-only, type: hysteria2, server: e.node.example, port: 22000, password: Q, mport: 22000-22099 }
+  - { name: hy2-mport-differs, type: hysteria2, server: e.node.example, port: 23000, password: R, ports: 23000-23099, mport: 24000-24099 }
+  - { name: hy2-pinned, type: hysteria2, server: f.node.example, port: 443, password: P, skip-cert-verify: true, fingerprint: 0000000000000000000000000000000000000000000000000000000000000000 }
+`;
+
+test("real provider shapes: harmless generator fields pass, ECH by name and doubled port hopping work, pins stay out", () => {
+  const parsed = parseSubscription(CLASH_REAL_SHAPES);
+  const byName = new Map(parsed.nodes.map((node) => [node.name, node]));
+  expect([...byName.keys()]).toEqual(["vless-extra", "vless-flow-null", "vless-ech", "vless-ech-off", "hy2-null", "hy2-mport", "hy2-mport-only"]);
+  expect(byName.get("vless-extra")!.outbound).not.toHaveProperty("alter_id");
+  expect(byName.get("vless-ech")!.outbound.tls).toMatchObject({ enabled: true, ech: { enabled: true, query_server_name: "cloudflare-ech.com" } });
+  expect((byName.get("vless-ech-off")!.outbound.tls as any).ech).toBeUndefined();
+  expect(byName.get("hy2-null")!.outbound).not.toHaveProperty("up_mbps");
+  expect(byName.get("hy2-null")!.outbound).not.toHaveProperty("down_mbps");
+  expect(byName.get("hy2-mport")!.outbound).toMatchObject({ server_ports: ["21000:21999"], hop_interval: "30s", up_mbps: 100 });
+  expect(byName.get("hy2-mport-only")!.outbound).toMatchObject({ server_ports: ["22000:22099"] });
+  expect(byName.get("vless-flow-null")!.outbound).not.toHaveProperty("flow");
+  expect(Object.fromEntries(parsed.unsupported.map((row) => [row.name, row.reason]))).toEqual({
+    // Post-quantum key exchange for REALITY: sing-box cannot be told to match it, so it stays out.
+    "vless-mlkem": "unknown reality field support-x25519mlkem768",
+    "vless-aid-1": "vless alterId 1",
+    "vless-cipher": "vless cipher aes-128-gcm",
+    "vless-ech-config": "ech config",
+    "hy2-mport-differs": "mport differs from ports",
+    "hy2-pinned": "unknown field fingerprint",
+  });
+});

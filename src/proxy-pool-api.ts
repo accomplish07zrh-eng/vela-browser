@@ -6,7 +6,8 @@
 
 import { fetchDirectEgress } from "./egress.ts";
 import { checkProxy } from "./proxy-check.ts";
-import { checkPoolNodes, poolNodeViews, poolUsage, ProxyPoolError, subscriptionView, type PoolNode } from "./proxy-pool.ts";
+import { checkPoolNodes, poolNodeViews, poolUsage, ProxyPoolError, subscriptionView, UNREADABLE_SUBSCRIPTION, type PoolNode } from "./proxy-pool.ts";
+import { SecretUnavailableError } from "./secret-box.ts";
 import { fetchSubscription, SubscriptionError } from "./subscription.ts";
 import type { KernelSupervisor } from "./kernel.ts";
 import { ProxySwitchError, type SwitchResult } from "./proxy-switch.ts";
@@ -164,8 +165,49 @@ export async function handleProxyPoolRequest(
     return json({ ok: false, error: "Unknown proxy pool operation" }, 404);
   } catch (error) {
     if (error instanceof ProxyPoolError) return json({ ok: false, error: error.message }, error.status);
+    if (error instanceof SecretUnavailableError) return json({ ok: false, error: "Encrypted storage is unavailable right now" }, 503);
     if (error instanceof Error && /unsupported proxy type/.test(error.message)) return json({ ok: false, error: "Unsupported proxy type" }, 400);
     return json({ ok: false, error: "Proxy pool operation failed" }, 500);
+  }
+}
+
+/**
+ * Check pool nodes and record the results. Kernel-protocol nodes go through one temporary kernel,
+ * one inbound each, which carries no profile's traffic and stops when the checks end; without a
+ * kernel they report "unavailable".
+ */
+export async function runPoolChecks(
+  store: ProfileStore,
+  nodes: PoolNode[],
+  opts: {
+    kernels?: Pick<KernelSupervisor, "startTemporary">;
+    check?: (proxy: ProxySpec, direct: import("./egress.ts").EgressInfo | null) => Promise<import("./proxy-check.ts").ProxyCheckResult>;
+    direct?: () => Promise<import("./egress.ts").EgressInfo | null>;
+    cancelled?: () => boolean;
+    onResult?: (node: PoolNode) => void;
+  } = {},
+): Promise<void> {
+  const kernelNodes = nodes.filter((node) => node.outbound);
+  let temporary: Awaited<ReturnType<KernelSupervisor["startTemporary"]>> | undefined;
+  try {
+    if (kernelNodes.length && opts.kernels) {
+      temporary = await opts.kernels.startTemporary(kernelNodes.map((node) => ({ tag: node.id, outbound: node.outbound! })));
+    }
+  } catch { /* each kernel node below reports "unavailable" */ }
+  const route = (node: PoolNode): ProxySpec | null => node.outbound ? temporary?.specs.get(node.id) ?? null : node.proxy;
+  try {
+    await checkPoolNodes(store.proxyPool, nodes, {
+      check: async (_proxy, checkOpts, node) => {
+        const via = route(node!);
+        if (!via) throw new Error("no kernel");
+        return opts.check ? opts.check(via, checkOpts.direct) : checkProxy(via, { direct: checkOpts.direct });
+      },
+      direct: opts.direct ?? (() => fetchDirectEgress()),
+      ...(opts.cancelled ? { cancelled: opts.cancelled } : {}),
+      ...(opts.onResult ? { onResult: opts.onResult } : {}),
+    });
+  } finally {
+    temporary?.process.stop();
   }
 }
 
@@ -174,6 +216,7 @@ async function refreshSubscription(store: ProfileStore, id: string, deps: ProxyP
   const pool = store.proxyPool;
   const sub = pool.getSubscription(id);
   if (!sub) throw new ProxyPoolError("This subscription is no longer here", 404);
+  if (sub.unreadable) throw new ProxyPoolError(UNREADABLE_SUBSCRIPTION, 409);
   try {
     const fetched = await (deps.fetchSubscription ?? fetchSubscription)(sub.url, sub.userAgent ? { userAgent: sub.userAgent } : {});
     const result = pool.syncSubscription(id, fetched.parsed.nodes, { ...fetched.parsed, ...(fetched.usage ? { usage: fetched.usage } : {}) });
@@ -205,24 +248,10 @@ function streamChecks(store: ProfileStore, nodes: PoolNode[], options: UiRuntime
       };
       let completed = 0;
       send({ type: "progress", completed, total: nodes.length });
-      // Kernel-protocol nodes are checked through one temporary kernel, one inbound each, which
-      // carries no profile's traffic and stops when the checks end.
-      const kernelNodes = nodes.filter((node) => node.outbound);
-      let temporary: Awaited<ReturnType<KernelSupervisor["startTemporary"]>> | undefined;
       try {
-        if (kernelNodes.length && deps.kernels) {
-          temporary = await deps.kernels.startTemporary(kernelNodes.map((node) => ({ tag: node.id, outbound: node.outbound! })));
-        }
-      } catch { /* each kernel node below reports "unavailable" */ }
-      const route = (node: PoolNode): ProxySpec | null => node.outbound ? temporary?.specs.get(node.id) ?? null : node.proxy;
-      try {
-        await checkPoolNodes(store.proxyPool, nodes, {
-          check: async (_proxy, opts, node) => {
-            const via = route(node!);
-            if (!via) throw new Error("no kernel");
-            return options.proxyCheck ? options.proxyCheck(via) : checkProxy(via, { direct: opts.direct });
-          },
-          direct: options.proxyCheck ? async () => null : () => fetchDirectEgress(),
+        await runPoolChecks(store, nodes, {
+          ...(deps.kernels ? { kernels: deps.kernels } : {}),
+          ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
           cancelled: () => gone || signal.aborted,
           onResult: (node) => {
             send({ type: "node", node: views(store, [store.proxyPool.get(node.id) ?? node])[0] });
@@ -233,7 +262,6 @@ function streamChecks(store: ProfileStore, nodes: PoolNode[], options: UiRuntime
       } catch {
         send({ type: "error", error: "Proxy check failed" });
       } finally {
-        temporary?.process.stop();
         try { controller.close(); } catch {}
       }
     },

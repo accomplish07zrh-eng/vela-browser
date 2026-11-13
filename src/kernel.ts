@@ -11,7 +11,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { assertKernelConfig, kernelConfig } from "./kernel-config.ts";
 import { downloadResumable } from "./runtime-download.ts";
 import type { Outbound } from "./subscription.ts";
@@ -168,6 +168,64 @@ export interface KernelDeps {
   log?: (msg: string) => void;
   spawn?: (cmd: string[]) => { pid: number; exited: Promise<number>; kill(): void; stderr?: ReadableStream<Uint8Array> };
   startTimeoutMs?: number;
+  /** Null means the process is gone; throw if the lookup is inconclusive. */
+  processCommandLine?: (pid: number) => Promise<string | null>;
+  isPidAlive?: (pid: number) => boolean;
+  killPid?: (pid: number) => void | Promise<void>;
+}
+
+interface KernelRecord {
+  pid: number;
+  executable: string;
+  marker: string;
+  startedAt: number;
+  ownerPid: number;
+}
+
+const KERNEL_RECORDS = "processes";
+
+function kernelRecord(value: unknown, name: string): KernelRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<KernelRecord>;
+  if (!Number.isSafeInteger(record.pid) || record.pid! <= 0
+    || !Number.isSafeInteger(record.ownerPid) || record.ownerPid! <= 0
+    || typeof record.executable !== "string" || !isAbsolute(record.executable) || /[\0\r\n]/.test(record.executable)
+    || typeof record.marker !== "string" || !/^[0-9a-f]{32}$/.test(record.marker) || name !== `${record.marker}.json`
+    || typeof record.startedAt !== "number" || !Number.isFinite(record.startedAt) || record.startedAt <= 0) return null;
+  return record as KernelRecord;
+}
+
+function pidIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return true;
+    throw error;
+  }
+}
+
+/** A missing process returns null; a failed or inaccessible scan is not proof of death. */
+async function readProcessCommandLine(pid: number, isAlive: (pid: number) => boolean): Promise<string | null> {
+  const script = `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $p=Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction Stop; if ($null -ne $p) { [Console]::Out.Write($p.CommandLine) }`;
+  const cmd = process.platform === "win32"
+    ? ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
+    : ["ps", "-o", "command=", "-p", String(pid)];
+  const child = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore" });
+  const timer = setTimeout(() => { try { child.kill(); } catch {} }, 10_000);
+  const [output, code] = await Promise.all([new Response(child.stdout).text(), child.exited])
+    .finally(() => clearTimeout(timer));
+  const commandLine = output.trim();
+  if (code === 0 && commandLine) return commandLine;
+  if (!isAlive(pid)) return null;
+  throw new Error("could not read the proxy kernel process command line");
+}
+
+/** Match the executable at the start of the command, not merely in another program's arguments. */
+function matchesKernelCommand(commandLine: string, record: KernelRecord): boolean {
+  const line = commandLine.trimStart();
+  const quoted = `"${record.executable}"`;
+  const prefix = line.startsWith(quoted) ? quoted : record.executable;
+  return line.startsWith(prefix) && (!line[prefix.length] || /\s/.test(line[prefix.length]!)) && line.includes(record.marker);
 }
 
 /**
@@ -176,7 +234,8 @@ export interface KernelDeps {
  */
 export async function startKernel(entries: Array<{ tag: string; outbound: Outbound }>, deps: KernelDeps): Promise<{ process: KernelProcess; specs: Map<string, ProxySpec> }> {
   const binary = await deps.binary();
-  if (sha256File(binary.path) !== binary.sha256) throw new Error("the proxy kernel executable changed since it was verified");
+  const executable = resolve(binary.path);
+  if (sha256File(executable) !== binary.sha256) throw new Error("the proxy kernel executable changed since it was verified");
   const inbounds = [];
   for (const entry of entries) {
     inbounds.push({
@@ -189,46 +248,66 @@ export async function startKernel(entries: Array<{ tag: string; outbound: Outbou
   }
   const config = kernelConfig(inbounds);
   assertKernelConfig(config);
-  mkdirSync(deps.workDir, { recursive: true });
-  const file = join(deps.workDir, `kernel-${randomBytes(8).toString("hex")}.json`);
-  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
-  const cmd = [binary.path, "run", "-c", file, "-D", deps.workDir, "--disable-color"];
-  const child = deps.spawn ? deps.spawn(cmd) : Bun.spawn(cmd, { stdout: "ignore", stderr: "pipe", cwd: dirname(binary.path) });
-  const stderr = "stderr" in child && child.stderr instanceof ReadableStream ? child.stderr : undefined;
-  let tail = "";
-  if (stderr) {
-    void (async () => {
-      const decoder = new TextDecoder();
-      const reader = stderr.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        tail = (tail + decoder.decode(value)).slice(-2000);
-      }
-    })().catch(() => {});
-  }
+  const workDir = resolve(deps.workDir);
+  const recordsDir = join(workDir, KERNEL_RECORDS);
+  mkdirSync(recordsDir, { recursive: true });
+  const marker = randomBytes(16).toString("hex");
+  const file = join(workDir, `kernel-${marker}.json`);
+  const recordPath = join(recordsDir, `${marker}.json`);
+  const cmd = [executable, "run", "-c", file, "-D", workDir, "--disable-color"];
   try {
-    await waitForPort(inbounds[0]!.port, child.exited, deps.startTimeoutMs ?? 8_000);
-    for (const inbound of inbounds.slice(1)) await waitForPort(inbound.port, child.exited, deps.startTimeoutMs ?? 8_000);
-  } catch (error) {
-    try { child.kill(); } catch {}
-    deps.log?.(`proxy kernel failed to start: ${(error as Error).message}${tail ? ` (${tail.trim().split("\n").at(-1)})` : ""}`);
-    throw error;
+    writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+    const startedAt = Date.now();
+    const child = deps.spawn ? deps.spawn(cmd) : Bun.spawn(cmd, { stdout: "ignore", stderr: "pipe", cwd: dirname(executable) });
+    try {
+      if (!Number.isSafeInteger(child.pid) || child.pid <= 0) throw new Error("the proxy kernel has no valid process id");
+      const record: KernelRecord = { pid: child.pid, executable, marker, startedAt, ownerPid: process.pid };
+      writeFileSync(recordPath, JSON.stringify(record), { mode: 0o600, flag: "wx" });
+    } catch (error) {
+      try { child.kill(); } catch {}
+      throw error;
+    }
+    // Keep the record until exit is confirmed, even when stop() or startup's kill fails.
+    void child.exited.then(() => {
+      try { rmSync(recordPath, { force: true }); }
+      catch (error) { deps.log?.(`could not remove proxy kernel record: ${(error as Error).message}`); }
+    }, () => {});
+    const stderr = "stderr" in child && child.stderr instanceof ReadableStream ? child.stderr : undefined;
+    let tail = "";
+    if (stderr) {
+      void (async () => {
+        const decoder = new TextDecoder();
+        const reader = stderr.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          tail = (tail + decoder.decode(value)).slice(-2000);
+        }
+      })().catch(() => {});
+    }
+    try {
+      await waitForPort(inbounds[0]!.port, child.exited, deps.startTimeoutMs ?? 8_000);
+      for (const inbound of inbounds.slice(1)) await waitForPort(inbound.port, child.exited, deps.startTimeoutMs ?? 8_000);
+    } catch (error) {
+      try { child.kill(); } catch {}
+      deps.log?.(`proxy kernel failed to start: ${(error as Error).message}${tail ? ` (${tail.trim().split("\n").at(-1)})` : ""}`);
+      throw error;
+    }
+    const specs = new Map(inbounds.map((inbound) => [inbound.tag, {
+      type: "socks5" as const, host: "127.0.0.1", port: String(inbound.port), user: inbound.username, pass: inbound.password,
+    }]));
+    return {
+      process: {
+        pid: child.pid,
+        spec: specs.get(inbounds[0]!.tag)!,
+        exited: child.exited,
+        stop: () => { try { child.kill(); } catch {} },
+      },
+      specs,
+    };
   } finally {
     rmSync(file, { force: true });
   }
-  const specs = new Map(inbounds.map((inbound) => [inbound.tag, {
-    type: "socks5" as const, host: "127.0.0.1", port: String(inbound.port), user: inbound.username, pass: inbound.password,
-  }]));
-  return {
-    process: {
-      pid: child.pid,
-      spec: specs.get(inbounds[0]!.tag)!,
-      exited: child.exited,
-      stop: () => { try { child.kill(); } catch {} },
-    },
-    specs,
-  };
 }
 
 interface Lease {
@@ -251,6 +330,34 @@ export class KernelSupervisor {
   onGiveUp?: (key: string) => void;
 
   constructor(private readonly deps: KernelDeps) {}
+
+  /** Reap only recorded kernels whose executable and random command-line marker still match. */
+  async reconcileOrphans(): Promise<void> {
+    const dir = join(this.deps.workDir, KERNEL_RECORDS);
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return; }
+    const isAlive = this.deps.isPidAlive ?? pidIsAlive;
+    const commandLine = this.deps.processCommandLine ?? ((pid: number) => readProcessCommandLine(pid, isAlive));
+    const kill = this.deps.killPid ?? ((pid: number) => { process.kill(pid, "SIGKILL"); });
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const path = join(dir, name);
+      try {
+        const contents = readFileSync(path, "utf8");
+        let record: KernelRecord | null = null;
+        try { record = kernelRecord(JSON.parse(contents), name); } catch {}
+        if (!record) { rmSync(path, { force: true }); continue; }
+        const line = await commandLine(record.pid);
+        if (!line || !matchesKernelCommand(line, record)) { rmSync(path, { force: true }); continue; }
+        // A second manager can share this directory; its kernels are not orphans.
+        if (isAlive(record.ownerPid)) continue;
+        await kill(record.pid);
+        rmSync(path, { force: true });
+      } catch (error) {
+        this.deps.log?.(`could not reconcile proxy kernel record ${name}: ${(error as Error).message}`);
+      }
+    }
+  }
 
   async acquire(key: string, outbound: Outbound): Promise<ProxySpec> {
     const existing = this.leases.get(key);

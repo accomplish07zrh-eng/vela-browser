@@ -24,9 +24,41 @@ import type { LaunchStartOptions, LaunchStartResult } from "./launcher.ts";
 import type { ProxyCheckResult } from "./proxy-check.ts";
 import { checkProxy } from "./proxy-check.ts";
 import { poolUsage, type PoolNode } from "./proxy-pool.ts";
-import { proxyHostPort } from "./proxy.ts";
+import { proxyHostPort, proxyIdentityKey } from "./proxy.ts";
+import { lookupExitLocation, type FetchLike } from "./geoip.ts";
+import { syncFirefoxTimezone } from "./firefox-config.ts";
 import type { ProfileStore } from "./store.ts";
-import type { LaunchInfo, ProxySpec } from "./types.ts";
+import type { LaunchInfo, Profile, ProxySpec } from "./types.ts";
+
+/**
+ * Save `proxy` as a profile's proxy, as the profile form saves one: the timezone follows the new
+ * exit unless the user typed one (a pool node's exit is looked up at its launch, through its
+ * kernel), and an open browser keeps the proxy it runs with until its next start. False when
+ * there is no such profile.
+ */
+export async function saveProfileProxy(store: ProfileStore, id: string, proxy: ProxySpec, timezoneFetch?: FetchLike): Promise<boolean> {
+  const apply = (profile: Profile) => {
+    const changed = !!profile.proxyError || proxyIdentityKey(profile.proxy) !== proxyIdentityKey(proxy);
+    profile.proxy = { ...proxy };
+    delete profile.proxyError;
+    return changed;
+  };
+  let p = store.getProfile(id);
+  if (!p) return false;
+  if (apply(p) && !p.timezoneManual) {
+    const location = await lookupExitLocation(proxy, timezoneFetch);
+    // Apply to the current copy, so changes saved during the lookup are kept.
+    p = store.getProfile(id);
+    if (!p) return false;
+    apply(p);
+    if (location) {
+      p.timezone = location.timezone;
+      syncFirefoxTimezone(p);
+    }
+  }
+  store.upsertProfile(p);
+  return true;
+}
 
 export type SwitchErrorCode =
   | "no_such_profile" | "node_unavailable" | "pool_exhausted" | "rate_limited" | "profile_busy"

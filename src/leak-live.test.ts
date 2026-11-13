@@ -27,7 +27,7 @@
  */
 import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createSocket } from "node:dgram";
 import net from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -470,6 +470,9 @@ async function probe(
   opts: { stripResolverRules?: boolean; identity?: Profile; kernel?: KernelProtocolName } = {},
 ): Promise<ProbeResult> {
   const run = randomUUID().slice(0, 8);
+  // The deliberately unhardened baseline does resolve names; a packet capture (pktmon-dns.ps1)
+  // counts its packets as a control, not as a leak, by these ids.
+  if (opts.stripResolverRules && process.env.VELA_LEAK_BASELINE_IDS) appendFileSync(process.env.VELA_LEAK_BASELINE_IDS, `${run}\n`);
   const root = join(tmpdir(), `vela-leak-${engine}-${run}`);
   mkdirSync(root, { recursive: true });
   const canary = await directCanary();

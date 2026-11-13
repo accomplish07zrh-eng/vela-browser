@@ -110,7 +110,7 @@ function bool(value: unknown): boolean {
 
 /** Fields every Clash proxy may carry that do not change where or how it connects for a profile. */
 const CLASH_COMMON = new Set(["name", "type", "server", "port", "udp", "tfo", "mptcp", "ip-version", "smux", "interface-name", "routing-mark"]);
-const CLASH_TLS = new Set(["tls", "sni", "servername", "skip-cert-verify", "client-fingerprint", "alpn", "reality-opts"]);
+const CLASH_TLS = new Set(["tls", "sni", "servername", "skip-cert-verify", "client-fingerprint", "alpn", "reality-opts", "ech-opts"]);
 const CLASH_TRANSPORT = new Set(["network", "ws-opts", "grpc-opts", "h2-opts", "http-opts"]);
 
 function onlyKnown(proxy: Record<string, unknown>, known: Set<string>[]): void {
@@ -140,6 +140,18 @@ function clashTls(proxy: Record<string, unknown>, opts: { always?: boolean; host
     tls.reality = { enabled: true, public_key: text(r["public-key"], "reality public key"), ...(r["short-id"] !== undefined ? { short_id: String(r["short-id"]) } : {}) };
     // REALITY needs a uTLS fingerprint; Clash defaults to chrome.
     if (!tls.utls) tls.utls = { enabled: true, fingerprint: "chrome" };
+  }
+  const ech = proxy["ech-opts"];
+  if (ech !== undefined) {
+    if (!ech || typeof ech !== "object") unsupported("invalid ech-opts");
+    const e = ech as Record<string, unknown>;
+    for (const key of Object.keys(e)) if (!["enable", "query-server-name", "config"].includes(key)) unsupported(`unknown ech field ${key}`);
+    if (bool(e.enable)) {
+      // An ECH config given inline is a different encoding in sing-box; only the DNS lookup is taken.
+      if (e.config !== undefined && e.config !== "") unsupported("ech config");
+      // The lookup goes through the kernel's own DNS-over-HTTPS resolver (kernel-config.ts).
+      tls.ech = { enabled: true, ...(e["query-server-name"] !== undefined ? { query_server_name: text(e["query-server-name"], "ech query server name") } : {}) };
+    }
   }
   return tls;
 }
@@ -245,10 +257,14 @@ export function parseClashProxy(proxy: Record<string, unknown>): ParsedNode | nu
       return finish(name, "vmess", outbound);
     }
     case "vless": {
-      onlyKnown(proxy, [CLASH_COMMON, CLASH_TLS, CLASH_TRANSPORT, new Set(["uuid", "flow", "packet-encoding", "encryption", "xudp"])]);
+      onlyKnown(proxy, [CLASH_COMMON, CLASH_TLS, CLASH_TRANSPORT, new Set(["uuid", "flow", "packet-encoding", "encryption", "xudp", "alterId", "cipher"])]);
       if (proxy.encryption !== undefined && proxy.encryption !== "" && proxy.encryption !== "none") unsupported("vless encryption");
+      // Clash generators copy VMess's alterId and cipher onto VLESS nodes. VLESS has neither, so only
+      // the values that mean "nothing" pass.
+      if (proxy.alterId !== undefined && Number(proxy.alterId) !== 0) unsupported(`vless alterId ${String(proxy.alterId)}`);
+      if (proxy.cipher !== undefined && !["", "auto", "none"].includes(String(proxy.cipher))) unsupported(`vless cipher ${String(proxy.cipher)}`);
       const outbound: Outbound = { type: "vless", ...base, uuid: text(proxy.uuid, "uuid") };
-      if (proxy.flow !== undefined && proxy.flow !== "") outbound.flow = text(proxy.flow, "flow");
+      if (proxy.flow !== undefined && proxy.flow !== null && proxy.flow !== "") outbound.flow = text(proxy.flow, "flow");
       const tls = clashTls(proxy, { host: host });
       if (tls) outbound.tls = tls;
       const transport = clashTransport(proxy);
@@ -264,16 +280,21 @@ export function parseClashProxy(proxy: Record<string, unknown>): ParsedNode | nu
       return finish(name, "trojan", outbound);
     }
     case "hysteria2": case "hy2": {
-      onlyKnown(proxy, [CLASH_COMMON, CLASH_TLS, new Set(["password", "auth", "obfs", "obfs-password", "up", "down", "ports", "hop-interval"])]);
+      onlyKnown(proxy, [CLASH_COMMON, CLASH_TLS, new Set(["password", "auth", "obfs", "obfs-password", "up", "down", "ports", "mport", "hop-interval"])]);
       const outbound: Outbound = { type: "hysteria2", ...base, password: text(proxy.password ?? proxy.auth, "password") };
       if (proxy.obfs !== undefined && proxy.obfs !== "") {
         if (proxy.obfs !== "salamander") unsupported(`hysteria2 obfs ${String(proxy.obfs)}`);
         outbound.obfs = { type: "salamander", password: text(proxy["obfs-password"], "obfs password") };
       }
       const mbps = (v: unknown) => { const m = /^(\d+)/.exec(String(v)); return m ? Number(m[1]) : unsupported("invalid bandwidth"); };
-      if (proxy.up !== undefined) outbound.up_mbps = mbps(proxy.up);
-      if (proxy.down !== undefined) outbound.down_mbps = mbps(proxy.down);
-      if (proxy.ports !== undefined) outbound.server_ports = String(proxy.ports).split(",").map((range) => range.trim().replace("-", ":"));
+      // An empty bandwidth (null) is the same as none given.
+      if (proxy.up !== undefined && proxy.up !== null && proxy.up !== "") outbound.up_mbps = mbps(proxy.up);
+      if (proxy.down !== undefined && proxy.down !== null && proxy.down !== "") outbound.down_mbps = mbps(proxy.down);
+      // "mport" is the older name of "ports"; some providers write both.
+      const mport = proxy.mport === undefined || proxy.mport === null || proxy.mport === "" ? undefined : String(proxy.mport).trim();
+      if (mport !== undefined && proxy.ports !== undefined && String(proxy.ports).trim() !== mport) unsupported("mport differs from ports");
+      const ports = proxy.ports ?? mport;
+      if (ports !== undefined) outbound.server_ports = String(ports).split(",").map((range) => range.trim().replace("-", ":"));
       if (proxy["hop-interval"] !== undefined) outbound.hop_interval = `${Number(proxy["hop-interval"])}s`;
       outbound.tls = clashTls(proxy, { always: true, host: host });
       return finish(name, "hysteria2", outbound);
