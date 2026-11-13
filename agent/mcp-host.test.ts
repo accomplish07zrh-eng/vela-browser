@@ -471,6 +471,42 @@ test("MCP cannot call retired account tools or forward them to the runtime", asy
     } finally { await client.close(); await host.close(); }
   });
 
+test.each(["chromium", "firefox", "webkit"])("MCP profile and %s status results retain safe proxy fields", async (engine) => {
+  const profiles: Record<string, Record<string, unknown>> = {
+    pool: { proxyNodeId: "node-1", proxyNodeName: "Tokyo", proxyCountry: "JP" },
+    deleted: { proxyNodeId: "deleted-node" },
+    direct: { proxyType: "socks5" },
+    none: {},
+  };
+  class ProxyStatusRuntime extends FakeRuntime {
+    override async call(method: string, params: Record<string, unknown> = {}): Promise<any> {
+      if (method === "profiles.list") return { profiles: Object.entries(profiles).map(([id, fields]) => ({ id, ...fields })) };
+      if (method === "browser.status") return {
+        profileId: params.profileId, running: true, ...profiles[String(params.profileId)],
+        ...(engine === "chromium" ? { ws: "ws://127.0.0.1:9333/private", port: 9333 }
+          : { engine, capabilities: ["mcp"], firefoxOwner: { token: "private-token" } }),
+      };
+      return super.call(method, params);
+    }
+  }
+  const host = await createVelaBrowserMcp({ discovered: { client: new ProxyStatusRuntime() }, playwright: new FakePlaywright() });
+  const client = new Client({ name: "test", version: "1" }, { capabilities: {} });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const listed = await client.callTool({ name: "vela_profiles_list", arguments: {} });
+    expect(listed.isError).not.toBe(true);
+    expect(listed.structuredContent).toEqual({ profiles: Object.entries(profiles).map(([id, fields]) => ({ id, ...fields })) });
+    for (const [id, fields] of Object.entries(profiles)) {
+      const status = await client.callTool({ name: "vela_browser_status", arguments: { profileId: id } });
+      expect(status.isError).not.toBe(true);
+      expect(Object.fromEntries(Object.entries(status.structuredContent as object).filter(([key]) => key.startsWith("proxy")))).toEqual(fields);
+      expect(JSON.stringify(status)).not.toContain("private-token");
+      expect(JSON.stringify(status)).not.toContain("ws://");
+    }
+  } finally { await client.close(); await host.close(); }
+});
+
 class PoolRuntime extends FakeRuntime {
   ws = "ws://127.0.0.1:9333/devtools/browser/before";
   override async call(method: string, params: Record<string, unknown> = {}): Promise<any> {

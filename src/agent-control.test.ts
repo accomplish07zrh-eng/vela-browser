@@ -467,6 +467,7 @@ test.each([
 
 import { ProfileStore } from "./store.ts";
 import { ProxyApprovalQueue, type AiProxyPolicy } from "./proxy-approvals.ts";
+import { parseSubscription } from "./subscription.ts";
 
 function poolHarness(policy: AiProxyPolicy) {
   const store = new ProfileStore(":memory:");
@@ -476,6 +477,8 @@ function poolHarness(policy: AiProxyPolicy) {
   const approvals = new ProxyApprovalQueue();
   const launcher = {
     kernels: { startTemporary: async () => { throw new Error("no kernel nodes here"); } },
+    reconcileOrphans: async () => {},
+    certifiedActive: async () => false,
     start: async () => ({ ws: "ws://x", port: 1 }),
     stop: async () => true,
     captureLocalSession: async () => {},
@@ -487,8 +490,212 @@ function poolHarness(policy: AiProxyPolicy) {
     proxySwitchDirect: async () => null,
     proxyTimezoneFetch: async () => new Response("{}"),
   });
-  return { store, node: node!, approvals, session, close: () => store.close() };
+  return { store, node: node!, launcher, approvals, session, close: () => store.close() };
 }
+
+function proxyFields(value: unknown): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => key.startsWith("proxy")));
+}
+
+test("profile lists and browser status describe proxies without exposing connection details", async () => {
+  const h = poolHarness("ask");
+  try {
+    const subscriptionUrl = "https://subscription.example/private-token";
+    const sub = h.store.proxyPool.addSubscription({ url: subscriptionUrl });
+    const parsed = parseSubscription([
+      "anytls://kernel-password@kernel-proxy.example:49123#%F0%9F%87%AF%F0%9F%87%B5%20Tokyo",
+      "trojan://hint-password@hint-proxy.example:49124#%F0%9F%87%AB%F0%9F%87%B7%20Paris",
+      "anytls://unknown-password@unknown-proxy.example:49125#Transit",
+    ].join("\n"));
+    h.store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+    const subscriptionNodes = h.store.proxyPool.list().filter((node) => node.subscriptionId === sub.id);
+    expect(subscriptionNodes).toHaveLength(3);
+    const [checked, hinted, unknown] = subscriptionNodes;
+    h.store.proxyPool.recordCheck(checked!.id, { status: "working", country: "gb", checkedAt: 1 });
+    h.store.proxyPool.recordCheck(hinted!.id, { status: "working", country: "", checkedAt: 1 });
+    h.store.proxyPool.recordCheck(unknown!.id, { status: "working", country: "unknown", checkedAt: 1 });
+    const base = h.store.getProfile("profile1")!;
+    const save = (id: string, proxy: typeof base.proxy) => h.store.upsertProfile({ ...base, id, name: id, proxy });
+    save("profile1", checked!.proxy);
+    // A plain proxy that also happens to be in the pool is still described only by type.
+    save("direct", h.node.proxy);
+    save("personal", { type: "socks5", host: "personal-proxy.example", port: "49126", user: "direct-user", pass: "direct-password" });
+    save("none", null);
+    save("hint", hinted!.proxy);
+    save("unknown", unknown!.proxy);
+
+    const expected: Record<string, Record<string, unknown>> = {
+      profile1: { proxyNodeId: checked!.id, proxyNodeName: "🇯🇵 Tokyo", proxyCountry: "GB" },
+      direct: { proxyType: "http" },
+      personal: { proxyType: "socks5" },
+      none: {},
+      hint: { proxyNodeId: hinted!.id, proxyNodeName: "🇫🇷 Paris", proxyCountry: "FR" },
+      unknown: { proxyNodeId: unknown!.id, proxyNodeName: "Transit" },
+    };
+    const listed = await h.session.enqueue(wire("profiles.list"));
+    expect(listed.ok).toBe(true);
+    const profiles = (listed.result as { profiles: Array<{ id: string }> }).profiles;
+    expect(profiles).toHaveLength(Object.keys(expected).length);
+    const poolListed = await h.session.enqueue(wire("proxyPool.list"));
+    expect(poolListed.ok).toBe(true);
+    const nodes = (poolListed.result as { nodes: Array<{ nodeId: string; country?: string }> }).nodes;
+    expect(nodes.find((node) => node.nodeId === checked!.id)?.country).toBe("GB");
+    expect(nodes.find((node) => node.nodeId === hinted!.id)?.country).toBe("FR");
+    expect(nodes.find((node) => node.nodeId === unknown!.id)?.country).toBeUndefined();
+    const results = [listed, poolListed];
+    for (const profile of profiles) {
+      expect(proxyFields(profile)).toEqual(expected[profile.id]!);
+      const status = await h.session.enqueue(wire("browser.status", { profileId: profile.id }));
+      expect(status.ok).toBe(true);
+      expect(proxyFields(status.result)).toEqual(expected[profile.id]!);
+      results.push(status);
+    }
+    for (const result of results) {
+      const text = JSON.stringify(result);
+      for (const secret of ["kernel-proxy.example", "49123", "kernel-password", "hint-proxy.example", "49124", "hint-password",
+        "unknown-proxy.example", "49125", "unknown-password", "203.0.113.40", '"port":"8080"', "pool-user", "pool-secret",
+        "personal-proxy.example", "49126", "direct-user", "direct-password", subscriptionUrl, '"outbound"']) {
+        expect(text).not.toContain(secret);
+      }
+    }
+
+    // Running browsers retain the same proxy fields alongside their engine details.
+    h.store.recordLaunch({ profileId: "profile1", pid: 12, debugPort: 9333, ws: "firefox://private", startedAt: 1, engine: "firefox" });
+    const runningSession = new AgentControlSession({
+      launcher: { certifiedActive: async () => true } as any, store: h.store, admission: {} as any,
+    });
+    const running = await runningSession.enqueue(wire("browser.status", { profileId: "profile1" }));
+    expect(running).toMatchObject({ ok: true, result: { running: true, engine: "firefox", ...expected.profile1 } });
+    expect(proxyFields(running.result)).toEqual(expected.profile1!);
+
+    // An invalid check country is unknown, so the valid region hint remains useful.
+    h.store.proxyPool.recordCheck(hinted!.id, { status: "working", country: "unknown", checkedAt: 2 });
+    const invalidCountry = await h.session.enqueue(wire("browser.status", { profileId: "hint" }));
+    expect(proxyFields(invalidCountry.result)).toEqual(expected.hint!);
+    const poolAfterCheck = await h.session.enqueue(wire("proxyPool.list", { country: "FR" }));
+    expect((poolAfterCheck.result as { nodes: Array<{ nodeId: string }> }).nodes.map((node) => node.nodeId)).toContain(hinted!.id);
+
+    h.store.proxyPool.remove([unknown!.id]);
+    const afterDelete = await h.session.enqueue(wire("profiles.list"));
+    const deletedProfile = (afterDelete.result as { profiles: Array<{ id: string }> }).profiles.find((profile) => profile.id === "unknown");
+    expect(proxyFields(deletedProfile)).toEqual({ proxyNodeId: unknown!.id });
+    const deletedStatus = await h.session.enqueue(wire("browser.status", { profileId: "unknown" }));
+    expect(proxyFields(deletedStatus.result)).toEqual({ proxyNodeId: unknown!.id });
+  } finally { h.close(); }
+});
+
+test("proxy labels do not expose subscription node addresses or credentials", async () => {
+  const h = poolHarness("allow_pool");
+  try {
+    const subscriptionUrl = "https://subscription.example/secret-subscription";
+    const sub = h.store.proxyPool.addSubscription({ url: subscriptionUrl });
+    const parsed = parseSubscription("anytls://hidden-password@hidden-proxy.example:49991");
+    h.store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+    const node = h.store.proxyPool.list().find((item) => item.subscriptionId === sub.id)!;
+    expect(node.name).toBe("hidden-proxy.example:49991");
+    h.store.upsertProfile({ ...h.store.getProfile("profile1")!, proxy: node.proxy });
+
+    for (const name of [node.name, "hidden-password", subscriptionUrl, JSON.stringify(node.outbound)]) {
+      h.store.proxyPool.update(node.id, { name });
+      const listed = await h.session.enqueue(wire("profiles.list"));
+      expect(proxyFields((listed.result as { profiles: unknown[] }).profiles[0])).toEqual({ proxyNodeId: node.id });
+      for (const result of [
+        listed,
+        await h.session.enqueue(wire("browser.status", { profileId: "profile1" })),
+        await h.session.enqueue(wire("proxyPool.list")),
+      ]) {
+        expect(result.ok).toBe(true);
+        const text = JSON.stringify(result);
+        for (const secret of ["hidden-proxy.example", "49991", "hidden-password", subscriptionUrl, '"outbound"']) expect(text).not.toContain(secret);
+      }
+    }
+    // The link must stay private even when its subscription has been removed.
+    h.store.proxyPool.update(node.id, { name: subscriptionUrl });
+    h.store.proxyPool.removeSubscription(sub.id, () => true);
+    const retained = await h.session.enqueue(wire("profiles.list"));
+    expect(retained.ok).toBe(true);
+    expect(JSON.stringify(retained)).not.toContain(subscriptionUrl);
+  } finally { h.close(); }
+});
+
+test("MCP proxy changes do not reveal proxy addresses in labels or the exit check", async () => {
+  const h = poolHarness("allow_pool");
+  try {
+    h.store.proxyPool.update(h.node.id, { name: "203.0.113.40:8080" });
+    const session = new AgentControlSession({
+      launcher: h.launcher as any, store: h.store, admission: {} as any,
+      aiProxyPolicy: () => "allow_pool",
+      proxySwitchCheck: async () => ({ status: "working", attempts: 3, successes: 3, ip: "203.0.113.40", country: "US" }),
+      proxySwitchDirect: async () => null,
+      proxyTimezoneFetch: async () => new Response("{}"),
+    });
+    const result = await session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: h.node.id }));
+    expect(result).toMatchObject({ ok: true, result: { previous: "http", next: "http", exit: { country: "US" } } });
+    for (const secret of ["old.example", "203.0.113.40", "8080", "pool-user", "pool-secret"]) {
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+  } finally { h.close(); }
+});
+
+test("an approved proxy change reports the proxy present after the approval wait", async () => {
+  const h = poolHarness("ask");
+  try {
+    const pending = h.session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: h.node.id }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const question = h.approvals.list()[0]!;
+    h.store.upsertProfile({
+      ...h.store.getProfile("profile1")!,
+      proxy: { type: "socks5", host: "updated-proxy.example", port: "49993", user: "updated-user", pass: "updated-secret" },
+    });
+    h.approvals.answer(question.id, true);
+    const result = await pending;
+    expect(result).toMatchObject({ ok: true, result: { previous: "socks5" } });
+    for (const secret of ["old.example", "updated-proxy.example", "49993", "updated-user", "updated-secret"]) {
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+  } finally { h.close(); }
+});
+
+test("remote profile responses use authoritative proxy settings instead of the local launch cache", async () => {
+  const h = poolHarness("ask");
+  try {
+    const local = h.store.getProfile("profile1")!;
+    const remoteProfiles = [
+      { ...local, proxy: { type: "pool" as const, host: h.node.id, port: "0", user: "", pass: "" } },
+      { ...local, id: "remote-only", proxy: { type: "socks5" as const, host: "remote-proxy.example", port: "49992", user: "remote-user", pass: "remote-secret" } },
+      { ...local, id: "no-proxy", proxy: null },
+    ];
+    const remote = {
+      listRoster: async () => ({ profiles: remoteProfiles.map(({ id, name, group }) => ({ id, name, group })) }),
+      getProfiles: async (ids: string[]) => remoteProfiles.filter((profile) => ids.includes(profile.id)),
+      getProfile: async (id: string) => remoteProfiles.find((profile) => profile.id === id)!,
+    };
+    const session = new AgentControlSession({
+      launcher: { reconcileOrphans: async () => {}, certifiedActive: async () => false } as any,
+      store: h.store, admission: {} as any, remote: remote as any,
+    });
+    const expected: Record<string, Record<string, unknown>> = {
+      profile1: { proxyNodeId: h.node.id, proxyNodeName: "🇺🇸 LA", proxyCountry: "US" },
+      "remote-only": { proxyType: "socks5" },
+      "no-proxy": {},
+    };
+    const listed = await session.enqueue(wire("profiles.list"));
+    expect(listed.ok).toBe(true);
+    const results = [listed];
+    for (const profile of (listed.result as { profiles: Array<{ id: string }> }).profiles) {
+      expect(proxyFields(profile)).toEqual(expected[profile.id]!);
+      const status = await session.enqueue(wire("browser.status", { profileId: profile.id }));
+      expect(status.ok).toBe(true);
+      expect(proxyFields(status.result)).toEqual(expected[profile.id]!);
+      results.push(status);
+    }
+    expect((listed.result as { profiles: unknown[] }).profiles).toHaveLength(3);
+    for (const result of results) {
+      const text = JSON.stringify(result);
+      for (const secret of ["old.example", "remote-proxy.example", "49992", "remote-user", "remote-secret"]) expect(text).not.toContain(secret);
+    }
+  } finally { h.close(); }
+});
 
 test("an AI lists the pool without credentials and can filter it", async () => {
   const h = poolHarness("ask");
@@ -546,4 +753,20 @@ test("an unknown node or profile is refused before anyone is asked", async () =>
   expect((await h.session.enqueue(wire("profiles.setProxy", { profileId: "nobody", nodeId: h.node.id }))).error?.code).toBe("no_such_profile");
   expect(h.approvals.list()).toEqual([]);
   h.close();
+});
+
+test("ordinary node names stay visible to an AI, even with numbers or slashes in them", async () => {
+  const h = poolHarness("allow_pool");
+  try {
+    const sub = h.store.proxyPool.addSubscription({ url: "https://subscription.example/secret-subscription" });
+    const parsed = parseSubscription("anytls://hidden-password@hidden-proxy.example:443?sni=hidden-proxy.example#x");
+    h.store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+    const node = h.store.proxyPool.list().find((item) => item.subscriptionId === sub.id)!;
+    h.store.upsertProfile({ ...h.store.getProfile("profile1")!, proxy: node.proxy });
+    for (const name of ["🇭🇰 香港 01 | 100M", "HK/IEPL 443", "SG-2x chrome"]) {
+      h.store.proxyPool.update(node.id, { name });
+      const listed = await h.session.enqueue(wire("profiles.list"));
+      expect(proxyFields((listed.result as { profiles: unknown[] }).profiles[0])).toMatchObject({ proxyNodeId: node.id, proxyNodeName: name });
+    }
+  } finally { h.close(); }
 });
