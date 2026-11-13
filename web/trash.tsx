@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "./i18n.tsx";
+import { confirmDialog } from "./dialog.tsx";
 import { folderScope, type FolderInfo } from "../src/folders.ts";
 import type { TrashMutationResult, TrashProfileView } from "../src/proxy-tools-types.ts";
 import { proxyResultPage } from "./proxies.tsx";
@@ -66,7 +67,7 @@ export function TrashPage({ active, onChanged, folderTree = [] }: { active: bool
 
   const mutate = async (action: "restore" | "purge", targets = chosen) => {
     if (controller.current || !targets.length) return;
-    if (action === "purge" && !confirm(t("Permanently delete {count} profiles and their saved data? This cannot be undone.", { count: targets.length }))) return;
+    if (action === "purge" && !await confirmDialog(t("Permanently delete {count} profiles and their saved data? This cannot be undone.", { count: targets.length }), { danger: true, confirmLabel: t("Delete permanently") })) return;
     const current = new AbortController(); controller.current = current;
     setBusy(action); setError("");
     setNotice(t(action === "restore" ? "Restoring {count} profiles…" : "Permanently deleting {count} profiles…", { count: targets.length.toLocaleString() }));

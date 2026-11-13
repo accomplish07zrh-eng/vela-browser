@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Select } from "./select.tsx";
+import { confirmDialog } from "./dialog.tsx";
+import { NumberInput } from "./controls.tsx";
 import type {
   PublishedScript,
   PublishedScriptSummary,
@@ -185,7 +187,7 @@ export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => v
 
   const remove = async () => {
     if (!script) return;
-    if (!window.confirm(t("Delete {name}?", { name: script.name }))) return;
+    if (!await confirmDialog(t("Delete {name}?", { name: script.name }), { danger: true, confirmLabel: t("Delete") })) return;
     setBusy(true);
     setError(null);
     try {
@@ -451,7 +453,7 @@ export function ScriptRunPanel({ open, selectedProfiles, onClose }: {
             <label className="fld"><span>{t("Script")}</span><Select className="select" value={scriptId} onChange={(event) => setScriptId(event.target.value)} disabled={busy || runActive}><option value="">{t("Choose a script…")}</option>{scripts.map((script) => <option key={script.id} value={script.id}>{script.name}</option>)}</Select></label>
             <label className="fld"><span>{t("JSON inputs")}</span><textarea className="input script-inputs" value={inputs} onChange={(event) => setInputs(event.target.value)} disabled={busy || runActive} /></label>
             <label className="script-credentials"><input type="checkbox" checked={useCredentials} onChange={(event) => setUseCredentials(event.target.checked)} disabled={busy || runActive} />{t("Use saved profile login details")}</label>
-            <label className="fld"><span>{t("Parallel browsers")}</span><input className="input" type="number" min={1} step={1} value={concurrency} onChange={(event) => setConcurrency(event.target.value)} disabled={busy || runActive} /></label>
+            <label className="fld"><span>{t("Parallel browsers")}</span><NumberInput className="input" min={1} step={1} value={concurrency} onChange={(event) => setConcurrency(event.target.value)} disabled={busy || runActive} /></label>
             <p className="formnote">{t("{n} selected profiles. Run up to this many at a time; the rest wait for a free slot. Browser startup may be staggered. Parallel runs share the log below.", { n: String(selectedProfiles.length) })}</p>
             {run && <div className="script-progress"><b>{run.scriptName} · {run.status}</b>{run.profiles.map((profile) => <div key={profile.id} className={`script-profile ${profile.status}`}><span>{profile.name}</span><span>{profile.status}</span>{profile.error && <small>{profile.error}</small>}{profile.warning && <small className="warning">{profile.warning}</small>}</div>)}</div>}
             {run && <pre className="script-log" aria-label={t("Script log")}>{log || t("Waiting for log output…")}</pre>}
