@@ -428,7 +428,7 @@ function Select-McpBrowser([Diagnostics.Process]$Process, [string]$ProfileId, [i
     id = $Id
     method = "tools/call"
     params = @{
-      name = "aliasmode_browser_select"
+      name = "vela_browser_select"
       arguments = @{ profileId = $ProfileId }
     }
   } | ConvertTo-Json -Compress -Depth 8
@@ -826,13 +826,13 @@ public static class VelaBrowserWindow {
         if ($toolResponse.id -ne 2) { throw "installed MCP host returned an invalid tools/list response" }
         $toolNames = @($toolResponse.result.tools | ForEach-Object { $_.name })
         foreach ($name in @(
-          "aliasmode_profiles_list",
-          "aliasmode_profile_create",
-          "aliasmode_profile_delete",
-          "aliasmode_browser_open",
-          "aliasmode_browser_select",
-          "aliasmode_browser_status",
-          "aliasmode_browser_close",
+          "vela_profiles_list",
+          "vela_profile_create",
+          "vela_profile_delete",
+          "vela_browser_open",
+          "vela_browser_select",
+          "vela_browser_status",
+          "vela_browser_close",
           "browser_close",
           "browser_evaluate",
           "browser_press_key",
@@ -939,7 +939,7 @@ public static class VelaBrowserWindow {
           id = 4
           method = "tools/call"
           params = @{
-            name = "aliasmode_profile_create"
+            name = "vela_profile_create"
             arguments = @{ name = "ci-owned"; chromiumRuntime = "cloakbrowser" }
           }
         } | ConvertTo-Json -Compress -Depth 8
@@ -955,7 +955,7 @@ public static class VelaBrowserWindow {
           id = 5
           method = "tools/call"
           params = @{
-            name = "aliasmode_browser_open"
+            name = "vela_browser_open"
             arguments = @{ profileId = $ownedProfileId; headless = $true }
           }
         } | ConvertTo-Json -Compress -Depth 8

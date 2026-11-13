@@ -204,18 +204,18 @@ jobs:
 
           function Assert-ClientRegistration([string]$command, [string[]]$arguments) {
             $output = (& $command @arguments 2>&1 | Out-String)
-            if ($LASTEXITCODE -ne 0 -or $output -notmatch "aliasmode") {
+            if ($LASTEXITCODE -ne 0 -or $output -notmatch "vela-browser") {
               throw "MCP client did not recognize the Vela Browser registration"
             }
           }
           $claude = (Get-Command claude -ErrorAction Stop).Source
           $codex = (Get-Command codex -ErrorAction Stop).Source
           $openclaw = (Get-Command openclaw -ErrorAction Stop).Source
-          Assert-ClientRegistration $claude @("mcp", "get", "aliasmode")
+          Assert-ClientRegistration $claude @("mcp", "get", "vela-browser")
           Assert-ClientRegistration $claude @("mcp", "list")
           Assert-ClientRegistration $codex @("mcp", "list")
           Assert-ClientRegistration $openclaw @("mcp", "list", "--json")
-          Assert-ClientRegistration $openclaw @("mcp", "doctor", "aliasmode", "--probe", "--json")
+          Assert-ClientRegistration $openclaw @("mcp", "doctor", "vela-browser", "--probe", "--json")
       - name: Verify Hermes MCP client
         shell: pwsh
         run: |
@@ -245,10 +245,10 @@ jobs:
             throw "Vela Browser did not configure Hermes"
           }
           $list = (& $hermes mcp list 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0 -or $list -notmatch "aliasmode") {
+          if ($LASTEXITCODE -ne 0 -or $list -notmatch "vela-browser") {
             throw "Hermes did not recognize the Vela Browser registration"
           }
-          $null = & $hermes mcp test aliasmode 2>&1
+          $null = & $hermes mcp test vela-browser 2>&1
           if ($LASTEXITCODE -ne 0) { throw "Hermes could not start the Vela Browser MCP server" }
       - name: Verify Remote MCP host and helper launcher
         shell: pwsh
@@ -321,7 +321,7 @@ jobs:
           const names = await tools;
           await tunnel.stop();
           server.close();
-          if (!names.includes("aliasmode_profiles_list") || !names.includes("aliasmode_browser_open")) throw new Error("the tool list is not complete");
+          if (!names.includes("vela_profiles_list") || !names.includes("vela_browser_open")) throw new Error("the tool list is not complete");
           console.log("Remote MCP tunnel listed " + names.length + " tools");
           '@ | Set-Content -LiteralPath $check -Encoding utf8
           $helpers = { @(Get-CimInstance Win32_Process -Filter "Name = 'aliasmode-sidecar.exe'" |

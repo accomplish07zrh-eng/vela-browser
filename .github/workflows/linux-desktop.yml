@@ -310,8 +310,8 @@ jobs:
               '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
             sleep 20
           } | "$helper" serve > "$evidence/mcp.jsonl"
-          grep -q '"aliasmode_profiles_list"' "$evidence/mcp.jsonl"
-          grep -q '"aliasmode_browser_open"' "$evidence/mcp.jsonl"
+          grep -q '"vela_profiles_list"' "$evidence/mcp.jsonl"
+          grep -q '"vela_browser_open"' "$evidence/mcp.jsonl"
 
           # Remote MCP: the tunnel must start the packaged MCP host and pass messages both ways.
           # A local server takes the place of Vela Cloud.
@@ -349,7 +349,7 @@ jobs:
             const names = await tools;
             await tunnel.stop();
             server.close();
-            if (!names.includes("aliasmode_profiles_list") || !names.includes("aliasmode_browser_open")) throw new Error("the tool list is not complete");
+            if (!names.includes("vela_profiles_list") || !names.includes("vela_browser_open")) throw new Error("the tool list is not complete");
             console.log("Remote MCP tunnel listed " + names.length + " tools");
           '
 

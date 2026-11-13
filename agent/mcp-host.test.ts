@@ -152,24 +152,24 @@ test("MCP lifecycle tools include directory annotations", async () => {
     expect(typeof tool.annotations?.destructiveHint).toBe("boolean");
     expect(typeof tool.annotations?.openWorldHint).toBe("boolean");
   }
-  expect(tools.find((tool) => tool.name === "aliasmode_profiles_list")?.annotations).toMatchObject({
+  expect(tools.find((tool) => tool.name === "vela_profiles_list")?.annotations).toMatchObject({
     readOnlyHint: false,
     destructiveHint: false,
     openWorldHint: false,
   });
-  expect(tools.find((tool) => tool.name === "aliasmode_profile_delete")?.annotations?.destructiveHint).toBe(true);
+  expect(tools.find((tool) => tool.name === "vela_profile_delete")?.annotations?.destructiveHint).toBe(true);
   expect(tools.some((tool) => tool.name === "aliasmode_profiles_replace_proxies")).toBe(false);
   expect(tools.some((tool) => tool.name === "aliasmode_profile_update")).toBe(false);
-  expect(tools.find((tool) => tool.name === "aliasmode_browser_open")?.annotations).toMatchObject({
+  expect(tools.find((tool) => tool.name === "vela_browser_open")?.annotations).toMatchObject({
     destructiveHint: true,
     openWorldHint: true,
   });
-  expect(tools.find((tool) => tool.name === "aliasmode_browser_select")?.annotations?.destructiveHint).toBe(true);
-  expect(tools.find((tool) => tool.name === "aliasmode_browser_status")?.annotations).toMatchObject({
+  expect(tools.find((tool) => tool.name === "vela_browser_select")?.annotations?.destructiveHint).toBe(true);
+  expect(tools.find((tool) => tool.name === "vela_browser_status")?.annotations).toMatchObject({
     readOnlyHint: false,
     destructiveHint: true,
   });
-  expect(tools.find((tool) => tool.name === "aliasmode_browser_close")?.annotations?.destructiveHint).toBe(true);
+  expect(tools.find((tool) => tool.name === "vela_browser_close")?.annotations?.destructiveHint).toBe(true);
   expect(tools.find((tool) => tool.name === "browser_close")?.annotations?.destructiveHint).toBe(true);
 
   await client.close();
@@ -183,27 +183,53 @@ test("MCP profile creation forwards the selected browser engine", async () => {
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
 
-  const tool = (await client.listTools()).tools.find((tool) => tool.name === "aliasmode_profile_create");
+  const tool = (await client.listTools()).tools.find((tool) => tool.name === "vela_profile_create");
   expect(tool?.inputSchema).toMatchObject({
     additionalProperties: false,
     properties: {
       engine: { type: "string", enum: ["chromium", "firefox", "webkit"] },
-      chromiumRuntime: { type: "string", enum: ["aliasmode", "cloakbrowser"] },
+      chromiumRuntime: { type: "string", enum: ["vela", "cloakbrowser"] },
     },
   });
   expect(tool?.description).toContain("Without engine, Windows creates a Vela Chromium profile, and macOS and Linux create a Vela Firefox profile.");
-  const created = await client.callTool({ name: "aliasmode_profile_create", arguments: { name: "Firefox", engine: "firefox" } });
+  const created = await client.callTool({ name: "vela_profile_create", arguments: { name: "Firefox", engine: "firefox" } });
   expect(created.isError).not.toBe(true);
   expect(runtime.calls.at(-1)).toEqual({
     method: "profiles.create",
     params: { input: { name: "Firefox", engine: "firefox" }, temporary: false },
   });
   // An explicit CloakBrowser request reaches the runtime unchanged.
-  await client.callTool({ name: "aliasmode_profile_create", arguments: { name: "Cloak", chromiumRuntime: "cloakbrowser" } });
+  await client.callTool({ name: "vela_profile_create", arguments: { name: "Cloak", chromiumRuntime: "cloakbrowser" } });
   expect(runtime.calls.at(-1)).toEqual({
     method: "profiles.create",
     params: { input: { name: "Cloak", chromiumRuntime: "cloakbrowser" }, temporary: false },
   });
+
+  // Vela Chromium 155 is "vela" to the AI and keeps its stored name in the runtime.
+  await client.callTool({ name: "vela_profile_create", arguments: { name: "Vela", chromiumRuntime: "vela" } });
+  expect(runtime.calls.at(-1)).toEqual({
+    method: "profiles.create",
+    params: { input: { name: "Vela", chromiumRuntime: "aliasmode" }, temporary: false },
+  });
+
+  await client.close();
+  await host.close();
+});
+
+test("MCP host is named Vela Browser and still answers the pre-0.1.7 aliasmode_* tool names", async () => {
+  const runtime = new FakeRuntime();
+  const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright: new FakePlaywright() });
+  const client = new Client({ name: "test", version: "1" }, { capabilities: {} });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+
+  expect(client.getServerVersion()).toMatchObject({ name: "vela-browser", title: "Vela Browser" });
+  const names = (await client.listTools()).tools.map((tool) => tool.name);
+  expect(names).toContain("vela_profiles_list");
+  expect(names.some((name) => name.startsWith("aliasmode_"))).toBe(false);
+  const legacy = await client.callTool({ name: "aliasmode_profiles_list", arguments: {} });
+  expect(legacy.isError).not.toBe(true);
+  expect(runtime.calls.at(-1)?.method).toBe("profiles.list");
 
   await client.close();
   await host.close();
@@ -229,7 +255,7 @@ test("MCP host exposes Playwright tools before selection and uses safe close", a
   expect(initial.tools.some((tool) => tool.name === "browser_close")).toBe(true);
 
   const opened = await client.callTool({
-    name: "aliasmode_browser_open",
+    name: "vela_browser_open",
     arguments: { profileId: "profile1", headless: true },
   });
   expect(opened.isError).not.toBe(true);
@@ -261,7 +287,7 @@ test("MCP host relays Firefox native tools without transport, PDF, or lifecycle 
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
 
-  const opened = await client.callTool({ name: "aliasmode_browser_open", arguments: { profileId: "firefox" } });
+  const opened = await client.callTool({ name: "vela_browser_open", arguments: { profileId: "firefox" } });
   expect(opened.isError).not.toBe(true);
   expect(JSON.stringify(opened)).toContain('"engine":"firefox"');
   expect(JSON.stringify(opened)).not.toContain('"port"');
@@ -288,7 +314,7 @@ test.each(["firefox", "webkit"])("%s developer tools retain profile targeting an
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
   try {
-    expect((await client.callTool({ name: "aliasmode_browser_open", arguments: { profileId: "a" } })).isError).not.toBe(true);
+    expect((await client.callTool({ name: "vela_browser_open", arguments: { profileId: "a" } })).isError).not.toBe(true);
     expect(updates).toBe(1);
     const names = new Set((await client.listTools()).tools.map(tool => tool.name));
     for (const tool of DEVTOOLS_TOOLS) expect(names.has(tool.name)).toBe(true);
@@ -312,11 +338,11 @@ test("MCP shutdown closes owned browsers but preserves pre-existing browsers", a
   await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
 
   await client.callTool({
-    name: "aliasmode_browser_open",
+    name: "vela_browser_open",
     arguments: { profileId: "existing" },
   });
   await client.callTool({
-    name: "aliasmode_browser_open",
+    name: "vela_browser_open",
     arguments: { profileId: "owned" },
   });
   await client.close();
@@ -336,17 +362,17 @@ test("a failed profile switch clears the stale selection", async () => {
   await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
 
   await client.callTool({
-    name: "aliasmode_browser_open",
+    name: "vela_browser_open",
     arguments: { profileId: "profile1" },
   });
   playwright.failNextAttach = true;
   const switched = await client.callTool({
-    name: "aliasmode_browser_select",
+    name: "vela_browser_select",
     arguments: { profileId: "profile2" },
   });
   expect(switched.isError).toBe(true);
   expect((await client.listTools()).tools.some((tool) => tool.name === "browser_snapshot")).toBe(true);
-  const status = await client.callTool({ name: "aliasmode_browser_status", arguments: {} });
+  const status = await client.callTool({ name: "vela_browser_status", arguments: {} });
   expect(status.isError).toBe(true);
 
   await client.close();
@@ -387,7 +413,7 @@ test("browser_batch runs several actions in one call and returns only the last s
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
   try {
-    await client.callTool({ name: "aliasmode_browser_select", arguments: { profileId: "profile-1" } });
+    await client.callTool({ name: "vela_browser_select", arguments: { profileId: "profile-1" } });
     const tools = (await client.listTools()).tools;
     expect(tools.find((tool) => tool.name === "browser_batch")).toBeTruthy();
     // The descriptions steer the AI away from snapshots it already has.
@@ -418,7 +444,7 @@ test("browser_batch runs several actions in one call and returns only the last s
 
     // Lifecycle, nested batches and unknown tools never run, and nothing runs before the check.
     playwright.calls = [];
-    for (const tool of ["browser_close", "browser_batch", "aliasmode_browser_close", "browser_nope"]) {
+    for (const tool of ["browser_close", "browser_batch", "vela_browser_close", "browser_nope"]) {
       const refused: any = await client.callTool({ name: "browser_batch", arguments: { steps: [{ tool: "browser_click" }, { tool }] } });
       expect(refused.isError).toBe(true);
       expect(refused.content[0].text).toContain("step 2");

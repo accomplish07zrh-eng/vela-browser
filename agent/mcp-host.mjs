@@ -88,13 +88,13 @@ function toolAnnotations(title, { readOnly = false, destructive = false, openWor
 
 const ALIAS_TOOLS = [
 {
-    name: "aliasmode_profiles_list",
+    name: "vela_profiles_list",
     description: "List local Vela Browser profiles and their current browser state.",
     annotations: toolAnnotations("List Vela Browser profiles"),
     inputSchema: EMPTY_SCHEMA,
   },
 {
-    name: "aliasmode_profile_create",
+    name: "vela_profile_create",
     description: "Create a persistent Vela Browser profile, or an explicit temporary profile. Without engine, Windows creates a Vela Chromium profile, and macOS and Linux create a Vela Firefox profile.",
     annotations: toolAnnotations("Create a Vela Browser profile"),
     inputSchema: {
@@ -106,8 +106,8 @@ const ALIAS_TOOLS = [
         engine: { type: "string", enum: ["chromium", "firefox", "webkit"] },
         chromiumRuntime: {
           type: "string",
-          enum: ["aliasmode", "cloakbrowser"],
-          description: "Chromium profiles only. aliasmode (Vela Chromium 155) is the default where this computer can run it. CloakBrowser profiles on one computer can be linked to each other.",
+          enum: ["vela", "cloakbrowser"],
+          description: "Chromium profiles only. vela (Vela Chromium 155) is the default where this computer can run it. CloakBrowser profiles on one computer can be linked to each other.",
         },
         screen: { type: "string" },
         proxy: {
@@ -132,7 +132,7 @@ const ALIAS_TOOLS = [
     },
   },
 {
-    name: "aliasmode_profile_delete",
+    name: "vela_profile_delete",
     description: "Delete a closed Vela Browser profile.",
     annotations: toolAnnotations("Delete a Vela Browser profile", { destructive: true }),
     inputSchema: {
@@ -143,7 +143,7 @@ const ALIAS_TOOLS = [
     },
   },
 {
-    name: "aliasmode_browser_open",
+    name: "vela_browser_open",
     description: "Open a Vela Browser browser and select it for Playwright actions.",
     annotations: toolAnnotations("Open a Vela Browser browser", { destructive: true, openWorld: true }),
     inputSchema: {
@@ -162,7 +162,7 @@ const ALIAS_TOOLS = [
     },
   },
 {
-    name: "aliasmode_browser_select",
+    name: "vela_browser_select",
     description: "Select an open Vela Browser browser for subsequent Playwright actions.",
     annotations: toolAnnotations("Select a Vela Browser browser", { destructive: true }),
     inputSchema: {
@@ -173,7 +173,7 @@ const ALIAS_TOOLS = [
     },
   },
 {
-    name: "aliasmode_browser_status",
+    name: "vela_browser_status",
     description: "Get the selected browser state, or the state of one profile.",
     annotations: toolAnnotations("Get Vela Browser browser status", { destructive: true }),
     inputSchema: {
@@ -183,7 +183,7 @@ const ALIAS_TOOLS = [
     },
   },
 {
-    name: "aliasmode_browser_close",
+    name: "vela_browser_close",
     description: "Safely capture and close one Vela Browser browser.",
     annotations: toolAnnotations("Close a Vela Browser browser", { destructive: true }),
     inputSchema: {
@@ -199,7 +199,7 @@ const ALIAS_TOOLS = [
     inputSchema: EMPTY_SCHEMA,
   },
 {
-    name: "aliasmode_humanize",
+    name: "vela_humanize",
     description: "Turn human-like input on or off for the browsers this connection drives, or change its pace. It is on by default: clicks, hovers, drags, typing and form filling move a pointer on a curved path, land inside the element, scroll with the wheel and type key by key, each profile with its own stable habits. Call without arguments to read the current setting.",
     annotations: toolAnnotations("Human-like input"),
     inputSchema: {
@@ -244,7 +244,17 @@ const ALIAS_TOOLS = [
 /** Tools whose result already carries the updated page snapshot. */
 const SNAPSHOT_RETURNING = /^browser_(click|type|fill_form|select_option|press_key|hover|drag|navigate|navigate_back|handle_dialog|file_upload|wait_for|tabs)$/;
 /** Tools a batch never runs: lifecycle belongs to Vela Browser, and a batch does not nest. */
-const NOT_IN_BATCH = new Set(["browser_batch", "browser_close", "browser_install", "aliasmode_browser_close"]);
+const NOT_IN_BATCH = new Set(["browser_batch", "browser_close", "browser_install", "vela_browser_close"]);
+
+/**
+ * Before 0.1.7 the Vela Browser tools were named aliasmode_*. They are listed as vela_* now; a
+ * script or saved prompt that still calls an old name reaches the same tool.
+ */
+export function canonicalToolName(name) {
+  if (typeof name !== "string" || !name.startsWith("aliasmode_")) return name;
+  const current = `vela_${name.slice("aliasmode_".length)}`;
+  return ALIAS_TOOLS.some((tool) => tool.name === current) ? current : name;
+}
 
 /** Tells the AI where the extra calls go, so it does not take a snapshot it already has. */
 function guideTool(tool) {
@@ -278,6 +288,8 @@ function errorResult(error) {
 
 function profileInput(args) {
   const { temporary = false, ...input } = args;
+  // "vela" is how the tool names Vela Chromium 155; the profile store keeps its older name.
+  if (input.chromiumRuntime === "vela") input.chromiumRuntime = "aliasmode";
   return { input, temporary };
 }
 
@@ -287,7 +299,7 @@ export async function createVelaBrowserMcp(options = {}) {
   const discovered = options.discovered ?? await discoverRuntime(options.runtime);
   const runtime = discovered.client;
   const server = new Server(
-    { name: "aliasmode", version: VERSION },
+    { name: "vela-browser", title: "Vela Browser", version: VERSION },
     { capabilities: { tools: { listChanged: true } } },
   );
   let selectedProfileId;
@@ -446,19 +458,19 @@ export async function createVelaBrowserMcp(options = {}) {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const name = request.params.name;
+    const name = canonicalToolName(request.params.name);
     const args = request.params.arguments ?? {};
     try {
-      if (name === "aliasmode_profiles_list") {
+      if (name === "vela_profiles_list") {
         return toolResult(await runtime.call("profiles.list"));
       }
-      if (name === "aliasmode_profile_create") {
+      if (name === "vela_profile_create") {
         return toolResult(await runtime.call("profiles.create", profileInput(args)));
       }
-      if (name === "aliasmode_profile_delete") {
+      if (name === "vela_profile_delete") {
         return toolResult(await runtime.call("profiles.delete", { profileId: args.profileId }));
       }
-      if (name === "aliasmode_browser_open") {
+      if (name === "vela_browser_open") {
         const opened = await runtime.call("browser.open", {
           profileId: args.profileId,
           ...(args.headless !== undefined ? { headless: args.headless } : {}),
@@ -496,17 +508,17 @@ export async function createVelaBrowserMcp(options = {}) {
           selected: args.select !== false,
         }));
       }
-      if (name === "aliasmode_browser_select") {
+      if (name === "vela_browser_select") {
         return toolResult(await selectBrowser(args.profileId));
       }
-      if (name === "aliasmode_browser_status") {
+      if (name === "vela_browser_status") {
         const profileId = args.profileId || selectedProfileId;
         if (!profileId) throw new Error("select an open Vela Browser browser first");
         const status = await runtime.call("browser.status", { profileId });
         const { ws: _ws, firefoxOwner: _firefoxOwner, ...safeStatus } = safeBrowserResult(status);
         return toolResult({ ...safeStatus, selected: profileId === selectedProfileId });
       }
-      if (name === "aliasmode_humanize") {
+      if (name === "vela_humanize") {
         if (typeof args.enabled === "boolean") humanize.enabled = args.enabled;
         if (typeof args.speed === "number") humanize.speed = Math.min(2.5, Math.max(0.4, args.speed));
         if (args.pasteOver === null) delete humanize.pasteOver;
@@ -514,7 +526,7 @@ export async function createVelaBrowserMcp(options = {}) {
         for (const session of sessions.values()) session.humanizer?.configure({ ...humanize, pasteOver: humanize.pasteOver ?? null });
         return toolResult({ ...humanize });
       }
-      if (name === "aliasmode_browser_close" || name === "browser_close") {
+      if (name === "vela_browser_close" || name === "browser_close") {
         return toolResult(await closeBrowser(args.profileId));
       }
       const { profileId: requested, ...toolArgs } = args;
@@ -531,7 +543,7 @@ export async function createVelaBrowserMcp(options = {}) {
         if (!steps.length || steps.length > 25) throw new Error("browser_batch takes 1 to 25 steps");
         for (const [index, step] of steps.entries()) {
           const tool = step?.tool;
-          if (typeof tool !== "string" || NOT_IN_BATCH.has(tool) || tool.startsWith("aliasmode_") || !known(tool)) {
+          if (typeof tool !== "string" || NOT_IN_BATCH.has(canonicalToolName(tool)) || /^(vela|aliasmode)_/.test(tool) || !known(tool)) {
             throw new Error(`step ${index + 1}: ${typeof tool === "string" ? tool : "a step"} cannot run in a batch`);
           }
           if (step.arguments !== undefined && (typeof step.arguments !== "object" || step.arguments === null || Array.isArray(step.arguments))) {
@@ -565,7 +577,7 @@ export async function createVelaBrowserMcp(options = {}) {
     } catch (error) {
       return errorResult(error);
     } finally {
-      if (["aliasmode_browser_open", "aliasmode_browser_select", "aliasmode_browser_close", "browser_close"].includes(name)) await publishTools();
+      if (["vela_browser_open", "vela_browser_select", "vela_browser_close", "browser_close"].includes(name)) await publishTools();
     }
   });
 

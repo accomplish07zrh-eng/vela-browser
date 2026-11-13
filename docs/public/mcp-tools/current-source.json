@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.6",
+  "aliasModeVersion": "0.1.7",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -19,7 +19,7 @@
   "playwrightToolAvailability": "listed-before-selection",
   "aliasModeTools": [
     {
-      "name": "aliasmode_profiles_list",
+      "name": "vela_profiles_list",
       "description": "List local Vela Browser profiles and their current browser state.",
       "annotations": {
         "title": "List Vela Browser profiles",
@@ -34,7 +34,7 @@
       }
     },
     {
-      "name": "aliasmode_profile_create",
+      "name": "vela_profile_create",
       "description": "Create a persistent Vela Browser profile, or an explicit temporary profile. Without engine, Windows creates a Vela Chromium profile, and macOS and Linux create a Vela Firefox profile.",
       "annotations": {
         "title": "Create a Vela Browser profile",
@@ -65,10 +65,10 @@
           "chromiumRuntime": {
             "type": "string",
             "enum": [
-              "aliasmode",
+              "vela",
               "cloakbrowser"
             ],
-            "description": "Chromium profiles only. aliasmode (Vela Chromium 155) is the default where this computer can run it. CloakBrowser profiles on one computer can be linked to each other."
+            "description": "Chromium profiles only. vela (Vela Chromium 155) is the default where this computer can run it. CloakBrowser profiles on one computer can be linked to each other."
           },
           "screen": {
             "type": "string"
@@ -115,7 +115,7 @@
       }
     },
     {
-      "name": "aliasmode_profile_delete",
+      "name": "vela_profile_delete",
       "description": "Delete a closed Vela Browser profile.",
       "annotations": {
         "title": "Delete a Vela Browser profile",
@@ -138,7 +138,7 @@
       }
     },
     {
-      "name": "aliasmode_browser_open",
+      "name": "vela_browser_open",
       "description": "Open a Vela Browser browser and select it for Playwright actions.",
       "annotations": {
         "title": "Open a Vela Browser browser",
@@ -176,7 +176,7 @@
       }
     },
     {
-      "name": "aliasmode_browser_select",
+      "name": "vela_browser_select",
       "description": "Select an open Vela Browser browser for subsequent Playwright actions.",
       "annotations": {
         "title": "Select a Vela Browser browser",
@@ -199,7 +199,7 @@
       }
     },
     {
-      "name": "aliasmode_browser_status",
+      "name": "vela_browser_status",
       "description": "Get the selected browser state, or the state of one profile.",
       "annotations": {
         "title": "Get Vela Browser browser status",
@@ -219,7 +219,7 @@
       }
     },
     {
-      "name": "aliasmode_browser_close",
+      "name": "vela_browser_close",
       "description": "Safely capture and close one Vela Browser browser.",
       "annotations": {
         "title": "Close a Vela Browser browser",
@@ -254,7 +254,7 @@
       }
     },
     {
-      "name": "aliasmode_humanize",
+      "name": "vela_humanize",
       "description": "Turn human-like input on or off for the browsers this connection drives, or change its pace. It is on by default: clicks, hovers, drags, typing and form filling move a pointer on a curved path, land inside the element, scroll with the wheel and type key by key, each profile with its own stable habits. Call without arguments to read the current setting.",
       "annotations": {
         "title": "Human-like input",
