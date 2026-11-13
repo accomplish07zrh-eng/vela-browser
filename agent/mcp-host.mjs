@@ -73,7 +73,7 @@ const PROXY_REPLACEMENT_ROW = {
 
 function diagnose(message) {
   if (process.env.ALIASMODE_MCP_DIAGNOSTICS === "1") {
-    process.stderr.write(`[aliasmode-mcp-host] ${message}\n`);
+    process.stderr.write(`[vela-browser-mcp-host] ${message}\n`);
   }
 }
 

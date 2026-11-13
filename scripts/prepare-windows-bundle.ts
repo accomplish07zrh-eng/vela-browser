@@ -161,7 +161,7 @@ export async function compileSidecar(cwd: string, output: string, target = WINDO
     "--external=playwright-core",
     "--external=chromium-bidi",
     "--external=electron",
-    // One program for the sidecar and the MCP helper; Cargo builds the aliasmode-mcp launcher.
+    // One program for the sidecar and the MCP helper; Cargo builds the vela-browser-mcp launcher.
     "src/sidecar-entry.ts",
     "--outfile",
     output,

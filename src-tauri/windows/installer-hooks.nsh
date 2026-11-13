@@ -4,12 +4,14 @@
 ; Installing over a running sidecar fails with "Error opening file for writing",
 ; so stop it here. Cloud sessions survive: every open browser's session is saved
 ; again from its encrypted local queue after the next start.
-; An AI client keeps aliasmode-mcp.exe open in the same way. Stopping it also
+; An AI client keeps vela-browser-mcp.exe (aliasmode-mcp.exe before 0.1.7) open in the same way. Stopping it also
 ; stops its MCP helper, an aliasmode-sidecar.exe process. Stop it first and
-; without /T: the helper may have started AliasMode, which is not its to stop.
+; without /T: the helper may have started Vela Browser, which is not its to stop.
 !macro NSIS_HOOK_PREINSTALL
   Push $R0
 
+  nsExec::Exec 'taskkill /F /IM "vela-browser-mcp.exe"'
+  Pop $R0
   nsExec::Exec 'taskkill /F /IM "aliasmode-mcp.exe"'
   Pop $R0
   nsExec::Exec 'taskkill /IM "aliasmode-sidecar.exe"'

@@ -695,8 +695,12 @@ try {
     $bundleVersion = $installation.Version
     $appPath = $installation.AppPath
     $sidecarPath = $installation.SidecarPath
-    $helper = Join-Path $installRoot "aliasmode-mcp.exe"
+    $helper = Join-Path $installRoot "vela-browser-mcp.exe"
     $playwrightRuntime = Join-Path $installRoot "playwright"
+    # AI clients set up before 0.1.7 start the launcher by its old name.
+    foreach ($launcher in @($helper, (Join-Path $installRoot "aliasmode-mcp.exe"))) {
+      if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "installed MCP launcher is missing: $(Split-Path -Leaf $launcher)" }
+    }
   }
 
   if ($Shard -in @("runtime-protocol", "runtime-desktop")) {

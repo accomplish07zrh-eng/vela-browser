@@ -14,7 +14,7 @@ fn main() {
     // Build scripts run on the host, so the target comes from Cargo's environment.
     let windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     // Apple's linker signs arm64 programs by itself, but not x86_64 ones. Tauri signs the main
-    // program before aliasmode-mcp, and codesign refuses to seal an app around unsigned code.
+    // program before vela-browser-mcp, and codesign refuses to seal an app around unsigned code.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
         && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64")
     {

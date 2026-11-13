@@ -64,15 +64,20 @@ test("Windows builds require the socket inheritance fix for proxy recovery", () 
   }
 });
 
-test("one sidecar program also runs the MCP helper behind the aliasmode-mcp launcher", () => {
+test("one sidecar program also runs the MCP helper behind the vela-browser-mcp launcher", () => {
   const repo = join(import.meta.dir, "..");
   const tauri = JSON.parse(readFileSync(join(repo, "src-tauri", "tauri.conf.json"), "utf8"));
   expect(tauri.bundle.externalBin).toEqual(["binaries/aliasmode-sidecar"]);
   const cargo = readFileSync(join(repo, "src-tauri", "Cargo.toml"), "utf8");
   expect(cargo).toContain(`default-run = "aliasmode"`);
-  expect(cargo).toMatch(/name = "aliasmode-mcp"\r?\npath = "src\/bin\/aliasmode-mcp.rs"/);
-  const launcher = readFileSync(join(repo, "src-tauri", "src", "bin", "aliasmode-mcp.rs"), "utf8");
+  expect(cargo).toMatch(/name = "vela-browser-mcp"\r?\npath = "src\/bin\/vela-browser-mcp.rs"/);
+  const launcher = readFileSync(join(repo, "src-tauri", "src", "bin", "vela-browser-mcp.rs"), "utf8");
   expect(launcher).toContain(`const MCP_MODE: &str = "${MCP_MODE}";`);
+  // The name before 0.1.7 stays installed, the same launcher, for clients set up with it.
+  expect(cargo).toMatch(/name = "aliasmode-mcp"\r?\npath = "src\/bin\/aliasmode-mcp.rs"/);
+  const legacy = readFileSync(join(repo, "src-tauri", "src", "bin", "aliasmode-mcp.rs"), "utf8");
+  expect(legacy).toContain(`include!("vela-browser-mcp.rs");`);
+  expect(launcher).not.toMatch(/^\s*(\/\/!|#!\[)/m);
 
   const helper = Bun.spawnSync([process.execPath, "src/sidecar-entry.ts", MCP_MODE, "version"], { cwd: repo });
   expect(helper.exitCode).toBe(0);

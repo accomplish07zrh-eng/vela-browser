@@ -441,7 +441,7 @@ async function onHost(platform: "win32" | "darwin" | "linux", run: () => Promise
   }
 }
 
-// The MCP create tool and `aliasmode-mcp profiles create` both send this request.
+// The MCP create tool and `vela-browser-mcp profiles create` both send this request.
 test.each([
   ["win32", "chromium", "aliasmode"],
   ["darwin", "firefox", undefined],

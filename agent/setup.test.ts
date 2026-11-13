@@ -9,7 +9,7 @@ test("setup uses each client's supported MCP registration command", async () => 
     inputs.push([command, args, input]);
     return { found: true, code: 0 };
   };
-  const helper = "C:\\Program Files\\Vela Browser\\aliasmode-mcp.exe";
+  const helper = "C:\\Program Files\\Vela Browser\\vela-browser-mcp.exe";
   const command = "C:\\Program Files\\Vela Browser\\playwright\\node\\node.exe";
   const host = "C:\\Program Files\\Vela Browser\\playwright\\agent\\mcp-host.mjs";
   const result = await configureClients({ helper, command, args: [host], run });
@@ -63,7 +63,7 @@ test("setup reports a detected client registration failure", async () => {
     code: args[1] === "add" ? 1 : 0,
   });
   const result = await configureClients({
-    helper: "C:\\Vela Browser\\aliasmode-mcp.exe",
+    helper: "C:\\Vela Browser\\vela-browser-mcp.exe",
     clients: ["claude"],
     run,
   });
@@ -83,7 +83,7 @@ test("setup is repeatable and reports clients that are not installed", async () 
     return { found: true, code: 0 };
   };
   const options = {
-    helper: "C:\\Vela Browser\\aliasmode-mcp.exe",
+    helper: "C:\\Vela Browser\\vela-browser-mcp.exe",
     clients: ["claude", "codex"] as const,
     run,
   };
@@ -108,7 +108,7 @@ test("setup is repeatable and reports clients that are not installed", async () 
 test("setup replaces the pre-0.1.7 aliasmode registration with vela-browser", async () => {
   const calls: Array<[string, string[]]> = [];
   const run: CommandRunner = async (command, args) => { calls.push([command, args]); return { found: true, code: 0 }; };
-  await configureClients({ helper: "/opt/vela/aliasmode-mcp", clients: ["codex"], run });
+  await configureClients({ helper: "/opt/vela/vela-browser-mcp", clients: ["codex"], run });
   expect(calls.map(([, args]) => args.slice(0, 3).join(" "))).toEqual([
     "--version",
     "mcp remove aliasmode",

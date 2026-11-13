@@ -176,7 +176,7 @@ jobs:
             "/D=$installRoot"
           )
           if ($install.ExitCode -ne 0) { throw "Vela Browser installer exited with code $($install.ExitCode)" }
-          $helper = Join-Path $installRoot "aliasmode-mcp.exe"
+          $helper = Join-Path $installRoot "vela-browser-mcp.exe"
           if (-not (Test-Path $helper -PathType Leaf)) { throw "Vela Browser helper was not installed" }
           $aliasData = Join-Path $appData "com.velabrowser.desktop"
           New-Item -ItemType Directory -Force $aliasData | Out-Null
@@ -192,7 +192,7 @@ jobs:
             "openclaw@2026.7.1-2"
           if ($LASTEXITCODE -ne 0) { throw "pinned MCP client installation failed" }
 
-          $helper = Join-Path $env:ALIASMODE_INSTALL_ROOT "aliasmode-mcp.exe"
+          $helper = Join-Path $env:ALIASMODE_INSTALL_ROOT "vela-browser-mcp.exe"
           $setup = (& $helper setup --client auto --yes | ConvertFrom-Json)
           if ($LASTEXITCODE -ne 0 -or -not $setup.ok) { throw "Vela Browser automatic client setup failed" }
           foreach ($client in @("claude", "codex", "openclaw")) {
@@ -235,7 +235,7 @@ jobs:
           $hermesBin = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\bin"
           $env:PATH = "$hermesBin;$env:PATH"
           $hermes = (Get-Command hermes -ErrorAction Stop).Source
-          $helper = Join-Path $env:ALIASMODE_INSTALL_ROOT "aliasmode-mcp.exe"
+          $helper = Join-Path $env:ALIASMODE_INSTALL_ROOT "vela-browser-mcp.exe"
           $setup = (& $helper setup --client hermes --yes | ConvertFrom-Json)
           if (
             $LASTEXITCODE -ne 0 -or
@@ -255,7 +255,7 @@ jobs:
         timeout-minutes: 10
         run: |
           $ErrorActionPreference = "Stop"
-          $helper = Join-Path $env:ALIASMODE_INSTALL_ROOT "aliasmode-mcp.exe"
+          $helper = Join-Path $env:ALIASMODE_INSTALL_ROOT "vela-browser-mcp.exe"
 
           # Ending the launcher must end the MCP helper that it started in the sidecar program.
           $start = [Diagnostics.ProcessStartInfo]::new($helper)

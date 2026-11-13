@@ -261,10 +261,17 @@ test("the Windows installer stops a leftover sidecar before overwriting it", () 
   expect(hooks).toContain(`nsExec::Exec 'taskkill /F /T /IM "aliasmode-sidecar.exe"'`);
   // An AI client can hold the MCP helper launcher open as well. It goes first, and without its
   // process tree: the helper may have started the desktop app.
-  const helperKill = hooks.indexOf(`nsExec::Exec 'taskkill /F /IM "aliasmode-mcp.exe"'`);
-  expect(helperKill).toBeGreaterThan(0);
-  expect(helperKill).toBeLessThan(hooks.indexOf(`taskkill /IM "aliasmode-sidecar.exe"`));
-  expect(hooks).not.toContain(`/T /IM "aliasmode-mcp.exe"`);
+  // Both launcher names: vela-browser-mcp.exe, and aliasmode-mcp.exe for clients set up before 0.1.7.
+  for (const launcher of ["vela-browser-mcp.exe", "aliasmode-mcp.exe"]) {
+    const helperKill = hooks.indexOf(`nsExec::Exec 'taskkill /F /IM "${launcher}"'`);
+    expect(helperKill).toBeGreaterThan(0);
+    expect(helperKill).toBeLessThan(hooks.indexOf(`taskkill /IM "aliasmode-sidecar.exe"`));
+    expect(hooks).not.toContain(`/T /IM "${launcher}"`);
+  }
+  // Every command leaves its exit code on the stack; each is taken off again.
+  const execs = hooks.match(/nsExec::Exec[^\n]*/g) ?? [];
+  expect(execs.length).toBeGreaterThan(0);
+  expect(hooks.match(/nsExec::Exec[^\n]*\r?\n[ \t]*Pop \$R0/g)?.length).toBe(execs.length);
   // An update removes the Python runtime that earlier versions bundled.
   expect(hooks).toContain(`RMDir /r "$INSTDIR\\playwright\\python"`);
 });
