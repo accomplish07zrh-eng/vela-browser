@@ -142,6 +142,12 @@ function openResponse(
  * from the launches table, which is authoritative for every browser THIS manager
  * started — campaign-launched or dashboard-launched alike (one manager per box).
  */
+/** "anytls · 🇸🇬 SG 01" for a pool node, or a plain notice when it left the pool. */
+function poolLabel(store: ProfileStore, nodeId: string): string {
+  const node = store.proxyPool.get(nodeId);
+  return node ? `${node.protocol} · ${node.name}` : "pool node (removed)";
+}
+
 export function listUiProfiles(store: ProfileStore, cooledAt?: (id: string) => number | undefined): UiProfile[] {
   const launches = new Map(store.listLaunches().map((l) => [l.profileId, l]));
   const meta = store.listProfileMeta();
@@ -156,7 +162,8 @@ export function listUiProfiles(store: ProfileStore, cooledAt?: (id: string) => n
       group: p.group,
       platform: p.platform ?? "",
       tags: p.tags ?? [],
-      proxy: p.proxy ? proxyHostPort(p.proxy) : null,
+      // A pool node shows as its protocol and name; its id means nothing to a person.
+      proxy: p.proxy ? (p.proxy.type === "pool" ? poolLabel(store, p.proxy.host) : proxyHostPort(p.proxy)) : null,
       ...(p.proxyError ? { proxyError: p.proxyError } : {}),
       timezone: p.timezone,
       cookieCount: p.cookies.length,
@@ -790,6 +797,7 @@ export async function handleUiRequest(
     }
     return handleProxyPoolRequest(req, store, options, {
       assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
+      kernels: launcher.kernels,
     });
   }
 

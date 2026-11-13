@@ -45,6 +45,7 @@ import {
 } from "./fingerprint.ts";
 export { isMobileUserAgent } from "./fingerprint.ts";
 import { startProxyRelay, type ProxyRelay, type UpstreamProxy } from "./proxy-relay.ts";
+import { clearKernelWorkDir, ensureKernel, KernelSupervisor, type InstalledKernel } from "./kernel.ts";
 import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "./search-provider.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
@@ -122,6 +123,8 @@ function launchedWithDirectProxy(profile: Profile): boolean {
 
 /** The relay's upstream for a profile proxy. It keeps the proxy's protocol: HTTPS stays TLS. */
 export function relayUpstream(proxy: ProxySpec): UpstreamProxy {
+  // A pool node is reached only through its kernel; its address comes from there.
+  if (proxy.type === "pool") throw new Error("a proxy pool node needs its kernel");
   return { type: proxy.type, host: proxy.host, port: Number(proxy.port), user: proxy.user, pass: proxy.pass };
 }
 
@@ -306,6 +309,8 @@ const PREFLIGHT_GUIDANCE = {
   firefox_setup: "Firefox runtime approval is missing or invalid. Run bun cli.ts setup, then restart Vela Browser.",
   proxy_invalid: "Saved proxy settings are invalid. Edit or clear this profile's proxy.",
   proxy_https_auth: "Authenticated HTTPS proxies are unsupported. Use HTTP or SOCKS5.",
+  proxy_node_missing: "This profile's proxy-pool node is no longer in the pool. Choose another proxy for it.",
+  proxy_kernel: "The proxy kernel could not start for this profile's proxy-pool node. Check the node, then retry.",
   persona_mobile: "This profile has a mobile user agent. Use a desktop browser profile.",
   persona_unsupported: "This profile's user agent has no recognized desktop platform. Check its saved browser identity.",
   firefox_configuration: "The saved Firefox configuration is missing or incompatible with this runtime. Use a matching Vela Browser runtime and profile export.",
@@ -579,6 +584,10 @@ export interface LauncherOptions {
   expectedFirefoxBinarySha256?: string;
   ensureWebKit?: (root: string) => Promise<string>;
   webkitRuntime?: LauncherOptions["firefoxRuntime"];
+  /** Runs proxy-pool nodes (vless, hysteria2, anytls…). Defaults to sing-box under the runtimes root. */
+  kernels?: KernelSupervisor;
+  /** Installs the pinned proxy kernel. Injectable for tests. */
+  ensureKernel?: (root: string) => Promise<InstalledKernel>;
   /** Install root for the downloaded Chromium 155 beta. Defaults beside dataRoot. */
   chromiumRuntimeRoot?: string;
   /** Injectable Chromium 155 installer for tests. Returns chrome.exe. */
@@ -1036,6 +1045,8 @@ export class Launcher {
    */
   private verifiedExternal = new Map<string, VerifiedExternalLaunch>();
   private relays = new Map<string, ProxyRelay>(); // auth-injecting proxy relay per running authed-proxy profile
+  /** One proxy kernel per running profile whose proxy is a pool node. */
+  readonly kernels: KernelSupervisor;
   /** Post-stop cache deletes still running, so a relaunch never races its own cache dirs. */
   private cacheClears = new Map<string, Promise<void>>();
   /** Proxied browser websocket generations verified by this manager process. */
@@ -1091,6 +1102,21 @@ export class Launcher {
     }
     this.dataRoot = opts.dataRoot ?? DEFAULT_DATA_ROOT;
     this.chromiumRuntimeRoot = opts.chromiumRuntimeRoot ?? join(dirname(resolve(this.dataRoot)), "runtimes");
+    const kernelWorkDir = join(dirname(resolve(this.dataRoot)), "kernels");
+    clearKernelWorkDir(kernelWorkDir);
+    this.kernels = opts.kernels ?? new KernelSupervisor({
+      binary: () => (opts.ensureKernel ?? ((root) => ensureKernel(root, { log: (msg) => this.log(msg) })))(this.chromiumRuntimeRoot),
+      workDir: kernelWorkDir,
+      log: (msg) => this.log(msg),
+    });
+    // A kernel that died and came back listens on a new port: the profile's relay follows it, cutting
+    // every connection of the dead one first. Until then the relay has nowhere to send anything.
+    this.kernels.onRestart = (profileId, spec) => {
+      const relay = this.relays.get(profileId);
+      if (!relay) { this.kernels.release(profileId); return; }
+      relay.switchUpstream(relayUpstream(spec)).catch((error) => this.log(`proxy relay for ${profileId} could not follow its kernel: ${(error as Error).message}`));
+    };
+    this.kernels.onGiveUp = (profileId) => this.log(`profile ${profileId} has no network: its proxy kernel keeps failing`);
     this.ensureAliasmodeChromiumFn = opts.ensureAliasmodeChromium ?? ((root) => ensureAliasmodeChromium(root));
     this.ensureDownloadedCloakBrowserFn = opts.ensureDownloadedCloakBrowser
       ?? ((root) => ensureCloakBrowser(root, this.hostPlatform, this.hostArch));
@@ -1901,6 +1927,8 @@ export class Launcher {
         return await this.doStart(profileId, launchArgs, opts);
       })
       .catch((error) => {
+        // A kernel started for this launch (to look up the exit) has no browser to serve.
+        if (!this.store.getLaunch(profileId) && !this.relays.has(profileId)) this.kernels.release(profileId);
         if (error instanceof BrowserLaunchError || error instanceof SessionRestoreError) {
           if (error instanceof BrowserLaunchError && error.guidance) this.log(`start ${profileId} rejected: ${error.guidance}`);
           throw error;
@@ -2158,7 +2186,9 @@ export class Launcher {
     // the profile, so pages see the timezone of the IP they come from. Without an answer the saved
     // timezone stays, and so does one the user typed. The exit IP is WebRTC's public address below.
     const proxy = profile.proxy;
-    const lookupExit = () => proxy && this.lookupExitLocationFn ? this.lookupExitLocationFn(proxy).catch(() => null) : Promise.resolve(null);
+    // A pool node's exit is looked up through its own kernel, started here for the launch.
+    const route = await this.proxyRoute(profile);
+    const lookupExit = () => route && this.lookupExitLocationFn ? this.lookupExitLocationFn(route).catch(() => null) : Promise.resolve(null);
     let exit = await lookupExit();
     // Without the exit IP, WebRTC behind the proxy finds no address at all, which a real browser
     // never shows. A slow lookup gets more time and a failed one a second try, both through the proxy.
@@ -2274,14 +2304,14 @@ export class Launcher {
         const p = profile.proxy!;
         let relay: ProxyRelay;
         try {
-          relay = await startProxyRelay(relayUpstream(p), {});
+          relay = await startProxyRelay(relayUpstream((await this.proxyRoute({ ...profile, proxy: p }))!), {});
         } catch {
           throw new BrowserLaunchError("relay_setup");
         }
         // Defensive cleanup for a stale in-memory relay whose launch row was
         // removed before this fresh start. Never overwrite the only reference to
         // a listening server/socket set.
-        this.closeRelay(profileId);
+        this.dropStaleRelay(profileId);
         this.relays.set(profileId, relay);
         relayPort = relay.port;
         this.log(`proxy relay ready for ${profileId}`);
@@ -2710,8 +2740,8 @@ export class Launcher {
       // authentication. A failed relay fails requests instead of reverting to the direct route.
       if (profile.proxy) {
         const proxy = profile.proxy;
-        const relay = await startProxyRelay(relayUpstream(proxy), {});
-        this.closeRelay(profileId); this.relays.set(profileId, relay); launch.relayPort = relay.port;
+        const relay = await startProxyRelay(relayUpstream((await this.proxyRoute({ ...profile, proxy }))!), {});
+        this.dropStaleRelay(profileId); this.relays.set(profileId, relay); launch.relayPort = relay.port;
       }
       this.requireUnchangedProfile(profileId, snapshot, "WebKit spawn");
       this.store.recordLaunch(launch); reserved = true; this.liveReserved.add(port);
@@ -2841,8 +2871,8 @@ export class Launcher {
     try {
       if (needsProxyRelay(profile)) {
         const proxy = profile.proxy!;
-        const relay = await startProxyRelay(relayUpstream(proxy), {});
-        this.closeRelay(profileId);
+        const relay = await startProxyRelay(relayUpstream((await this.proxyRoute({ ...profile, proxy }))!), {});
+        this.dropStaleRelay(profileId);
         this.relays.set(profileId, relay);
         launch.relayPort = relay.port;
       }
@@ -3626,13 +3656,37 @@ export class Launcher {
     return !!proof && await this.confirmLaunchStopped(profileId, launch, proof);
   }
 
+  /** Tear down a profile's network: its relay, and its proxy kernel if it has one. */
   private closeRelay(profileId: string): void {
+    this.dropStaleRelay(profileId);
+    this.kernels.release(profileId);
+  }
+
+  /** Close a relay left over from an earlier launch, keeping the kernel this launch started. */
+  private dropStaleRelay(profileId: string): void {
     const relay = this.relays.get(profileId);
     if (relay) {
       try {
         relay.close();
       } catch {}
       this.relays.delete(profileId);
+    }
+  }
+
+  /**
+   * Where a profile's traffic goes: its proxy, or for a pool node the address of the profile's own
+   * kernel (started now if it is not running). A node that left the pool, or a kernel that cannot
+   * start, refuses the launch: never a direct route.
+   */
+  private async proxyRoute(profile: Profile): Promise<ProxySpec | null> {
+    const proxy = profile.proxy;
+    if (!proxy || proxy.type !== "pool") return proxy;
+    const node = this.store.proxyPool.get(proxy.host);
+    if (!node?.outbound) throw new LaunchRefusal("proxy_node_missing", `profile ${profile.id}: pool node ${proxy.host} is not in the pool`);
+    try {
+      return await this.kernels.acquire(profile.id, node.outbound);
+    } catch (error) {
+      throw new LaunchRefusal("proxy_kernel", `profile ${profile.id}: proxy kernel failed: ${(error as Error).message}`);
     }
   }
 
@@ -3656,7 +3710,7 @@ export class Launcher {
     }
     let relay: ProxyRelay;
     try {
-      relay = await startProxyRelay(relayUpstream(profile.proxy!), { port: launch.relayPort });
+      relay = await startProxyRelay(relayUpstream((await this.proxyRoute(profile))!), { port: launch.relayPort });
     } catch (error) {
       this.log(`proxy relay rebind failed for ${profile.id}: ${(error as { code?: string })?.code ?? "unavailable"}`);
       throw new BrowserLaunchError("relay_setup");

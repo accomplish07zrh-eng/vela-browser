@@ -136,7 +136,7 @@ test("names say where nodes are: flags, place names and capital codes; English w
 
 function nodes(count: number, opts: Partial<PoolNode> = {}): PoolNode[] {
   return Array.from({ length: count }, (_, i) => ({
-    id: `n${i}`, name: `node ${i}`, kind: "manual" as const, proxy: spec(`10.0.1.${i}`), tags: [], maxProfiles: 1,
+    id: `n${i}`, name: `node ${i}`, kind: "manual" as const, proxy: spec(`10.0.1.${i}`), protocol: "http" as const, tags: [], maxProfiles: 1,
     disabled: false, check: { status: "working" as const, country: "US", durationMs: 100 + i, checkedAt: 1 }, createdAt: i, ...opts,
   }));
 }
@@ -209,4 +209,79 @@ test("checks record each node's result, with the shared direct address and a fai
   expect(seen.sort()).toEqual([a!.id, b!.id].sort());
   expect(p.get(a!.id)!.check).toMatchObject({ status: "working", ip: "203.0.113.9", country: "US", durationMs: 250 });
   expect(p.get(b!.id)!.check).toMatchObject({ status: "unavailable", reason: "check_unavailable" });
+});
+
+import { parseSubscription } from "./subscription.ts";
+
+const SUB_V1 = [
+  "vless://11111111-2222-3333-4444-555555555555@jp.node.example:443?security=tls&sni=jp.node.example#%F0%9F%87%AF%F0%9F%87%B5%20JP",
+  "anytls://ANYPASS@sg.node.example:443?sni=sg.node.example#SG",
+  "socks5://su:sp@198.51.100.9:1080#plain",
+].join("\n");
+
+test("a subscription's nodes join the pool as shared provider nodes; kernel ones are reached by id", () => {
+  const p = pool();
+  const sub = p.addSubscription({ url: "https://sub.example/token-secret" });
+  const parsed = parseSubscription(SUB_V1);
+  expect(p.syncSubscription(sub.id, parsed.nodes, parsed)).toEqual({ added: 3, kept: 0, removed: 0 });
+  const [jp, sg, plain] = p.list();
+  expect(jp).toMatchObject({ kind: "provider", maxProfiles: null, protocol: "vless", subscriptionId: sub.id, regionHint: "JP" });
+  expect(jp!.proxy).toEqual({ type: "pool", host: jp!.id, port: "0", user: "", pass: "" });
+  expect(jp!.outbound).toMatchObject({ type: "vless", server: "jp.node.example" });
+  expect(sg!.protocol).toBe("anytls");
+  // A plain SOCKS5 node needs no kernel: profiles get the proxy itself.
+  expect(plain).toMatchObject({ protocol: "socks5", proxy: { type: "socks5", host: "198.51.100.9", port: "1080", user: "su", pass: "sp" } });
+  expect(plain!.outbound).toBeUndefined();
+  // Views never carry credentials or the link.
+  const views = poolNodeViews(p.list(), []);
+  expect(views.map((v) => v.proxy)).toEqual(["vless://jp.node.example:443", "anytls://sg.node.example:443", "socks5://198.51.100.9:1080"]);
+  const text = JSON.stringify(views);
+  for (const secret of ["11111111-2222-3333-4444-555555555555", "ANYPASS", "sp", "token-secret"]) expect(text).not.toContain(secret);
+});
+
+test("refreshing keeps listed nodes, adds new ones, and marks gone ones without removing them", () => {
+  const p = pool();
+  const sub = p.addSubscription({ url: "https://sub.example/a" });
+  const first = parseSubscription(SUB_V1);
+  p.syncSubscription(sub.id, first.nodes, first);
+  const before = p.list();
+  const second = parseSubscription([
+    "vless://11111111-2222-3333-4444-555555555555@jp.node.example:443?security=tls&sni=jp.node.example#renamed%20by%20provider",
+    "trojan://NEW@tw.node.example:443?sni=tw.node.example#TW",
+  ].join("\n"));
+  expect(p.syncSubscription(sub.id, second.nodes, second)).toEqual({ added: 1, kept: 1, removed: 2 });
+  const after = p.list();
+  // The JP node keeps its id, so profiles on it stay on it.
+  expect(after.find((n) => n.id === before[0]!.id)!.removedFromSource).toBeUndefined();
+  expect(after.filter((n) => n.removedFromSource).map((n) => n.id).sort()).toEqual([before[1]!.id, before[2]!.id].sort());
+  expect(after.map((n) => n.protocol)).toContain("trojan");
+  // A node whose credentials changed is a different node: the old one stays for the profiles on it.
+  const third = parseSubscription("vless://99999999-2222-3333-4444-555555555555@jp.node.example:443?security=tls&sni=jp.node.example#JP");
+  expect(p.syncSubscription(sub.id, third.nodes, third)).toEqual({ added: 1, kept: 0, removed: 2 });
+  expect(p.get(before[0]!.id)!.removedFromSource).toBe(true);
+  expect(p.getSubscription(sub.id)!.lastImport).toMatchObject({ nodes: 1, added: 1 });
+});
+
+test("removing a subscription removes its unused nodes and keeps the ones profiles use", () => {
+  const p = pool();
+  const sub = p.addSubscription({ url: "https://sub.example/a" });
+  const parsed = parseSubscription(SUB_V1);
+  p.syncSubscription(sub.id, parsed.nodes, parsed);
+  const [jp] = p.list();
+  expect(p.removeSubscription(sub.id, (node) => node.id === jp!.id)).toEqual({ removedNodes: 2, keptNodes: 1 });
+  expect(p.list().map((n) => [n.id, n.removedFromSource, n.subscriptionId])).toEqual([[jp!.id, true, undefined]]);
+  expect(p.listSubscriptions()).toEqual([]);
+});
+
+test("subscriptions need an https link, once", () => {
+  const p = pool();
+  expect(() => p.addSubscription({ url: "http://sub.example/a" })).toThrow("https");
+  expect(() => p.addSubscription({ url: "not a url" })).toThrow("valid URL");
+  p.addSubscription({ url: "https://sub.example/a" });
+  expect(() => p.addSubscription({ url: "https://sub.example/a" })).toThrow("already");
+});
+
+test("a pool node id is a proxy no one can connect to directly", () => {
+  const p = pool();
+  expect(p.importText("pool://00000000-0000-0000-0000-000000000000:0").invalid.length).toBe(1);
 });

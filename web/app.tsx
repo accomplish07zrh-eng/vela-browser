@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
-import { PoolProxyPicker } from "./proxy-pool.tsx";
+import { PoolNodeField, PoolProxyPicker } from "./proxy-pool.tsx";
 import { WorkbenchPage } from "./workbench.tsx";
 import { CommandPalette, type SearchTarget } from "./command-palette.tsx";
 import "./design-tokens.css";
@@ -4016,7 +4016,7 @@ function App() {
                     <span>{t("Tags")} <span className="muted">{t("(comma-separated)")}</span></span>
                     <input value={editForm.tags ?? ""} placeholder="warmup, us, priority" onChange={(e) => setEF("tags", e.target.value)} />
                   </label>
-                  <div className="fld-row">
+                  {editForm.proxyType === "pool" ? <PoolNodeField nodeId={editForm.proxy ?? ""} onManual={() => { setEF("proxyType", "http"); setEF("proxy", ""); }} /> : <div className="fld-row">
                     <label className="fld type">
                       <span>{t("Proxy type")}</span>
                       <Select value={editForm.proxyType ?? "http"} onChange={(e) => setEF("proxyType", e.target.value)}>
@@ -4030,9 +4030,9 @@ function App() {
                       <input value={editForm.proxy ?? ""} placeholder="host:port:username:password" onChange={(e) => setEF("proxy", e.target.value)} />
                       <small>{t("Leave blank to launch on a direct connection.")}</small>
                     </label>
-                  </div>
+                  </div>}
                   <div className="proxy-check-actions">
-                    <button
+                    {editForm.proxyType !== "pool" && <button
                       type="button"
                       className="btn proxy-check-btn"
                       disabled={editProxyCheck.checking || timezoneBusy || !editHasProxy}
@@ -4041,7 +4041,7 @@ function App() {
                     >
                       <Icon name="activity" className="sm" />
                       {editProxyCheck.checking ? "Checking…" : t("Check proxy")}
-                    </button>
+                    </button>}
                     {editId && <PoolProxyPicker profileId={editId} onAssigned={() => {
                       // The server saved the pool proxy and its exit's timezone; show what it saved,
                       // and treat it as the form's starting point so a later save does not undo it.

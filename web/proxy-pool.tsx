@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Select } from "./select.tsx";
 import { NumberInput } from "./controls.tsx";
 import { useTranslation } from "./i18n.tsx";
-import type { PoolCheck, PoolNodeView } from "../src/proxy-pool.ts";
+import type { PoolCheck, PoolNodeView, PoolSubscriptionView } from "../src/proxy-pool.ts";
 
 export class ProxyPoolClientError extends Error {}
 
@@ -23,11 +23,20 @@ const SERVER_MESSAGES = new Set([
   "This proxy is already used by as many profiles as its sharing limit allows", "no such profile",
   "Unknown proxy pool operation", "Unsupported proxy type", "Invalid request", "POST is required",
   "Proxy pool operation failed", "Proxy check failed",
+  "Paste a subscription link", "Choose a subscription", "This subscription is no longer here", "This subscription is already added",
+  "The subscription link is not a valid URL", "The subscription link must use https", "The subscription could not be read",
+  "The subscription could not be downloaded", "The subscription is too large", "The subscription is empty",
+  "The subscription format is not recognised", "The subscription lists no usable node", "The subscription is not valid YAML",
+  "The subscription is not valid JSON", "The subscription has no proxies", "The subscription has no outbounds",
+  "The subscription link redirects too many times", "The subscription link redirects to an insecure address",
 ]);
 
 /** A failure's message for the page: a known server message, translated, or `fallback`. */
-function failureText(t: (key: string) => string, failure: unknown, fallback: string): string {
+function failureText(t: (key: string, vars?: Record<string, string | number>) => string, failure: unknown, fallback: string): string {
   const message = failure instanceof Error ? failure.message : "";
+  // Subscription errors come from Vela's own fetcher; some carry a status code.
+  const answered = /^The subscription server answered (\d{3})$/.exec(message);
+  if (answered) return t("The subscription server answered {status}", { status: answered[1]! });
   return SERVER_MESSAGES.has(message) ? t(message) : t(fallback);
 }
 
@@ -46,6 +55,29 @@ async function poolCall<T>(path: string, body?: unknown, signal?: AbortSignal): 
 }
 
 export const fetchPool = (signal?: AbortSignal) => poolCall<{ nodes: PoolNodeView[] }>("", undefined, signal).then((r) => r.nodes);
+export const fetchPoolAll = (signal?: AbortSignal) => poolCall<{ nodes: PoolNodeView[]; subscriptions: PoolSubscriptionView[] }>("", undefined, signal);
+interface SubscriptionResult { added: number; kept: number; removed: number; infoEntries: number; nonNodes: number; unsupported: Array<{ name: string; reason: string }> }
+export const addSubscription = (url: string, name: string) => poolCall<SubscriptionResult>("/subscriptions/add", { url, ...(name.trim() ? { name } : {}) });
+export const refreshSubscription = (id: string) => poolCall<SubscriptionResult>("/subscriptions/refresh", { id });
+export const deleteSubscription = (id: string) => poolCall<{ removedNodes: number; keptNodes: number }>("/subscriptions/delete", { id });
+
+function bytes(value: number | undefined): string {
+  if (value === undefined) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = value, i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)} ${units[i]}`;
+}
+
+/** Remaining traffic and expiry, warning under 10% left or 7 days to go. */
+export function subscriptionUsage(sub: PoolSubscriptionView, now = Date.now()): { used?: number; total?: number; left?: number; expireAt?: number; warn: boolean } {
+  const used = sub.usage ? (sub.usage.uploadBytes ?? 0) + (sub.usage.downloadBytes ?? 0) : undefined;
+  const total = sub.usage?.totalBytes;
+  const left = total !== undefined && used !== undefined ? Math.max(0, total - used) : undefined;
+  const expireAt = sub.usage?.expireAt ? sub.usage.expireAt * 1000 : undefined;
+  const warn = (total !== undefined && left !== undefined && total > 0 && left / total < 0.1) || (expireAt !== undefined && expireAt - now < 7 * 86_400_000);
+  return { ...(used !== undefined ? { used } : {}), ...(total !== undefined ? { total } : {}), ...(left !== undefined ? { left } : {}), ...(expireAt !== undefined ? { expireAt } : {}), warn };
+}
 export const importPool = (text: string, type: string, tags: string[]) =>
   poolCall<{ added: number; duplicates: number; invalid: Array<{ line: number; error: string }> }>("/import", { text, type, tags });
 export const updatePoolNode = (id: string, patch: Record<string, unknown>) => poolCall<{ node: PoolNodeView }>("/update", { id, ...patch });
@@ -151,8 +183,12 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
   const [country, setCountry] = useState("");
   const [status, setStatus] = useState("");
 
+  const [subs, setSubs] = useState<PoolSubscriptionView[]>([]);
+  const [subUrl, setSubUrl] = useState("");
+  const [subName, setSubName] = useState("");
+  const [subBusy, setSubBusy] = useState<string | null>(null);
   const load = useCallback(async () => {
-    try { setNodes(await fetchPool()); setError(null); } catch { setError(t("The proxy pool could not load.")); }
+    try { const all = await fetchPoolAll(); setNodes(all.nodes); setSubs(all.subscriptions); setError(null); } catch { setError(t("The proxy pool could not load.")); }
   }, [t]);
   useEffect(() => { if (active) void load(); }, [active, load]);
 
@@ -205,6 +241,53 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
   };
 
   return <>
+    <section className="tools-panel proxy-input-panel">
+      <div className="tools-panel-head"><div><h3>{t("Subscriptions")}</h3><p>{t("Paste a provider's subscription link. Its nodes join the pool; providers share their exits, so their nodes have no sharing limit by default. The link stays on this computer.")}</p></div></div>
+      <div className="tools-panel-body">
+        <div className="fld-row">
+          <label className="fld grow"><span>{t("Subscription link")}</span><input type="password" autoComplete="off" spellCheck={false} value={subUrl} disabled={!!subBusy} placeholder="https://…" onChange={(e) => setSubUrl(e.target.value)} /></label>
+          <label className="fld"><span>{t("Name")}</span><input value={subName} disabled={!!subBusy} onChange={(e) => setSubName(e.target.value)} /></label>
+        </div>
+        <div className="tools-result-bar"><span />
+          <button type="button" className="btn primary" disabled={!!subBusy || !subUrl.trim()} onClick={() => void (async () => {
+            setSubBusy("add"); setError(null); setNotice(null);
+            try {
+              const result = await addSubscription(subUrl.trim(), subName);
+              setSubUrl(""); setSubName("");
+              setNotice(subscriptionNotice(t, result));
+              await load();
+            } catch (failure) { setError(failureText(t, failure, "The subscription could not be read")); await load(); }
+            finally { setSubBusy(null); }
+          })()}>{subBusy === "add" ? t("Adding…") : t("Add subscription")}</button></div>
+        {subs.length > 0 && <div className="proxy-table-wrap"><table className="profile-table proxy-table pool-table"><thead><tr>
+          <th>{t("Name")}</th><th>{t("Traffic left")}</th><th>{t("Expires")}</th><th>{t("Nodes")}</th><th>{t("Updated")}</th><th></th>
+        </tr></thead><tbody>{subs.map((sub) => {
+          const usage = subscriptionUsage(sub);
+          const nodeCount = (nodes ?? []).filter((node) => node.subscriptionId === sub.id && !node.removedFromSource).length;
+          return <tr key={sub.id}>
+            <td><strong>{sub.name}</strong><small className="tools-mono">{sub.host}</small></td>
+            <td className={usage.warn ? "pool-warn" : ""}>{usage.left !== undefined ? `${bytes(usage.left)} / ${bytes(usage.total)}` : "—"}</td>
+            <td className={usage.warn ? "pool-warn" : ""}>{usage.expireAt ? new Date(usage.expireAt).toLocaleDateString() : "—"}</td>
+            <td>{nodeCount}{sub.lastImport && (sub.lastImport.unsupported.length > 0 || sub.lastImport.infoEntries > 0) && <small>{t("{unsupported} unsupported · {info} notices", { unsupported: sub.lastImport.unsupported.length, info: sub.lastImport.infoEntries })}</small>}</td>
+            <td>{sub.lastFetchedAt ? new Date(sub.lastFetchedAt).toLocaleString() : "—"}{sub.lastError && <small className="pool-warn">{failureText(t, new Error(sub.lastError), "The subscription could not be read")}</small>}</td>
+            <td><div className="proxy-actions">
+              <button type="button" className="btn sm" disabled={!!subBusy} onClick={() => void (async () => {
+                setSubBusy(sub.id); setError(null); setNotice(null);
+                try { setNotice(subscriptionNotice(t, await refreshSubscription(sub.id))); }
+                catch (failure) { setError(failureText(t, failure, "The subscription could not be read")); }
+                finally { setSubBusy(null); await load(); }
+              })()}>{subBusy === sub.id ? t("Updating…") : t("Update")}</button>
+              <button type="button" className="btn sm" disabled={!!subBusy} onClick={() => void (async () => {
+                if (!window.confirm(t("Remove this subscription? Its nodes that profiles use stay in the pool; the others are removed."))) return;
+                setSubBusy(sub.id);
+                try { await deleteSubscription(sub.id); } catch { setError(t("Could not save")); }
+                finally { setSubBusy(null); await load(); }
+              })()}>{t("Remove")}</button>
+            </div></td>
+          </tr>;
+        })}</tbody></table></div>}
+      </div>
+    </section>
     <section className="tools-panel proxy-input-panel">
       <div className="tools-panel-head"><div><h3>{t("Add proxies to the pool")}</h3><p>{t("One per line: host:port:user:pass or a URL. Add #name at the end to name it. A proxy already in the pool is not added twice.")}</p></div></div>
       <div className="tools-panel-body">
@@ -262,7 +345,10 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
             <td>{editing === node.id
               ? <NodeEditor node={node} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); void load(); onChanged?.(); }} />
               : <><strong>{node.name}</strong>{node.disabled && <small>{t("Disabled")}</small>}{node.tags.length > 0 && <small>{node.tags.join(" · ")}</small>}</>}</td>
-            <td className="tools-mono">{node.proxy}{node.hasAuth && <small>{t("with login")}</small>}</td>
+            <td className="tools-mono">{node.proxy}{node.hasAuth && !node.subscriptionId && <small>{t("with login")}</small>}
+              {node.subscriptionId && <small>{subs.find((sub) => sub.id === node.subscriptionId)?.name ?? t("Subscription")}</small>}
+              {node.insecureTls && <small className="pool-warn">{t("certificate not checked")}</small>}
+              {node.removedFromSource && <small className="pool-warn">{t("no longer in its subscription")}</small>}</td>
             <td>{where.code ?? "—"}{where.fromName && <small>{t("from name")}</small>}{mismatch && <small className="pool-warn">{t("name says {code}", { code: node.regionHint! })}</small>}</td>
             <td><span className={`tools-status ${node.check?.status ?? "unavailable"}`}>{statusLabel(t, node.check)}</span>
               {reasonLabel(t, node.check?.reason) && <small>{reasonLabel(t, node.check?.reason)}</small>}
@@ -365,4 +451,31 @@ export function PoolProxyPicker({ profileId, onAssigned }: { profileId: string; 
     <button type="button" className="btn" onClick={() => setOpen(false)}>{t("Cancel")}</button>
     {message && <small>{message}</small>}
   </div>;
+}
+
+/** A profile's proxy that is a pool node: shown by name, never edited as text. */
+export function PoolNodeField({ nodeId, onManual }: { nodeId: string; onManual: () => void }) {
+  const { t } = useTranslation();
+  const [node, setNode] = useState<PoolNodeView | null | undefined>(undefined);
+  useEffect(() => { void fetchPool().then((nodes) => setNode(nodes.find((n) => n.id === nodeId) ?? null), () => setNode(null)); }, [nodeId]);
+  return <div className="fld-row">
+    <div className="fld grow">
+      <span>{t("Proxy from the pool")}</span>
+      <div className="pool-node-field">
+        {node === undefined ? t("Loading…")
+          : node === null ? <span className="pool-warn">{t("This node is no longer in the pool. The profile will not open until you choose another proxy.")}</span>
+          : <><strong>{node.name}</strong><small>{node.protocol} · {nodeCountry(node).code ?? "—"} · {statusLabel(t, node.check)}{node.removedFromSource ? ` · ${t("no longer in its subscription")}` : ""}</small></>}
+      </div>
+      <small>{t("Runs through this profile's own proxy kernel.")}</small>
+    </div>
+    <button type="button" className="btn" onClick={onManual}>{t("Type a proxy instead")}</button>
+  </div>;
+}
+
+function subscriptionNotice(t: (key: string, vars?: Record<string, string | number>) => string, result: SubscriptionResult): string {
+  const parts = [t("Added {added} · kept {kept} · no longer listed {removed}", { added: result.added, kept: result.kept, removed: result.removed })];
+  if (result.unsupported.length) parts.push(t("{count} not supported", { count: result.unsupported.length }) + `: ${[...new Set(result.unsupported.map((row) => row.reason))].slice(0, 3).join("; ")}`);
+  if (result.infoEntries) parts.push(t("{count} provider notices skipped", { count: result.infoEntries }));
+  if (result.nonNodes) parts.push(t("{count} entries are not exits (direct, reject, groups)", { count: result.nonNodes }));
+  return parts.join(" · ");
 }

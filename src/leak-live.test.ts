@@ -35,9 +35,15 @@ import { dirname, join, resolve } from "node:path";
 import { buildNewProfile } from "./create.ts";
 import { defaultSpawn, Launcher, PROXIED_DISABLED_FEATURES, PROXIED_HOST_RESOLVER_RULES } from "./launcher.ts";
 import { ProfileStore } from "./store.ts";
+import { ensureKernel, freeLoopbackPort, type InstalledKernel } from "./kernel.ts";
+import { parseSubscription } from "./subscription.ts";
 import type { ObservedFingerprint, Profile } from "./types.ts";
 
 const live = process.env.VELA_LEAK_LIVE === "1" && process.platform === "win32";
+/** The pinned sing-box release archive, to run proxy-pool nodes through the real kernel. */
+const kernelZip = process.env.VELA_SINGBOX_ZIP?.trim() ?? "";
+const KERNEL_PROTOCOLS = (process.env.VELA_LEAK_PROTOCOLS ?? "vless,trojan,hysteria2,anytls,shadowsocks").split(",").map((p) => p.trim()).filter(Boolean);
+type KernelProtocolName = "vless" | "trojan" | "hysteria2" | "anytls" | "shadowsocks";
 const chromiumBinary = process.env.VELA_LEAK_CHROMIUM?.trim() ?? "";
 const firefoxBinary = process.env.VELA_LEAK_FIREFOX?.trim() ?? "";
 const chromiumTest = live && chromiumBinary ? test : test.skip;
@@ -57,8 +63,12 @@ async function fakeExit(run: string, canary: Canary) {
   const reports: unknown[] = [];
   const page = probePage(run, canary);
   const ours = (host: string) => host === V4 || host === V6 || host === `[${V6}]` || host.endsWith(`.${LEAK_DOMAIN}`);
-  const server = net.createServer((sock) => {
-    sock.on("error", () => sock.destroy());
+  /**
+   * One request on `sock`. Browsers send absolute-form requests through HTTP proxies; a proxy
+   * kernel's node server tunnels everything with CONNECT, so a CONNECT to one of the probe's
+   * plain-HTTP names becomes a tunnel whose origin-form request is served the same way.
+   */
+  const serve = (sock: net.Socket, tunnelHost?: string) => {
     let buf = Buffer.alloc(0);
     const onData = (chunk: Buffer) => {
       buf = Buffer.concat([buf, chunk]);
@@ -68,19 +78,33 @@ async function fakeExit(run: string, canary: Canary) {
       const head = buf.subarray(0, end).toString("latin1");
       const first = head.split("\r\n")[0] ?? "";
       const [method = "", target = ""] = first.split(/\s+/);
-      if (/^CONNECT$/i.test(method)) {
+      if (!tunnelHost && /^CONNECT$/i.test(method)) {
         records.push({ at: Date.now(), kind: "connect", target });
+        const authority = /^(.*):(\d+)$/.exec(target);
+        const host = (authority?.[1] ?? target).replace(/^\[|\]$/g, "");
+        if (authority?.[2] === "80" && ours(host)) {
+          sock.write("HTTP/1.1 200 Connection established\r\n\r\n");
+          serve(sock, authority[1]);
+          return;
+        }
         // No TLS here: a preconnect only has to arrive. Close it.
         sock.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
         return;
       }
       let url: URL;
-      try { url = new URL(target); } catch { sock.end("HTTP/1.1 400 Bad Request\r\n\r\n"); return; }
+      try { url = new URL(tunnelHost ? `http://${tunnelHost}${target}` : target); } catch { sock.end("HTTP/1.1 400 Bad Request\r\n\r\n"); return; }
       const host = url.hostname.replace(/^\[|\]$/g, "");
       records.push({ at: Date.now(), kind: "http", target: url.host, path: url.pathname });
       if (!ours(host)) { sock.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); return; }
       if (/^upgrade:\s*websocket/im.test(head)) {
         sock.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+        return;
+      }
+      if (url.pathname === "/slow") {
+        // A long response, one byte a second: the connection behind it stays open to be seen.
+        sock.write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nContent-Length: 15\r\nConnection: close\r\n\r\n");
+        let sent = 0;
+        const timer = setInterval(() => { if (sock.destroyed || ++sent > 15) { clearInterval(timer); sock.end(); return; } sock.write("."); }, 1000);
         return;
       }
       const length = Number(/^content-length:\s*(\d+)/im.exec(head)?.[1] ?? 0);
@@ -100,6 +124,10 @@ async function fakeExit(run: string, canary: Canary) {
       });
     };
     sock.on("data", onData);
+  };
+  const server = net.createServer((sock) => {
+    sock.on("error", () => sock.destroy());
+    serve(sock);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   return {
@@ -232,6 +260,8 @@ function probePage(run: string, canary: Canary): string {
     pc.close();
   } catch (e) { report.errors.push(String(e)); }
   await fetch("http://${n("report")}/report", { method: "POST", body: JSON.stringify(report) }).catch(() => {});
+  // A slow response keeps a connection open through the whole chain for a while.
+  fetch("http://${n("slow")}/slow", { cache: "no-store" }).catch(() => {});
   // Keep asking after the report, so a relay that goes away is observed under load.
   let i = 0;
   setInterval(() => {
@@ -362,6 +392,12 @@ async function sha256(path: string): Promise<string> {
 }
 
 interface ProbeResult {
+  /** Kernel mode: the kernel process's sockets, whether it was restarted, and where its node lives. */
+  kernelSamples?: Awaited<ReturnType<ReturnType<typeof socketSampler>["stop"]>>;
+  kernelRestarted?: boolean;
+  nodeServerAddress?: string;
+  /** The node is reached over QUIC (UDP). */
+  quic?: boolean;
   canaryHits: string[];
   mdnsSent: string[];
   lan: { v4?: string; v6?: string };
@@ -376,9 +412,61 @@ interface ProbeResult {
   mozLog?: string;
 }
 
+/** The node server listens off 127.0.0.1, which a subscription treats as a provider notice. */
+const NODE_SERVER_HOST = "127.0.0.2";
+
+/**
+ * A local node server for one protocol (self-signed TLS where the protocol needs it). Its only
+ * outbound is the fake exit, as an HTTP proxy that receives names, never addresses.
+ */
+async function startNodeServer(kernel: InstalledKernel, protocol: KernelProtocolName, exitPort: number, root: string) {
+  const keypair = await new Response(Bun.spawn([kernel.path, "generate", "tls-keypair", "vela-node.test"], { stdout: "pipe" }).stdout).text();
+  const key = /-----BEGIN PRIVATE KEY-----[\s\S]+?-----END PRIVATE KEY-----/.exec(keypair)?.[0];
+  const cert = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/.exec(keypair)?.[0];
+  if (!key || !cert) throw new Error("sing-box did not generate a key pair");
+  const tls = { enabled: true, server_name: "vela-node.test", certificate: cert.split("\n"), key: key.split("\n") };
+  const port = await freeLoopbackPort();
+  const uuid = randomUUID();
+  const listen = { listen: NODE_SERVER_HOST, listen_port: port };
+  const inbound: Record<string, unknown> = {
+    vless: { type: "vless", ...listen, users: [{ uuid }], tls },
+    trojan: { type: "trojan", ...listen, users: [{ password: "probe-trojan" }], tls },
+    hysteria2: { type: "hysteria2", ...listen, users: [{ password: "probe-hy2" }], tls },
+    anytls: { type: "anytls", ...listen, users: [{ password: "probe-anytls" }], tls },
+    shadowsocks: { type: "shadowsocks", ...listen, method: "aes-128-gcm", password: "probe-ss-password" },
+  }[protocol] as Record<string, unknown>;
+  const link = {
+    vless: `vless://${uuid}@${NODE_SERVER_HOST}:${port}?security=tls&sni=vela-node.test&allowInsecure=1#probe-vless`,
+    trojan: `trojan://probe-trojan@${NODE_SERVER_HOST}:${port}?sni=vela-node.test&allowInsecure=1#probe-trojan`,
+    hysteria2: `hysteria2://probe-hy2@${NODE_SERVER_HOST}:${port}?sni=vela-node.test&insecure=1#probe-hy2`,
+    anytls: `anytls://probe-anytls@${NODE_SERVER_HOST}:${port}?sni=vela-node.test&insecure=1#probe-anytls`,
+    shadowsocks: `ss://${Buffer.from("aes-128-gcm:probe-ss-password").toString("base64url")}@${NODE_SERVER_HOST}:${port}#probe-ss`,
+  }[protocol];
+  const config = join(root, "node-server.json");
+  writeFileSync(config, JSON.stringify({
+    log: { level: "error" },
+    inbounds: [inbound],
+    outbounds: [{ type: "http", tag: "exit", server: "127.0.0.1", server_port: exitPort }],
+    route: { final: "exit" },
+  }));
+  const proc = Bun.spawn([kernel.path, "run", "-c", config], { stdout: "ignore", stderr: "ignore" });
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    const up = protocol === "hysteria2" || await new Promise<boolean>((resolve) => {
+      const socket = net.connect(port, NODE_SERVER_HOST);
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("error", () => resolve(false));
+    });
+    if (up) break;
+    await Bun.sleep(100);
+  }
+  if (protocol === "hysteria2") await Bun.sleep(500);
+  return { link, stop: () => proc.kill() };
+}
+
 async function probe(
   engine: "chromium" | "firefox",
-  opts: { stripResolverRules?: boolean; identity?: Profile } = {},
+  opts: { stripResolverRules?: boolean; identity?: Profile; kernel?: KernelProtocolName } = {},
 ): Promise<ProbeResult> {
   const run = randomUUID().slice(0, 8);
   const root = join(tmpdir(), `vela-leak-${engine}-${run}`);
@@ -387,7 +475,20 @@ async function probe(
   const mdns = await mdnsWatch();
   const exit = await fakeExit(run, canary);
   const store = new ProfileStore(join(root, "profiles.sqlite"));
-  const proxy = { type: "http" as const, host: "127.0.0.1", port: String(exit.port), user: "", pass: "" };
+  let proxy: Profile["proxy"] = { type: "http" as const, host: "127.0.0.1", port: String(exit.port), user: "", pass: "" };
+  // Kernel mode: the profile's proxy is a pool node served by a local node server, whose only
+  // way out is the fake exit. Browser -> relay -> the profile's kernel -> node server -> exit.
+  let installed: InstalledKernel | undefined;
+  let nodeServer: Awaited<ReturnType<typeof startNodeServer>> | undefined;
+  if (opts.kernel) {
+    installed = await ensureKernel(join(root, "runtimes"), { fetch: (async () => new Response(readFileSync(kernelZip) as unknown as BodyInit)) as never });
+    nodeServer = await startNodeServer(installed, opts.kernel, exit.port, root);
+    const parsed = parseSubscription(nodeServer.link);
+    if (parsed.nodes.length !== 1) throw new Error(`the ${opts.kernel} node did not parse: ${JSON.stringify(parsed.unsupported)}`);
+    const sub = store.proxyPool.addSubscription({ url: "https://leak-probe.vela-leak.test/sub" });
+    store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+    proxy = store.proxyPool.list()[0]!.proxy;
+  }
   const profile: Profile = opts.identity
     ? { ...structuredClone(opts.identity), proxy }
     : engine === "chromium"
@@ -409,6 +510,7 @@ async function probe(
     cdpReadyTimeoutMs: 60_000,
     labelWindow: async () => {},
     lookupExitLocation: async () => FAKE_EXIT,
+    ...(installed ? { ensureKernel: async () => installed! } : {}),
     ...(engine === "chromium" ? {
       chromiumRuntimeRoot: dirname(dirname(chromiumBinary)),
       ensureAliasmodeChromium: async () => chromiumBinary,
@@ -429,6 +531,9 @@ async function probe(
   } as ConstructorParameters<typeof Launcher>[0]);
   const rootPidFile = join(root, "browser.pid");
   const sampler = socketSampler(rootPidFile, join(root, "sockets.jsonl"));
+  const kernelPidFile = join(root, "kernel.pid");
+  const kernelSampler = opts.kernel ? socketSampler(kernelPidFile, join(root, "kernel-sockets.jsonl")) : undefined;
+  let kernelRestarted = false;
   let killAt = 0;
   try {
     const startedAt = Date.now();
@@ -436,9 +541,21 @@ async function probe(
     const browserPid = store.getLaunch(profile.id)?.pid;
     if (!browserPid) throw new Error("the probe browser has no recorded PID");
     writeFileSync(rootPidFile, String(browserPid));
+    if (opts.kernel) writeFileSync(kernelPidFile, String(launcher.kernels.pid(profile.id) ?? 0));
     const deadline = Date.now() + 45_000;
     while (!exit.reports.length && Date.now() < deadline) await Bun.sleep(250);
     await Bun.sleep(3000);
+    if (opts.kernel) {
+      // The kernel dies under load. Its watchdog brings it back on a new port and the relay follows;
+      // in between, requests fail: nothing goes anywhere else.
+      const before = launcher.kernels.pid(profile.id)!;
+      process.kill(before);
+      const until = Date.now() + 10_000;
+      while (Date.now() < until && (launcher.kernels.pid(profile.id) ?? before) === before) await Bun.sleep(100);
+      kernelRestarted = (launcher.kernels.pid(profile.id) ?? before) !== before;
+      writeFileSync(kernelPidFile, String(launcher.kernels.pid(profile.id) ?? 0));
+      await Bun.sleep(3000);
+    }
     // Kill switch: the relay goes away while the page keeps requesting.
     killAt = Date.now();
     (launcher as unknown as { closeRelay(id: string): void }).closeRelay(profile.id);
@@ -450,7 +567,9 @@ async function probe(
     await launcher.stop(profile.id).catch(() => false);
     await Bun.sleep(1500);
     const samples = await sampler.stop();
+    const kernelSamples = kernelSampler ? await kernelSampler.stop() : undefined;
     return {
+      ...(kernelSamples ? { kernelSamples, kernelRestarted, nodeServerAddress: NODE_SERVER_HOST, quic: opts.kernel === "hysteria2" } : {}),
       canaryHits: [...canary.hits],
       mdnsSent: [...mdns.sent],
       lan: { ...(canary.v4 ? { v4: canary.v4 } : {}), ...(canary.v6 ? { v6: canary.v6 } : {}) },
@@ -465,6 +584,8 @@ async function probe(
     };
   } finally {
     await sampler.stop().catch(() => []);
+    await kernelSampler?.stop().catch(() => []);
+    nodeServer?.stop();
     await launcher.stop(profile.id).catch(() => false);
     store.close();
     await exit.close();
@@ -521,6 +642,23 @@ function summarize(label: string, result: ProbeResult) {
 
 function expectNoLeak(result: ProbeResult, label: string) {
   const { summary, remote, afterKill } = summarize(label, result);
+  if (result.kernelSamples) {
+    // The kernel talks to its node and to nothing else: no DNS server, no destination, no exit.
+    const kernelRemote = new Set<string>();
+    for (const sample of result.kernelSamples) for (const row of sample.tcp) kernelRemote.add(row.a);
+    console.log(`[leak] ${label} kernel: samples ${result.kernelSamples.length}, peers ${JSON.stringify([...kernelRemote])}, restarted ${result.kernelRestarted}`);
+    expect(result.kernelSamples.length).toBeGreaterThan(5);
+    // It was seen talking to its node (the slow response keeps one connection open), and to
+    // nothing else; 127.0.0.1 is the relay's side of the kernel's own inbound. A QUIC node
+    // (hysteria2, tuic) is reached over UDP: no TCP peer but the relay, and a UDP socket in use.
+    if (result.quic) {
+      expect(result.kernelSamples.some((sample) => sample.udp.length > 0)).toBe(true);
+    } else {
+      expect([...kernelRemote]).toContain(result.nodeServerAddress!);
+    }
+    expect([...kernelRemote].filter((address) => address !== result.nodeServerAddress && address !== "127.0.0.1")).toEqual([]);
+    expect(result.kernelRestarted).toBe(true);
+  }
   // The probe ran: its page, subresources and literals all reached the fake exit through the relay.
   expect(result.report).toBeDefined();
   const targets = summary.exitTargets.join(" ");
@@ -627,4 +765,16 @@ chromiumTest("Vela Chromium 155: the resolver rules and Media Router off change 
 firefoxTest("Vela Firefox: no DNS, IPv4, IPv6 or WebRTC leak, and the kill switch holds", async () => {
   const result = await probe("firefox");
   expectNoLeak(result, "firefox");
+}, 600_000);
+
+for (const protocol of KERNEL_PROTOCOLS as KernelProtocolName[]) {
+  (live && chromiumBinary && kernelZip ? test : test.skip)(`Vela Chromium 155 through a ${protocol} pool node and the real kernel: no leak, and a dying kernel is no way out`, async () => {
+    const result = await probe("chromium", { kernel: protocol });
+    expectNoLeak(result, `chromium-${protocol}`);
+  }, 600_000);
+}
+
+(live && firefoxBinary && kernelZip ? test : test.skip)("Vela Firefox through an anytls pool node and the real kernel: no leak", async () => {
+  const result = await probe("firefox", { kernel: "anytls" });
+  expectNoLeak(result, "firefox-anytls");
 }, 600_000);

@@ -6222,3 +6222,163 @@ test("a SOCKS5 survivor without its relay is still refused, as before", async ()
   await expect(launcherB.start("k1d0cd11")).rejects.toThrow();
   store.close();
 });
+
+// ---- Proxy-pool nodes run through the profile's own kernel ----
+
+import { parseSubscription as parsePoolSubscription } from "./subscription.ts";
+import net from "node:net";
+
+/** A loopback listener standing in for a kernel's SOCKS inbound: it records who connects. */
+async function fakeKernelInbound() {
+  let hits = 0;
+  const server = net.createServer((socket) => { hits++; socket.on("error", () => {}); socket.destroy(); });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const port = (server.address() as net.AddressInfo).port;
+  return { spec: { type: "socks5" as const, host: "127.0.0.1", port: String(port), user: "k", pass: "k" }, hits: () => hits, close: () => server.close() };
+}
+
+function fakeKernels(specs: Array<{ type: "socks5"; host: string; port: string; user: string; pass: string }>) {
+  const acquired: string[] = [];
+  const released: string[] = [];
+  let next = 0;
+  let fail = false;
+  const current = new Map<string, (typeof specs)[number]>();
+  const kernels = {
+    onRestart: undefined as undefined | ((key: string, spec: (typeof specs)[number]) => void),
+    onGiveUp: undefined,
+    async acquire(key: string, outbound: { type: string }) {
+      if (fail) throw new Error("kernel would not start");
+      acquired.push(`${key}:${outbound.type}`);
+      if (!current.has(key)) current.set(key, specs[next++]!);
+      return current.get(key)!;
+    },
+    current: (key: string) => current.get(key),
+    release(key: string) { released.push(key); current.delete(key); },
+    releaseAll() {},
+    startTemporary: async () => { throw new Error("unused"); },
+  };
+  return { kernels, acquired, released, failNext: () => { fail = true; }, restart: (key: string) => { const spec = specs[next++]!; current.set(key, spec); kernels.onRestart?.(key, spec); } };
+}
+
+function poolProfile(store: ProfileStore) {
+  const parsed = parsePoolSubscription("anytls://ANYPASS@sg.node.example:443?sni=sg.node.example#SG");
+  const sub = store.proxyPool.addSubscription({ url: "https://sub.example/a" });
+  store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+  const node = store.proxyPool.list()[0]!;
+  store.upsertProfile({ ...store.getProfile("k1d0cd11")!, proxy: node.proxy });
+  return node;
+}
+
+async function relayConnect(port: number) {
+  const socket = net.connect(port, "127.0.0.1");
+  socket.on("error", () => {});
+  await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
+  socket.write("CONNECT site.example:443 HTTP/1.1\r\nHost: site.example:443\r\n\r\n");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  socket.destroy();
+}
+
+test("a pool-node profile reaches its node only through its own kernel, which stops with the browser", async () => {
+  const store = seeded();
+  const node = poolProfile(store);
+  const first = await fakeKernelInbound();
+  const fake = fakeKernels([first.spec]);
+  const exits: unknown[] = [];
+  const spawnedArgs: string[][] = [];
+  const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+    kernels: fake.kernels as any,
+    lookupExitLocation: async (proxy) => { exits.push(proxy); return null; },
+  });
+  await launcher.start("k1d0cd11");
+  // One kernel for the launch: the exit lookup and the relay share it.
+  expect([...new Set(fake.acquired)]).toEqual(["k1d0cd11:anytls"]);
+  // The exit is looked up through the kernel, and the browser is told only its relay.
+  expect(exits.length).toBeGreaterThan(0);
+  for (const exit of exits) expect(exit).toEqual(first.spec);
+  const relayPort = store.getLaunch("k1d0cd11")!.relayPort!;
+  expect(spawnedArgs[0]!.filter((arg) => arg.startsWith("--proxy-server="))).toEqual([`--proxy-server=http://127.0.0.1:${relayPort}`]);
+  expect(spawnedArgs[0]!.join(" ")).not.toContain("sg.node.example");
+  expect(spawnedArgs[0]!.join(" ")).not.toContain(node.id);
+  await relayConnect(relayPort);
+  expect(first.hits()).toBe(1);
+  await launcher.stop("k1d0cd11");
+  expect(fake.released).toContain("k1d0cd11");
+  first.close();
+  store.close();
+});
+
+test("a kernel that came back on a new port takes the relay with it", async () => {
+  const store = seeded();
+  poolProfile(store);
+  const [first, second] = [await fakeKernelInbound(), await fakeKernelInbound()];
+  const fake = fakeKernels([first.spec, second.spec]);
+  const launcher = newLauncher(store, fleet(), [], undefined, undefined, { kernels: fake.kernels as any, lookupExitLocation: async () => null });
+  await launcher.start("k1d0cd11");
+  const relayPort = store.getLaunch("k1d0cd11")!.relayPort!;
+  fake.restart("k1d0cd11");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await relayConnect(relayPort);
+  expect([first.hits(), second.hits()]).toEqual([0, 1]);
+  await launcher.stop("k1d0cd11");
+  first.close(); second.close();
+  store.close();
+});
+
+test("a node that left the pool, or a kernel that will not start, refuses the launch before any browser", async () => {
+  for (const scenario of ["missing", "kernel"] as const) {
+    const store = seeded();
+    const node = poolProfile(store);
+    if (scenario === "missing") store.proxyPool.remove([node.id]);
+    const fake = fakeKernels([]);
+    if (scenario === "kernel") fake.failNext();
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, { kernels: fake.kernels as any, lookupExitLocation: async () => null });
+    await expect(launcher.start("k1d0cd11")).rejects.toMatchObject({
+      failure: "preflight", preflightReason: scenario === "missing" ? "proxy_node_missing" : "proxy_kernel",
+    });
+    expect(spawnedArgs).toEqual([]);
+    expect(store.getLaunch("k1d0cd11")).toBeNull();
+    expect(fake.released).toContain("k1d0cd11");
+    store.close();
+  }
+});
+
+test("a launch that fails after its kernel started gives the kernel back", async () => {
+  const store = seeded();
+  poolProfile(store);
+  const inbound = await fakeKernelInbound();
+  const fake = fakeKernels([inbound.spec]);
+  // The browser starts but never becomes ready; it is confirmed gone, so its network goes too.
+  const launcher = newLauncher(store, fleet(), [], undefined, undefined, {
+    kernels: fake.kernels as any,
+    lookupExitLocation: async () => null,
+    spawn: () => ({ pid: 7777, kill: () => {} }),
+    fetch: async () => ({ ok: false, json: async () => ({}) }),
+    isPidAlive: () => false,
+    findOwnedBrowserPids: async () => [],
+  });
+  await expect(launcher.start("k1d0cd11")).rejects.toBeDefined();
+  expect(fake.acquired.length).toBeGreaterThan(0);
+  expect(fake.released).toContain("k1d0cd11");
+  inbound.close();
+  store.close();
+});
+
+test("a pool node never leaves this computer as no proxy: an exported copy is held until its proxy is chosen", async () => {
+  const { encodePortableProfile, decodePortableProfile, POOL_PROXY_NOT_PORTABLE } = await import("./portable-profile.ts");
+  const store = seeded();
+  poolProfile(store);
+  const payload = encodePortableProfile(store.getProfile("k1d0cd11")!);
+  expect(payload.profile.proxy).toBeNull();
+  expect(payload.profile.proxyError).toBe(POOL_PROXY_NOT_PORTABLE);
+  const decoded = decodePortableProfile(payload).profile;
+  expect(decoded.proxy).toBeNull();
+  expect(decoded.proxyError).toBe(POOL_PROXY_NOT_PORTABLE);
+  // The held copy refuses to open instead of opening direct.
+  const other = new ProfileStore(":memory:");
+  other.upsertProfile(decoded);
+  const launcher = newLauncher(other, fleet(), []);
+  await expect(launcher.start(decoded.id)).rejects.toMatchObject({ failure: "preflight", preflightReason: "proxy_invalid" });
+  other.close();
+  store.close();
+});
