@@ -6,7 +6,7 @@
 
 - **能做，而且不需要放松隔离。** 现有架构里每个环境都有自己的本机中继（`src/proxy-relay.ts`），浏览器只连 `127.0.0.1:<中继端口>`。订阅节点、代理池、运行中换代理，都可以挂在这个中继后面实现，浏览器那一侧什么都不用变。
 - **只影响对应环境，不碰电脑全局。** 不开 TUN 虚拟网卡，不设系统代理，不改路由表。协议内核只在 127.0.0.1 上为对应环境的中继开端口，其他软件感知不到。验收里专门有一项检查"全局没被改"（§8.4）。
-- **订阅协议靠 sing-box 内核，每个用订阅节点的环境起一个内核进程。** 共享内核看起来省内存，但热切换时要整体重载配置，会把所有环境的连接一起断掉；一个进程崩了也是全体断网；多个环境的流量还可能被多路复用进同一条到节点的连接。按环境分进程，每个约 20–40 MB，和 Chromium 每个环境几百 MB 比起来不算大。
+- **订阅协议靠 sing-box 内核（最低 1.12.0，AnyTLS 需要），每个用订阅节点的环境起一个内核进程。** 订阅里的 `direct` / `reject` 这类非出口条目一律跳过，绝不会被当成节点分配出去。 共享内核看起来省内存，但热切换时要整体重载配置，会把所有环境的连接一起断掉；一个进程崩了也是全体断网；多个环境的流量还可能被多路复用进同一条到节点的连接。按环境分进程，每个约 20–40 MB，和 Chromium 每个环境几百 MB 比起来不算大。
 - **运行中换代理 = 把启动时按出口定的那两样东西（时区、WebRTC 公网地址）在运行中按新出口重定一遍，然后刷新页面。** 不限制只能换同地区节点，换完也不弹重启提示（按用户要求）。中继在切换期间只有三种状态：用旧上游转发、暂存新连接不转发、用新上游转发。没有任何一条代码路径会直连。
 - **哪些内核能真正热换：** Vela Chromium 155、Vela Firefox 是我们自己编的内核，加一个运行中更新时区和 WebRTC 地址的接口就行（见 §5.4）。CloakBrowser（第三方二进制）和 WebKit 改不了运行中的时区，这两种内核换代理时由 Vela 自动保存会话、重开、恢复标签页。用户看到的是"窗口闪一下，标签页都回来了"，不用自己操作。
 - **MCP 加三个工具：** `vela_proxy_pool_list`、`vela_proxy_pool_check`、`vela_browser_set_proxy`。换出口会影响账号风控，默认每次在 Vela 界面里请用户点"允许"；用户可以按 MCP 连接改成"池内节点直接放行"。
@@ -44,12 +44,16 @@
 
 - 用户在界面里填订阅链接。链接本身就是凭据，存储时与环境代理密码同等对待（Windows 走现有 `src/dpapi.ts`），日志和界面只显示主机名。
 - 从本机直接拉取（订阅服务商看到真实 IP 是正常的，它不是账号网站）。可以在订阅上指定"经某个已有代理拉取"。
-- 限制：只允许 https（http 需用户确认）、响应体最大 5 MB、超时 20 s、最多 3 次重定向。User-Agent 可选 `clash.meta` / `v2rayN` / 自定义，因为很多服务商按 UA 返回不同格式。
+- 限制：只允许 https（http 需用户确认）、响应体最大 5 MB、超时 20 s、最多 3 次重定向。
+- **按 UA 取格式**：同一订阅会按 User-Agent 返回不同格式（三份测试订阅都是这样）。默认先用 `clash.meta` 拉 YAML，因为它的字段最全（`reality-opts`、`ws-opts`、`client-fingerprint` 等都在）。拉取失败或解析不出 `proxies` 时，再用 `v2rayN` 拉 base64 URI。用户也可以在订阅上固定 UA 或自定义 UA。
+- **流量与到期**：读取响应头 `subscription-userinfo`（格式为 `upload=…; download=…; total=…; expire=…`，单位字节和 Unix 秒）。在订阅上显示已用、剩余流量和到期日；剩余不足 10% 或 7 天内到期时提醒。这个头缺失或格式不对时不显示，不报错。三份测试订阅都带这个头。
 - 定时刷新可选（默认关）。刷新不会自动给正在使用的环境换节点，见 §2.4。
 
 ### 2.2 识别格式（按顺序尝试）
 
-1. YAML，并且有 `proxies:` 列表，按 Clash / mihomo 处理。只读 `proxies`；`proxy-groups`、`rules` 一律忽略，因为每个环境只有一个出口，不做按规则分流。
+1. YAML，并且有 `proxies:` 列表，按 Clash / mihomo 处理。只读 `proxies`；`proxy-groups`（`select` / `url-test` / `fallback` / `load-balance` 等）、`rules` 一律忽略，因为每个环境只有一个固定出口，不做按规则分流，也不做自动选优。
+   - `proxies` 里的**非出口类型**，包括 `direct`、`reject`、`reject-drop`、`dns`、`pass`、`compatible` 以及分组引用，一律跳过并计为"非节点"，导入报告里列出数量。**它们绝不能被导入成可以分配给环境的节点**：`direct` 等于让环境直连，`reject` 等于断网。sing-box JSON 和 URI 列表里的 `direct` / `block` / `dns` 出站同样处理。
+   - 判断用白名单：只有 §2.3 表里列出的协议才可能成为节点，其他类型一律落到"不支持"或"非节点"，不存在"默认当成节点"的分支。
 2. JSON，并且有 `outbounds`，按 sing-box 配置处理。
 3. 整体 base64（标准 / URL-safe，容忍缺 padding 和换行）解码后逐行解析 URI。
 4. 明文逐行 URI。
@@ -66,13 +70,18 @@
 | Trojan | `type: trojan`；`trojan://pass@host:port?sni=…#name` | |
 | Hysteria2 | `type: hysteria2`；`hysteria2://` 或 `hy2://pass@host:port?sni&obfs&obfs-password#name` | 走 QUIC；这条 UDP 是**内核到节点服务器**的，不是浏览器发出的 |
 | TUIC | `type: tuic`；`tuic://uuid:pass@host:port?…` | 同上 |
+| AnyTLS | `type: anytls`，字段 `password`、`sni`、`client-fingerprint`、`skip-cert-verify`、`alpn`、`idle-session-check-interval`、`idle-session-timeout`、`min-idle-session`；`anytls://pass@host:port?sni=…&insecure=…#name` | 映射到 sing-box 的 `anytls` 出站（**sing-box 1.12.0 起支持**）。`client-fingerprint` 对应 `tls.utls.fingerprint`，`idle-session-*` 对应同名的 `idle_session_*`。测试订阅 2 全是 anytls，不支持它就等于整份订阅不能用 |
 | 其他（ssr、wireguard、snell 等） | | 记为"不支持"并写明原因，不静默丢掉 |
 
 解析时的硬规定：
 
 - **任何字段不认识，就整条节点标"不支持"**，不能删掉这个字段勉强导入。少了一个 transport 或 TLS 参数，节点行为就变了，可能连到别处，也可能明文传输。
 - `skip-cert-verify: true` / `allowInsecure=1` 照原样导入，但节点要标"不验证证书"。到节点这一段可能被中间人截获；浏览器到网站的 TLS 仍然是端到端的，不受影响。
-- 服务商塞进来的信息条目（如"剩余流量 xx GB""到期时间"，常见特征是服务器为 `127.0.0.1` / `0.0.0.0` / 端口 1）标记为信息，不算节点。
+- 服务商塞进来的信息条目标记为信息，不算节点，也不会被分配出去。识别规则（任一条命中即可）：
+  - 服务器是 `127.0.0.1` / `0.0.0.0` / `::` / `localhost`，或者端口是 0 / 1；
+  - 节点名含关键词：`剩余流量`、`流量`、`到期`、`过期`、`有效期`、`官网`、`网址`、`套餐`、`重置`、`客服`、`群`、`公告`、`Traffic`、`Expire`、`Website` 等。关键词表放在一个常量里，方便补充。
+  - 三份测试订阅都没有回环地址的信息条目，信息全写在节点名里，所以关键词这一条是主要手段。
+  - 关键词判断可能误伤真节点（比如名字里碰巧有"群"字），所以信息条目放在导入报告的单独一栏，用户可以手动改回节点。导入时永远不会把它当成可用节点。
 - 服务器地址是内网或回环地址的节点要提示，但允许导入，因为可能是用户自己局域网里的代理。
 - 去重键：`协议 + 服务器 + 端口 + 凭据哈希`。同一节点出现在两个订阅里时只存一份，记两个来源。
 
@@ -89,12 +98,12 @@
 
 | | sing-box | mihomo |
 | --- | --- | --- |
-| 协议覆盖 | vmess / vless（含 reality、vision）/ trojan / ss / hysteria2 / tuic | 同等，且原生读 Clash YAML |
+| 协议覆盖 | vmess / vless（含 reality、vision）/ trojan / ss / hysteria2 / tuic / anytls（1.12.0 起） | 同等，且原生读 Clash YAML |
 | 配置 | 严格 JSON，字段明确，适合程序生成后校验 | YAML，兼容历史写法多，宽松 |
 | 运行时控制 | 有 Clash 兼容 API，但本方案不依赖 | REST API 完整 |
 | 许可 | GPL-3.0-or-later | GPL-3.0 |
 
-推荐 **sing-box**。我们自己把订阅解析成中立的节点模型，再生成内核配置，所以"原生读 Clash YAML"不是优势；严格的 JSON 更容易验证"生成的配置里没有直连出站"。两者都是 GPL，作为独立可执行文件分发、不链接进 Vela，并在 `NOTICE` 中附源码地址。**实施前需要再确认一次许可证条款。**
+推荐 **sing-box，最低版本 1.12.0**：AnyTLS 出站从 1.12.0 开始才有。实施时选当时 1.12 及以上的最新稳定版，按那个版本写死各平台的哈希常量（§3.4）。以后升级内核版本时，要在 §8.1 测试台上把 vless-reality、vless-ws、hysteria2、anytls 都跑一遍再换常量。我们自己把订阅解析成中立的节点模型，再生成内核配置，所以"原生读 Clash YAML"不是优势；严格的 JSON 更容易验证"生成的配置里没有直连出站"。两者都是 GPL，作为独立可执行文件分发、不链接进 Vela，并在 `NOTICE` 中附源码地址。**实施前需要再确认一次许可证条款。**
 
 ### 3.2 每环境一个进程，还是一个共享进程
 
@@ -153,9 +162,17 @@
 ```ts
 interface ProxySubscription {
   id: string; name: string;
-  url: string;                 // 加密存储
-  userAgent?: string; viaProxyNodeId?: string;
+  url: string;                 // 加密存储，日志与界面只显示主机名
+  userAgent?: string;          // 缺省：先 clash.meta，失败再 v2rayN（§2.1）
+  viaProxyNodeId?: string;
   refreshHours?: number; lastFetchedAt?: number; lastError?: string;
+  kind: "provider" | "manual"; // 机场订阅 / 手动添加，决定默认共享策略（§4.4）
+  usage?: {                    // 来自 subscription-userinfo 响应头
+    uploadBytes?: number; downloadBytes?: number; totalBytes?: number;
+    expireAt?: number;         // Unix 秒；0 或缺失 = 不显示
+    readAt: number;
+  };
+  lastImport?: { nodes: number; unsupported: number; nonNodes: number; infoEntries: number };
 }
 
 interface ProxyNode {
@@ -163,7 +180,7 @@ interface ProxyNode {
   version: number;             // 参数变化 +1，旧版本保留到无引用
   sourceIds: string[];         // 来自哪些订阅；手动添加为空
   name: string;
-  protocol: "http" | "https" | "socks5" | "ss" | "vmess" | "vless" | "trojan" | "hysteria2" | "tuic";
+  protocol: "http" | "https" | "socks5" | "ss" | "vmess" | "vless" | "trojan" | "hysteria2" | "tuic" | "anytls";
   server: string; port: number;
   outbound: object;            // 规范化后的 sing-box 出站（不含 tag），机密字段加密
   tags: string[];              // 用户标签
@@ -174,7 +191,7 @@ interface ProxyNode {
     latencyMs?: number; rotating?: boolean; checkedAt: number;
   };
   insecureTls?: boolean;       // skip-cert-verify
-  maxProfiles?: number;        // 共享上限，默认 1
+  maxProfiles?: number;        // 共享上限；缺省值按来源分档（§4.4）
   disabled?: boolean; removedFromSource?: boolean;
 }
 ```
@@ -200,8 +217,15 @@ interface ProxyNode {
 
 ### 4.4 一个节点分给几个环境
 
-- **默认独占**：`maxProfiles = 1`。同一出口 IP 下的多个账号容易被风控关联。
-- 用户可以对节点或分组调高上限。分配时若超出上限，或该节点已被别的环境使用，界面要列出"与哪些环境共享出口"。
+按节点来源分两档，作为默认值；用户可以对单个节点或分组改，最终的默认值由用户在 §10 拍板：
+
+| 来源 | 默认 | 理由 |
+| --- | --- | --- |
+| 机场类订阅（`kind: "provider"`） | **可共享**，不设上限，但分配时、以及在环境卡片上都提示"与哪些环境共用这个出口" | 机场节点的出口本来就被成千上万人共用。在 Vela 里限制独占，既挡不住外面的人共用，也会让 100 个节点的订阅只能开 100 个环境 |
+| 手动添加的节点（静态住宅、独享 IP 等，`kind: "manual"`） | **独占**，`maxProfiles = 1` | 这类 IP 通常只有你在用，两个账号共用一个 IP 很容易被风控关联 |
+
+- 无论哪一档，界面都要能看出某个出口 IP 正被哪几个环境用着。以出口检测得到的 IP 为准，而不是以节点 id 为准，因为不同节点可能落在同一个出口。
+- 超过上限时不能分配；在"可共享"档下分配给第二个环境时，只提示，不拦。
 - **分配是粘性的**：节点失效时不自动换给环境另一个出口，只提示。自动换出口对账号来说是一次没人批准过的"异地登录"。
 - 轮换型节点（`rotating`）单独标识。分给多个环境时额外提示：它们看起来是不同 IP，节点那一侧可能仍是同一个用户。
 
@@ -350,7 +374,11 @@ interface ProxyNode {
 
 | 用例 | 通过条件 |
 | --- | --- |
-| 订阅解析：各协议样本、坏样本、信息条目、未知字段 | 结果与快照一致；未知字段的节点标"不支持"，不会被导入成残缺节点 |
+| 订阅解析：各协议样本（含 anytls）、坏样本、信息条目、未知字段 | 结果与快照一致；未知字段的节点标"不支持"，不会被导入成残缺节点 |
+| 非出口类型：`proxies` 里混入 `direct` / `reject` / `dns`，sing-box JSON 里混入 `direct` / `block` | 全部计为"非节点"，池里查不到，任何分配接口都选不到 |
+| 信息条目：节点名含"剩余流量""到期"等关键词，或服务器是回环地址 | 归入信息条目，不可分配 |
+| `subscription-userinfo` 头：正常、缺字段、格式错误、缺失 | 正常时显示剩余流量和到期日；其他情况不显示也不报错 |
+| UA 回退：clash.meta 返回非 YAML | 自动用 v2rayN 再拉一次，并解析出 base64 URI |
 | 内核配置生成 | 断言没有 direct、`final=block`、没有 tun / sniff、入站只听 127.0.0.1 且有认证 |
 | 内核哈希不符 | 拒绝启动该环境，其他环境不受影响 |
 | 走 A 浏览、走 B 浏览 | 金丝雀只看到 `127.0.0.3` / `127.0.0.4` |
@@ -366,7 +394,9 @@ interface ProxyNode {
 
 ### 8.3 真实网络（发版前手工 + 脚本）
 
-- 用一个真实订阅（至少包含 vless-reality、trojan、hysteria2 各一个节点），在 Windows / macOS / Linux 各跑一遍：出口查询服务看到的 IP 等于节点出口且不等于本机直连 IP；在公开的 WebRTC / DNS 泄露检测页面上不出现本机 IP 和本机 DNS 服务器。
+- **用用户提供的三份真实订阅**做真实网络验收。它们覆盖了 vless（reality、ws、xtls-rprx-vision）、hysteria2、anytls，以及 `skip-cert-verify` / `insecure=1`、`type: reject` 条目、大量 `select` / `url-test` / `fallback` 分组和 `subscription-userinfo` 头。验收时要核对导入报告：每份订阅的节点、非节点、信息条目、不支持条目的数量与实际一致，`reject` 没有被导入成节点，anytls 节点能连通。
+- **订阅链接是用户的凭据**：不写进仓库、文档、提交说明、日志、测试快照或 CI 配置。需要时现场向用户要，或从本机仓库外的安全位置读取（例如用户自己放的环境变量或文件），用完不落盘。离线的解析测试用自己编的样本，不用真实订阅的内容（节点名、服务器地址、凭据都不能出现在快照里）。
+- 每个节点类型选几个，在 Windows / macOS / Linux 各跑一遍：出口查询服务看到的 IP 等于节点出口且不等于本机直连 IP；在公开的 WebRTC / DNS 泄露检测页面上不出现本机 IP 和本机 DNS 服务器。
 - 抓包（Windows 用 `pktmon`，macOS / Linux 用 `tcpdump`）：浏览期间本机所有出网流量只发往节点服务器地址，以及 Vela 自身的更新和出口查询服务。浏览目标网站的地址一个都不能出现。
 
 ### 8.4 "只影响对应环境，不碰全局"
@@ -396,8 +426,8 @@ interface ProxyNode {
 
 ## 10. 需要用户拍板的点
 
-1. 内核选 sing-box、每个用订阅节点的环境一个进程，是否同意。
-2. 节点默认独占（`maxProfiles = 1`），是否同意。
+1. 内核选 sing-box（最低 1.12.0，为了支持 AnyTLS），每个用订阅节点的环境一个进程，是否同意。
+2. 共享默认值分两档：机场订阅节点默认可共享，但提示与哪些环境共用出口；手动添加的节点（静态住宅等）默认独占。是否同意，或者两档都改成同一种。
 3. MCP 换代理默认每次询问，可以按连接改成池内节点直接放行，是否同意。
 4. CloakBrowser / WebKit，以及"直连 ↔ 代理"之间的切换，走自动重开而不是热换。这是内核能力和 WebRTC 隔离决定的，不是地区限制。
 5. Vela Chromium 155 / Vela Firefox 的运行时身份接口需要改内核源码，要与内核构建排期。在那之前，热换会先以"自动重开"的形式上线。
