@@ -200,3 +200,30 @@ test("Firefox owner reservations keep tokens out of their endpoint", async () =>
   expect(reservation.endpoint).not.toContain(reservation.token);
   expect(reservation.generation).not.toContain(reservation.token);
 });
+
+test("a proxied Firefox resolves no name on this computer and has no direct fallback", () => {
+  const prefs = firefoxLaunchOptions({ executablePath: "firefox.exe", proxy: { server: "http://127.0.0.1:41000" } }).firefoxUserPrefs;
+  expect(prefs).toMatchObject({
+    // Kill switch: no request may fall back to a direct connection when the proxy fails it.
+    "network.proxy.allow_bypass": false,
+    "network.proxy.failover_direct": false,
+    "network.proxy.socks_remote_dns": true,
+    "network.proxy.socks5_remote_dns": true,
+    "network.dns.disablePrefetch": true,
+    "network.dns.disablePrefetchFromHTTPS": true,
+    "network.predictor.enabled": false,
+    "network.predictor.enable-prefetch": false,
+    "network.trr.mode": 5,
+    // Behind a proxy, Firefox looked up every page's HTTPS record with the system resolver.
+    "network.dns.prefetch_via_proxy": false,
+    "network.dns.native_https_query": false,
+    "network.dns.native_https_query_win10": false,
+    "network.dns.native_https_query_in_automation": false,
+    "network.dns.upgrade_with_https_rr": false,
+    "network.dns.use_https_rr_as_altsvc": false,
+    "network.dns.force_use_https_rr": false,
+  });
+  // A direct profile keeps stock behaviour: its DNS is the computer's anyway.
+  const direct = firefoxLaunchOptions({ executablePath: "firefox.exe" }).firefoxUserPrefs;
+  expect(Object.keys(direct).some((key) => key.startsWith("network."))).toBe(false);
+});

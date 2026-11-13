@@ -20,6 +20,8 @@ import type { StatePaths } from "./paths.ts";
 import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
+import { handleProxyPoolRequest } from "./proxy-pool-api.ts";
+import { saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
 import { handleTrashRequest } from "./trash.ts";
 import {
   importInbox,
@@ -45,7 +47,7 @@ import {
   type ExtensionFetch,
 } from "./extensions.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
-import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
+import { normalizeProxySpec, proxyHostPort, proxyIdentityKey, proxyLegacyString, type ProxyInput } from "./proxy.ts";
 import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent } from "./fingerprint.ts";
 import { fingerprintAudit } from "./fingerprint-audit.ts";
 import { setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
@@ -141,6 +143,12 @@ function openResponse(
  * from the launches table, which is authoritative for every browser THIS manager
  * started — campaign-launched or dashboard-launched alike (one manager per box).
  */
+/** "anytls · 🇸🇬 SG 01" for a pool node, or a plain notice when it left the pool. */
+function poolLabel(store: ProfileStore, nodeId: string): string {
+  const node = store.proxyPool.get(nodeId);
+  return node ? `${node.protocol} · ${node.name}` : "pool node (removed)";
+}
+
 export function listUiProfiles(store: ProfileStore, cooledAt?: (id: string) => number | undefined): UiProfile[] {
   const launches = new Map(store.listLaunches().map((l) => [l.profileId, l]));
   const meta = store.listProfileMeta();
@@ -155,7 +163,8 @@ export function listUiProfiles(store: ProfileStore, cooledAt?: (id: string) => n
       group: p.group,
       platform: p.platform ?? "",
       tags: p.tags ?? [],
-      proxy: p.proxy ? proxyHostPort(p.proxy) : null,
+      // A pool node shows as its protocol and name; its id means nothing to a person.
+      proxy: p.proxy ? (p.proxy.type === "pool" ? poolLabel(store, p.proxy.host) : proxyHostPort(p.proxy)) : null,
       ...(p.proxyError ? { proxyError: p.proxyError } : {}),
       timezone: p.timezone,
       cookieCount: p.cookies.length,
@@ -367,6 +376,22 @@ function profileEditView(p: Profile) {
   };
 }
 
+/**
+ * Give one profile a proxy from the pool, saved as the profile form saves a proxy: the timezone
+ * follows the new exit unless the user typed one, and an open browser keeps the proxy it runs
+ * with until its next start. Null when there is no such profile.
+ */
+async function assignProfileProxy(
+  store: ProfileStore,
+  id: string,
+  proxy: ProxySpec,
+  options: UiRuntimeOptions,
+): Promise<{ restartRequired?: true } | null> {
+  if (!isSafeProfileId(id)) return null;
+  if (!await saveProfileProxy(store, id, proxy, options.timezoneFetch)) return null;
+  return restartRequired(store, id);
+}
+
 /** `{ restartRequired: true }` when the open browser runs with an older proxy or fingerprint than the saved one. */
 function restartRequired(store: ProfileStore, id: string): { restartRequired?: true } {
   const launch = store.getLaunch(id);
@@ -468,6 +493,8 @@ export interface UiRuntimeOptions {
 
 
   health?: UiHealthMetadata | null;
+  /** Proxy changes an AI asked for, waiting for a person (see proxy-approvals.ts). */
+  proxyApprovals?: import("./proxy-approvals.ts").ProxyApprovalQueue;
   timezoneFetch?: FetchLike;
   proxyCheck?: (proxy: ProxySpec) => Promise<ProxyCheckResult>;
   extensionFetch?: ExtensionFetch;
@@ -730,9 +757,7 @@ export async function handleUiRequest(
         throw new Error("invalid proxy input");
       }
       const normalized = normalizeProxySpec(body.proxy as ProxyInput);
-      if (!normalized || (normalized.type !== "http" && normalized.type !== "socks5")) {
-        throw new Error("unsupported proxy input");
-      }
+      if (!normalized) throw new Error("unsupported proxy input");
       proxy = normalized;
     } catch {
       return noStoreJson({ ok: false, error: "Invalid proxy settings" }, 400);
@@ -743,6 +768,52 @@ export async function handleUiRequest(
     } catch {
       return noStoreJson({ ok: false, error: "Proxy check failed" }, 500);
     }
+  }
+
+  // AI proxy changes: the questions waiting for a person, the answers, and the standing policy.
+  if (pathname === "/ui/api/proxy-approvals" && req.method === "GET") {
+    let policy: string = "ask";
+    try { policy = options.appConfig?.read().aiProxyChanges ?? "ask"; } catch {}
+    return noStoreJson({ ok: true, pending: options.proxyApprovals?.list() ?? [], policy });
+  }
+  if (pathname.startsWith("/ui/api/proxy-approvals/") && req.method === "POST") {
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+    if (pathname === "/ui/api/proxy-approvals/policy") {
+      const policy = body?.policy;
+      if (policy !== "ask" && policy !== "allow_pool" && policy !== "deny") return noStoreJson({ ok: false, error: "Invalid policy" }, 400);
+      if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 500);
+      const config = options.appConfig.read();
+      const { aiProxyChanges: _old, ...rest } = config;
+      options.appConfig.write(policy === "ask" ? rest : { ...rest, aiProxyChanges: policy });
+      return noStoreJson({ ok: true, policy });
+    }
+    if (pathname === "/ui/api/proxy-approvals/answer") {
+      if (typeof body?.id !== "string" || typeof body.approve !== "boolean") return noStoreJson({ ok: false, error: "Invalid answer" }, 400);
+      const answered = options.proxyApprovals?.answer(body.id, body.approve) ?? false;
+      return noStoreJson({ ok: answered, ...(answered ? {} : { error: "This request is no longer waiting" }) }, answered ? 200 : 409);
+    }
+    return noStoreJson({ ok: false, error: "Unknown approval operation" }, 404);
+  }
+
+  if (pathname === "/ui/api/proxy-pool" || pathname.startsWith("/ui/api/proxy-pool/")) {
+    if (remote) return noStoreJson({ ok: false, error: "The proxy pool is unavailable in legacy remote mode" }, 400);
+    if (req.method !== "GET") {
+      const rejected = rejectUntrustedJsonMutation(req);
+      if (rejected) {
+        rejected.headers.set("Cache-Control", "no-store");
+        return rejected;
+      }
+    }
+    return handleProxyPoolRequest(req, store, options, {
+      assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
+      kernels: launcher.kernels,
+      switchProxy: (profileId, nodeId, by) => switchProfileProxy({
+        store, launcher, assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
+        ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
+      }, { profileId, nodeId, by }),
+    });
   }
 
   if (pathname.startsWith("/ui/api/proxies/")) {

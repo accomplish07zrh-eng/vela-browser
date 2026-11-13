@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Select } from "./select.tsx";
 import { NumberInput } from "./controls.tsx";
 import { useTranslation } from "./i18n.tsx";
+import { PoolSelectionFields, ProxyPoolPanel } from "./proxy-pool.tsx";
 import { folderScope, type FolderInfo } from "../src/folders.ts";
 import type {
   ProxyCheckView,
@@ -41,6 +42,7 @@ function getReasonLabel(t: (key: string) => string, reason: string): string {
     no_editable_match: t("No editable profile matched"), ambiguous_username: t("More than one profile matched"),
     expected_version_required: t("Preview this profile again"), unsupported: t("This proxy type cannot be checked"),
     cancelled: t("Not completed"), folder_access_denied: t("Folder access denied"),
+    pool_exhausted: t("No fitting pool proxy has room left"), pool_node_unavailable: t("This pool proxy was removed or disabled; preview again"),
   };
   return reasons[reason] || t("Check could not complete");
 }
@@ -196,7 +198,7 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
   const { t } = useTranslation();
   const [all, setAll] = useState(true);
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
-  const [task, setTask] = useState<"check" | "replace">("check");
+  const [task, setTask] = useState<"check" | "replace" | "pool">("check");
   const [mode, setMode] = useState<ProxyReplacementMode>("list");
   const [input, setInput] = useState("");
   const [perProxy, setPerProxy] = useState(1);
@@ -321,7 +323,9 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
     <div className="tools-tabs" aria-label={t("Proxy tools")}>
       <button className={task === "check" ? "selected" : ""} aria-pressed={task === "check"} onClick={() => setTask("check")}>{t("Check proxies")} <small>{t("Find connection problems")}</small></button>
       <button className={task === "replace" ? "selected" : ""} aria-pressed={task === "replace"} onClick={() => setTask("replace")}>{t("Replace proxies")} <small>{t("Assign new connections")}</small></button>
+      <button className={task === "pool" ? "selected" : ""} aria-pressed={task === "pool"} onClick={() => setTask("pool")}>{t("Proxy pool")} <small>{t("Import once, give to profiles")}</small></button>
     </div>
+    {task === "pool" ? <ProxyPoolPanel active={active && task === "pool"} onChanged={() => void onChanged()} /> : <>
     <section className="tools-panel proxy-scope">
       <div className="tools-panel-head"><div><h3>{task === "replace" && <span className="tools-step">1</span>}{t("Choose folders")}</h3><p>{t("Includes every profile in these folders, across all pages.")}</p></div><span className="tools-folder-tag">{all ? t("All folders") : t("{count} selected", { count: selectedGroups.length })}</span></div>
       <div className="proxy-folder-list">
@@ -369,20 +373,22 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
           <Pager {...checkResults} onPage={setCheckPage} />
         </> : <div className="tools-empty"><span className="tools-empty-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 18 18 6M6 6h12v12" /></svg></span><h3>{busy === "check" ? t("Checking selected folders…") : t("Ready when you are")}</h3><p>{t("Choose your folders above, then check which proxies are alive, dead, or need attention.")}</p></div>}
       </section>
-      <p className="tools-footnote">{t("Supports HTTP and SOCKS5. HTTPS checks are not supported. Unknown means a result could not be confirmed.")}</p>
+      <p className="tools-footnote">{t("Supports HTTP, HTTPS and SOCKS5. Unknown means a result could not be confirmed.")}</p>
     </> : <>
       <section className="tools-panel proxy-input-panel">
         <div className="tools-panel-head"><div><h3><span className="tools-step">2</span>{t("Add replacement proxies")}</h3><p>{t("Nothing changes until you review and apply the assignments.")}</p></div></div>
         <div className="tools-panel-body">
           <label className="fld"><span>{t("Assignment method")}</span><Select value={mode} disabled={!!busy} onChange={(event) => { setMode(event.target.value as ProxyReplacementMode); invalidatePreview(); }}>
-            <option value="list">{t("Paste a proxy list")}</option><option value="profileId">{t("Match specific profile IDs — CSV")}</option><option value="oldProxy">{t("Replace matching old proxies — CSV")}</option>
+            <option value="list">{t("Paste a proxy list")}</option><option value="pool">{t("Give proxies from the pool")}</option><option value="profileId">{t("Match specific profile IDs — CSV")}</option><option value="oldProxy">{t("Replace matching old proxies — CSV")}</option>
           </Select></label>
+          {mode === "pool" ? <PoolSelectionFields value={input} disabled={!!busy} onChange={(next) => { setInput(next); invalidatePreview(); }} /> : <>
           <p className="tools-hint">{mode === "profileId" ? <>{t("Include a header row:")} <code>profileId,type,host,port,user,pass</code>.</>
             : mode === "oldProxy" ? <>{t("Include a header row:")} <code>oldProxy,newProxy</code>. {t("Each old proxy is replaced wherever it appears in the selected folders.")}</>
             : t("Paste one proxy per line. We match them to profiles in profile-ID order. Each proxy is used for the number of profiles you set below. You will see every assignment next.")}</p>
           {mode === "list" && <label className="fld"><span>{t("Profiles per proxy")}</span><NumberInput aria-label={t("Profiles per proxy")} min={1} step={1} value={perProxy} disabled={!!busy} onChange={(event) => { setPerProxy(Math.max(1, Math.floor(Number(event.target.value)) || 1)); invalidatePreview(); }} /></label>}
           <label className="fld"><span>{mode === "list" ? t("Your new proxy list") : t("Your replacement CSV")}</span><textarea aria-label={t("Replacement input")} rows={5} value={input} disabled={!!busy} spellCheck={false} autoComplete="off" placeholder={mode === "list" ? "proxy.example.com:8080:username:password\nsocks5://username:password@proxy.example.com:1080" : mode === "profileId" ? "profileId,type,host,port,user,pass" : "oldProxy,newProxy"} onChange={(event) => { setInput(event.target.value); invalidatePreview(); }} /></label>
-          <div className="tools-result-bar"><label className={`proxy-upload${busy ? " disabled" : ""}`}><svg viewBox="0 0 24 24" aria-hidden="true"><path className="duo" d="M6 4.5A1.5 1.5 0 0 1 7.5 3h6.3L18 7.2v12.3a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19.5z" /><path d="M6 4.5A1.5 1.5 0 0 1 7.5 3h6.3L18 7.2v12.3a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19.5zM13.6 3.2v3.3a1 1 0 0 0 1 1h3.2M12 17.6v-6.4M9.4 13.7 12 11.1l2.6 2.6" /></svg>{t("Or upload a file")}<input type="file" className="visually-hidden-file" accept=".csv,.txt,text/csv,text/plain" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void loadFile(file); }} /></label>
+          </>}
+          <div className="tools-result-bar">{mode === "pool" ? <span /> : <label className={`proxy-upload${busy ? " disabled" : ""}`}><svg viewBox="0 0 24 24" aria-hidden="true"><path className="duo" d="M6 4.5A1.5 1.5 0 0 1 7.5 3h6.3L18 7.2v12.3a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19.5z" /><path d="M6 4.5A1.5 1.5 0 0 1 7.5 3h6.3L18 7.2v12.3a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19.5zM13.6 3.2v3.3a1 1 0 0 0 1 1h3.2M12 17.6v-6.4M9.4 13.7 12 11.1l2.6 2.6" /></svg>{t("Or upload a file")}<input type="file" className="visually-hidden-file" accept=".csv,.txt,text/csv,text/plain" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void loadFile(file); }} /></label>}
             <button type="button" className="btn primary" disabled={!!busy || !scopeReady || !input.trim()} onClick={() => void makePreview()}>{busy === "preview" ? t("Preparing preview…") : t("Preview changes")}</button></div>
         </div>
       </section>
@@ -409,6 +415,7 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
           <Pager {...replacements} onPage={setReplacementPage} />
         </> : <div className="tools-empty compact"><p>{t("Your preview will appear here. Saved sessions and fingerprints stay unchanged.")}</p></div>}
       </section>
+    </>}
     </>}
   </>;
 

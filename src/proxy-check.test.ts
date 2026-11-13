@@ -247,7 +247,16 @@ test("proxy check returns fixed safe failure reasons", async () => {
 
 test("proxy check rejects blank and unsupported proxy input before network activity", async () => {
   await expect(checkProxy({ host: "", port: "" })).rejects.toThrow("proxy is required");
-  await expect(checkProxy({ type: "https", host: "proxy.example", port: "8443" })).rejects.toThrow(
-    "use http or socks5",
-  );
+  await expect(checkProxy({ type: "ftp", host: "proxy.example", port: "21" })).rejects.toThrow("unsupported proxy type");
+});
+
+test("an HTTPS proxy is checked through a relay that keeps its protocol", async () => {
+  const types: unknown[] = [];
+  await checkProxy({ type: "https", host: "proxy.example", port: "8443" }, {
+    direct: null,
+    endpoints: ["https://egress.test/ip"],
+    relayFactory: async (upstream) => { types.push(upstream.type); return { port: 1, close() {} }; },
+    fetchFn: (async () => new Response(JSON.stringify({ ip: "203.0.113.4" }))) as unknown as typeof fetch,
+  });
+  expect(types).toEqual(["https", "https", "https"]);
 });

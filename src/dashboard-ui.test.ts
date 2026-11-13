@@ -522,6 +522,11 @@ test("the dashboard typeface is bundled, never fetched at runtime", () => {
   expect(notice).toContain("Manrope");
   expect(notice).toContain("Noto Sans SC");
   expect(notice).toContain("Noto Serif SC");
+  // sing-box: GPL, its extra term on its name, not associated, and where its source is.
+  expect(notice).toContain("sing-box, Copyright (C) 2022 by nekohasekai");
+  expect(notice).toContain("GNU General Public License, version 3");
+  expect(notice).toContain("not associated with or endorsed by its authors");
+  expect(notice).toContain("https://github.com/SagerNet/sing-box");
 });
 
 test("New profile and Edit are instant dialogs; Scripts, Settings and Extensions are pages", () => {
