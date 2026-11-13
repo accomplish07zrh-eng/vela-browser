@@ -4152,6 +4152,75 @@ test("legacy Linux cleanup kills exact-root descendants before root and never si
   store.close();
 });
 
+test("Linux cleanup looks again when an exiting browser leaves its scan briefly inconclusive", async () => {
+  const store = seeded();
+  const alive = new Set([7110, 7111]);
+  let cdpAlive = true;
+  let inconclusive = 0;
+  const signaled: number[] = [];
+  store.recordLaunch({
+    profileId: "k1d0cd11", pid: 7110, debugPort: 9333,
+    ws: "ws://127.0.0.1:9333/devtools/browser/linux-settling", startedAt: 1,
+    binaryPath: "/fake/cloak", userDataDir: "/tmp/linux-settling/k1d0cd11",
+  });
+  const launcher = new Launcher({
+    store, binaryPath: "/fake/cloak", hostPlatform: "linux",
+    fetch: async () => ({ ok: cdpAlive, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9333/devtools/browser/linux-settling" }) }),
+    findOwnedBrowserPids: async () => [...alive].filter((pid) => pid === 7110 || pid === 7111),
+    isPidAlive: (pid) => alive.has(pid),
+    readProcessSnapshot: async () => {
+      if (inconclusive > 0) { inconclusive--; return { records: [], incomplete: true }; }
+      return { records: [
+        ...(alive.has(7110) ? [{ pid: 7110, executablePath: "/fake/cloak", parentPid: 1, processGroupId: 7000, startTime: "10" }] : []),
+        ...(alive.has(7111) ? [{ pid: 7111, executablePath: "/fake/cloak", parentPid: 7110, processGroupId: 7000, startTime: "11" }] : []),
+      ], incomplete: false };
+    },
+    // The graceful close is accepted but the browser lingers; its next scans are inconclusive.
+    browserClose: async () => { inconclusive = 3; return true; },
+    killPid: async (pid) => { signaled.push(pid); alive.delete(pid); if (pid === 7110) cdpAlive = false; },
+    teardownTimeoutMs: 50, teardownPollMs: 1,
+  });
+
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  expect(signaled).toEqual([7111, 7110]);
+  expect(store.getLaunch("k1d0cd11")).toBeNull();
+  store.close();
+});
+
+test("Linux cleanup after the root exits signals only its proven survivors, never a reused root PID", async () => {
+  const store = seeded();
+  const alive = new Set([7120, 7121]);
+  let recycled = false;
+  let cdpAlive = true;
+  const signaled: number[] = [];
+  store.recordLaunch({
+    profileId: "k1d0cd11", pid: 7120, debugPort: 9333,
+    ws: "ws://127.0.0.1:9333/devtools/browser/linux-orphan", startedAt: 1,
+    binaryPath: "/fake/cloak", userDataDir: "/tmp/linux-orphan/k1d0cd11",
+  });
+  const launcher = new Launcher({
+    store, binaryPath: "/fake/cloak", hostPlatform: "linux",
+    fetch: async () => ({ ok: cdpAlive, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9333/devtools/browser/linux-orphan" }) }),
+    findOwnedBrowserPids: async () => [...alive].filter((pid) => pid === 7121 || (pid === 7120 && !recycled)),
+    isPidAlive: (pid) => alive.has(pid),
+    readProcessSnapshot: async () => ({ records: [
+      // After the close the root is gone and an unrelated process reuses its PID.
+      recycled
+        ? { pid: 7120, executablePath: "/unrelated", parentPid: 1, processGroupId: 7120, startTime: "77" }
+        : { pid: 7120, executablePath: "/fake/cloak", parentPid: 1, processGroupId: 7000, startTime: "20" },
+      ...(alive.has(7121) ? [{ pid: 7121, executablePath: "/fake/cloak", parentPid: recycled ? 1 : 7120, processGroupId: 7000, startTime: "21" }] : []),
+    ], incomplete: false }),
+    browserClose: async () => { recycled = true; cdpAlive = false; return true; },
+    killPid: async (pid) => { signaled.push(pid); alive.delete(pid); },
+    teardownTimeoutMs: 20, teardownPollMs: 1,
+  });
+
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  expect(signaled).toEqual([7121]);
+  expect(store.getLaunch("k1d0cd11")).toBeNull();
+  store.close();
+});
+
 test("Linux group cleanup verifies the exact unchanged leader before signaling and confirms delayed tree death", async () => {
   const store = seeded();
   const alive = new Set([7200, 7201]);

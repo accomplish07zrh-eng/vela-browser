@@ -3489,11 +3489,37 @@ export class Launcher {
     const deadline = Date.now() + this.teardownTimeoutMs;
     while (true) {
       const exact = await this.exactOwnedPids(profileId, launch);
+      // Nothing this launch owns is left: there is nothing to signal, and the
+      // exact disappearance check that follows decides whether it stopped.
+      if (exact?.length === 0) return;
       const snapshot = await this.readProcessSnapshotFn();
-      const root = exact && snapshot && this.exactLinuxRoot(exact, snapshot) === proof.rootPid
-        ? snapshot.records.find((record) => record.pid === proof.rootPid)
-        : null;
-      if (!exact?.length || root?.startTime !== proof.rootStartTime) {
+      // A browser that is already exiting leaves its scan briefly inconclusive (an
+      // exiting process hides its executable, orphaned helpers are re-parented).
+      // That is not an identity change: look again until the teardown deadline.
+      if (!exact || !snapshot || snapshot.incomplete) {
+        if (Date.now() >= deadline) throw new Error("Linux browser ancestry stayed inconclusive before signaling");
+        await sleep(this.teardownPollMs);
+        continue;
+      }
+      const rootRecord = snapshot.records.find((record) => record.pid === proof.rootPid);
+      if (!rootRecord || rootRecord.startTime !== proof.rootStartTime) {
+        // The root exited on its own. Only processes proven part of its tree, by PID
+        // and start time, and still owned by this launch may be signaled; a reused
+        // PID is never touched. Anything else stays for the confirmation to report.
+        const owned = new Set(exact);
+        const survivors = proof.members.filter((member) => member.pid !== proof.rootPid
+          && owned.has(member.pid)
+          && snapshot.records.some((record) => record.pid === member.pid && record.startTime === member.startTime));
+        for (const member of survivors) {
+          if (expected && !this.launchGenerationMatches(profileId, expected)) {
+            throw new Error("launch generation changed before Linux survivor signaling");
+          }
+          await this.killPidFn(member.pid);
+        }
+        return;
+      }
+      const root = this.exactLinuxRoot(exact, snapshot) === proof.rootPid ? rootRecord : null;
+      if (!root) {
         throw new Error("Linux browser root identity changed before tree signaling");
       }
       const members = collectLinuxProcessTree(proof.rootPid, snapshot!);
