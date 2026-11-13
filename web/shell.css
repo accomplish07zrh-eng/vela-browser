@@ -123,10 +123,9 @@
 .app .sidebar.dock .dock-blob {
   position: absolute; left: 0; top: 5px; z-index: 0; height: 42px; width: 0; border-radius: 999px; pointer-events: none;
   transform-origin: left center; will-change: transform; opacity: 0;
-  background: rgba(var(--ink-rgb), .085);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), inset 0 -1px 0 rgba(var(--ink-rgb), .04), 0 1px 3px rgba(var(--sh-rgb), .1);
+  /* Flat: no highlight or shading, so it reads as a pressed spot, not a lens. */
+  background: var(--pressed); box-shadow: none;
 }
-:root[data-theme="dark"] .app .sidebar.dock .dock-blob { background: rgba(var(--ink-rgb), .1); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 1px 3px rgba(0, 0, 0, .3); }
 /* Only the section you are in spells out its name. */
 .app .sidebar.dock .navitem .navlabel { max-width: 0; margin: 0; opacity: 0; transform: none; transition: max-width 420ms var(--spring-layout), margin 420ms var(--spring-layout), opacity 180ms var(--spring-control); }
 /* In the section group the label takes its width at once, so the jelly and the icons beside it
