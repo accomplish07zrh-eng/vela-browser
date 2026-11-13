@@ -142,3 +142,47 @@ test("failed retry previews show the current proxy and folder without changing a
   expect(retry.rows[0]).toMatchObject({ name: "Renamed", group: "new folder", previousProxy: "http://changed.example:8080", proxy: "http://new.example:9000", status: "ready" });
   expect(store.getProfile("p1")!.proxy!.host).toBe("changed.example");
 });
+
+test("pool mode gives each profile its own node, keeps a profile on its node, and re-checks room when applying", async () => {
+  const { store, request } = setup(["p1", "p2", "p3"]);
+  const pool = store.proxyPool;
+  const [a, b] = pool.importText("pool-a.example:7001:pool-user:pool-secret\npool-b.example:7002").added;
+  for (const node of [a!, b!]) pool.recordCheck(node.id, { status: "working", country: "US", checkedAt: 1 });
+  // p3 already uses node b.
+  store.upsertProfile({ ...store.getProfile("p3")!, proxy: b!.proxy });
+
+  const previewed = await (await request("preview", { scope: { all: true }, mode: "pool", input: JSON.stringify({ country: "US" }) })).json() as ProxyPreview;
+  expect(JSON.stringify(previewed)).not.toContain("pool-secret");
+  expect(previewed.rows.map((row) => [row.profileId, row.status, row.code ?? null, row.proxy])).toEqual([
+    ["p1", "ready", null, "http://pool-a.example:7001"],
+    ["p2", "skipped", "pool_exhausted", null],
+    ["p3", "unchanged", null, "http://pool-b.example:7002"],
+  ]);
+
+  // Someone takes node a before the apply: it is full now, so p1 is skipped, not doubled up.
+  store.upsertProfile({ ...store.getProfile("p2")!, proxy: a!.proxy });
+  const output = await events(await request("apply", { previewId: previewed.previewId }));
+  expect(output.filter((e) => e.type === "replacement").map((e) => [e.row.profileId, e.row.code ?? e.row.status]))
+    .toContainEqual(["p1", "pool_exhausted"]);
+  expect(store.getProfile("p1")!.proxy!.host).toBe("old.example");
+
+  // With room again (limit raised), the same plan applies and the node's credentials go with it.
+  pool.update(a!.id, { maxProfiles: 2 });
+  const again = await (await request("preview", { scope: { ids: ["p1"], all: true }, mode: "pool", input: JSON.stringify({ nodeIds: [a!.id] }) })).json() as ProxyPreview;
+  await events(await request("apply", { previewId: again.previewId }));
+  expect(store.getProfile("p1")!.proxy).toEqual(a!.proxy);
+});
+
+test("pool mode refuses a node that left the pool after the preview, and a bad selection", async () => {
+  const { store, request } = setup(["p1"]);
+  const [a] = store.proxyPool.importText("pool-a.example:7001").added;
+  store.proxyPool.recordCheck(a!.id, { status: "working", checkedAt: 1 });
+  const previewed = await (await request("preview", { scope: { all: true }, mode: "pool", input: "{}" })).json() as ProxyPreview;
+  expect(previewed.rows[0]!.status).toBe("ready");
+  store.proxyPool.remove([a!.id]);
+  const output = await events(await request("apply", { previewId: previewed.previewId }));
+  expect(output.find((e) => e.type === "replacement")!.row.code).toBe("pool_node_unavailable");
+  expect(store.getProfile("p1")!.proxy!.host).toBe("old.example");
+  const bad = await request("preview", { scope: { all: true }, mode: "pool", input: '{"country":"USA"}' });
+  expect(bad.status).toBe(400);
+});

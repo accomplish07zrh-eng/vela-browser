@@ -24,6 +24,7 @@ import type {
 import { completeProfileFingerprint, normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
 import { normalizeProfileHardware } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
+import { ProxyPool } from "./proxy-pool.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { assertValidProfile } from "./profile-validation.ts";
 import { mergeCookies } from "./parse.ts";
@@ -290,6 +291,12 @@ export class ProfileStore {
         }
       }
     })();
+  }
+
+  private pool?: ProxyPool;
+  /** The proxy pool, kept in this same database file. */
+  get proxyPool(): ProxyPool {
+    return this.pool ??= new ProxyPool(this.db);
   }
 
   close(): void {

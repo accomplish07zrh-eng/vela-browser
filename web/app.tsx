@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
+import { PoolProxyPicker } from "./proxy-pool.tsx";
 import { WorkbenchPage } from "./workbench.tsx";
 import { CommandPalette, type SearchTarget } from "./command-palette.tsx";
 import "./design-tokens.css";
@@ -4041,6 +4042,18 @@ function App() {
                       <Icon name="activity" className="sm" />
                       {editProxyCheck.checking ? "Checking…" : t("Check proxy")}
                     </button>
+                    {editId && <PoolProxyPicker profileId={editId} onAssigned={() => {
+                      // The server saved the pool proxy and its exit's timezone; show what it saved,
+                      // and treat it as the form's starting point so a later save does not undo it.
+                      const id = editId;
+                      void fetchProfileEdit(id).then((p) => {
+                        if (editFetchId.current !== id) return;
+                        setEditForm((form) => ({ ...form, proxyType: p.proxyType || "http", proxy: p.proxy, proxyError: p.proxyError ?? "", timezone: p.timezone }));
+                        setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
+                        setEditInitialFingerprint((initial) => ({ ...initial, timezone: p.timezone ?? "" }));
+                      }).catch(() => {});
+                      void load();
+                    }} />}
                   </div>
                   <ProxyCheckFeedback hasProxy={editHasProxy} state={editProxyCheck} />
                   {!appMode?.legacyRemote && (

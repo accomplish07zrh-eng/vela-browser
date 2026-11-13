@@ -20,6 +20,7 @@ import type { StatePaths } from "./paths.ts";
 import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
+import { handleProxyPoolRequest } from "./proxy-pool-api.ts";
 import { handleTrashRequest } from "./trash.ts";
 import {
   importInbox,
@@ -45,7 +46,7 @@ import {
   type ExtensionFetch,
 } from "./extensions.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
-import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
+import { normalizeProxySpec, proxyHostPort, proxyIdentityKey, proxyLegacyString, type ProxyInput } from "./proxy.ts";
 import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent } from "./fingerprint.ts";
 import { fingerprintAudit } from "./fingerprint-audit.ts";
 import { setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
@@ -365,6 +366,41 @@ function profileEditView(p: Profile) {
       },
     } : {}),
   };
+}
+
+/**
+ * Give one profile a proxy from the pool, saved as the profile form saves a proxy: the timezone
+ * follows the new exit unless the user typed one, and an open browser keeps the proxy it runs
+ * with until its next start. Null when there is no such profile.
+ */
+async function assignProfileProxy(
+  store: ProfileStore,
+  id: string,
+  proxy: ProxySpec,
+  options: UiRuntimeOptions,
+): Promise<{ restartRequired?: true } | null> {
+  if (!isSafeProfileId(id)) return null;
+  const apply = (profile: Profile) => {
+    const changed = !!profile.proxyError || proxyIdentityKey(profile.proxy) !== proxyIdentityKey(proxy);
+    profile.proxy = { ...proxy };
+    delete profile.proxyError;
+    return changed;
+  };
+  let p = store.getProfile(id);
+  if (!p) return null;
+  if (apply(p) && !p.timezoneManual) {
+    const location = await lookupExitLocation(proxy, options.timezoneFetch);
+    // Apply to the current copy, so changes saved during the lookup are kept.
+    p = store.getProfile(id);
+    if (!p) return null;
+    apply(p);
+    if (location) {
+      p.timezone = location.timezone;
+      syncFirefoxTimezone(p);
+    }
+  }
+  store.upsertProfile(p);
+  return restartRequired(store, id);
 }
 
 /** `{ restartRequired: true }` when the open browser runs with an older proxy or fingerprint than the saved one. */
@@ -730,9 +766,7 @@ export async function handleUiRequest(
         throw new Error("invalid proxy input");
       }
       const normalized = normalizeProxySpec(body.proxy as ProxyInput);
-      if (!normalized || (normalized.type !== "http" && normalized.type !== "socks5")) {
-        throw new Error("unsupported proxy input");
-      }
+      if (!normalized) throw new Error("unsupported proxy input");
       proxy = normalized;
     } catch {
       return noStoreJson({ ok: false, error: "Invalid proxy settings" }, 400);
@@ -743,6 +777,20 @@ export async function handleUiRequest(
     } catch {
       return noStoreJson({ ok: false, error: "Proxy check failed" }, 500);
     }
+  }
+
+  if (pathname === "/ui/api/proxy-pool" || pathname.startsWith("/ui/api/proxy-pool/")) {
+    if (remote) return noStoreJson({ ok: false, error: "The proxy pool is unavailable in legacy remote mode" }, 400);
+    if (req.method !== "GET") {
+      const rejected = rejectUntrustedJsonMutation(req);
+      if (rejected) {
+        rejected.headers.set("Cache-Control", "no-store");
+        return rejected;
+      }
+    }
+    return handleProxyPoolRequest(req, store, options, {
+      assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
+    });
   }
 
   if (pathname.startsWith("/ui/api/proxies/")) {

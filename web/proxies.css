@@ -363,3 +363,12 @@
   .store-section-head, .store-order { padding-left: 16px; padding-right: 16px; }
   .store-crypto { justify-content: center; }
 }
+
+/* Proxy pool */
+.pool-table td small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.pool-table td small.pool-warn, .pool-picker .pool-warn { color: var(--warn-ink, var(--danger-ink, #b45309)); }
+.pool-table tr.pool-disabled td { opacity: .55; }
+.pool-table td:first-child, .pool-table th:first-child { width: 28px; }
+.pool-editor { display: flex; flex-direction: column; gap: 10px; min-width: 260px; }
+.pool-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pool-picker > small, .pool-picker-message { flex-basis: 100%; font-size: 11px; color: var(--muted); }
