@@ -143,6 +143,8 @@
 - **配置里不出现 `direct` 出站**。内核要连到节点服务器，靠的是节点出站自己的拨号，不需要 direct。
 - 不开 `tun`、`set_system_proxy`、`auto_route`，不开 `sniff` 和 `sniff_override_destination`。内核原样转发中继给的域名，不在本机解析目标域名，也不读、不改浏览器的 TLS。
 - 本机只解析一个名字：**节点服务器自己的域名**。今天直接用 http / socks5 代理时也是这样，没有新增暴露。
+  - 这一个名字也不走运营商的明文 DNS：节点出站设 `domain_resolver`，指向一个只用来解析节点服务器的 DoH 服务器（可配置）。这是借鉴 Clash Verge 的 `proxy-server-nameserver` 做法。目标网站的名字照旧一个都不在本机解析。
+  - sing-box 配置里，除了这个专用 DoH 服务器，不配置任何其他 `dns.servers` 和 `dns.rules`；断言里写死这一点。
 - 入站带随机账号密码。现在中继端口不带认证，同机其他进程理论上能连上；内核入站至少不扩大这个面。中继端口要不要也加防护，另列跟进项。
 - 中继接内核时，就把内核当成一个普通 SOCKS5 上游：`{type: "socks5", host: "127.0.0.1", port, user, pass}`。`startProxyRelay` 已经支持带认证的 SOCKS5，中继代码几乎不用改。
 
@@ -356,6 +358,21 @@ interface ProxyNode {
 6. **有代理的环境，WebRTC 策略始终是 `disable_non_proxied_udp`**，运行中不改。
 7. **出口复核**：切换后，以及管理器重启后恢复中继时，经中继看到的出口必须不等于本机直连 IP。
 8. **全局零改动**：系统代理设置、路由表、网卡列表、hosts、系统 DNS 设置，在 Vela 运行前后完全一致。
+9. **浏览器在本机不解析任何名字**（阶段 0 实现）。
+   - Chromium（Vela Chromium 155、CloakBrowser）：有代理时加 `--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1 , EXCLUDE [::1]`。代理本身是回环 IP，不需要解析；预取、预连接、内置异步 DNS、DoH 初始化发起的解析，统统落到 `~notfound`。
+   - Firefox：远程 DNS，关掉 DNS 预取和预测器，TRR（DoH）设为 5（关闭）。另外关掉原生 HTTPS 记录查询（`network.dns.native_https_query*`、`upgrade_with_https_rr`、`use_https_rr_as_altsvc`、`force_use_https_rr`），以及 `prefetch_via_proxy`。
+   - 中继和 SOCKS 客户端：代码里不出现任何解析调用；每个套接字只连上游代理。由静态检查测试 `src/proxy-dns-guard.test.ts` 守住。
+10. **没有任何"代理失败就直连"的退路**（阶段 0 实现）。Firefox 关掉 `network.proxy.allow_bypass`（代理失败时，更新和媒体插件下载会直连重试）和 `network.proxy.failover_direct`。Chromium 固定代理本来就没有直连回退。启动器在"有代理却没有中继端口"时直接报错，不会把上游直接交给浏览器。
+11. **不往局域网组播**（阶段 0 实现）。有代理的 Chromium 关掉 `MediaRouter`：投屏发现会从本机每块网卡组播 mDNS 查询。实测关闭后，页面能看到的投屏相关 API 不变。
+
+### 7.1 阶段 0 实测发现的线上版本问题（0.1.7）
+
+阶段 0 的真实浏览器检测在当前线上版本里查出两处 Vela Firefox 泄露，都已在阶段 0 修掉：
+
+- **DNS**：有代理时，Firefox 仍然通过系统 `getaddrinfo` 查每个访问网站的 HTTPS 记录（DNS 类型 65）。也就是说，本机 DNS 服务器能看到环境访问的每一个域名。
+- **Kill Switch**：代理拒绝或失败时，Firefox 的应用更新检查（aus5.mozilla.org）和媒体插件下载（OpenH264、Widevine）会绕过代理，用本机地址直连重试。
+
+代价：没有 HTTPS 记录以后，Firefox 对开了 ECH 的网站只发 GREASE ECH，不发真实 ECH。要拿回真实 ECH，需要让 DoH 经中继走并另行验证，列为跟进项。
 
 ---
 
@@ -369,6 +386,18 @@ interface ProxyNode {
 - 起一个"金丝雀"站点，监听 `127.0.0.2`，记下每个连接的来源地址：`127.0.0.3` 代表走了 A，`127.0.0.4` 代表走了 B，**其他任何来源都是泄露**。
 - 浏览器（Vela Chromium 155 / Vela Firefox / CloakBrowser / WebKit 各跑一遍）通过 环境中继 → 客户端内核 → 节点服务端 → 金丝雀 访问。
 - 金丝雀域名（例如 `canary.vela.test`）只在节点服务端的 DNS 里有记录。本机解析不到；本机若尝试解析，会被本机 DNS 探针记录下来，即为 DNS 泄露。
+
+**阶段 0 已经实现的部分**（`src/leak-live.test.ts`，设置 `VELA_LEAK_LIVE=1` 时运行，在真实的 Vela Chromium 155 和 Vela Firefox 上跑）。这里的"出口"是一个本机假出口：它为 `*.vela-leak.test`、203.0.113.7、`[2001:db8::7]` 提供页面并记下所有请求，自己从不连外网。下面这些观察者彼此独立，并且都不依赖"出口 IP 对不对"，所以开着系统级 TUN 也照样有效：
+
+- **浏览器自己的日志**：Chromium 的 net-log 记录每次解析任务、DNS 事务、TCP / UDP 连接和 UDP 发送；Firefox 的 MOZ_LOG 记录解析器和套接字传输。
+- **操作系统连接表**：用 `netstat` 每秒采样，只看检测启动的浏览器进程树，用户自己开着的窗口不算。
+- **Windows DNS 缓存**：查本次检测专用的名字有没有出现在里面。
+- **局域网金丝雀**：在本机真实局域网 IPv4 / IPv6 地址上开 TCP 和 UDP 监听，页面对这些地址发请求，也把它们配成 STUN / TURN 服务器。只要有一个包没经过中继，金丝雀就会收到。
+- **mDNS 旁听**：加入 224.0.0.251 和 ff02::fb 组播组，记录本机发出的 mDNS 包。
+- **Kill Switch**：页面持续发请求，中途关掉中继，之后不允许任何请求再到达任何地方。
+- **观察时长**：每轮至少 60 秒（`VELA_LEAK_OBSERVE_MS` 可调），后台任务（更新检查、投屏发现）都会落在窗口里。
+- **管理员抓包**：`scripts/leak-check/pktmon-dns.ps1` 需要管理员权限，带阳性对照。
+- **全局快照**：`scripts/leak-check/global-snapshot.ps1` 对比运行前后的系统代理、WinHTTP、路由、网卡、DNS 服务器和 hosts。
 
 ### 8.2 用例
 
@@ -414,7 +443,7 @@ interface ProxyNode {
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| **0 · 中继统一** | 有代理的环境（所有内核、所有代理类型）一律走中继；中继支持"代数 + 暂存 + 换上游 + 断开旧代数"（先不对外开放）；`needsProxyRelay` 简化为 `!!profile.proxy` | 现有 `proxy-relay` / `proxy-live` / launcher 测试全绿；新增中继热换单测（暂存、断开旧代数、换上游失败时退回旧上游）；§8.4 全局快照不变 |
+| **0 · 中继统一 + 防泄露** | 有代理的环境（所有内核、所有代理类型）一律走中继，`needsProxyRelay` 简化为 `!!profile.proxy`；中继支持"代数 + 暂存 + 换上游 + 断开旧代数"（先不对外开放）；§7 第 9–11 条（浏览器在本机不解析名字、没有直连退路、不往局域网组播） | 现有测试全绿；中继热换单测、静态检查测试；§8.1 阶段 0 检测台在 Vela Chromium 155 和 Vela Firefox 上通过；Chromium 指纹开关前后一致；§8.4 全局快照不变 |
 | **1 · 代理池（不含内核）** | `ProxyNode` / `ProxySubscription` 表；池子页面；粘贴或导入 http / https / socks5；健康检测；分组、标签、共享上限；环境编辑和批量换代理可以从池里选 | 解析、分配、上限、粘性分配单测；从池里选的节点启动，出口与检测结果一致 |
 | **2 · 订阅 + sing-box** | 订阅拉取和解析（§2）；sing-box 下载、哈希、每环境一个进程、看门狗；检测专用共享内核；启动时经内核查出口 | §8.1 测试台搭好；§8.2 中解析、配置生成、哈希、A/B 浏览、内核崩溃、本机 DNS 各项通过；§8.3 真实订阅三平台通过 |
 | **3 · 运行中换代理（界面）** | 环境卡片和详情里的"换代理"；先对所有内核走"自动重开"，然后 Vela Chromium 155 / Vela Firefox 内核接口就绪后打开热换并刷新；切换历史 | §8.2 切换压力、时区与 WebRTC、指纹复核、管理器重启各项通过（每个内核都要过） |

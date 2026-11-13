@@ -189,6 +189,8 @@ test("a proxied Firefox launch saves the proxy exit's timezone in its config, an
     expect(saved.firefox!.config.timezone).toBe(timezone);
     expect((f.config() as Record<string, unknown>).timezone).toBe(timezone);
     // The launch identity was recorded with the saved timezone, so a restarted app reattaches.
+    // A restarted app is a new process: the old one's relay is gone and its port is free again.
+    (launcher as any).closeRelay(f.profile.id);
     const restarted = new Launcher(options);
     expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false, reattached: true });
     expect(await restarted.certifiedActive(f.profile.id)).toBe(true);

@@ -41,10 +41,10 @@ import { AUTOFILL_EXTENSION_REVISION, autofillExtensionDir } from "./autofill-ex
 import { allocatePort } from "./ports.ts";
 import {
   DEFAULT_WINDOW_HEIGHT_SCALE, DEFAULT_WINDOW_WIDTH_SCALE, deriveFingerprintFlags, isMobileUserAgent, launchWindowSize,
-  platformFromUA, proxyServerFlag,
+  platformFromUA,
 } from "./fingerprint.ts";
 export { isMobileUserAgent } from "./fingerprint.ts";
-import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
+import { startProxyRelay, type ProxyRelay, type UpstreamProxy } from "./proxy-relay.ts";
 import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "./search-provider.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
@@ -99,13 +99,46 @@ function webRtcPolicy(profile: Profile): string {
   return profile.proxy ? "disable_non_proxied_udp" : "default_public_interface_only";
 }
 
+/**
+ * Every proxied profile reaches its proxy only through its own loopback relay, whatever the
+ * engine and proxy type. The browser is told nothing but 127.0.0.1:<relay port>, so the relay is
+ * the one place that decides where its traffic goes, and the one place where that can change
+ * while the browser runs.
+ */
 function needsProxyRelay(profile: Profile): boolean {
-  return !!profile.proxy && (
-    profile.engine === "webkit"
-    || profile.proxy.type === "socks5"
-    || (profile.proxy.type === "http" && !!profile.proxy.user)
+  return !!profile.proxy;
+}
+
+/**
+ * Before every proxy was relayed, Chromium and Firefox named an unauthenticated HTTP or HTTPS
+ * proxy directly in their proxy setting. Such a browser, still running when this version starts,
+ * keeps that route until it closes; it has no relay to restore.
+ */
+function launchedWithDirectProxy(profile: Profile): boolean {
+  return !!profile.proxy && profile.engine !== "webkit" && (
+    profile.proxy.type === "https" || (profile.proxy.type === "http" && !profile.proxy.user)
   );
 }
+
+/** The relay's upstream for a profile proxy. It keeps the proxy's protocol: HTTPS stays TLS. */
+export function relayUpstream(proxy: ProxySpec): UpstreamProxy {
+  return { type: proxy.type, host: proxy.host, port: Number(proxy.port), user: proxy.user, pass: proxy.pass };
+}
+
+/**
+ * A proxied Chromium resolves no name on this computer. Its proxy is a loopback IP, so nothing it
+ * needs is lost: every destination name goes to the proxy, which resolves it at the exit. This
+ * also covers DNS prefetch, preconnect, the built-in async resolver and DNS-over-HTTPS setup, which
+ * would otherwise be able to ask this computer's DNS server about the pages a profile visits.
+ */
+export const PROXIED_HOST_RESOLVER_RULES = "MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1 , EXCLUDE [::1]";
+
+/**
+ * Chromium features a proxied profile runs without. Media Router (casting) looks for Cast devices
+ * by multicasting mDNS queries from every network interface of this computer, real LAN address
+ * included, outside the proxy. Its page-visible API surface was measured unchanged without it.
+ */
+export const PROXIED_DISABLED_FEATURES = ["MediaRouter"];
 
 const SEARCH_PROVIDER_BOOTSTRAP_REVISION = 2;
 const SEARCH_PROVIDER_BOOTSTRAP_MARKER = `.aliasmode-search-bootstrap-v${SEARCH_PROVIDER_BOOTSTRAP_REVISION}`;
@@ -1553,12 +1586,12 @@ export class Launcher {
     if (keepAlive && profile.chromiumRuntime && ALIASMODE_CHROMIUM_KEEP_ALIVE) {
       args.push("--aliasmode-keep-alive");
     }
-    // Relayed proxies use a loopback HTTP endpoint. Everything else uses the
-    // upstream proxy flag directly.
-    if (relayPort) args.push(`--proxy-server=http://127.0.0.1:${relayPort}`);
-    else {
-      const proxy = proxyServerFlag(profile);
-      if (proxy) args.push(proxy);
+    // A proxied profile names only its loopback relay. It never names the upstream, and it
+    // never starts without the relay: a missing relay is a launch error, not a direct route.
+    if (profile.proxy) {
+      if (!relayPort) throw new BrowserLaunchError("relay_setup");
+      args.push(`--proxy-server=http://127.0.0.1:${relayPort}`);
+      args.push(`--host-resolver-rules=${PROXIED_HOST_RESOLVER_RULES}`);
     }
     // Load any assigned (unpacked) extensions. Resolve ids → install dirs and
     // skip any that are not installed on this device. --disable-extensions-except
@@ -1598,7 +1631,11 @@ export class Launcher {
     // throttling of hidden pages stays exactly as in Chrome.
     // Chromium reads only the last --disable-features, so every list joins this one.
     const disableFeatures = "--disable-features=";
-    const features = ["IntensiveWakeUpThrottling", ...(profile.chromiumRuntime ? ["DeviceBoundSessions", "EnableBoundSessionCredentials"] : [])];
+    const features = [
+      "IntensiveWakeUpThrottling",
+      ...(profile.chromiumRuntime ? ["DeviceBoundSessions", "EnableBoundSessionCredentials"] : []),
+      ...(profile.proxy ? PROXIED_DISABLED_FEATURES : []),
+    ];
     for (const arg of [...this.baseArgs, ...forwardedArgs]) {
       if (arg.startsWith(disableFeatures)) features.push(...arg.slice(disableFeatures.length).split(","));
     }
@@ -2237,16 +2274,7 @@ export class Launcher {
         const p = profile.proxy!;
         let relay: ProxyRelay;
         try {
-          relay = await startProxyRelay(
-            {
-              type: p.type === "socks5" ? "socks5" : "http",
-              host: p.host,
-              port: Number(p.port),
-              user: p.user,
-              pass: p.pass,
-            },
-            {},
-          );
+          relay = await startProxyRelay(relayUpstream(p), {});
         } catch {
           throw new BrowserLaunchError("relay_setup");
         }
@@ -2682,9 +2710,7 @@ export class Launcher {
       // authentication. A failed relay fails requests instead of reverting to the direct route.
       if (profile.proxy) {
         const proxy = profile.proxy;
-        const relay = await startProxyRelay({ type: proxy.type,
-          host: proxy.host, port: Number(proxy.port), user: proxy.user, pass: proxy.pass,
-        }, {});
+        const relay = await startProxyRelay(relayUpstream(proxy), {});
         this.closeRelay(profileId); this.relays.set(profileId, relay); launch.relayPort = relay.port;
       }
       this.requireUnchangedProfile(profileId, snapshot, "WebKit spawn");
@@ -2815,10 +2841,7 @@ export class Launcher {
     try {
       if (needsProxyRelay(profile)) {
         const proxy = profile.proxy!;
-        const relay = await startProxyRelay({
-          type: proxy.type,
-          host: proxy.host, port: Number(proxy.port), user: proxy.user, pass: proxy.pass,
-        }, {});
+        const relay = await startProxyRelay(relayUpstream(proxy), {});
         this.closeRelay(profileId);
         this.relays.set(profileId, relay);
         launch.relayPort = relay.port;
@@ -2827,9 +2850,9 @@ export class Launcher {
       this.store.recordLaunch(launch);
       reserved = true;
       this.liveReserved.add(port);
-      const proxy = launch.relayPort
-        ? { server: `http://127.0.0.1:${launch.relayPort}` }
-        : profile.proxy ? { server: `${profile.proxy.type}://${profile.proxy.host}:${profile.proxy.port}` } : undefined;
+      // A proxied Firefox is told only its loopback relay, never the upstream.
+      if (profile.proxy && !launch.relayPort) throw new BrowserLaunchError("relay_setup");
+      const proxy = launch.relayPort ? { server: `http://127.0.0.1:${launch.relayPort}` } : undefined;
       // The engine shows the label in the native window title and adds the " — " separator itself,
       // so no page script edits document.title.
       const windowLabel = this.skipDefaultWindowLabel
@@ -3626,20 +3649,14 @@ export class Launcher {
     if (!needsProxyRelay(profile)) return false;
     if (this.relays.has(profile.id)) return false;
     if (!launch.relayPort) {
+      // Its proxy setting names the upstream itself, as launches did before every proxy was
+      // relayed. It keeps that route, and its launch-time persona, until it closes.
+      if (launchedWithDirectProxy(profile)) return false;
       throw new Error(`proxied survivor ${profile.id} predates the required relay; close it and reopen with the current manager`);
     }
     let relay: ProxyRelay;
     try {
-      relay = await startProxyRelay(
-        {
-          type: profile.proxy!.type,
-          host: profile.proxy!.host,
-          port: Number(profile.proxy!.port),
-          user: profile.proxy!.user,
-          pass: profile.proxy!.pass,
-        },
-        { port: launch.relayPort },
-      );
+      relay = await startProxyRelay(relayUpstream(profile.proxy!), { port: launch.relayPort });
     } catch (error) {
       this.log(`proxy relay rebind failed for ${profile.id}: ${(error as { code?: string })?.code ?? "unavailable"}`);
       throw new BrowserLaunchError("relay_setup");

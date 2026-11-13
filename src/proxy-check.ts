@@ -40,7 +40,8 @@ export interface ProxyCheckResult {
   rotating?: boolean;
 }
 
-type RelayFactory = (upstream: UpstreamProxy, options?: RelayOptions) => Promise<ProxyRelay>;
+/** A check needs only a listening relay; it never switches one. */
+type RelayFactory = (upstream: UpstreamProxy, options?: RelayOptions) => Promise<Pick<ProxyRelay, "port" | "close">>;
 
 export interface ProxyCheckOptions extends EgressLookupOptions {
   fetchFn?: typeof fetch;
@@ -125,7 +126,7 @@ async function proxyAttempt(
   options: Required<Pick<ProxyCheckOptions, "fetchFn" | "relayFactory">> & EgressLookupOptions,
 ): Promise<ProxyCheckAttempt> {
   const logs: string[] = [];
-  let relay: ProxyRelay | undefined;
+  let relay: Pick<ProxyRelay, "port" | "close"> | undefined;
   try {
     relay = await options.relayFactory({
       type: proxy.type === "socks5" ? "socks5" : "http",

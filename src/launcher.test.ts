@@ -41,6 +41,8 @@ import {
   type FetchFn,
   type SearchProviderEnsurer,
   type HostProcessSnapshot,
+  PROXIED_HOST_RESOLVER_RULES,
+  relayUpstream,
 } from "./launcher.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { parseExport } from "./parse.ts";
@@ -2140,7 +2142,7 @@ test("buildArgs keeps Vela Browser and forwarded Automation ownership markers di
     ensureCookies: async () => ({ injected: true }),
   });
   const profile = store.getProfile("k1d0cd11")!;
-  const args = launcher.buildArgs(profile, 9333, "/data", ["--automation-launcher-pid=4242"]);
+  const args = launcher.buildArgs(profile, 9333, "/data", ["--automation-launcher-pid=4242"], 41000);
   const managerIdx = args.indexOf("--aliasmode-launcher-pid=MANAGER");
   const automationIdx = args.indexOf("--automation-launcher-pid=4242");
   expect(managerIdx).toBeGreaterThanOrEqual(0);
@@ -2171,12 +2173,12 @@ test("buildArgs never forwards startup URLs to chromium argv", () => {
     ensureCookies: async () => ({ injected: true }),
   });
   const profile = store.getProfile("k1d0cd11")!;
-  const args = launcher.buildArgs(profile, 9333, "/data", ["--disable-sync", "https://x.com/home"]);
+  const args = launcher.buildArgs(profile, 9333, "/data", ["--disable-sync", "https://x.com/home"], 41000);
   expect(args).toContain("--disable-sync");
   expect(args).toContain("--no-first-run");
   expect(args).toContain("--no-default-browser-check");
   expect(args).toContain("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
-  expect(launcher.buildArgs({ ...profile, proxy: null }, 9333, "/data", []))
+  expect(launcher.buildArgs({ ...profile, proxy: null }, 9333, "/data", [], 41000))
     .toContain("--force-webrtc-ip-handling-policy=default_public_interface_only");
   expect(args).not.toContain("https://x.com/home");
   store.close();
@@ -2203,10 +2205,10 @@ test("buildArgs accepts the fixed Automation runtime flag bundle", () => {
     "--memory-pressure-off",
     "--automation-launcher-pid=4242",
   ];
-  const args = launcher.buildArgs(profile, 9333, "/data", launchArgs);
+  const args = launcher.buildArgs(profile, 9333, "/data", launchArgs, 41000);
   for (const arg of launchArgs.filter((arg) => !arg.startsWith("--disable-features="))) expect(args).toContain(arg);
   // Chromium reads only the last --disable-features, so the bundle's joins Vela Browser's own.
-  expect(args.filter((arg) => arg.startsWith("--disable-features="))).toEqual(["--disable-features=IntensiveWakeUpThrottling,BackForwardCache"]);
+  expect(args.filter((arg) => arg.startsWith("--disable-features="))).toEqual(["--disable-features=IntensiveWakeUpThrottling,MediaRouter,BackForwardCache"]);
   store.close();
 });
 
@@ -2218,14 +2220,16 @@ test("buildArgs keeps Chromium 155 Google logins off the TPM binding and merges 
   const chromium155 = { ...cloak, chromiumRuntime: "aliasmode" as const };
   const features = (args: string[]) => args.filter((arg) => arg.startsWith("--disable-features="));
 
-  expect(features(launcher.buildArgs(chromium155, 9333, "/data", [])))
-    .toEqual(["--disable-features=IntensiveWakeUpThrottling,DeviceBoundSessions,EnableBoundSessionCredentials"]);
-  expect(features(launcher.buildArgs(chromium155, 9333, "/data", ["--disable-features=BackForwardCache"])))
-    .toEqual(["--disable-features=IntensiveWakeUpThrottling,DeviceBoundSessions,EnableBoundSessionCredentials,BackForwardCache"]);
+  expect(features(launcher.buildArgs(chromium155, 9333, "/data", [], 41000)))
+    .toEqual(["--disable-features=IntensiveWakeUpThrottling,DeviceBoundSessions,EnableBoundSessionCredentials,MediaRouter"]);
+  expect(features(launcher.buildArgs(chromium155, 9333, "/data", ["--disable-features=BackForwardCache"], 41000)))
+    .toEqual(["--disable-features=IntensiveWakeUpThrottling,DeviceBoundSessions,EnableBoundSessionCredentials,MediaRouter,BackForwardCache"]);
   // Every runtime keeps a browser left in the background from sleeping a minute between timers;
   // the ordinary once-a-second throttling of hidden pages stays as in Chrome.
-  expect(features(launcher.buildArgs(cloak, 9333, "/data", []))).toEqual(["--disable-features=IntensiveWakeUpThrottling"]);
-  const all = launcher.buildArgs(cloak, 9333, "/data", []);
+  expect(features(launcher.buildArgs(cloak, 9333, "/data", [], 41000))).toEqual(["--disable-features=IntensiveWakeUpThrottling,MediaRouter"]);
+  // A direct profile keeps Media Router: only a proxied one must not multicast from this computer.
+  expect(features(launcher.buildArgs({ ...cloak, proxy: null }, 9333, "/data", []))).toEqual(["--disable-features=IntensiveWakeUpThrottling"]);
+  const all = launcher.buildArgs(cloak, 9333, "/data", [], 41000);
   expect(all).not.toContain("--disable-background-timer-throttling");
   expect(all).not.toContain("--disable-backgrounding-occluded-windows");
   store.close();
@@ -2237,11 +2241,11 @@ test("buildArgs forwards any client-named launcher-pid ownership marker verbatim
   const f = fleet();
   const launcher = new Launcher({ store, binaryPath: "/fake", spawn: f.spawn, fetch: f.fetchFn });
 
-  expect(launcher.buildArgs(profile, 9333, "/data", ["--xactions-launcher-pid=4242"]))
+  expect(launcher.buildArgs(profile, 9333, "/data", ["--xactions-launcher-pid=4242"], 41000))
     .toContain("--xactions-launcher-pid=4242");
-  expect(() => launcher.buildArgs(profile, 9333, "/data", ["--xactions-launcher-pid=0"]))
+  expect(() => launcher.buildArgs(profile, 9333, "/data", ["--xactions-launcher-pid=0"], 41000))
     .toThrow("unsafe launch_args rejected");
-  expect(() => launcher.buildArgs(profile, 9333, "/data", ["--launcher-pid=4242"]))
+  expect(() => launcher.buildArgs(profile, 9333, "/data", ["--launcher-pid=4242"], 41000))
     .toThrow("unsafe launch_args rejected");
   store.close();
 });
@@ -2254,7 +2258,7 @@ test("buildArgs loads the exact extension assigned through the registry", () => 
   const f = fleet();
   const launcher = new Launcher({ store, binaryPath: "/fake", spawn: f.spawn, fetch: f.fetchFn });
 
-  const args = launcher.buildArgs(store.getProfile("k1d0cd11")!, 9333, "/data", []);
+  const args = launcher.buildArgs(store.getProfile("k1d0cd11")!, 9333, "/data", [], 41000);
   expect(args).toContain("--load-extension=/data/extensions/store-fixture");
   expect(args).toContain("--disable-extensions-except=/data/extensions/store-fixture");
   store.close();
@@ -2275,7 +2279,7 @@ test("buildArgs logs assigned extensions missing on this device", () => {
     log: (message) => logs.push(message),
   });
 
-  const args = launcher.buildArgs(store.getProfile("k1d0cd11")!, 9333, "/data", []);
+  const args = launcher.buildArgs(store.getProfile("k1d0cd11")!, 9333, "/data", [], 41000);
   expect(args).toContain("--load-extension=/data/extensions/store-fixture");
   expect(logs).toEqual([
     "profile k1d0cd11: assigned extension missing-device is not installed on this device; skipped",
@@ -2300,9 +2304,9 @@ test("buildArgs rejects identity, proxy, storage, extension, mode, and WebRTC ov
     "--remote-debugging-address=0.0.0.0",
     "--js-flags=--max-old-space-size=1024",
   ]) {
-    expect(() => launcher.buildArgs(profile, 9333, "/data", [arg])).toThrow("unsafe launch_args rejected");
+    expect(() => launcher.buildArgs(profile, 9333, "/data", [arg], 41000)).toThrow("unsafe launch_args rejected");
   }
-  const safe = launcher.buildArgs(profile, 9333, "/data", ["--disable-sync", "https://x.com/home"]);
+  const safe = launcher.buildArgs(profile, 9333, "/data", ["--disable-sync", "https://x.com/home"], 41000);
   expect(safe).toContain("--disable-sync");
   expect(safe).toContain("--remote-debugging-address=127.0.0.1");
   expect(safe).not.toContain("https://x.com/home");
@@ -2945,14 +2949,14 @@ test("buildArgs omits --headless when headful, and adds it only when headless", 
   const profile = store.getProfile("k1d0cd11")!;
 
   const headful = new Launcher({ store, binaryPath: "/fake", spawn: f.spawn, fetch: f.fetchFn, ensureCookies: async () => ({ injected: true }) });
-  const argsHeadful = headful.buildArgs(profile, 9333, "/data", []);
+  const argsHeadful = headful.buildArgs(profile, 9333, "/data", [], 41000);
   expect(argsHeadful.some((a) => a.startsWith("--headless"))).toBe(false); // raw chromium: any --headless = headless ON
-  expect(headful.buildArgs(profile, 9333, "/data", [], undefined, true)).toContain("--headless=new");
+  expect(headful.buildArgs(profile, 9333, "/data", [], 41000, true)).toContain("--headless=new");
 
   const headless = new Launcher({ store, binaryPath: "/fake", headless: true, spawn: f.spawn, fetch: f.fetchFn, ensureCookies: async () => ({ injected: true }) });
-  const argsHeadless = headless.buildArgs(profile, 9333, "/data", []);
+  const argsHeadless = headless.buildArgs(profile, 9333, "/data", [], 41000);
   expect(argsHeadless).toContain("--headless=new");
-  expect(headless.buildArgs(profile, 9333, "/data", [], undefined, false).some((a) => a.startsWith("--headless"))).toBe(false);
+  expect(headless.buildArgs(profile, 9333, "/data", [], 41000, false).some((a) => a.startsWith("--headless"))).toBe(false);
   store.close();
 });
 
@@ -4799,7 +4803,7 @@ test("userDataDir is ABSOLUTE even when dataRoot is relative (so --user-data-dir
   expect(isAbsolute(dir)).toBe(true);
   expect(dir).toBe(resolve("profiles", "k1d0cd11"));
   // and the launch flag carries the absolute path, not a bare "profiles/<id>"
-  const args = launcher.buildArgs({ id: "k1d0cd11", screenWidth: 1920, screenHeight: 1080, fingerprintSeed: 1 } as any, 9333, dir, []);
+  const args = launcher.buildArgs({ id: "k1d0cd11", screenWidth: 1920, screenHeight: 1080, fingerprintSeed: 1 } as any, 9333, dir, [], 41000);
   expect(args).toContain(`--user-data-dir=${dir}`);
   store.close();
 });
@@ -4932,7 +4936,7 @@ test("buildArgs keeps a minimized window's renderer priority but Chrome's page t
   const f = fleet();
   const profile = store.getProfile("k1d0cd11")!;
   const launcher = new Launcher({ store, binaryPath: "/fake", spawn: f.spawn, fetch: f.fetchFn, ensureCookies: async () => ({ injected: true }) });
-  const args = launcher.buildArgs(profile, 9333, "/data", []);
+  const args = launcher.buildArgs(profile, 9333, "/data", [], 41000);
   // The session launcher opens the window MINIMIZED (/MIN) so it doesn't steal focus.
   // Process priority is invisible to pages, and Chromium still exits when the user
   // closes the final visible window instead of retaining a background process.
@@ -4952,7 +4956,7 @@ test("buildArgs floors the window width so small-resolution profiles aren't an u
   // too narrow; with the default 65% width it should stay comfortably usable.
   const small = { ...store.getProfile("k1d0cd11")!, screenWidth: 1366, screenHeight: 768 };
   const launcher = new Launcher({ store, binaryPath: "/fake", spawn: f.spawn, fetch: f.fetchFn, ensureCookies: async () => ({ injected: true }) });
-  const args = launcher.buildArgs(small, 9333, "/data", []);
+  const args = launcher.buildArgs(small, 9333, "/data", [], 41000);
   expect(args).toContain("--window-size=888,691"); // round(1366*0.65) x round(768*0.9)
   store.close();
 });
@@ -5795,6 +5799,8 @@ test("every proxied Chromium launch takes the proxy exit's timezone, and no answ
     const opened = await launcher.start(chromium155.id);
     const stored = store.getProfile(chromium155.id)!.timezone;
     // The launch identity was recorded with the saved timezone, so a restarted app reattaches.
+    // A restarted app is a new process: the old one's relay is gone and its port is free again.
+    (launcher as any).closeRelay(chromium155.id);
     const restarted = newLauncher(store, f, spawnedArgs, undefined, undefined, options);
     expect(await restarted.start(chromium155.id)).toEqual({ ...opened, nativeSessionRestored: false, reattached: true });
     expect(spawnedArgs).toHaveLength(1);
@@ -6130,5 +6136,89 @@ test("Chromium 155 beta is refused on unsupported hosts before any download", as
   await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "chromium155_host"));
   launcher.prefetchBrowserRuntimes([profile]);
   expect(downloads).toBe(0);
+  store.close();
+});
+
+// ---- Every proxied profile goes through its own relay, and resolves no name on this computer ----
+
+for (const proxy of [
+  { type: "http", host: "proxy.example", port: "8080", user: "", pass: "" },
+  { type: "https", host: "proxy.example", port: "8443", user: "", pass: "" },
+  { type: "socks5", host: "proxy.example", port: "1080", user: "", pass: "" },
+  { type: "http", host: "proxy.example", port: "8080", user: "u", pass: "p" },
+] as const) {
+  test(`a ${proxy.type}${proxy.user ? " authenticated" : ""} proxy reaches Chromium only as its loopback relay`, async () => {
+    const store = seeded();
+    store.upsertProfile({ ...store.getProfile("k1d0cd11")!, proxy: { ...proxy } });
+    const f = fleet();
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, f, spawnedArgs);
+    await launcher.start("k1d0cd11");
+    const args = spawnedArgs[0]!;
+    expect(args.filter((arg) => arg.startsWith("--proxy-server="))).toEqual([
+      `--proxy-server=http://127.0.0.1:${store.getLaunch("k1d0cd11")!.relayPort}`,
+    ]);
+    expect(args.some((arg) => arg.includes("proxy.example"))).toBe(false);
+    expect(args).toContain(`--host-resolver-rules=${PROXIED_HOST_RESOLVER_RULES}`);
+    await launcher.stop("k1d0cd11");
+    store.close();
+  });
+}
+
+test("the host resolver rules leave nothing to resolve on this computer except loopback names", () => {
+  expect(PROXIED_HOST_RESOLVER_RULES).toBe("MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1 , EXCLUDE [::1]");
+});
+
+test("a direct profile keeps the system resolver and gets no relay", async () => {
+  const store = seeded();
+  makeDirect(store);
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const launcher = newLauncher(store, f, spawnedArgs);
+  await launcher.start("k1d0cd11");
+  expect(spawnedArgs[0]!.some((arg) => arg.startsWith("--proxy-server=") || arg.startsWith("--host-resolver-rules="))).toBe(false);
+  expect(store.getLaunch("k1d0cd11")?.relayPort).toBeUndefined();
+  await launcher.stop("k1d0cd11");
+  store.close();
+});
+
+test("the relay keeps the proxy's own protocol, so an HTTPS proxy is reached over TLS", () => {
+  for (const type of ["http", "https", "socks5"] as const) {
+    expect(relayUpstream({ type, host: "proxy.example", port: "3128", user: "u", pass: "p" }))
+      .toEqual({ type, host: "proxy.example", port: 3128, user: "u", pass: "p" });
+  }
+});
+
+test("a browser opened before every proxy was relayed keeps running through its direct proxy after a restart", async () => {
+  const store = seeded();
+  store.upsertProfile({ ...store.getProfile("k1d0cd11")!, proxy: { type: "http", host: "proxy.example", port: "8080", user: "", pass: "" } });
+  const f = fleet();
+  const launcherA = newLauncher(store, f, []);
+  await launcherA.start("k1d0cd11");
+  (launcherA as any).closeRelay("k1d0cd11");
+  // The row such a browser left: its --proxy-server named the upstream, no relay port.
+  const { relayPort: _relayPort, ...legacy } = store.getLaunch("k1d0cd11")!;
+  store.recordLaunch(legacy);
+
+  const launcherB = newLauncher(store, f, []);
+  const again = await launcherB.start("k1d0cd11");
+  expect(again.reattached).toBe(true);
+  expect(store.getLaunch("k1d0cd11")?.relayPort).toBeUndefined();
+  await launcherB.stop("k1d0cd11");
+  store.close();
+});
+
+test("a SOCKS5 survivor without its relay is still refused, as before", async () => {
+  const store = seeded();
+  store.upsertProfile({ ...store.getProfile("k1d0cd11")!, proxy: { type: "socks5", host: "proxy.example", port: "1080", user: "u", pass: "p" } });
+  const f = fleet();
+  const launcherA = newLauncher(store, f, []);
+  await launcherA.start("k1d0cd11");
+  (launcherA as any).closeRelay("k1d0cd11");
+  const { relayPort: _relayPort, ...legacy } = store.getLaunch("k1d0cd11")!;
+  store.recordLaunch(legacy);
+
+  const launcherB = newLauncher(store, f, []);
+  await expect(launcherB.start("k1d0cd11")).rejects.toThrow();
   store.close();
 });
