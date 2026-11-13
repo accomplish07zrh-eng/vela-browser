@@ -80,3 +80,15 @@ const binary = process.env.VELA_SINGBOX?.trim();
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a node using ECH always gets the DoH resolver, even when it is given by IP, so the lookup never uses this computer's DNS", () => {
+  const ech = parseSubscription(`proxies:
+  - { name: e, type: vless, server: 203.0.113.30, port: 443, uuid: 11111111-2222-3333-4444-555555555555, tls: true, servername: c.node.example, ech-opts: { enable: true, query-server-name: cloudflare-ech.com } }
+`).nodes[0]!;
+  const config = kernelConfig([{ tag: "e", port: 41100, username: "u", password: "p", outbound: ech.outbound }]) as any;
+  expect(config.dns).toEqual({ servers: [{ type: "https", tag: "node-resolver", server: "223.5.5.5" }] });
+  expect(config.route.default_domain_resolver).toBe("node-resolver");
+  const withoutDns = structuredClone(config);
+  delete withoutDns.dns;
+  expect(() => assertKernelConfig(withoutDns)).toThrow("ECH needs the node resolver");
+});

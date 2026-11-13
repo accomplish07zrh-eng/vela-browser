@@ -32,7 +32,8 @@ export function kernelConfig(inbounds: KernelInbound[], opts: { resolver?: { typ
   if (!inbounds.length) throw new Error("a kernel needs at least one inbound");
   const resolver = opts.resolver ?? NODE_RESOLVER;
   if (resolver.type !== "https" || isIP(resolver.server) === 0) throw new Error("the node resolver must be a DNS-over-HTTPS server given by IP");
-  const needsResolver = inbounds.some((inbound) => isIP(inbound.outbound.server) === 0);
+  // A node given by name, or one that looks up its ECH config: either way the only DNS is the DoH resolver.
+  const needsResolver = inbounds.some((inbound) => isIP(inbound.outbound.server) === 0 || usesEch(inbound.outbound));
   const config = {
     log: { level: "warn", timestamp: false },
     ...(needsResolver ? { dns: { servers: [{ type: "https", tag: RESOLVER_TAG, server: resolver.server }] } } : {}),
@@ -64,6 +65,11 @@ export function kernelConfig(inbounds: KernelInbound[], opts: { resolver?: { typ
   return config;
 }
 
+function usesEch(outbound: Record<string, unknown>): boolean {
+  const tls = outbound.tls as Record<string, any> | undefined;
+  return !!tls?.ech?.enabled;
+}
+
 /**
  * The invariants, checked on every config before it is written and again before a kernel starts.
  * A config that breaks one is never run.
@@ -89,6 +95,8 @@ export function assertKernelConfig(config: unknown): void {
     for (const key of ["detour", "bind_interface", "inet4_bind_address", "inet6_bind_address", "routing_mark", "multiplex"]) {
       if (key in outbound) fail(`outbound option ${key}`);
     }
+    // Without the DoH resolver, sing-box would look the ECH config up with this computer's DNS.
+    if (usesEch(outbound) && !c.dns) fail("ECH needs the node resolver");
     tags.add(outbound.tag);
   }
   const route = c.route ?? fail("no route");
