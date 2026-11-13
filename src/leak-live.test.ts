@@ -37,6 +37,7 @@ import { defaultSpawn, Launcher, PROXIED_DISABLED_FEATURES, PROXIED_HOST_RESOLVE
 import { ProfileStore } from "./store.ts";
 import { ensureKernel, freeLoopbackPort, type InstalledKernel } from "./kernel.ts";
 import { parseSubscription } from "./subscription.ts";
+import { switchProfileProxy } from "./proxy-switch.ts";
 import type { ObservedFingerprint, Profile } from "./types.ts";
 
 const live = process.env.VELA_LEAK_LIVE === "1" && process.platform === "win32";
@@ -419,7 +420,7 @@ const NODE_SERVER_HOST = "127.0.0.2";
  * A local node server for one protocol (self-signed TLS where the protocol needs it). Its only
  * outbound is the fake exit, as an HTTP proxy that receives names, never addresses.
  */
-async function startNodeServer(kernel: InstalledKernel, protocol: KernelProtocolName, exitPort: number, root: string) {
+async function startNodeServer(kernel: InstalledKernel, protocol: KernelProtocolName, exitPort: number, root: string, host = NODE_SERVER_HOST) {
   const keypair = await new Response(Bun.spawn([kernel.path, "generate", "tls-keypair", "vela-node.test"], { stdout: "pipe" }).stdout).text();
   const key = /-----BEGIN PRIVATE KEY-----[\s\S]+?-----END PRIVATE KEY-----/.exec(keypair)?.[0];
   const cert = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/.exec(keypair)?.[0];
@@ -427,7 +428,7 @@ async function startNodeServer(kernel: InstalledKernel, protocol: KernelProtocol
   const tls = { enabled: true, server_name: "vela-node.test", certificate: cert.split("\n"), key: key.split("\n") };
   const port = await freeLoopbackPort();
   const uuid = randomUUID();
-  const listen = { listen: NODE_SERVER_HOST, listen_port: port };
+  const listen = { listen: host, listen_port: port };
   const inbound: Record<string, unknown> = {
     vless: { type: "vless", ...listen, users: [{ uuid }], tls },
     trojan: { type: "trojan", ...listen, users: [{ password: "probe-trojan" }], tls },
@@ -436,13 +437,13 @@ async function startNodeServer(kernel: InstalledKernel, protocol: KernelProtocol
     shadowsocks: { type: "shadowsocks", ...listen, method: "aes-128-gcm", password: "probe-ss-password" },
   }[protocol] as Record<string, unknown>;
   const link = {
-    vless: `vless://${uuid}@${NODE_SERVER_HOST}:${port}?security=tls&sni=vela-node.test&allowInsecure=1#probe-vless`,
-    trojan: `trojan://probe-trojan@${NODE_SERVER_HOST}:${port}?sni=vela-node.test&allowInsecure=1#probe-trojan`,
-    hysteria2: `hysteria2://probe-hy2@${NODE_SERVER_HOST}:${port}?sni=vela-node.test&insecure=1#probe-hy2`,
-    anytls: `anytls://probe-anytls@${NODE_SERVER_HOST}:${port}?sni=vela-node.test&insecure=1#probe-anytls`,
-    shadowsocks: `ss://${Buffer.from("aes-128-gcm:probe-ss-password").toString("base64url")}@${NODE_SERVER_HOST}:${port}#probe-ss`,
+    vless: `vless://${uuid}@${host}:${port}?security=tls&sni=vela-node.test&allowInsecure=1#probe-vless`,
+    trojan: `trojan://probe-trojan@${host}:${port}?sni=vela-node.test&allowInsecure=1#probe-trojan`,
+    hysteria2: `hysteria2://probe-hy2@${host}:${port}?sni=vela-node.test&insecure=1#probe-hy2`,
+    anytls: `anytls://probe-anytls@${host}:${port}?sni=vela-node.test&insecure=1#probe-anytls`,
+    shadowsocks: `ss://${Buffer.from("aes-128-gcm:probe-ss-password").toString("base64url")}@${host}:${port}#probe-ss`,
   }[protocol];
-  const config = join(root, "node-server.json");
+  const config = join(root, `node-server-${host}.json`);
   writeFileSync(config, JSON.stringify({
     log: { level: "error" },
     inbounds: [inbound],
@@ -453,7 +454,7 @@ async function startNodeServer(kernel: InstalledKernel, protocol: KernelProtocol
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
     const up = protocol === "hysteria2" || await new Promise<boolean>((resolve) => {
-      const socket = net.connect(port, NODE_SERVER_HOST);
+      const socket = net.connect(port, host);
       socket.once("connect", () => { socket.destroy(); resolve(true); });
       socket.once("error", () => resolve(false));
     });
@@ -777,4 +778,119 @@ for (const protocol of KERNEL_PROTOCOLS as KernelProtocolName[]) {
 (live && firefoxBinary && kernelZip ? test : test.skip)("Vela Firefox through an anytls pool node and the real kernel: no leak", async () => {
   const result = await probe("firefox", { kernel: "anytls" });
   expectNoLeak(result, "firefox-anytls");
+}, 600_000);
+
+/**
+ * Changing an open browser's exit with the real flow: node A (trojan, 127.0.0.2) has its own fake
+ * exit, node B (shadowsocks, 127.0.0.3) another. After the switch nothing reaches A's exit, before
+ * it nothing reached B's, and throughout no name is resolved here and no socket leaves loopback.
+ */
+async function switchProbe() {
+  const run = randomUUID().slice(0, 8);
+  const root = join(tmpdir(), `vela-leak-switch-${run}`);
+  mkdirSync(root, { recursive: true });
+  const canary = await directCanary();
+  const mdns = await mdnsWatch();
+  const exitA = await fakeExit(run, canary);
+  const exitB = await fakeExit(run, canary);
+  const installed = await ensureKernel(join(root, "runtimes"), { fetch: (async () => new Response(readFileSync(kernelZip) as unknown as BodyInit)) as never });
+  const serverA = await startNodeServer(installed, "trojan", exitA.port, root, "127.0.0.2");
+  const serverB = await startNodeServer(installed, "shadowsocks", exitB.port, root, "127.0.0.3");
+  const store = new ProfileStore(join(root, "profiles.sqlite"));
+  const parsed = parseSubscription(`${serverA.link}\n${serverB.link}`);
+  const sub = store.proxyPool.addSubscription({ url: "https://leak-probe.vela-leak.test/sub" });
+  store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+  const [nodeA, nodeB] = store.proxyPool.list();
+  const profile = buildNewProfile({ name: `switch-${run}`, chromiumRuntime: "aliasmode", proxy: nodeA!.proxy, screen: "1280x800" }, () => false);
+  store.upsertProfile(profile);
+  const netLogPath = join(root, "netlog.json");
+  const launcher = new Launcher({
+    store, dataRoot: join(root, "profiles"), headless: false, portRange: { start: 9700, end: 9799 }, cdpReadyTimeoutMs: 60_000,
+    labelWindow: async () => {}, lookupExitLocation: async () => FAKE_EXIT, ensureKernel: async () => installed,
+    chromiumRuntimeRoot: dirname(dirname(chromiumBinary)), ensureAliasmodeChromium: async () => chromiumBinary,
+    baseArgs: [`--log-net-log=${netLogPath}`, "--net-log-capture-mode=Everything"],
+  } as ConstructorParameters<typeof Launcher>[0]);
+  const rootPidFile = join(root, "browser.pid");
+  const kernelPidFile = join(root, "kernel.pid");
+  const sampler = socketSampler(rootPidFile, join(root, "sockets.jsonl"));
+  const kernelSampler = socketSampler(kernelPidFile, join(root, "kernel-sockets.jsonl"));
+  const pids = () => {
+    writeFileSync(rootPidFile, String(store.getLaunch(profile.id)?.pid ?? 0));
+    writeFileSync(kernelPidFile, String(launcher.kernels.pid(profile.id) ?? 0));
+  };
+  try {
+    await launcher.start(profile.id, [`http://page-${run}.${LEAK_DOMAIN}/`]);
+    pids();
+    let deadline = Date.now() + 45_000;
+    while (!exitA.reports.length && Date.now() < deadline) await Bun.sleep(250);
+    await Bun.sleep(3000);
+    const switchAt = Date.now();
+    // The reopened browser's relay is checked as an HTTP proxy; the node's temporary kernel is SOCKS5.
+    const relayCheck = (proxy: { type: string; host: string }) => proxy.type === "http" && proxy.host === "127.0.0.1";
+    const result = await switchProfileProxy({
+      store, launcher,
+      assign: async (id, proxy) => { store.upsertProfile({ ...store.getProfile(id)!, proxy }); },
+      // The fake exits are not the internet: the node passes its check, and the reopened relay's
+      // check finds no egress service (never this computer's address).
+      check: async (proxy) => relayCheck(proxy)
+        ? { status: "unavailable", attempts: 3, successes: 0, reason: "check_unavailable" }
+        : { status: "working", attempts: 3, successes: 3, ip: "203.0.113.60", country: "US" },
+      direct: async () => ({ ip: "198.51.100.1" }),
+    }, { profileId: profile.id, nodeId: nodeB!.id, by: "leak-probe" });
+    const switchedAt = Date.now();
+    pids();
+    deadline = Date.now() + 45_000;
+    while (!exitB.reports.length && Date.now() < deadline) await Bun.sleep(250);
+    await Bun.sleep(15_000);
+    const afterSwitchOnA = exitA.records.filter((record) => record.at > switchedAt);
+    const beforeSwitchOnB = exitB.records.filter((record) => record.at < switchAt);
+    await launcher.stop(profile.id).catch(() => false);
+    await Bun.sleep(1500);
+    const samples = await sampler.stop();
+    const kernelSamples = await kernelSampler.stop();
+    return {
+      result, afterSwitchOnA, beforeSwitchOnB,
+      reportsA: exitA.reports.length, reportsB: exitB.reports.length,
+      canaryHits: [...canary.hits], samples, kernelSamples,
+      dnsCache: await dnsCacheNames(LEAK_DOMAIN),
+      netLog: existsSync(netLogPath) ? readNetLog(netLogPath) : undefined,
+      history: store.proxyPool.switchHistory(profile.id),
+    };
+  } finally {
+    await sampler.stop().catch(() => []);
+    await kernelSampler.stop().catch(() => []);
+    await launcher.stop(profile.id).catch(() => false);
+    serverA.stop(); serverB.stop();
+    store.close();
+    await exitA.close(); await exitB.close();
+    canary.close(); mdns.close();
+    // A cleanup that fails must not hide why the probe failed.
+    try {
+      if (process.env.VELA_LEAK_KEEP !== "1") rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      else console.log(`[leak] kept ${root}`);
+    } catch (error) { console.log(`[leak] could not remove ${root}: ${(error as Error).message}`); }
+  }
+}
+
+(live && chromiumBinary && kernelZip ? test : test.skip)("Vela Chromium 155 changes exits while open: the old exit goes silent, the new one carries the restored page, and nothing leaks in between", async () => {
+  const r = await switchProbe();
+  const peers = new Set(r.kernelSamples.flatMap((sample) => sample.tcp.map((row) => row.a)));
+  const remote = new Set(r.samples.flatMap((sample) => sample.tcp.map((row) => row.a)).filter((a) => !LOOPBACK.has(a)));
+  console.log(`[leak] switch: ${JSON.stringify({ applied: r.result.applied, reportsA: r.reportsA, reportsB: r.reportsB, afterSwitchOnA: r.afterSwitchOnA.length, beforeSwitchOnB: r.beforeSwitchOnB.length, kernelPeers: [...peers], remote: [...remote], dnsCache: r.dnsCache, canary: r.canaryHits, resolved: r.netLog?.resolved, history: r.history })}`);
+  expect(r.result.applied).toBe("reopened");
+  expect(r.reportsA).toBeGreaterThan(0);
+  // The restored tab loaded again, through the new exit only.
+  expect(r.reportsB).toBeGreaterThan(0);
+  expect(r.afterSwitchOnA).toEqual([]);
+  expect(r.beforeSwitchOnB).toEqual([]);
+  expect([...remote]).toEqual([]);
+  expect([...peers].filter((a) => !["127.0.0.1", "127.0.0.2", "127.0.0.3"].includes(a))).toEqual([]);
+  expect(peers.has("127.0.0.3")).toBe(true);
+  expect(r.dnsCache).toEqual([]);
+  expect(r.canaryHits).toEqual([]);
+  if (r.netLog) {
+    expect(r.netLog.resolved.filter((entry) => !/^(localhost|127\.0\.0\.1)$/.test(entry.host))).toEqual([]);
+    expect(r.netLog.udpSends).toEqual([]);
+  }
+  expect(r.history[0]).toMatchObject({ by: "leak-probe", outcome: "reopened" });
 }, 600_000);

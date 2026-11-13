@@ -4042,7 +4042,7 @@ function App() {
                       <Icon name="activity" className="sm" />
                       {editProxyCheck.checking ? "Checking…" : t("Check proxy")}
                     </button>}
-                    {editId && <PoolProxyPicker profileId={editId} onAssigned={() => {
+                    {editId && <PoolProxyPicker profileId={editId} running={!!profiles.find((p) => p.id === editId)?.running} onAssigned={() => {
                       // The server saved the pool proxy and its exit's timezone; show what it saved,
                       // and treat it as the form's starting point so a later save does not undo it.
                       const id = editId;

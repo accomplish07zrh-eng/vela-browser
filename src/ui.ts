@@ -21,6 +21,7 @@ import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxyS
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleProxyPoolRequest } from "./proxy-pool-api.ts";
+import { switchProfileProxy } from "./proxy-switch.ts";
 import { handleTrashRequest } from "./trash.ts";
 import {
   importInbox,
@@ -798,6 +799,10 @@ export async function handleUiRequest(
     return handleProxyPoolRequest(req, store, options, {
       assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
       kernels: launcher.kernels,
+      switchProxy: (profileId, nodeId, by) => switchProfileProxy({
+        store, launcher, assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
+        ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
+      }, { profileId, nodeId, by }),
     });
   }
 

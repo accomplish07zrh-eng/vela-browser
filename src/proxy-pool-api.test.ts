@@ -174,3 +174,31 @@ test("kernel nodes are checked through a temporary kernel that stops afterwards;
   expect(store.proxyPool.get(kernelNode!.id)!.check).toMatchObject({ status: "unavailable" });
   expect(store.proxyPool.get(plain!.id)!.check!.status).toBe("working");
 });
+
+test("switching goes through one route; each stop reason has its own status, and history lists who changed what", async () => {
+  const { store } = setup();
+  const { handleProxyPoolRequest } = await import("./proxy-pool-api.ts");
+  const { ProxySwitchError } = await import("./proxy-switch.ts");
+  const calls: string[] = [];
+  let failWith: InstanceType<typeof ProxySwitchError> | null = null;
+  const deps = {
+    assign: async () => null,
+    switchProxy: async (profileId: string, nodeId: string, by: string) => {
+      calls.push(`${profileId} ${nodeId} ${by}`);
+      if (failWith) throw failWith;
+      store.proxyPool.recordSwitch({ profileId, at: 5, by, from: "a", to: "b", outcome: "reopened" });
+      return { applied: "reopened" as const, previous: "a", next: "b", sharedWith: [] };
+    },
+  };
+  const call = (path: string, body?: unknown) => handleProxyPoolRequest(new Request(`http://localhost/ui/api/proxy-pool${path}`, body === undefined
+    ? { method: "GET" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), store, {}, deps);
+  expect(await (await call("/switch", { profileId: "p1", nodeId: "n1" })).json()).toEqual({ ok: true, applied: "reopened", previous: "a", next: "b", sharedWith: [] });
+  expect(calls).toEqual(["p1 n1 dashboard"]);
+  for (const [code, status] of [["rate_limited", 429], ["pool_exhausted", 409], ["switch_check_failed", 422], ["exit_is_direct", 500]] as const) {
+    failWith = new ProxySwitchError(code, "stopped", code === "rate_limited" ? { retryAfterMs: 1000 } : {});
+    const response = await call("/switch", { profileId: "p1", nodeId: "n1" });
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ ok: false, code, ...(code === "rate_limited" ? { retryAfterMs: 1000 } : {}) });
+  }
+  expect(await (await call("/history?profileId=p1")).json()).toEqual({ ok: true, history: [{ profileId: "p1", at: 5, by: "dashboard", from: "a", to: "b", outcome: "reopened" }] });
+});

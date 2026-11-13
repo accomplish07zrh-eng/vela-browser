@@ -82,6 +82,10 @@ export const importPool = (text: string, type: string, tags: string[]) =>
   poolCall<{ added: number; duplicates: number; invalid: Array<{ line: number; error: string }> }>("/import", { text, type, tags });
 export const updatePoolNode = (id: string, patch: Record<string, unknown>) => poolCall<{ node: PoolNodeView }>("/update", { id, ...patch });
 export const deletePoolNodes = (ids: string[]) => poolCall<{ removed: number }>("/delete", { ids });
+export interface SwitchAnswer { applied: "saved" | "reopened"; previous: string; next: string; exit?: { ip?: string; country?: string }; sharedWith: Array<{ id: string; name: string; group: string }> }
+export const switchPoolNode = (profileId: string, nodeId: string) => poolCall<SwitchAnswer>("/switch", { profileId, nodeId });
+export interface SwitchHistoryView { at: number; by: string; from: string; to: string; outcome: "saved" | "reopened" | "failed"; code?: string; exitCountry?: string }
+export const fetchSwitchHistory = (profileId: string) => poolCall<{ history: SwitchHistoryView[] }>(`/history?profileId=${encodeURIComponent(profileId)}`).then((r) => r.history);
 export const assignPoolNode = (profileId: string, nodeId: string) =>
   poolCall<{ restartRequired?: true; sharedWith: Array<{ id: string; name: string; group: string }> }>("/assign", { profileId, nodeId });
 
@@ -408,31 +412,57 @@ export function PoolSelectionFields({ value, onChange, disabled }: { value: stri
 }
 
 /** "From the pool" in a profile's edit form: saves the chosen node as the profile's proxy. */
-export function PoolProxyPicker({ profileId, onAssigned }: { profileId: string; onAssigned: (result: { restartRequired?: true }) => void }) {
+/** Why a switch stopped, for the person who asked for it. */
+function switchFailure(t: (key: string, vars?: Record<string, string | number>) => string, failure: unknown): string {
+  const { code, retryAfterMs } = failure as { code?: string; retryAfterMs?: number };
+  switch (code) {
+    case "pool_exhausted": return t("This proxy already has as many profiles as its sharing limit allows.");
+    case "node_unavailable": return t("This proxy is not available in the pool");
+    case "rate_limited": return t("This profile changed its proxy moments ago. Try again in {seconds} s.", { seconds: Math.ceil((retryAfterMs ?? 30_000) / 1000) });
+    case "profile_busy": return t("This profile is already changing its proxy.");
+    case "switch_check_failed": return t("The new proxy did not pass its check. Nothing was changed.");
+    case "teardown_unconfirmed": return t("The browser could not be closed for certain, so it keeps its current proxy.");
+    case "reopen_failed": return t("The new proxy is saved, but the browser did not reopen. Open it again.");
+    case "exit_is_direct": return t("After reopening, the browser's traffic left from this computer's own address, so it was closed.");
+    default: return t("Could not save");
+  }
+}
+
+export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId: string; running?: boolean; onAssigned: (result: SwitchAnswer) => void }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [nodes, setNodes] = useState<PoolNodeView[] | null>(null);
   const [choice, setChoice] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState<SwitchHistoryView[]>([]);
   useEffect(() => { if (open) void fetchPool().then(setNodes, () => setNodes([])); }, [open]);
+  useEffect(() => { void fetchSwitchHistory(profileId).then(setHistory, () => setHistory([])); }, [profileId, busy]);
+  const last = history[0];
+  const lastLine = last && <small className="pool-picker-message">{t("Last change: {when} · {from} → {to} · {by} · {outcome}", {
+    when: new Date(last.at).toLocaleString(), from: last.from, to: last.to,
+    by: last.by === "dashboard" ? t("you") : last.by.replace(/^mcp:/, "MCP · "),
+    outcome: last.outcome === "failed" ? t("not changed") : last.outcome === "reopened" ? t("reopened") : t("saved"),
+  })}</small>;
   if (!open) return <>
     <button type="button" className="btn proxy-check-btn" onClick={() => { setOpen(true); setMessage(null); }}>{t("From the pool…")}</button>
     {message && <small className="pool-picker-message">{message}</small>}
+    {lastLine}
   </>;
   const usable = (nodes ?? []).filter((node) => !node.disabled);
   const assign = async () => {
+    if (running && !window.confirm(t("Change this open browser's exit? Its session is saved, it closes, and it reopens on the new exit with its tabs. Timezone and WebRTC follow the new exit."))) return;
     setBusy(true); setMessage(null);
     try {
-      const result = await assignPoolNode(profileId, choice);
-      setMessage(result.sharedWith.length
-        ? t("Saved. This exit is shared with {names}.", { names: result.sharedWith.map((p) => p.name || p.id).join(", ") })
-        : t("Saved."));
+      const result = await switchPoolNode(profileId, choice);
+      const shared = result.sharedWith.length ? " " + t("This exit is shared with {names}.", { names: result.sharedWith.map((p) => p.name || p.id).join(", ") }) : "";
+      setMessage((result.applied === "reopened"
+        ? t("Changed. The browser reopened on the new exit ({country}).", { country: result.exit?.country ?? "—" })
+        : t("Saved. The profile uses the new exit from its next start.")) + shared);
       onAssigned(result);
       setOpen(false);
     } catch (failure) {
-      const code = (failure as { code?: string }).code;
-      setMessage(code === "pool_exhausted" ? t("This proxy already has as many profiles as its sharing limit allows.") : t("Could not save"));
+      setMessage(switchFailure(t, failure));
     } finally { setBusy(false); }
   };
   return <div className="pool-picker">
@@ -447,7 +477,7 @@ export function PoolProxyPicker({ profileId, onAssigned }: { profileId: string; 
         </option>;
       })}
     </Select>
-    <button type="button" className="btn primary" disabled={!choice || busy} onClick={() => void assign()}>{t("Use this proxy")}</button>
+    <button type="button" className="btn primary" disabled={!choice || busy} onClick={() => void assign()}>{busy ? t("Checking the new exit…") : running ? t("Change and reopen") : t("Use this proxy")}</button>
     <button type="button" className="btn" onClick={() => setOpen(false)}>{t("Cancel")}</button>
     {message && <small>{message}</small>}
   </div>;

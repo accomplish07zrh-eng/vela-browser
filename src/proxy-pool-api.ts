@@ -9,6 +9,7 @@ import { checkProxy } from "./proxy-check.ts";
 import { checkPoolNodes, poolNodeViews, poolUsage, ProxyPoolError, subscriptionView, type PoolNode } from "./proxy-pool.ts";
 import { fetchSubscription, SubscriptionError } from "./subscription.ts";
 import type { KernelSupervisor } from "./kernel.ts";
+import { ProxySwitchError, type SwitchResult } from "./proxy-switch.ts";
 import { normalizeProxyType } from "./proxy.ts";
 import type { ProfileStore } from "./store.ts";
 import type { ProxySpec } from "./types.ts";
@@ -21,7 +22,15 @@ export interface ProxyPoolRouteDeps {
   kernels?: Pick<KernelSupervisor, "startTemporary">;
   /** Injectable for tests. */
   fetchSubscription?: typeof fetchSubscription;
+  /** Change a profile's proxy to a pool node, reopening its browser if open (proxy-switch.ts). */
+  switchProxy?: (profileId: string, nodeId: string, by: string) => Promise<SwitchResult>;
 }
+
+/** HTTP status for each reason a switch stops. */
+export const SWITCH_STATUS: Record<string, number> = {
+  no_such_profile: 404, node_unavailable: 409, pool_exhausted: 409, rate_limited: 429, profile_busy: 409,
+  switch_check_failed: 422, teardown_unconfirmed: 500, reopen_failed: 500, exit_is_direct: 500,
+};
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -46,6 +55,12 @@ export async function handleProxyPoolRequest(
   const action = new URL(req.url).pathname.replace(/^\/ui\/api\/proxy-pool\/?/, "");
   const pool = store.proxyPool;
   try {
+    if (action === "history" && req.method === "GET") {
+      const profileId = new URL(req.url).searchParams.get("profileId");
+      if (!profileId) return json({ ok: false, error: "Choose a profile" }, 400);
+      return json({ ok: true, history: pool.switchHistory(profileId, 20) });
+    }
+
     if (action === "" && req.method === "GET") {
       return json({ ok: true, nodes: views(store), subscriptions: pool.listSubscriptions().map(subscriptionView) });
     }
@@ -81,6 +96,17 @@ export async function handleProxyPoolRequest(
     if (action === "delete") {
       const removed = pool.remove(stringList(body.ids, "ids"));
       return json({ ok: true, removed });
+    }
+
+    if (action === "switch") {
+      if (typeof body.profileId !== "string" || typeof body.nodeId !== "string") throw new ProxyPoolError("Choose a profile and a proxy");
+      if (!deps.switchProxy) return json({ ok: false, error: "Proxy pool operation failed" }, 500);
+      try {
+        return json({ ok: true, ...(await deps.switchProxy(body.profileId, body.nodeId, "dashboard")) });
+      } catch (error) {
+        if (!(error instanceof ProxySwitchError)) throw error;
+        return json({ ok: false, code: error.code, error: error.message, ...error.detail }, SWITCH_STATUS[error.code] ?? 500);
+      }
     }
 
     if (action === "assign") {

@@ -194,6 +194,17 @@ export class ProxyPool {
         check_json TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS proxy_switch_history (
+        profile_id TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        by_whom TEXT NOT NULL,
+        from_label TEXT NOT NULL,
+        to_label TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        code TEXT NOT NULL DEFAULT '',
+        exit_country TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS proxy_switch_history_profile ON proxy_switch_history (profile_id, at);
       CREATE TABLE IF NOT EXISTS proxy_subscriptions (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL DEFAULT '',
@@ -216,6 +227,22 @@ export class ProxyPool {
     ]) {
       try { db.exec(`ALTER TABLE proxy_pool_nodes ADD COLUMN ${column}`); } catch { /* already there */ }
     }
+  }
+
+  /** Remember a proxy change: when, by whom (the dashboard or an MCP connection), from and to what. */
+  recordSwitch(entry: import("./proxy-switch.ts").SwitchHistoryEntry): void {
+    this.db.query(`INSERT INTO proxy_switch_history (profile_id, at, by_whom, from_label, to_label, outcome, code, exit_country) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(entry.profileId, entry.at, entry.by.slice(0, 120), entry.from.slice(0, 300), entry.to.slice(0, 300), entry.outcome, entry.code ?? "", entry.exitCountry ?? "");
+  }
+
+  /** A profile's proxy changes, newest first. */
+  switchHistory(profileId: string, limit = 20): import("./proxy-switch.ts").SwitchHistoryEntry[] {
+    return this.db.query<any, [string, number]>(`SELECT * FROM proxy_switch_history WHERE profile_id = ? ORDER BY at DESC, rowid DESC LIMIT ?`)
+      .all(profileId, limit)
+      .map((row) => ({
+        profileId: row.profile_id, at: Number(row.at), by: row.by_whom, from: row.from_label, to: row.to_label, outcome: row.outcome,
+        ...(row.code ? { code: row.code } : {}), ...(row.exit_country ? { exitCountry: row.exit_country } : {}),
+      }));
   }
 
   listSubscriptions(): PoolSubscription[] {
