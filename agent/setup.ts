@@ -11,7 +11,7 @@ export type CommandRunner = (command: string, args: string[], input?: string) =>
 
 /** The name the MCP server is registered under in each AI client. */
 export const MCP_SERVER_NAME = "vela-browser";
-/** The name used before 0.1.7. Setting up again removes it, so the client lists the server once. */
+/** The name earlier versions used. Setting up again removes it, so the client lists the server once. */
 export const LEGACY_MCP_SERVER_NAMES = ["aliasmode"];
 
 const CLIENTS: Record<SetupClient, {

@@ -2,7 +2,7 @@
 //
 // Local AI clients start this file by its installed path. It keeps that path and passes
 // the arguments, the environment, stdin, stdout, stderr and the exit code through unchanged.
-// Plain comments, not `//!`: aliasmode-mcp.rs includes this file for clients set up before 0.1.7.
+// Plain comments, not `//!`: aliasmode-mcp.rs includes this file for clients set up with earlier versions.
 
 use std::{
     env,

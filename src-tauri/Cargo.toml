@@ -21,7 +21,7 @@ path = "src/main.rs"
 name = "vela-browser-mcp"
 path = "src/bin/vela-browser-mcp.rs"
 
-# The same launcher under its name before 0.1.7, for AI clients set up with an earlier version.
+# The same launcher under its earlier name, for AI clients set up with an earlier version.
 [[bin]]
 name = "aliasmode-mcp"
 path = "src/bin/aliasmode-mcp.rs"

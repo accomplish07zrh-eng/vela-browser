@@ -247,7 +247,7 @@ const SNAPSHOT_RETURNING = /^browser_(click|type|fill_form|select_option|press_k
 const NOT_IN_BATCH = new Set(["browser_batch", "browser_close", "browser_install", "vela_browser_close"]);
 
 /**
- * Before 0.1.7 the Vela Browser tools were named aliasmode_*. They are listed as vela_* now; a
+ * Earlier versions named the Vela Browser tools aliasmode_*. They are listed as vela_* now; a
  * script or saved prompt that still calls an old name reaches the same tool.
  */
 export function canonicalToolName(name) {

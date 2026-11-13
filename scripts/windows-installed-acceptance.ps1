@@ -697,7 +697,7 @@ try {
     $sidecarPath = $installation.SidecarPath
     $helper = Join-Path $installRoot "vela-browser-mcp.exe"
     $playwrightRuntime = Join-Path $installRoot "playwright"
-    # AI clients set up before 0.1.7 start the launcher by its old name.
+    # AI clients set up with earlier versions start the launcher by its old name.
     foreach ($launcher in @($helper, (Join-Path $installRoot "aliasmode-mcp.exe"))) {
       if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "installed MCP launcher is missing: $(Split-Path -Leaf $launcher)" }
     }
@@ -813,8 +813,8 @@ public static class VelaBrowserWindow {
         $setup.result.mcp.command -ne $helper -or
         $setup.result.mcp.args.Count -ne 1 -or
         $setup.result.mcp.args[0] -ne "serve" -or
-        $setup.result.generic.mcpServers.aliasmode.command -ne $helper -or
-        $setup.result.generic.mcpServers.aliasmode.args[0] -ne "serve"
+        $setup.result.generic.mcpServers."vela-browser".command -ne $helper -or
+        $setup.result.generic.mcpServers."vela-browser".args[0] -ne "serve"
       ) {
         throw "installed generic MCP setup returned incorrect paths"
       }
