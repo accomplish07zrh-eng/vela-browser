@@ -3,6 +3,7 @@ import { checkProxy, type ProxyCheckOptions, type ProxyCheckResult } from "./pro
 import { fetchDirectEgress, type EgressInfo } from "./egress.ts";
 import { normalizeProxySpec, parseProxySpec, proxyHostPort, proxyIdentityKey } from "./proxy.ts";
 import { parseProxyReplacementCsv } from "./proxy-replacements.ts";
+import { parsePoolSelection, planPoolAssignment, ProxyPoolError, type PoolNode, type PoolProfileRef } from "./proxy-pool.ts";
 import type { ProxySpec } from "./types.ts";
 import type { ProxyCheckView, ProxyPreviewInput, ProxyProgressEvent, ProxyReplacementView, ProxyScope } from "./proxy-tools-types.ts";
 
@@ -20,6 +21,8 @@ export interface ProxyInventoryProfile {
 export interface PlannedProxyReplacement {
   view: ProxyReplacementView;
   next?: ProxySpec;
+  /** The pool node this row hands out (pool mode). Its room is checked again when applied. */
+  poolNodeId?: string;
   originalKey: string;
   expectedVersion?: number;
 }
@@ -46,7 +49,11 @@ export function replacementState(profile: ProxyInventoryProfile | undefined, nex
   return { status: "ready" };
 }
 
-export function buildProxyPreview(profiles: ProxyInventoryProfile[], input: ProxyPreviewInput): { rows: PlannedProxyReplacement[]; unusedProxies: number } {
+export function buildProxyPreview(
+  profiles: ProxyInventoryProfile[],
+  input: ProxyPreviewInput,
+  pool?: { nodes: PoolNode[]; allProfiles: PoolProfileRef[] },
+): { rows: PlannedProxyReplacement[]; unusedProxies: number } {
   if (!input || typeof input.input !== "string" || !input.input.trim()) throw new ProxyToolsError("Paste or upload replacement proxies");
   const selected = selectProxyProfiles(profiles, input.scope).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const byId = new Map(selected.map((p) => [p.id, p]));
@@ -100,8 +107,18 @@ export function buildProxyPreview(profiles: ProxyInventoryProfile[], input: Prox
       if (!Number.isInteger(perProxy) || perProxy < 1) throw new Error("profilesPerProxy");
       selected.forEach((profile, index) => add(profile, proxies[Math.floor(index / perProxy)]));
       unusedProxies = Math.max(0, proxies.length - Math.ceil(selected.length / perProxy));
+    } else if (input.mode === "pool") {
+      if (!pool) throw new Error("pool");
+      const refs = selected.map(({ id, name, group, proxy }) => ({ id, name, group, proxy }));
+      for (const planned of planPoolAssignment(refs, pool.nodes, pool.allProfiles, parsePoolSelection(input.input))) {
+        const profile = byId.get(planned.profileId);
+        if (!planned.node) { add(profile, undefined, "pool_exhausted"); continue; }
+        add(profile, planned.node.proxy);
+        rows[rows.length - 1]!.poolNodeId = planned.node.id;
+      }
     } else throw new Error("mode");
-  } catch {
+  } catch (error) {
+    if (error instanceof ProxyPoolError) throw new ProxyToolsError(error.message);
     throw new ProxyToolsError("Invalid proxy input. Check the selected format and proxy settings.");
   }
   const targets = new Map<string, number>();
@@ -133,7 +150,7 @@ export async function checkProfileProxies(
     const key = proxyIdentityKey(profile.proxy);
     const group = unique.get(key);
     if (group) group.row.profiles.push(ref);
-    else unique.set(key, { proxy: profile.proxy, row: { ...base, status: profile.proxy.type === "https" ? "unsupported" : "unavailable" } });
+    else unique.set(key, { proxy: profile.proxy, row: { ...base, status: "unavailable" } });
   }
   send({ type: "summary", selectedProfiles: profiles.length, uniqueProxies: unique.size, duplicatesSkipped: profiles.length - excluded.length - unique.size });
   for (const row of excluded) send({ type: "check", row });

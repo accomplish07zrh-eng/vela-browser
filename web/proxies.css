@@ -363,3 +363,16 @@
   .store-section-head, .store-order { padding-left: 16px; padding-right: 16px; }
   .store-crypto { justify-content: center; }
 }
+
+/* Proxy pool */
+.pool-table td small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.pool-table td small.pool-warn, .pool-picker .pool-warn { color: var(--warn-ink, var(--danger-ink, #b45309)); }
+.pool-table tr.pool-disabled td { opacity: .55; }
+.pool-table td:first-child, .pool-table th:first-child { width: 28px; }
+.pool-editor { display: flex; flex-direction: column; gap: 10px; min-width: 260px; }
+.pool-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pool-picker > small, .pool-picker-message { flex-basis: 100%; font-size: 11px; color: var(--muted); }
+.proxy-approvals { position: fixed; right: 16px; bottom: 104px; z-index: 60; display: flex; flex-direction: column; gap: 10px; width: min(380px, calc(100vw - 32px)); }
+.proxy-approval { padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-shadow: 0 12px 32px rgba(var(--shadow-rgb), .18); font-size: 12px; line-height: 1.6; }
+.proxy-approval p { margin: 6px 0 0; color: var(--ink-soft); }
+.proxy-approval .proxy-actions { justify-content: flex-end; margin-top: 10px; }

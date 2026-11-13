@@ -470,3 +470,90 @@ test("MCP cannot call retired account tools or forward them to the runtime", asy
       expect(runtime.calls).toEqual([]);
     } finally { await client.close(); await host.close(); }
   });
+
+test.each(["chromium", "firefox", "webkit"])("MCP profile and %s status results retain safe proxy fields", async (engine) => {
+  const profiles: Record<string, Record<string, unknown>> = {
+    pool: { proxyNodeId: "node-1", proxyNodeName: "Tokyo", proxyCountry: "JP" },
+    deleted: { proxyNodeId: "deleted-node" },
+    direct: { proxyType: "socks5" },
+    none: {},
+  };
+  class ProxyStatusRuntime extends FakeRuntime {
+    override async call(method: string, params: Record<string, unknown> = {}): Promise<any> {
+      if (method === "profiles.list") return { profiles: Object.entries(profiles).map(([id, fields]) => ({ id, ...fields })) };
+      if (method === "browser.status") return {
+        profileId: params.profileId, running: true, ...profiles[String(params.profileId)],
+        ...(engine === "chromium" ? { ws: "ws://127.0.0.1:9333/private", port: 9333 }
+          : { engine, capabilities: ["mcp"], firefoxOwner: { token: "private-token" } }),
+      };
+      return super.call(method, params);
+    }
+  }
+  const host = await createVelaBrowserMcp({ discovered: { client: new ProxyStatusRuntime() }, playwright: new FakePlaywright() });
+  const client = new Client({ name: "test", version: "1" }, { capabilities: {} });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const listed = await client.callTool({ name: "vela_profiles_list", arguments: {} });
+    expect(listed.isError).not.toBe(true);
+    expect(listed.structuredContent).toEqual({ profiles: Object.entries(profiles).map(([id, fields]) => ({ id, ...fields })) });
+    for (const [id, fields] of Object.entries(profiles)) {
+      const status = await client.callTool({ name: "vela_browser_status", arguments: { profileId: id } });
+      expect(status.isError).not.toBe(true);
+      expect(Object.fromEntries(Object.entries(status.structuredContent as object).filter(([key]) => key.startsWith("proxy")))).toEqual(fields);
+      expect(JSON.stringify(status)).not.toContain("private-token");
+      expect(JSON.stringify(status)).not.toContain("ws://");
+    }
+  } finally { await client.close(); await host.close(); }
+});
+
+class PoolRuntime extends FakeRuntime {
+  ws = "ws://127.0.0.1:9333/devtools/browser/before";
+  override async call(method: string, params: Record<string, unknown> = {}): Promise<any> {
+    if (method === "proxyPool.list") { this.calls.push({ method, params: structuredClone(params) }); return { nodes: [{ nodeId: "n1", name: "LA", protocol: "anytls", country: "US", status: "working", assignedProfiles: 0, maxProfiles: null }] }; }
+    if (method === "proxyPool.check") { this.calls.push({ method, params: structuredClone(params) }); return { nodes: [] }; }
+    if (method === "profiles.setProxy") {
+      this.calls.push({ method, params: structuredClone(params) });
+      // The browser reopened: it now answers on a new endpoint.
+      this.ws = "ws://127.0.0.1:9334/devtools/browser/after";
+      return { profileId: params.profileId, applied: "reopened", previous: "http · A", next: "anytls · LA", sharedWith: [] };
+    }
+    if (method === "browser.status") {
+      this.calls.push({ method, params: structuredClone(params) });
+      return { profileId: params.profileId, running: true, ws: this.ws, port: 9333, headless: false };
+    }
+    return super.call(method, params);
+  }
+}
+
+test("MCP proxy tools: list and check the pool, change a profile's proxy as this client, and follow a reopened browser", async () => {
+  const runtime = new PoolRuntime();
+  const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright: new FakePlaywright() });
+  const client = new Client({ name: "Claude Code", version: "1" }, { capabilities: {} });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+
+  const tools = Object.fromEntries((await client.listTools()).tools.map((tool) => [tool.name, tool]));
+  expect(tools.vela_proxy_pool_list?.annotations).toMatchObject({ readOnlyHint: true });
+  expect(tools.vela_proxy_pool_check?.annotations).toMatchObject({ openWorldHint: true });
+  expect(tools.vela_browser_set_proxy?.annotations).toMatchObject({ destructiveHint: true, openWorldHint: true });
+  expect(tools.vela_browser_set_proxy?.inputSchema).toMatchObject({ required: ["profileId", "nodeId"], additionalProperties: false });
+
+  await client.callTool({ name: "vela_proxy_pool_list", arguments: { country: "US", available: true } });
+  expect(runtime.calls.at(-1)).toEqual({ method: "proxyPool.list", params: { country: "US", available: true } });
+  await client.callTool({ name: "vela_proxy_pool_check", arguments: { nodeIds: ["n1"] } });
+  expect(runtime.calls.at(-1)).toEqual({ method: "proxyPool.check", params: { nodeIds: ["n1"] } });
+
+  // Select the browser, then change its proxy: the call carries this client's name, and the
+  // connection reattaches to the reopened browser.
+  await client.callTool({ name: "vela_browser_select", arguments: { profileId: "p1" } });
+  const changed = await client.callTool({ name: "vela_browser_set_proxy", arguments: { profileId: "p1", nodeId: "n1" } });
+  expect(changed.isError).not.toBe(true);
+  expect(runtime.calls.find((call) => call.method === "profiles.setProxy")).toEqual({ method: "profiles.setProxy", params: { profileId: "p1", nodeId: "n1", client: "Claude Code" } });
+  const statusCalls = runtime.calls.filter((call) => call.method === "browser.status");
+  expect(statusCalls.length).toBeGreaterThanOrEqual(2);
+  expect(JSON.stringify(changed.content)).toContain("reopened");
+
+  await client.close();
+  await host.close();
+});

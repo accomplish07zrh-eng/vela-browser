@@ -18,6 +18,8 @@ export interface AppConfig {
   cooling?: CoolingSettings;
   /** Plugins in the plugins folder that the user switched off. Every other plugin there is on. */
   disabledPlugins?: string[];
+  /** Whether an AI may change a profile's proxy: ask each time (absent), allow pool nodes, or never. */
+  aiProxyChanges?: "allow_pool" | "deny";
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -51,6 +53,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     ...(raw.cooling !== undefined ? { cooling: normalizeCoolingSettings(raw.cooling) } : {}),
     ...(Array.isArray(raw.disabledPlugins) && raw.disabledPlugins.some(id => typeof id === "string")
       ? { disabledPlugins: [...new Set(raw.disabledPlugins.filter((id): id is string => typeof id === "string" && id.length <= 64))].sort() } : {}),
+    ...(raw.aiProxyChanges === "allow_pool" || raw.aiProxyChanges === "deny" ? { aiProxyChanges: raw.aiProxyChanges } : {}),
   };
 }
 

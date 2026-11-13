@@ -181,6 +181,39 @@ const NETWORK_DETAIL_OFF = { "juggler.networkDetail": false };
 // a while gets only a sliver of timer time, which stalls a browser left behind the workbench. The
 // ordinary once-a-second clamp of background timers stays as in stock Firefox.
 const BACKGROUND_TIMERS = { "dom.timeout.enable_budget_timer_throttling": false };
+// A proxied profile resolves no name on this computer. Its proxy is the loopback relay (an IP), and
+// every destination name goes to it. These close the ways Firefox would still ask this computer's
+// DNS server about pages a profile visits: link and HTTPS-page DNS prefetch, the predictor, and
+// DNS-over-HTTPS (whose own lookups would bypass the profile's exit). SOCKS is never used for a
+// profile, but if it were, names would still be resolved by the proxy.
+//
+// Behind an HTTP proxy Firefox still looked up every page's HTTPS record (DNS type 65) with the
+// system resolver, through getaddrinfo, before each request: a lookup of each visited name at
+// this computer's DNS server. Its native HTTPS queries and the features that ask for them are off.
+// Without HTTPS records Firefox sends GREASE ECH, as it does wherever it has none.
+//
+// Kill switch. When the proxy failed a request, Firefox retried its update and media-plugin
+// downloads (aus5.mozilla.org, OpenH264, Widevine) directly, from this computer's own address
+// (ServiceRequest, network.proxy.allow_bypass), and may fail a proxied request over to a direct
+// connection (network.proxy.failover_direct). A proxied profile has no direct route at all.
+const PROXIED_DNS = {
+  "network.proxy.allow_bypass": false,
+  "network.proxy.failover_direct": false,
+  "network.proxy.socks_remote_dns": true,
+  "network.proxy.socks5_remote_dns": true,
+  "network.dns.disablePrefetch": true,
+  "network.dns.disablePrefetchFromHTTPS": true,
+  "network.dns.prefetch_via_proxy": false,
+  "network.predictor.enabled": false,
+  "network.predictor.enable-prefetch": false,
+  "network.trr.mode": 5,
+  "network.dns.native_https_query": false,
+  "network.dns.native_https_query_win10": false,
+  "network.dns.native_https_query_in_automation": false,
+  "network.dns.upgrade_with_https_rr": false,
+  "network.dns.use_https_rr_as_altsvc": false,
+  "network.dns.force_use_https_rr": false,
+};
 
 export function firefoxLaunchOptions(input) {
   // A stored graphics identity must show on every computer, also where the browser would turn WebGL off.
@@ -198,6 +231,7 @@ export function firefoxLaunchOptions(input) {
     ...(input.proxy ? {
       proxy: input.proxy,
       firefoxUserPrefs: {
+        ...PROXIED_DNS,
         "media.peerconnection.ice.proxy_only": true,
         "media.peerconnection.ice.default_address_only": true,
         "media.peerconnection.ice.no_host": true,
