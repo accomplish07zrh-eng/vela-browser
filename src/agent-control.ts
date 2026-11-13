@@ -16,7 +16,8 @@ import {
   ProxyReplacementInputError,
 } from "./proxy-replacements.ts";
 import type { ProfileStore } from "./store.ts";
-import { poolNodeViews, type PoolNodeView } from "./proxy-pool.ts";
+import { poolNodeViews, type PoolNode, type PoolNodeView } from "./proxy-pool.ts";
+import type { ProxySpec } from "./types.ts";
 import { runPoolChecks } from "./proxy-pool-api.ts";
 import { ProxySwitchError, proxyLabel, saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
 import type { AiProxyPolicy, ProxyApprovalQueue } from "./proxy-approvals.ts";
@@ -106,7 +107,38 @@ type SafeProfile = {
   headless?: boolean;
   expectedVersion?: number;
   permission?: "view" | "edit";
+} & SafeProxyFields;
+
+type SafeProxyFields = {
+  proxyType?: Exclude<ProxySpec["type"], "pool">;
+  proxyNodeId?: string;
+  proxyNodeName?: string;
+  proxyCountry?: string;
 };
+
+/**
+ * Imported nodes can use their address, or even a secret, as their display name. Such a name is
+ * left out. Only the secret parts are compared (addresses, logins, passwords, ids, the link), and
+ * only when long enough to mean something, so ordinary names like "HK 100M" stay.
+ */
+function aiPoolName(node: PoolNode, subscriptionUrl?: string): string | undefined {
+  const secrets: string[] = [];
+  const add = (value: unknown) => {
+    const text = typeof value === "string" || typeof value === "number" ? String(value).toLowerCase() : "";
+    if (text.length >= 4) secrets.push(text);
+  };
+  if (node.proxy.type !== "pool") { add(node.proxy.host); add(node.proxy.user); add(node.proxy.pass); }
+  const outbound = (node.outbound ?? {}) as Record<string, any>;
+  for (const key of ["server", "uuid", "password", "username"]) add(outbound[key]);
+  add(outbound.tls?.server_name);
+  add(outbound.tls?.reality?.public_key);
+  add(outbound.tls?.reality?.short_id);
+  add(outbound.obfs?.password);
+  add(outbound.transport?.headers?.Host);
+  if (subscriptionUrl) { add(subscriptionUrl); try { add(new URL(subscriptionUrl).hostname); } catch { /* no host */ } }
+  const name = node.name.toLowerCase();
+  return name && !/https?:\/\//i.test(name) && !secrets.some((value) => name.includes(value)) ? node.name : undefined;
+}
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -328,17 +360,24 @@ export class AgentControlSession {
 
   /** The pool as an AI sees it: no credentials, no subscription links. */
   private poolViews(): PoolNodeView[] {
-    const profiles = this.deps.store.listProfiles().map(({ id, name, group, proxy }) => ({ id, name, group, proxy }));
-    return poolNodeViews(this.deps.store.proxyPool.list(), profiles);
+    const { store } = this.deps;
+    const profiles = store.listProfiles().map(({ id, name, group, proxy }) => ({ id, name, group, proxy }));
+    const nodes = store.proxyPool.list();
+    const subscriptions = new Map(store.proxyPool.listSubscriptions().map((sub) => [sub.id, sub.url]));
+    return poolNodeViews(nodes, profiles).map((view, index) => ({
+      ...view,
+      name: aiPoolName(nodes[index]!, subscriptions.get(nodes[index]!.subscriptionId ?? "")) ?? "",
+    }));
   }
 
   private static aiNode(view: PoolNodeView) {
-    const country = view.check?.country?.toUpperCase() ?? view.regionHint;
+    const checkedCountry = view.check?.country?.toUpperCase();
+    const country = checkedCountry && /^[A-Z]{2}$/.test(checkedCountry) ? checkedCountry : view.regionHint?.toUpperCase();
     return {
       nodeId: view.id,
-      name: view.name,
+      ...(view.name ? { name: view.name } : {}),
       protocol: view.protocol,
-      ...(country ? { country } : {}),
+      ...(country && /^[A-Z]{2}$/.test(country) ? { country } : {}),
       ...(view.check?.city ? { city: view.check.city } : {}),
       status: view.check?.status ?? "unchecked",
       ...(view.check?.durationMs !== undefined ? { checkMs: view.check.durationMs } : {}),
@@ -350,6 +389,31 @@ export class AgentControlSession {
       maxProfiles: view.maxProfiles,
       ...(view.sameExitAs.length ? { sameExitAsNodes: view.sameExitAs } : {}),
     };
+  }
+
+  private aiPoolNodes() {
+    return new Map(this.poolViews().map((view) => {
+      const node = AgentControlSession.aiNode(view);
+      return [node.nodeId, node] as const;
+    }));
+  }
+
+  private proxyFields(proxy: ProxySpec | null | undefined, nodes?: ReturnType<AgentControlSession["aiPoolNodes"]>): SafeProxyFields {
+    if (!proxy) return {};
+    if (proxy.type !== "pool") return { proxyType: proxy.type };
+    const node = (nodes ?? this.aiPoolNodes()).get(proxy.host);
+    return {
+      proxyNodeId: proxy.host,
+      ...(node?.name ? { proxyNodeName: node.name } : {}),
+      ...(node?.country ? { proxyCountry: node.country } : {}),
+    };
+  }
+
+  private aiProxyLabel(proxy: ProxySpec | null, nodes: ReturnType<AgentControlSession["aiPoolNodes"]>): string {
+    if (!proxy) return "direct";
+    if (proxy.type !== "pool") return proxy.type;
+    const node = nodes.get(proxy.host);
+    return node ? `${node.protocol}${node.name ? ` · ${node.name}` : ""}` : "pool node (removed)";
   }
 
   private listPoolNodes(params: Record<string, unknown>) {
@@ -405,13 +469,20 @@ export class AgentControlSession {
       if (outcome === "denied") throw agentError("approval_denied", "The proxy change was not approved; nothing was changed");
     }
     try {
+      const nodes = this.aiPoolNodes();
+      const previous = this.aiProxyLabel(store.getProfile(profileId)?.proxy ?? null, nodes);
+      const next = this.aiProxyLabel({ type: "pool", host: node.id, port: "0", user: "", pass: "" }, nodes);
       const result = await switchProfileProxy({
         store, launcher, assign: (id, proxy) => saveProfileProxy(store, id, proxy, this.deps.proxyTimezoneFetch),
         ...(this.deps.proxySwitchCheck ? { check: this.deps.proxySwitchCheck } : {}),
         ...(this.deps.proxySwitchDirect ? { direct: this.deps.proxySwitchDirect } : {}),
         log: (msg) => this.deps.log?.(msg),
       }, { profileId, nodeId, by: `mcp:${client}` });
-      return { profileId, ...result };
+      return {
+        profileId, applied: result.applied, previous, next,
+        ...(result.exit ? { exit: { ...(result.exit.country ? { country: result.exit.country } : {}) } } : {}),
+        sharedWith: result.sharedWith,
+      };
     } catch (error) {
       if (error instanceof ProxySwitchError) {
         throw agentError(error.code, error.message + ("retryAfterMs" in error.detail ? ` (retry after ${Math.ceil(Number(error.detail.retryAfterMs) / 1000)} s)` : ""));
@@ -453,6 +524,11 @@ export class AgentControlSession {
 
     if (this.deps.remote) {
       const roster = await this.deps.remote.listRoster();
+      // The local store is only a launch cache in remote mode; its proxy may be stale or absent.
+      // Best effort: without the details, the list is shown as before, without proxy fields.
+      const details = await this.deps.remote.getProfiles(roster.profiles.map(({ id }) => id)).catch(() => []);
+      const proxies = new Map(details.map(({ id, proxy }) => [id, proxy]));
+      const nodes = details.some(({ proxy }) => proxy?.type === "pool") ? this.aiPoolNodes() : undefined;
       return roster.profiles.map((profile) => {
         const launch = this.deps.store.getLaunch(profile.id);
         return {
@@ -462,11 +538,14 @@ export class AgentControlSession {
           platform: profile.platform ?? "",
           tags: profile.tags ?? [],
           running: !!launch,
+          ...this.proxyFields(proxies.get(profile.id), nodes),
           ...(launch ? { ...(launch.engine === "webkit" ? webkitPublicFields() : isFirefoxEngine(launch) ? firefoxPublicFields() : { debugPort: launch.debugPort }), headless: launch.headless } : {}),
         };
       });
     }
-    return this.deps.store.listProfiles().map((profile) => {
+    const profiles = this.deps.store.listProfiles();
+    const nodes = profiles.some(({ proxy }) => proxy?.type === "pool") ? this.aiPoolNodes() : undefined;
+    return profiles.map((profile) => {
       const launch = this.deps.store.getLaunch(profile.id);
       return {
         id: profile.id,
@@ -475,6 +554,7 @@ export class AgentControlSession {
         platform: profile.platform ?? "",
         tags: profile.tags ?? [],
         running: !!launch,
+        ...this.proxyFields(profile.proxy, nodes),
         ...(launch ? { ...(launch.engine === "webkit" ? webkitPublicFields() : isFirefoxEngine(launch) ? firefoxPublicFields() : { debugPort: launch.debugPort }), headless: launch.headless } : {}),
       };
     });
@@ -579,10 +659,14 @@ export class AgentControlSession {
   private async profileStatus(profileId: string): Promise<unknown> {
     const running = await this.deps.launcher.certifiedActive(profileId).catch(() => false);
     const launch = this.deps.store.getLaunch(profileId);
+    const profile = this.deps.remote
+      ? await this.deps.remote.getProfile(profileId).catch(() => null)
+      : this.deps.store.getProfile(profileId);
     return {
       profileId,
       running,
       state: running ? "running" : launch ? "uncertain" : "closed",
+      ...this.proxyFields(profile?.proxy),
       ...(running && launch ? (
         launch.engine === "webkit" ? { ...webkitPublicFields(), headless: launch.headless ?? false } : isFirefoxEngine(launch)
           ? { ...firefoxPublicFields(), headless: launch.headless ?? false }

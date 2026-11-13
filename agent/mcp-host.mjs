@@ -25,6 +25,7 @@ function safeBrowserResult(value) {
   const {
     profileId, running, state, engine, capabilities, headless, alreadyOpen,
     ownedByConnection, attachedExisting, selected, closed, sync, deleted, detached,
+    proxyType, proxyNodeId, proxyNodeName, proxyCountry,
   } = value;
   return {
     ...(profileId !== undefined ? { profileId } : {}),
@@ -36,6 +37,10 @@ function safeBrowserResult(value) {
     ...(alreadyOpen !== undefined ? { alreadyOpen } : {}),
     ...(ownedByConnection !== undefined ? { ownedByConnection } : {}),
     ...(attachedExisting !== undefined ? { attachedExisting } : {}),
+    ...(proxyType !== undefined ? { proxyType } : {}),
+    ...(proxyNodeId !== undefined ? { proxyNodeId } : {}),
+    ...(proxyNodeName !== undefined ? { proxyNodeName } : {}),
+    ...(proxyCountry !== undefined ? { proxyCountry } : {}),
     ...(selected !== undefined ? { selected } : {}),
     ...(closed !== undefined ? { closed } : {}),
     ...(sync !== undefined ? { sync } : {}),

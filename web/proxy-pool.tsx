@@ -29,6 +29,7 @@ const SERVER_MESSAGES = new Set([
   "The subscription format is not recognised", "The subscription lists no usable node", "The subscription is not valid YAML",
   "The subscription is not valid JSON", "The subscription has no proxies", "The subscription has no outbounds",
   "The subscription link redirects too many times", "The subscription link redirects to an insecure address",
+  "This subscription link cannot be read on this computer. Remove it and add it again", "Encrypted storage is unavailable right now",
 ]);
 
 /** A failure's message for the page: a known server message, translated, or `fallback`. */
@@ -252,6 +253,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
           <label className="fld grow"><span>{t("Subscription link")}</span><input type="password" autoComplete="off" spellCheck={false} value={subUrl} disabled={!!subBusy} placeholder="https://…" onChange={(e) => setSubUrl(e.target.value)} /></label>
           <label className="fld"><span>{t("Name")}</span><input value={subName} disabled={!!subBusy} onChange={(e) => setSubName(e.target.value)} /></label>
         </div>
+        <p className="tools-hint">{t("Subscription nodes such as VLESS, Trojan or Hysteria2 run in sing-box, a separate open-source program (GPL-3.0-or-later, by nekohasekai) that Vela Browser is not associated with. On first use Vela downloads its official release, checks it and runs it unmodified. Source: github.com/SagerNet/sing-box")}</p>
         <div className="tools-result-bar"><span />
           <button type="button" className="btn primary" disabled={!!subBusy || !subUrl.trim()} onClick={() => void (async () => {
             setSubBusy("add"); setError(null); setNotice(null);

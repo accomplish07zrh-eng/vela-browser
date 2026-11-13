@@ -23,3 +23,14 @@ The speech voice and media device data in firefox-data/ comes from Camoufox,
 Copyright (c) 2024-2026 daijro and the Camoufox contributors, licensed under the
 MIT License. The full license text is in firefox-data/LICENSE.
 
+Proxy subscription nodes that need a protocol kernel (VLESS, VMess, Trojan, Shadowsocks,
+Hysteria2, TUIC, AnyTLS and others) run in sing-box, Copyright (C) 2022 by nekohasekai,
+licensed under the GNU General Public License, version 3 or (at your option) any later
+version, with the additional term that no derivative work may use its name or imply
+association with it without prior consent. sing-box is a separate program: Vela Browser
+does not include or modify it, and is not associated with or endorsed by its authors.
+On first use Vela Browser downloads the official, unmodified release from
+https://github.com/SagerNet/sing-box/releases, checks it against pinned SHA-256 hashes,
+and keeps the release's own LICENSE file next to the executable. Its source code is at
+https://github.com/SagerNet/sing-box. The release also contains libcronet, built from
+Chromium's network stack under its own BSD-style license.

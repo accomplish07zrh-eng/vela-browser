@@ -6,7 +6,8 @@
 
 import { fetchDirectEgress } from "./egress.ts";
 import { checkProxy } from "./proxy-check.ts";
-import { checkPoolNodes, poolNodeViews, poolUsage, ProxyPoolError, subscriptionView, type PoolNode } from "./proxy-pool.ts";
+import { checkPoolNodes, poolNodeViews, poolUsage, ProxyPoolError, subscriptionView, UNREADABLE_SUBSCRIPTION, type PoolNode } from "./proxy-pool.ts";
+import { SecretUnavailableError } from "./secret-box.ts";
 import { fetchSubscription, SubscriptionError } from "./subscription.ts";
 import type { KernelSupervisor } from "./kernel.ts";
 import { ProxySwitchError, type SwitchResult } from "./proxy-switch.ts";
@@ -164,6 +165,7 @@ export async function handleProxyPoolRequest(
     return json({ ok: false, error: "Unknown proxy pool operation" }, 404);
   } catch (error) {
     if (error instanceof ProxyPoolError) return json({ ok: false, error: error.message }, error.status);
+    if (error instanceof SecretUnavailableError) return json({ ok: false, error: "Encrypted storage is unavailable right now" }, 503);
     if (error instanceof Error && /unsupported proxy type/.test(error.message)) return json({ ok: false, error: "Unsupported proxy type" }, 400);
     return json({ ok: false, error: "Proxy pool operation failed" }, 500);
   }
@@ -214,6 +216,7 @@ async function refreshSubscription(store: ProfileStore, id: string, deps: ProxyP
   const pool = store.proxyPool;
   const sub = pool.getSubscription(id);
   if (!sub) throw new ProxyPoolError("This subscription is no longer here", 404);
+  if (sub.unreadable) throw new ProxyPoolError(UNREADABLE_SUBSCRIPTION, 409);
   try {
     const fetched = await (deps.fetchSubscription ?? fetchSubscription)(sub.url, sub.userAgent ? { userAgent: sub.userAgent } : {});
     const result = pool.syncSubscription(id, fetched.parsed.nodes, { ...fetched.parsed, ...(fetched.usage ? { usage: fetched.usage } : {}) });

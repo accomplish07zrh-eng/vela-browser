@@ -151,7 +151,7 @@ test("current-source MCP catalog is deterministic and committed", async () => {
   const first = await generateCurrentSourceCatalog();
   const second = await generateCurrentSourceCatalog();
   expect(serialize(first)).toBe(serialize(second));
-  expect(read(CURRENT_CATALOG_PATH)).toBe(serialize(first));
+  expect(read(CURRENT_CATALOG_PATH).replace(/\r\n/g, "\n")).toBe(serialize(first));
 });
 
 test("MCP catalogs list the expected tools", () => {
