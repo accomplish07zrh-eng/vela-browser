@@ -113,7 +113,8 @@ test("a damaged key file is set aside and replaced", () => {
 test("the database holds no subscription link, node address or credential in readable form", () => {
   const db = new Database(":memory:");
   const box = SecretBox.ephemeral();
-  const p = new ProxyPool(db, Date.now, box);
+  let clock = 1_000;
+  const p = new ProxyPool(db, () => (clock += 10), box);
   const sub = p.addSubscription({ url: SUB_URL });
   const parsed = parseSubscription(SUB_TEXT);
   p.syncSubscription(sub.id, parsed.nodes, parsed);
@@ -127,8 +128,9 @@ test("the database holds no subscription link, node address or credential in rea
   // The pool itself reads them back.
   expect(p.getSubscription(sub.id)!.url).toBe(SUB_URL);
   expect(p.list().map((node) => node.name)).toEqual(["JP", "SG", "plain", "hand"]);
-  expect(p.list()[3]!.proxy).toMatchObject({ host: "203.0.113.40", user: "hand", pass: "HAND-PASS" });
-  expect(p.list()[1]!.outbound).toMatchObject({ type: "anytls", password: "ANYPASS-SECRET" });
+  const named = (name: string) => p.list().find((node) => node.name === name)!;
+  expect(named("hand").proxy).toMatchObject({ host: "203.0.113.40", user: "hand", pass: "HAND-PASS" });
+  expect(named("SG").outbound).toMatchObject({ type: "anytls", password: "ANYPASS-SECRET" });
   // Equal proxies are still recognised.
   expect(p.importText("socks5://hand:HAND-PASS@203.0.113.40:1080").duplicates).toBe(1);
   expect(p.syncSubscription(sub.id, parsed.nodes, parsed)).toEqual({ added: 0, kept: 3, removed: 0 });
