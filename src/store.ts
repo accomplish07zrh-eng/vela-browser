@@ -24,16 +24,18 @@ import type {
 import { completeProfileFingerprint, normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
 import { normalizeProfileHardware } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
+import { ProxyPool } from "./proxy-pool.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { assertValidProfile } from "./profile-validation.ts";
 import { mergeCookies } from "./parse.ts";
+import { secretBoxForDatabase } from "./secret-box.ts";
 
 export class ProfileStore {
   private db: Database;
   /** Called after each profile save, so the app can start the downloads that profile needs. */
   onProfileSaved?: (profile: Profile) => void;
 
-  constructor(path = "profiles.sqlite") {
+  constructor(private readonly path = "profiles.sqlite") {
     this.db = new Database(path, { create: true });
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec(`
@@ -290,6 +292,13 @@ export class ProfileStore {
         }
       }
     })();
+  }
+
+  private pool?: ProxyPool;
+  /** The proxy pool, kept in this same database file. */
+  get proxyPool(): ProxyPool {
+    // Its secrets are sealed with this data directory's own key (DPAPI-protected on Windows).
+    return this.pool ??= new ProxyPool(this.db, Date.now, secretBoxForDatabase(this.path, { log: (message) => console.warn(message) }));
   }
 
   close(): void {

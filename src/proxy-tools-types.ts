@@ -6,7 +6,8 @@ export interface ProxyScope {
   ids?: string[];
 }
 
-export type ProxyReplacementMode = "profileId" | "oldProxy" | "list";
+/** "pool": give each selected profile a node from the proxy pool; `input` is the pool selection (JSON). */
+export type ProxyReplacementMode = "profileId" | "oldProxy" | "list" | "pool";
 
 export interface ProxyPreviewInput {
   scope: ProxyScope;

@@ -128,8 +128,9 @@ async function proxyAttempt(
   const logs: string[] = [];
   let relay: Pick<ProxyRelay, "port" | "close"> | undefined;
   try {
+    // The same relay a launched browser uses, with the proxy's own protocol: HTTPS stays TLS.
     relay = await options.relayFactory({
-      type: proxy.type === "socks5" ? "socks5" : "http",
+      type: proxy.type as Exclude<typeof proxy.type, "pool">,
       host: proxy.host,
       port: Number(proxy.port),
       user: proxy.user,
@@ -169,9 +170,8 @@ export async function checkProxy(
 ): Promise<ProxyCheckResult> {
   const proxy = normalizeProxySpec(input);
   if (!proxy) throw new Error("proxy is required");
-  if (proxy.type !== "http" && proxy.type !== "socks5") {
-    throw new Error("unsupported proxy type (use http or socks5)");
-  }
+  // A pool node is checked through its kernel: the caller passes the kernel's address.
+  if (proxy.type === "pool") throw new Error("a proxy pool node is checked through its kernel");
 
   const fetchFn = options.fetchFn ?? fetch;
   const relayFactory = options.relayFactory ?? startProxyRelay;

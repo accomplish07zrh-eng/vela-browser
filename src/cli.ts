@@ -1254,6 +1254,7 @@ async function runWindowsWindowAcceptance(paths: StatePaths, rest: string[]): Pr
   );
 
   try {
+    await launcher.kernels.reconcileOrphans();
     await launcher.reconcileOrphans();
     for (const profileId of WINDOWS_ACCEPTANCE_PROFILE_IDS) {
       if (store.getLaunch(profileId) && !await launcher.stop(profileId)) {
@@ -1424,6 +1425,7 @@ async function runBrowserLifecycleSmoke(paths: StatePaths, rest: string[]): Prom
   store.upsertProfile(profile);
   const before = store.getProfile(profileId)!;
   try {
+    await launcher.kernels.reconcileOrphans();
     await launcher.reconcileOrphans();
     for (let cycle = 0; cycle < 3; cycle++) {
       await launcher.start(profileId, smokeProxy?.startupUrl ? [smokeProxy.startupUrl] : []);
@@ -1628,6 +1630,7 @@ async function main() {
       console.log("startup: initializing autofill bridge");
       const launcher = makeLauncher(store, rest, false, profileDataRoot, undefined, join(paths.root, "runtimes"));
       console.log(`startup: checking ${store.listLaunches().length} saved browser process(es)`);
+      await launcher.kernels.reconcileOrphans();
       await launcher.reconcileOrphans();
       console.log("startup: verifying surviving local browsers");
       await launcher.certifySurvivors();
@@ -1678,6 +1681,7 @@ async function main() {
     case "serve": {
       const store = new ProfileStore(dbPath);
       const launcher = makeLauncher(store, rest, false, profileDataRoot, undefined, join(paths.root, "runtimes"));
+      await launcher.kernels.reconcileOrphans();
       await launcher.reconcileOrphans();
       await launcher.certifySurvivors();
       startMemoryAttributionLog();

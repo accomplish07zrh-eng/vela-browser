@@ -174,7 +174,6 @@ test("proxy check route rejects untrusted or invalid input without echoing crede
   for (const body of [
     { proxy: { host: "", port: "" } },
     { proxy: { host: "proxy.example", port: "not-a-port" } },
-    { proxy: { type: "https", host: "proxy.example", port: "8443" } },
     { proxy: { type: "private-password", host: "proxy.example", port: "8080" } },
     "not-json",
   ]) {
@@ -203,6 +202,9 @@ test("proxy check route rejects untrusted or invalid input without echoing crede
   expect(failureText).not.toContain("private-password");
   expect(failureText).not.toContain("checker exposed");
   expect(checks).toBe(1);
+  // HTTPS proxies are checked too: the relay reaches them over TLS, as a launched browser's does.
+  await request({ proxy: { type: "https", host: "proxy.example", port: "8443" } });
+  expect(checks).toBe(2);
   s.close();
 });
 
