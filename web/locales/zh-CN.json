@@ -1024,5 +1024,6 @@
   "Allow": "允许",
   "Request failed": "请求失败",
   "This subscription link cannot be read on this computer. Remove it and add it again": "这个订阅链接在这台电脑上读不出来（数据来自别的电脑或账户）。请删除后重新添加。",
-  "Encrypted storage is unavailable right now": "加密存储暂时不可用，请稍后再试"
+  "Encrypted storage is unavailable right now": "加密存储暂时不可用，请稍后再试",
+  "Subscription nodes such as VLESS, Trojan or Hysteria2 run in sing-box, a separate open-source program (GPL-3.0-or-later, by nekohasekai) that Vela Browser is not associated with. On first use Vela downloads its official release, checks it and runs it unmodified. Source: github.com/SagerNet/sing-box": "VLESS、Trojan、Hysteria2 等订阅节点由 sing-box 运行。它是独立的开源程序（GPL-3.0-or-later，作者 nekohasekai），与 Vela Browser 没有关联。Vela 首次使用时从它的官方发布页下载，校验后原样运行。源码：github.com/SagerNet/sing-box"
 }
