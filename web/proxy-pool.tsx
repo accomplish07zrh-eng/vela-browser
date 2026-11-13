@@ -29,6 +29,7 @@ const SERVER_MESSAGES = new Set([
   "The subscription format is not recognised", "The subscription lists no usable node", "The subscription is not valid YAML",
   "The subscription is not valid JSON", "The subscription has no proxies", "The subscription has no outbounds",
   "The subscription link redirects too many times", "The subscription link redirects to an insecure address",
+  "This subscription link cannot be read on this computer. Remove it and add it again", "Encrypted storage is unavailable right now",
 ]);
 
 /** A failure's message for the page: a known server message, translated, or `fallback`. */
@@ -82,6 +83,10 @@ export const importPool = (text: string, type: string, tags: string[]) =>
   poolCall<{ added: number; duplicates: number; invalid: Array<{ line: number; error: string }> }>("/import", { text, type, tags });
 export const updatePoolNode = (id: string, patch: Record<string, unknown>) => poolCall<{ node: PoolNodeView }>("/update", { id, ...patch });
 export const deletePoolNodes = (ids: string[]) => poolCall<{ removed: number }>("/delete", { ids });
+export interface SwitchAnswer { applied: "saved" | "reopened"; previous: string; next: string; exit?: { ip?: string; country?: string }; sharedWith: Array<{ id: string; name: string; group: string }> }
+export const switchPoolNode = (profileId: string, nodeId: string) => poolCall<SwitchAnswer>("/switch", { profileId, nodeId });
+export interface SwitchHistoryView { at: number; by: string; from: string; to: string; outcome: "saved" | "reopened" | "failed"; code?: string; exitCountry?: string }
+export const fetchSwitchHistory = (profileId: string) => poolCall<{ history: SwitchHistoryView[] }>(`/history?profileId=${encodeURIComponent(profileId)}`).then((r) => r.history);
 export const assignPoolNode = (profileId: string, nodeId: string) =>
   poolCall<{ restartRequired?: true; sharedWith: Array<{ id: string; name: string; group: string }> }>("/assign", { profileId, nodeId });
 
@@ -248,6 +253,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
           <label className="fld grow"><span>{t("Subscription link")}</span><input type="password" autoComplete="off" spellCheck={false} value={subUrl} disabled={!!subBusy} placeholder="https://…" onChange={(e) => setSubUrl(e.target.value)} /></label>
           <label className="fld"><span>{t("Name")}</span><input value={subName} disabled={!!subBusy} onChange={(e) => setSubName(e.target.value)} /></label>
         </div>
+        <p className="tools-hint">{t("Subscription nodes such as VLESS, Trojan or Hysteria2 run in sing-box, a separate open-source program (GPL-3.0-or-later, by nekohasekai) that Vela Browser is not associated with. On first use Vela downloads its official release, checks it and runs it unmodified. Source: github.com/SagerNet/sing-box")}</p>
         <div className="tools-result-bar"><span />
           <button type="button" className="btn primary" disabled={!!subBusy || !subUrl.trim()} onClick={() => void (async () => {
             setSubBusy("add"); setError(null); setNotice(null);
@@ -367,6 +373,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
         })}</tbody></table></div>
       </> : <div className="tools-empty compact"><p>{nodes ? t("The pool is empty. Add proxies above, then give them to profiles from Replace proxies or a profile's edit form.") : t("Loading…")}</p></div>}
     </section>
+    <AiProxyPolicyField />
   </>;
 }
 
@@ -408,31 +415,57 @@ export function PoolSelectionFields({ value, onChange, disabled }: { value: stri
 }
 
 /** "From the pool" in a profile's edit form: saves the chosen node as the profile's proxy. */
-export function PoolProxyPicker({ profileId, onAssigned }: { profileId: string; onAssigned: (result: { restartRequired?: true }) => void }) {
+/** Why a switch stopped, for the person who asked for it. */
+function switchFailure(t: (key: string, vars?: Record<string, string | number>) => string, failure: unknown): string {
+  const { code, retryAfterMs } = failure as { code?: string; retryAfterMs?: number };
+  switch (code) {
+    case "pool_exhausted": return t("This proxy already has as many profiles as its sharing limit allows.");
+    case "node_unavailable": return t("This proxy is not available in the pool");
+    case "rate_limited": return t("This profile changed its proxy moments ago. Try again in {seconds} s.", { seconds: Math.ceil((retryAfterMs ?? 30_000) / 1000) });
+    case "profile_busy": return t("This profile is already changing its proxy.");
+    case "switch_check_failed": return t("The new proxy did not pass its check. Nothing was changed.");
+    case "teardown_unconfirmed": return t("The browser could not be closed for certain, so it keeps its current proxy.");
+    case "reopen_failed": return t("The new proxy is saved, but the browser did not reopen. Open it again.");
+    case "exit_is_direct": return t("After reopening, the browser's traffic left from this computer's own address, so it was closed.");
+    default: return t("Could not save");
+  }
+}
+
+export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId: string; running?: boolean; onAssigned: (result: SwitchAnswer) => void }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [nodes, setNodes] = useState<PoolNodeView[] | null>(null);
   const [choice, setChoice] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState<SwitchHistoryView[]>([]);
   useEffect(() => { if (open) void fetchPool().then(setNodes, () => setNodes([])); }, [open]);
+  useEffect(() => { void fetchSwitchHistory(profileId).then(setHistory, () => setHistory([])); }, [profileId, busy]);
+  const last = history[0];
+  const lastLine = last && <small className="pool-picker-message">{t("Last change: {when} · {from} → {to} · {by} · {outcome}", {
+    when: new Date(last.at).toLocaleString(), from: last.from, to: last.to,
+    by: last.by === "dashboard" ? t("you") : last.by.replace(/^mcp:/, "MCP · "),
+    outcome: last.outcome === "failed" ? t("not changed") : last.outcome === "reopened" ? t("reopened") : t("saved"),
+  })}</small>;
   if (!open) return <>
     <button type="button" className="btn proxy-check-btn" onClick={() => { setOpen(true); setMessage(null); }}>{t("From the pool…")}</button>
     {message && <small className="pool-picker-message">{message}</small>}
+    {lastLine}
   </>;
   const usable = (nodes ?? []).filter((node) => !node.disabled);
   const assign = async () => {
+    if (running && !window.confirm(t("Change this open browser's exit? Its session is saved, it closes, and it reopens on the new exit with its tabs. Timezone and WebRTC follow the new exit."))) return;
     setBusy(true); setMessage(null);
     try {
-      const result = await assignPoolNode(profileId, choice);
-      setMessage(result.sharedWith.length
-        ? t("Saved. This exit is shared with {names}.", { names: result.sharedWith.map((p) => p.name || p.id).join(", ") })
-        : t("Saved."));
+      const result = await switchPoolNode(profileId, choice);
+      const shared = result.sharedWith.length ? " " + t("This exit is shared with {names}.", { names: result.sharedWith.map((p) => p.name || p.id).join(", ") }) : "";
+      setMessage((result.applied === "reopened"
+        ? t("Changed. The browser reopened on the new exit ({country}).", { country: result.exit?.country ?? "—" })
+        : t("Saved. The profile uses the new exit from its next start.")) + shared);
       onAssigned(result);
       setOpen(false);
     } catch (failure) {
-      const code = (failure as { code?: string }).code;
-      setMessage(code === "pool_exhausted" ? t("This proxy already has as many profiles as its sharing limit allows.") : t("Could not save"));
+      setMessage(switchFailure(t, failure));
     } finally { setBusy(false); }
   };
   return <div className="pool-picker">
@@ -447,7 +480,7 @@ export function PoolProxyPicker({ profileId, onAssigned }: { profileId: string; 
         </option>;
       })}
     </Select>
-    <button type="button" className="btn primary" disabled={!choice || busy} onClick={() => void assign()}>{t("Use this proxy")}</button>
+    <button type="button" className="btn primary" disabled={!choice || busy} onClick={() => void assign()}>{busy ? t("Checking the new exit…") : running ? t("Change and reopen") : t("Use this proxy")}</button>
     <button type="button" className="btn" onClick={() => setOpen(false)}>{t("Cancel")}</button>
     {message && <small>{message}</small>}
   </div>;
@@ -478,4 +511,80 @@ function subscriptionNotice(t: (key: string, vars?: Record<string, string | numb
   if (result.infoEntries) parts.push(t("{count} provider notices skipped", { count: result.infoEntries }));
   if (result.nonNodes) parts.push(t("{count} entries are not exits (direct, reject, groups)", { count: result.nonNodes }));
   return parts.join(" · ");
+}
+
+/* ---------- AI proxy changes (MCP) ---------- */
+
+type AiProxyPolicy = "ask" | "allow_pool" | "deny";
+interface PendingApproval { id: string; profileId: string; profileName: string; client: string; from: string; to: string; reopens: boolean; expiresAt: number }
+
+async function approvalsCall<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(`/ui/api/proxy-approvals${path}`, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const parsed: any = await response.json().catch(() => null);
+  if (!response.ok || parsed?.ok !== true) throw new ProxyPoolClientError(typeof parsed?.error === "string" ? parsed.error : "Request failed");
+  return parsed as T;
+}
+const fetchApprovals = () => approvalsCall<{ pending: PendingApproval[]; policy: AiProxyPolicy }>("");
+
+/** The standing answer to proxy changes an AI asks for through MCP. */
+export function AiProxyPolicyField() {
+  const { t } = useTranslation();
+  const [policy, setPolicy] = useState<AiProxyPolicy | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { void fetchApprovals().then((r) => setPolicy(r.policy), () => setPolicy("ask")); }, []);
+  return <section className="tools-panel proxy-input-panel">
+    <div className="tools-panel-head"><div><h3>{t("AI proxy changes")}</h3><p>{t("An AI connected through MCP can give a profile a pool proxy. Changing a profile's exit shows its sites an IP change.")}</p></div></div>
+    <div className="tools-panel-body">
+      <label className="fld"><span>{t("When an AI asks to change a proxy")}</span>
+        <Select value={policy ?? "ask"} disabled={!policy} onChange={(e) => {
+          const next = e.target.value as AiProxyPolicy;
+          setError(null);
+          void approvalsCall<{ policy: AiProxyPolicy }>("/policy", { policy: next }).then((r) => setPolicy(r.policy), () => setError(t("Could not save")));
+        }}>
+          <option value="ask">{t("Ask me each time")}</option>
+          <option value="allow_pool">{t("Allow pool proxies without asking")}</option>
+          <option value="deny">{t("Never allow")}</option>
+        </Select></label>
+      {error && <div className="tools-alert" role="alert">{error}</div>}
+    </div>
+  </section>;
+}
+
+/**
+ * Questions from AI clients waiting for a person: shown over any page of the dashboard, so an
+ * approval does not depend on which view is open. Unanswered ones are refused after a minute.
+ */
+export function ProxyApprovalPrompts() {
+  const { t } = useTranslation();
+  const [pending, setPending] = useState<PendingApproval[]>([]);
+  const [answering, setAnswering] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const poll = useCallback(async () => {
+    try { setPending((await fetchApprovals()).pending); } catch { /* keep what is shown; the next poll retries */ }
+  }, []);
+  useEffect(() => {
+    void poll();
+    const timer = setInterval(() => { void poll(); setNow(Date.now()); }, 2000);
+    return () => clearInterval(timer);
+  }, [poll]);
+  if (!pending.length) return null;
+  const answer = async (id: string, approve: boolean) => {
+    setAnswering(id);
+    try { await approvalsCall("/answer", { id, approve }); } catch { /* it expired or was replaced; the poll clears it */ }
+    finally { setAnswering(null); await poll(); }
+  };
+  return <div className="proxy-approvals" role="region" aria-label={t("AI proxy changes")}>
+    {pending.map((item) => <div key={item.id} className="proxy-approval" role="alertdialog" aria-labelledby={`approval-${item.id}`}>
+      <strong id={`approval-${item.id}`}>{t("{client} wants to change the proxy of {profile}", { client: item.client, profile: item.profileName })}</strong>
+      <p className="tools-mono">{item.from} → {item.to}</p>
+      <p>{item.reopens ? t("The open browser will save its tabs, close and reopen on the new exit.") : t("The profile uses it from its next start.")}
+        {" "}{t("Refused automatically in {seconds} s.", { seconds: Math.max(0, Math.ceil((item.expiresAt - now) / 1000)) })}</p>
+      <div className="proxy-actions">
+        <button type="button" className="btn" disabled={answering === item.id} onClick={() => void answer(item.id, false)}>{t("Deny")}</button>
+        <button type="button" className="btn primary" disabled={answering === item.id} onClick={() => void answer(item.id, true)}>{t("Allow")}</button>
+      </div>
+    </div>)}
+  </div>;
 }

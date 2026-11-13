@@ -13,6 +13,7 @@
 
 import type { Database } from "bun:sqlite";
 import { parseProxySpec, normalizeProxySpec, proxyHostPort, proxyIdentityKey } from "./proxy.ts";
+import { SecretBox, SecretUnavailableError } from "./secret-box.ts";
 import type { ProxyCheckResult } from "./proxy-check.ts";
 import type { NodeProtocol, Outbound, ParsedNode, SubscriptionUsage } from "./subscription.ts";
 import type { ProxySpec, ProxyType } from "./types.ts";
@@ -179,7 +180,12 @@ export interface ImportResult {
 }
 
 export class ProxyPool {
-  constructor(private readonly db: Database, private readonly now: () => number = Date.now) {
+  /**
+   * `box` seals subscription links, node addresses and credentials, and keys the identity digests
+   * (see secret-box.ts). The store passes the data directory's own box; the in-memory default is
+   * only for tests.
+   */
+  constructor(private readonly db: Database, private readonly now: () => number = Date.now, private readonly box: SecretBox = SecretBox.ephemeral()) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS proxy_pool_nodes (
         id TEXT PRIMARY KEY,
@@ -194,6 +200,17 @@ export class ProxyPool {
         check_json TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS proxy_switch_history (
+        profile_id TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        by_whom TEXT NOT NULL,
+        from_label TEXT NOT NULL,
+        to_label TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        code TEXT NOT NULL DEFAULT '',
+        exit_country TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS proxy_switch_history_profile ON proxy_switch_history (profile_id, at);
       CREATE TABLE IF NOT EXISTS proxy_subscriptions (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL DEFAULT '',
@@ -216,15 +233,75 @@ export class ProxyPool {
     ]) {
       try { db.exec(`ALTER TABLE proxy_pool_nodes ADD COLUMN ${column}`); } catch { /* already there */ }
     }
+    this.sealOlderRows();
+  }
+
+  /** Rows written before encryption: seal them in place, once. */
+  private sealOlderRows(): void {
+    if (!this.box.available) return;
+    this.db.transaction(() => {
+      for (const row of this.db.query<{ id: string; proxy_json: string; outbound_json: string; identity_key: string }, []>(
+        `SELECT id, proxy_json, outbound_json, identity_key FROM proxy_pool_nodes`).all()) {
+        const proxy = SecretBox.isSealed(row.proxy_json) ? row.proxy_json : this.box.seal(row.proxy_json);
+        const outbound = !row.outbound_json || SecretBox.isSealed(row.outbound_json) ? row.outbound_json : this.box.seal(row.outbound_json);
+        const key = SecretBox.isDigest(row.identity_key) ? row.identity_key : this.box.digest(row.identity_key);
+        if (proxy !== row.proxy_json || outbound !== row.outbound_json || key !== row.identity_key) {
+          this.db.query(`UPDATE proxy_pool_nodes SET proxy_json = ?, outbound_json = ?, identity_key = ? WHERE id = ?`).run(proxy, outbound, key, row.id);
+        }
+      }
+      for (const row of this.db.query<{ id: string; url: string }, []>(`SELECT id, url FROM proxy_subscriptions`).all()) {
+        if (!SecretBox.isSealed(row.url)) this.db.query(`UPDATE proxy_subscriptions SET url = ? WHERE id = ?`).run(this.box.seal(row.url), row.id);
+      }
+    })();
+  }
+
+  /** The stored stand-in for a node's identity (protocol, address, credentials). */
+  private identity(key: string): string {
+    return this.box.digest(key);
+  }
+
+  /** A node as stored, or null when its secrets cannot be read on this computer. */
+  private readNode(row: any): PoolNode | null {
+    try {
+      return rowToNode({ ...row, proxy_json: this.box.open(row.proxy_json), outbound_json: row.outbound_json ? this.box.open(row.outbound_json) : "" });
+    } catch (error) {
+      if (error instanceof SecretUnavailableError) return null;
+      throw error;
+    }
+  }
+
+  private readSubscription(row: any): PoolSubscription {
+    try {
+      return rowToSubscription({ ...row, url: this.box.open(row.url) });
+    } catch (error) {
+      if (!(error instanceof SecretUnavailableError)) throw error;
+      return { ...rowToSubscription({ ...row, url: "" }), unreadable: true };
+    }
+  }
+
+  /** Remember a proxy change: when, by whom (the dashboard or an MCP connection), from and to what. */
+  recordSwitch(entry: import("./proxy-switch.ts").SwitchHistoryEntry): void {
+    this.db.query(`INSERT INTO proxy_switch_history (profile_id, at, by_whom, from_label, to_label, outcome, code, exit_country) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(entry.profileId, entry.at, entry.by.slice(0, 120), entry.from.slice(0, 300), entry.to.slice(0, 300), entry.outcome, entry.code ?? "", entry.exitCountry ?? "");
+  }
+
+  /** A profile's proxy changes, newest first. */
+  switchHistory(profileId: string, limit = 20): import("./proxy-switch.ts").SwitchHistoryEntry[] {
+    return this.db.query<any, [string, number]>(`SELECT * FROM proxy_switch_history WHERE profile_id = ? ORDER BY at DESC, rowid DESC LIMIT ?`)
+      .all(profileId, limit)
+      .map((row) => ({
+        profileId: row.profile_id, at: Number(row.at), by: row.by_whom, from: row.from_label, to: row.to_label, outcome: row.outcome,
+        ...(row.code ? { code: row.code } : {}), ...(row.exit_country ? { exitCountry: row.exit_country } : {}),
+      }));
   }
 
   listSubscriptions(): PoolSubscription[] {
-    return this.db.query<any, []>(`SELECT * FROM proxy_subscriptions ORDER BY created_at`).all().map(rowToSubscription);
+    return this.db.query<any, []>(`SELECT * FROM proxy_subscriptions ORDER BY created_at`).all().map((row) => this.readSubscription(row));
   }
 
   getSubscription(id: string): PoolSubscription | null {
     const row = this.db.query<any, [string]>(`SELECT * FROM proxy_subscriptions WHERE id = ?`).get(id);
-    return row ? rowToSubscription(row) : null;
+    return row ? this.readSubscription(row) : null;
   }
 
   addSubscription(input: { url: string; name?: string; userAgent?: string }): PoolSubscription {
@@ -238,7 +315,7 @@ export class ProxyPool {
       createdAt: this.now(),
     };
     this.db.query(`INSERT INTO proxy_subscriptions (id, name, url, user_agent, created_at) VALUES (?, ?, ?, ?, ?)`)
-      .run(sub.id, sub.name, sub.url, sub.userAgent ?? "", sub.createdAt);
+      .run(sub.id, sub.name, this.box.seal(sub.url), sub.userAgent ?? "", sub.createdAt);
     return sub;
   }
 
@@ -268,7 +345,7 @@ export class ProxyPool {
           type: parsed.protocol, host: parsed.server, port: String(parsed.port),
           user: String(parsed.outbound.username ?? ""), pass: String(parsed.outbound.password ?? ""),
         })! : null;
-        const key = plainProxy ? proxyIdentityKey(plainProxy) : `kernel:${parsed.key}`;
+        const key = this.identity(plainProxy ? proxyIdentityKey(plainProxy) : `kernel:${parsed.key}`);
         listed.add(key);
         const existing = this.db.query<{ id: string }, [string]>(`SELECT id FROM proxy_pool_nodes WHERE identity_key = ?`).get(key);
         if (existing) {
@@ -283,9 +360,9 @@ export class ProxyPool {
             protocol, outbound_json, subscription_id, insecure_tls, removed_from_source)
           VALUES ($id, $name, 'provider', $proxy, $key, '[]', NULL, 0, $hint, '', $at, $protocol, $outbound, $sub, $insecure, 0)
         `).run({
-          $id: nodeId, $name: (parsed.name || `${parsed.server}:${parsed.port}`).slice(0, 200), $proxy: JSON.stringify(proxy), $key: key,
+          $id: nodeId, $name: (parsed.name || `${parsed.server}:${parsed.port}`).slice(0, 200), $proxy: this.box.seal(JSON.stringify(proxy)), $key: key,
           $hint: parsed.regionHint ?? "", $at: this.now() + result.added / 1000, $protocol: parsed.protocol,
-          $outbound: plainProxy ? "" : JSON.stringify(parsed.outbound), $sub: id, $insecure: parsed.insecureTls ? 1 : 0,
+          $outbound: plainProxy ? "" : this.box.seal(JSON.stringify(parsed.outbound)), $sub: id, $insecure: parsed.insecureTls ? 1 : 0,
         });
         result.added++;
       }
@@ -326,12 +403,13 @@ export class ProxyPool {
   }
 
   list(): PoolNode[] {
-    return this.db.query<any, []>(`SELECT * FROM proxy_pool_nodes ORDER BY created_at, rowid`).all().map(rowToNode);
+    return this.db.query<any, []>(`SELECT * FROM proxy_pool_nodes ORDER BY created_at, rowid`).all()
+      .map((row) => this.readNode(row)).filter((node): node is PoolNode => node !== null);
   }
 
   get(id: string): PoolNode | null {
     const row = this.db.query<any, [string]>(`SELECT * FROM proxy_pool_nodes WHERE id = ?`).get(id);
-    return row ? rowToNode(row) : null;
+    return row ? this.readNode(row) : null;
   }
 
   /**
@@ -370,7 +448,7 @@ export class ProxyPool {
           result.invalid.push({ line: index + 1, error: "not a proxy" });
           return;
         }
-        const key = proxyIdentityKey(proxy);
+        const key = this.identity(proxyIdentityKey(proxy));
         if (known.has(key)) { result.duplicates++; return; }
         known.add(key);
         const node: PoolNode = {
@@ -386,7 +464,7 @@ export class ProxyPool {
           createdAt: this.now() + result.added.length / 1000,
         };
         insert.run({
-          $id: node.id, $name: node.name, $kind: node.kind, $proxy: JSON.stringify(node.proxy), $key: key,
+          $id: node.id, $name: node.name, $kind: node.kind, $proxy: this.box.seal(JSON.stringify(node.proxy)), $key: key,
           $tags: JSON.stringify(node.tags), $max: node.maxProfiles, $hint: node.regionHint ?? "", $at: node.createdAt, $protocol: node.protocol,
         });
         result.added.push(node);
@@ -657,8 +735,10 @@ export async function checkPoolNodes(
 export interface PoolSubscription {
   id: string;
   name: string;
-  /** The link is a credential: it never leaves the server. */
+  /** The link is a credential: it never leaves the server, and is stored sealed. */
   url: string;
+  /** Sealed under a key this computer's account cannot read (the data came from elsewhere): add it again. */
+  unreadable?: true;
   userAgent?: string;
   lastFetchedAt?: number;
   lastError?: string;
@@ -678,9 +758,14 @@ export interface PoolSubscriptionView extends Omit<PoolSubscription, "url"> {
   host: string;
 }
 
+export const UNREADABLE_SUBSCRIPTION = "This subscription link cannot be read on this computer. Remove it and add it again";
+
 export function subscriptionView(sub: PoolSubscription): PoolSubscriptionView {
   const { url, ...rest } = sub;
-  return { ...rest, host: new URL(url).hostname };
+  if (sub.unreadable) return { ...rest, host: "", lastError: UNREADABLE_SUBSCRIPTION };
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* shown without a host */ }
+  return { ...rest, host };
 }
 
 function rowToSubscription(row: any): PoolSubscription {

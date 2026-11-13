@@ -21,6 +21,7 @@ import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxyS
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleProxyPoolRequest } from "./proxy-pool-api.ts";
+import { saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
 import { handleTrashRequest } from "./trash.ts";
 import {
   importInbox,
@@ -387,26 +388,7 @@ async function assignProfileProxy(
   options: UiRuntimeOptions,
 ): Promise<{ restartRequired?: true } | null> {
   if (!isSafeProfileId(id)) return null;
-  const apply = (profile: Profile) => {
-    const changed = !!profile.proxyError || proxyIdentityKey(profile.proxy) !== proxyIdentityKey(proxy);
-    profile.proxy = { ...proxy };
-    delete profile.proxyError;
-    return changed;
-  };
-  let p = store.getProfile(id);
-  if (!p) return null;
-  if (apply(p) && !p.timezoneManual) {
-    const location = await lookupExitLocation(proxy, options.timezoneFetch);
-    // Apply to the current copy, so changes saved during the lookup are kept.
-    p = store.getProfile(id);
-    if (!p) return null;
-    apply(p);
-    if (location) {
-      p.timezone = location.timezone;
-      syncFirefoxTimezone(p);
-    }
-  }
-  store.upsertProfile(p);
+  if (!await saveProfileProxy(store, id, proxy, options.timezoneFetch)) return null;
   return restartRequired(store, id);
 }
 
@@ -511,6 +493,8 @@ export interface UiRuntimeOptions {
 
 
   health?: UiHealthMetadata | null;
+  /** Proxy changes an AI asked for, waiting for a person (see proxy-approvals.ts). */
+  proxyApprovals?: import("./proxy-approvals.ts").ProxyApprovalQueue;
   timezoneFetch?: FetchLike;
   proxyCheck?: (proxy: ProxySpec) => Promise<ProxyCheckResult>;
   extensionFetch?: ExtensionFetch;
@@ -786,6 +770,33 @@ export async function handleUiRequest(
     }
   }
 
+  // AI proxy changes: the questions waiting for a person, the answers, and the standing policy.
+  if (pathname === "/ui/api/proxy-approvals" && req.method === "GET") {
+    let policy: string = "ask";
+    try { policy = options.appConfig?.read().aiProxyChanges ?? "ask"; } catch {}
+    return noStoreJson({ ok: true, pending: options.proxyApprovals?.list() ?? [], policy });
+  }
+  if (pathname.startsWith("/ui/api/proxy-approvals/") && req.method === "POST") {
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+    if (pathname === "/ui/api/proxy-approvals/policy") {
+      const policy = body?.policy;
+      if (policy !== "ask" && policy !== "allow_pool" && policy !== "deny") return noStoreJson({ ok: false, error: "Invalid policy" }, 400);
+      if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 500);
+      const config = options.appConfig.read();
+      const { aiProxyChanges: _old, ...rest } = config;
+      options.appConfig.write(policy === "ask" ? rest : { ...rest, aiProxyChanges: policy });
+      return noStoreJson({ ok: true, policy });
+    }
+    if (pathname === "/ui/api/proxy-approvals/answer") {
+      if (typeof body?.id !== "string" || typeof body.approve !== "boolean") return noStoreJson({ ok: false, error: "Invalid answer" }, 400);
+      const answered = options.proxyApprovals?.answer(body.id, body.approve) ?? false;
+      return noStoreJson({ ok: answered, ...(answered ? {} : { error: "This request is no longer waiting" }) }, answered ? 200 : 409);
+    }
+    return noStoreJson({ ok: false, error: "Unknown approval operation" }, 404);
+  }
+
   if (pathname === "/ui/api/proxy-pool" || pathname.startsWith("/ui/api/proxy-pool/")) {
     if (remote) return noStoreJson({ ok: false, error: "The proxy pool is unavailable in legacy remote mode" }, 400);
     if (req.method !== "GET") {
@@ -798,6 +809,10 @@ export async function handleUiRequest(
     return handleProxyPoolRequest(req, store, options, {
       assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
       kernels: launcher.kernels,
+      switchProxy: (profileId, nodeId, by) => switchProfileProxy({
+        store, launcher, assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
+        ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
+      }, { profileId, nodeId, by }),
     });
   }
 
