@@ -104,3 +104,101 @@ test("checks stream each node's result and save it on the node", async () => {
   const listed = await (await call("")).json();
   expect(listed.nodes[0].sameExitAs).toEqual([listed.nodes[1].id]);
 });
+
+import { parseSubscription, SubscriptionError } from "./subscription.ts";
+
+test("subscriptions: added and refreshed through the routes, the link never in an answer", async () => {
+  const { store } = setup();
+  const links = "anytls://ANYPASS@sg.node.example:443?sni=sg.node.example#SG\nvless://u-1@jp.node.example:443?security=tls#JP\nwireguard://x@y:1#WG";
+  let fail = false;
+  const fetchSubscription = (async () => {
+    if (fail) throw new SubscriptionError("The subscription server answered 403");
+    return { body: links, userAgent: "clash.meta", usage: { totalBytes: 100, downloadBytes: 40 }, parsed: parseSubscription(links) };
+  }) as any;
+  const call = (path: string, body?: unknown) => handleUiRequest(new Request(`http://localhost/ui/api/proxy-pool${path}`, body === undefined
+    ? { method: "GET" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  {} as any, store, null, {}).then((r) => r!);
+  // ui.ts passes the launcher's kernels; routes without them still list and sync.
+  const { handleProxyPoolRequest } = await import("./proxy-pool-api.ts");
+  const direct = (path: string, body?: unknown) => handleProxyPoolRequest(new Request(`http://localhost/ui/api/proxy-pool${path}`, body === undefined
+    ? { method: "GET" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  store, {}, { assign: async () => null, fetchSubscription });
+
+  const added = await (await direct("/subscriptions/add", { url: "https://sub.example/secret-token", name: "My airport" })).json();
+  expect(added).toMatchObject({ ok: true, added: 2, kept: 0, removed: 0, format: "uri", unsupported: [{ name: "WG" }] });
+  expect(added.subscription).toMatchObject({ name: "My airport", host: "sub.example", usage: { totalBytes: 100, downloadBytes: 40 } });
+  const listed = await (await call("")).text();
+  expect(listed).not.toContain("secret-token");
+  expect(listed).not.toContain("ANYPASS");
+  const body = JSON.parse(listed);
+  expect(body.subscriptions).toHaveLength(1);
+  expect(body.nodes.map((n: { protocol: string; maxProfiles: number | null }) => [n.protocol, n.maxProfiles])).toEqual([["anytls", null], ["vless", null]]);
+
+  fail = true;
+  const failed = await direct("/subscriptions/refresh", { id: added.subscription.id });
+  expect(failed.status).toBe(502);
+  expect(store.proxyPool.getSubscription(added.subscription.id)!.lastError).toBe("The subscription server answered 403");
+  // A failed refresh leaves the nodes as they were.
+  expect(store.proxyPool.list()).toHaveLength(2);
+
+  expect(await (await direct("/subscriptions/delete", { id: added.subscription.id })).json()).toEqual({ ok: true, removedNodes: 2, keptNodes: 0 });
+  expect((await direct("/subscriptions/add", { url: "http://sub.example/x" })).status).toBe(400);
+});
+
+test("kernel nodes are checked through a temporary kernel that stops afterwards; without one they are unknown", async () => {
+  const { store, options } = setup();
+  const parsed = parseSubscription("anytls://ANYPASS@sg.node.example:443?sni=sg.node.example#SG\nsocks5://198.51.100.9:1080#plain");
+  const sub = store.proxyPool.addSubscription({ url: "https://sub.example/a" });
+  store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+  const [kernelNode, plain] = store.proxyPool.list();
+  const checked: string[] = [];
+  options.proxyCheck = async (proxy) => { checked.push(`${proxy.type}://${proxy.host}:${proxy.port}`); return { status: "working", attempts: 3, successes: 3, ip: "203.0.113.1" }; };
+  let stopped = 0;
+  const kernels = {
+    startTemporary: async (entries: Array<{ tag: string }>) => ({
+      process: { pid: 1, spec: {} as any, exited: new Promise<number>(() => {}), stop: () => { stopped++; } },
+      specs: new Map(entries.map((entry, i) => [entry.tag, { type: "socks5" as const, host: "127.0.0.1", port: String(40000 + i), user: "k", pass: "k" }])),
+    }),
+  };
+  const { handleProxyPoolRequest } = await import("./proxy-pool-api.ts");
+  const run = (deps: object) => handleProxyPoolRequest(new Request("http://localhost/ui/api/proxy-pool/check", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), store, options, { assign: async () => null, ...deps }).then((r) => r.text());
+  await run({ kernels });
+  expect(checked.sort()).toEqual(["socks5://127.0.0.1:40000", "socks5://198.51.100.9:1080"]);
+  expect(stopped).toBe(1);
+  expect(store.proxyPool.get(kernelNode!.id)!.check!.status).toBe("working");
+  checked.length = 0;
+  await run({});
+  expect(checked).toEqual(["socks5://198.51.100.9:1080"]);
+  expect(store.proxyPool.get(kernelNode!.id)!.check).toMatchObject({ status: "unavailable" });
+  expect(store.proxyPool.get(plain!.id)!.check!.status).toBe("working");
+});
+
+test("switching goes through one route; each stop reason has its own status, and history lists who changed what", async () => {
+  const { store } = setup();
+  const { handleProxyPoolRequest } = await import("./proxy-pool-api.ts");
+  const { ProxySwitchError } = await import("./proxy-switch.ts");
+  const calls: string[] = [];
+  let failWith: InstanceType<typeof ProxySwitchError> | null = null;
+  const deps = {
+    assign: async () => null,
+    switchProxy: async (profileId: string, nodeId: string, by: string) => {
+      calls.push(`${profileId} ${nodeId} ${by}`);
+      if (failWith) throw failWith;
+      store.proxyPool.recordSwitch({ profileId, at: 5, by, from: "a", to: "b", outcome: "reopened" });
+      return { applied: "reopened" as const, previous: "a", next: "b", sharedWith: [] };
+    },
+  };
+  const call = (path: string, body?: unknown) => handleProxyPoolRequest(new Request(`http://localhost/ui/api/proxy-pool${path}`, body === undefined
+    ? { method: "GET" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), store, {}, deps);
+  expect(await (await call("/switch", { profileId: "p1", nodeId: "n1" })).json()).toEqual({ ok: true, applied: "reopened", previous: "a", next: "b", sharedWith: [] });
+  expect(calls).toEqual(["p1 n1 dashboard"]);
+  for (const [code, status] of [["rate_limited", 429], ["pool_exhausted", 409], ["switch_check_failed", 422], ["exit_is_direct", 500]] as const) {
+    failWith = new ProxySwitchError(code, "stopped", code === "rate_limited" ? { retryAfterMs: 1000 } : {});
+    const response = await call("/switch", { profileId: "p1", nodeId: "n1" });
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ ok: false, code, ...(code === "rate_limited" ? { retryAfterMs: 1000 } : {}) });
+  }
+  expect(await (await call("/history?profileId=p1")).json()).toEqual({ ok: true, history: [{ profileId: "p1", at: 5, by: "dashboard", from: "a", to: "b", outcome: "reopened" }] });
+});

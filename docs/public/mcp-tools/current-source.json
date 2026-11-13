@@ -254,6 +254,100 @@
       }
     },
     {
+      "name": "vela_proxy_pool_list",
+      "description": "List the proxies in Vela Browser's proxy pool, to choose one for vela_browser_set_proxy. Each has a nodeId, name, protocol, exit country (from its last check, or its name when never checked), status, and how many profiles use it of how many may. Credentials and subscription links are never returned.",
+      "annotations": {
+        "title": "List the proxy pool",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{2}$",
+            "description": "Two-letter exit country, e.g. US."
+          },
+          "tag": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "working",
+              "unstable",
+              "failed",
+              "unavailable",
+              "unchecked"
+            ]
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Only proxies that are enabled and below their sharing limit."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_proxy_pool_check",
+      "description": "Check pool proxies now (exit IP country, whether they work). This sends a few requests to an IP lookup service through each proxy. Returns the same entries as vela_proxy_pool_list.",
+      "annotations": {
+        "title": "Check pool proxies",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "nodeIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "nodeIds"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_browser_set_proxy",
+      "description": "Give a profile a proxy from the pool (nodeId from vela_proxy_pool_list). Changing a profile's exit shows its sites an IP change, so the user may have to approve it in Vela Browser first (the call waits up to a minute). The new proxy is checked before anything changes. A closed profile uses it from its next start. An open browser saves its session, closes and reopens on the new exit with its tabs (timezone and WebRTC follow the new exit); this connection reattaches to it. Errors: approval_denied, approval_timeout, node_unavailable, pool_exhausted, rate_limited (one change per profile every 30 seconds), profile_busy, switch_check_failed, teardown_unconfirmed, reopen_failed, exit_is_direct.",
+      "annotations": {
+        "title": "Change a profile's proxy",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nodeId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "profileId",
+          "nodeId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "vela_humanize",
       "description": "Turn human-like input on or off for the browsers this connection drives, or change its pace. It is on by default: clicks, hovers, drags, typing and form filling move a pointer on a curved path, land inside the element, scroll with the wheel and type key by key, each profile with its own stable habits. Call without arguments to read the current setting.",
       "annotations": {

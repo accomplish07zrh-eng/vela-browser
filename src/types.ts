@@ -22,7 +22,12 @@ export interface CookieRecord {
   _crHasCrossSiteAncestor?: boolean;
 }
 
-export type ProxyType = "http" | "https" | "socks5";
+/**
+ * "pool": a proxy-pool node run by the proxy kernel (vless, hysteria2, anytls…). Its `host` is the
+ * node's id and its port "0"; nothing connects to it directly. A launch turns it into the address
+ * of the profile's own kernel, and anything that cannot do that fails instead of going direct.
+ */
+export type ProxyType = "http" | "https" | "socks5" | "pool";
 
 /** Browser engine that owns this profile's identity. Missing legacy values mean Chromium. */
 export type ProfileEngine = "chromium" | "firefox" | "webkit";

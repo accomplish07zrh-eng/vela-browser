@@ -41,6 +41,7 @@ import {
   type AgentControlSession,
   validAgentAuthorization,
 } from "./agent-control.ts";
+import { ProxyApprovalQueue, type AiProxyPolicy } from "./proxy-approvals.ts";
 import {
   LifecycleAdmissionController,
   dispatchWithLifecycleAdmission,
@@ -237,6 +238,11 @@ export function serveDashboard(opts: DashboardServerOptions) {
       return true;
     },
   }) : undefined;
+  // Proxy changes an AI asks for wait here for a person on the dashboard (unless the user allowed them).
+  const proxyApprovals = new ProxyApprovalQueue();
+  const aiProxyPolicy = (): AiProxyPolicy => {
+    try { return opts.appConfig?.read().aiProxyChanges ?? "ask"; } catch { return "ask"; }
+  };
   const agentHub = agentNonce
     ? new AgentControlHub({
         launcher,
@@ -248,6 +254,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
         ...(opts.paths && !opts.remote ? { plugins: () => scanPlugins(pluginsDirectory(opts.paths!.root), opts.appConfig?.read().disabledPlugins ?? []).specs } : {}),
         // The AI's pointer in a Chromium browser, drawn over that browser's card.
         pointer: (profileId, pointer) => workbenchHub?.pointer(profileId, pointer),
+        proxyApprovals,
+        aiProxyPolicy,
         log,
       })
     : undefined;
@@ -385,6 +393,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
           health: opts.health,
           scripts,
           runtimeMode,
+          proxyApprovals,
         });
         if (ui) return ui;
         // Per-profile identity "card" (AdsPower-style landing page). Opened as a tab and

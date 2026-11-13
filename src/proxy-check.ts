@@ -130,7 +130,7 @@ async function proxyAttempt(
   try {
     // The same relay a launched browser uses, with the proxy's own protocol: HTTPS stays TLS.
     relay = await options.relayFactory({
-      type: proxy.type,
+      type: proxy.type as Exclude<typeof proxy.type, "pool">,
       host: proxy.host,
       port: Number(proxy.port),
       user: proxy.user,
@@ -170,6 +170,8 @@ export async function checkProxy(
 ): Promise<ProxyCheckResult> {
   const proxy = normalizeProxySpec(input);
   if (!proxy) throw new Error("proxy is required");
+  // A pool node is checked through its kernel: the caller passes the kernel's address.
+  if (proxy.type === "pool") throw new Error("a proxy pool node is checked through its kernel");
 
   const fetchFn = options.fetchFn ?? fetch;
   const relayFactory = options.relayFactory ?? startProxyRelay;

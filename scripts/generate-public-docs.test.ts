@@ -151,7 +151,7 @@ test("current-source MCP catalog is deterministic and committed", async () => {
   const first = await generateCurrentSourceCatalog();
   const second = await generateCurrentSourceCatalog();
   expect(serialize(first)).toBe(serialize(second));
-  expect(read(CURRENT_CATALOG_PATH)).toBe(serialize(first));
+  expect(read(CURRENT_CATALOG_PATH).replace(/\r\n/g, "\n")).toBe(serialize(first));
 });
 
 test("MCP catalogs list the expected tools", () => {
@@ -163,8 +163,10 @@ test("MCP catalogs list the expected tools", () => {
   expect(released.aliasModeTools.map((tool: any) => tool.name)).toEqual(BETA42_ALIASMODE_TOOLS);
   expect(current.status).toBe("source");
   expect(current.playwrightToolAvailability).toBe("listed-before-selection");
-  expect(current.aliasModeTools.length).toBe(9 + DEVTOOLS_TOOLS.length);
+  const proxyPoolTools = ["vela_proxy_pool_list", "vela_proxy_pool_check", "vela_browser_set_proxy"];
+  expect(current.aliasModeTools.length).toBe(9 + proxyPoolTools.length + DEVTOOLS_TOOLS.length);
   for (const tool of DEVTOOLS_TOOLS) expect(current.aliasModeTools.some((item: any) => item.name === tool.name)).toBe(true);
+  for (const name of proxyPoolTools) expect(current.aliasModeTools.some((item: any) => item.name === name)).toBe(true);
   expect(current.aliasModeTools.map((tool: any) => tool.name)).not.toContain("aliasmode_profiles_replace_proxies");
   expect(current.aliasModeTools.map((tool: any) => tool.name)).not.toContain("aliasmode_profile_update");
   for (const catalog of [current, released]) {

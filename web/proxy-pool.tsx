@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Select } from "./select.tsx";
 import { NumberInput } from "./controls.tsx";
 import { useTranslation } from "./i18n.tsx";
-import type { PoolCheck, PoolNodeView } from "../src/proxy-pool.ts";
+import type { PoolCheck, PoolNodeView, PoolSubscriptionView } from "../src/proxy-pool.ts";
 
 export class ProxyPoolClientError extends Error {}
 
@@ -23,11 +23,21 @@ const SERVER_MESSAGES = new Set([
   "This proxy is already used by as many profiles as its sharing limit allows", "no such profile",
   "Unknown proxy pool operation", "Unsupported proxy type", "Invalid request", "POST is required",
   "Proxy pool operation failed", "Proxy check failed",
+  "Paste a subscription link", "Choose a subscription", "This subscription is no longer here", "This subscription is already added",
+  "The subscription link is not a valid URL", "The subscription link must use https", "The subscription could not be read",
+  "The subscription could not be downloaded", "The subscription is too large", "The subscription is empty",
+  "The subscription format is not recognised", "The subscription lists no usable node", "The subscription is not valid YAML",
+  "The subscription is not valid JSON", "The subscription has no proxies", "The subscription has no outbounds",
+  "The subscription link redirects too many times", "The subscription link redirects to an insecure address",
+  "This subscription link cannot be read on this computer. Remove it and add it again", "Encrypted storage is unavailable right now",
 ]);
 
 /** A failure's message for the page: a known server message, translated, or `fallback`. */
-function failureText(t: (key: string) => string, failure: unknown, fallback: string): string {
+function failureText(t: (key: string, vars?: Record<string, string | number>) => string, failure: unknown, fallback: string): string {
   const message = failure instanceof Error ? failure.message : "";
+  // Subscription errors come from Vela's own fetcher; some carry a status code.
+  const answered = /^The subscription server answered (\d{3})$/.exec(message);
+  if (answered) return t("The subscription server answered {status}", { status: answered[1]! });
   return SERVER_MESSAGES.has(message) ? t(message) : t(fallback);
 }
 
@@ -46,10 +56,37 @@ async function poolCall<T>(path: string, body?: unknown, signal?: AbortSignal): 
 }
 
 export const fetchPool = (signal?: AbortSignal) => poolCall<{ nodes: PoolNodeView[] }>("", undefined, signal).then((r) => r.nodes);
+export const fetchPoolAll = (signal?: AbortSignal) => poolCall<{ nodes: PoolNodeView[]; subscriptions: PoolSubscriptionView[] }>("", undefined, signal);
+interface SubscriptionResult { added: number; kept: number; removed: number; infoEntries: number; nonNodes: number; unsupported: Array<{ name: string; reason: string }> }
+export const addSubscription = (url: string, name: string) => poolCall<SubscriptionResult>("/subscriptions/add", { url, ...(name.trim() ? { name } : {}) });
+export const refreshSubscription = (id: string) => poolCall<SubscriptionResult>("/subscriptions/refresh", { id });
+export const deleteSubscription = (id: string) => poolCall<{ removedNodes: number; keptNodes: number }>("/subscriptions/delete", { id });
+
+function bytes(value: number | undefined): string {
+  if (value === undefined) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = value, i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)} ${units[i]}`;
+}
+
+/** Remaining traffic and expiry, warning under 10% left or 7 days to go. */
+export function subscriptionUsage(sub: PoolSubscriptionView, now = Date.now()): { used?: number; total?: number; left?: number; expireAt?: number; warn: boolean } {
+  const used = sub.usage ? (sub.usage.uploadBytes ?? 0) + (sub.usage.downloadBytes ?? 0) : undefined;
+  const total = sub.usage?.totalBytes;
+  const left = total !== undefined && used !== undefined ? Math.max(0, total - used) : undefined;
+  const expireAt = sub.usage?.expireAt ? sub.usage.expireAt * 1000 : undefined;
+  const warn = (total !== undefined && left !== undefined && total > 0 && left / total < 0.1) || (expireAt !== undefined && expireAt - now < 7 * 86_400_000);
+  return { ...(used !== undefined ? { used } : {}), ...(total !== undefined ? { total } : {}), ...(left !== undefined ? { left } : {}), ...(expireAt !== undefined ? { expireAt } : {}), warn };
+}
 export const importPool = (text: string, type: string, tags: string[]) =>
   poolCall<{ added: number; duplicates: number; invalid: Array<{ line: number; error: string }> }>("/import", { text, type, tags });
 export const updatePoolNode = (id: string, patch: Record<string, unknown>) => poolCall<{ node: PoolNodeView }>("/update", { id, ...patch });
 export const deletePoolNodes = (ids: string[]) => poolCall<{ removed: number }>("/delete", { ids });
+export interface SwitchAnswer { applied: "saved" | "reopened"; previous: string; next: string; exit?: { ip?: string; country?: string }; sharedWith: Array<{ id: string; name: string; group: string }> }
+export const switchPoolNode = (profileId: string, nodeId: string) => poolCall<SwitchAnswer>("/switch", { profileId, nodeId });
+export interface SwitchHistoryView { at: number; by: string; from: string; to: string; outcome: "saved" | "reopened" | "failed"; code?: string; exitCountry?: string }
+export const fetchSwitchHistory = (profileId: string) => poolCall<{ history: SwitchHistoryView[] }>(`/history?profileId=${encodeURIComponent(profileId)}`).then((r) => r.history);
 export const assignPoolNode = (profileId: string, nodeId: string) =>
   poolCall<{ restartRequired?: true; sharedWith: Array<{ id: string; name: string; group: string }> }>("/assign", { profileId, nodeId });
 
@@ -151,8 +188,12 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
   const [country, setCountry] = useState("");
   const [status, setStatus] = useState("");
 
+  const [subs, setSubs] = useState<PoolSubscriptionView[]>([]);
+  const [subUrl, setSubUrl] = useState("");
+  const [subName, setSubName] = useState("");
+  const [subBusy, setSubBusy] = useState<string | null>(null);
   const load = useCallback(async () => {
-    try { setNodes(await fetchPool()); setError(null); } catch { setError(t("The proxy pool could not load.")); }
+    try { const all = await fetchPoolAll(); setNodes(all.nodes); setSubs(all.subscriptions); setError(null); } catch { setError(t("The proxy pool could not load.")); }
   }, [t]);
   useEffect(() => { if (active) void load(); }, [active, load]);
 
@@ -205,6 +246,54 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
   };
 
   return <>
+    <section className="tools-panel proxy-input-panel">
+      <div className="tools-panel-head"><div><h3>{t("Subscriptions")}</h3><p>{t("Paste a provider's subscription link. Its nodes join the pool; providers share their exits, so their nodes have no sharing limit by default. The link stays on this computer.")}</p></div></div>
+      <div className="tools-panel-body">
+        <div className="fld-row">
+          <label className="fld grow"><span>{t("Subscription link")}</span><input type="password" autoComplete="off" spellCheck={false} value={subUrl} disabled={!!subBusy} placeholder="https://…" onChange={(e) => setSubUrl(e.target.value)} /></label>
+          <label className="fld"><span>{t("Name")}</span><input value={subName} disabled={!!subBusy} onChange={(e) => setSubName(e.target.value)} /></label>
+        </div>
+        <p className="tools-hint">{t("Subscription nodes such as VLESS, Trojan or Hysteria2 run in sing-box, a separate open-source program (GPL-3.0-or-later, by nekohasekai) that Vela Browser is not associated with. On first use Vela downloads its official release, checks it and runs it unmodified. Source: github.com/SagerNet/sing-box")}</p>
+        <div className="tools-result-bar"><span />
+          <button type="button" className="btn primary" disabled={!!subBusy || !subUrl.trim()} onClick={() => void (async () => {
+            setSubBusy("add"); setError(null); setNotice(null);
+            try {
+              const result = await addSubscription(subUrl.trim(), subName);
+              setSubUrl(""); setSubName("");
+              setNotice(subscriptionNotice(t, result));
+              await load();
+            } catch (failure) { setError(failureText(t, failure, "The subscription could not be read")); await load(); }
+            finally { setSubBusy(null); }
+          })()}>{subBusy === "add" ? t("Adding…") : t("Add subscription")}</button></div>
+        {subs.length > 0 && <div className="proxy-table-wrap"><table className="profile-table proxy-table pool-table"><thead><tr>
+          <th>{t("Name")}</th><th>{t("Traffic left")}</th><th>{t("Expires")}</th><th>{t("Nodes")}</th><th>{t("Updated")}</th><th></th>
+        </tr></thead><tbody>{subs.map((sub) => {
+          const usage = subscriptionUsage(sub);
+          const nodeCount = (nodes ?? []).filter((node) => node.subscriptionId === sub.id && !node.removedFromSource).length;
+          return <tr key={sub.id}>
+            <td><strong>{sub.name}</strong><small className="tools-mono">{sub.host}</small></td>
+            <td className={usage.warn ? "pool-warn" : ""}>{usage.left !== undefined ? `${bytes(usage.left)} / ${bytes(usage.total)}` : "—"}</td>
+            <td className={usage.warn ? "pool-warn" : ""}>{usage.expireAt ? new Date(usage.expireAt).toLocaleDateString() : "—"}</td>
+            <td>{nodeCount}{sub.lastImport && (sub.lastImport.unsupported.length > 0 || sub.lastImport.infoEntries > 0) && <small>{t("{unsupported} unsupported · {info} notices", { unsupported: sub.lastImport.unsupported.length, info: sub.lastImport.infoEntries })}</small>}</td>
+            <td>{sub.lastFetchedAt ? new Date(sub.lastFetchedAt).toLocaleString() : "—"}{sub.lastError && <small className="pool-warn">{failureText(t, new Error(sub.lastError), "The subscription could not be read")}</small>}</td>
+            <td><div className="proxy-actions">
+              <button type="button" className="btn sm" disabled={!!subBusy} onClick={() => void (async () => {
+                setSubBusy(sub.id); setError(null); setNotice(null);
+                try { setNotice(subscriptionNotice(t, await refreshSubscription(sub.id))); }
+                catch (failure) { setError(failureText(t, failure, "The subscription could not be read")); }
+                finally { setSubBusy(null); await load(); }
+              })()}>{subBusy === sub.id ? t("Updating…") : t("Update")}</button>
+              <button type="button" className="btn sm" disabled={!!subBusy} onClick={() => void (async () => {
+                if (!window.confirm(t("Remove this subscription? Its nodes that profiles use stay in the pool; the others are removed."))) return;
+                setSubBusy(sub.id);
+                try { await deleteSubscription(sub.id); } catch { setError(t("Could not save")); }
+                finally { setSubBusy(null); await load(); }
+              })()}>{t("Remove")}</button>
+            </div></td>
+          </tr>;
+        })}</tbody></table></div>}
+      </div>
+    </section>
     <section className="tools-panel proxy-input-panel">
       <div className="tools-panel-head"><div><h3>{t("Add proxies to the pool")}</h3><p>{t("One per line: host:port:user:pass or a URL. Add #name at the end to name it. A proxy already in the pool is not added twice.")}</p></div></div>
       <div className="tools-panel-body">
@@ -262,7 +351,10 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
             <td>{editing === node.id
               ? <NodeEditor node={node} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); void load(); onChanged?.(); }} />
               : <><strong>{node.name}</strong>{node.disabled && <small>{t("Disabled")}</small>}{node.tags.length > 0 && <small>{node.tags.join(" · ")}</small>}</>}</td>
-            <td className="tools-mono">{node.proxy}{node.hasAuth && <small>{t("with login")}</small>}</td>
+            <td className="tools-mono">{node.proxy}{node.hasAuth && !node.subscriptionId && <small>{t("with login")}</small>}
+              {node.subscriptionId && <small>{subs.find((sub) => sub.id === node.subscriptionId)?.name ?? t("Subscription")}</small>}
+              {node.insecureTls && <small className="pool-warn">{t("certificate not checked")}</small>}
+              {node.removedFromSource && <small className="pool-warn">{t("no longer in its subscription")}</small>}</td>
             <td>{where.code ?? "—"}{where.fromName && <small>{t("from name")}</small>}{mismatch && <small className="pool-warn">{t("name says {code}", { code: node.regionHint! })}</small>}</td>
             <td><span className={`tools-status ${node.check?.status ?? "unavailable"}`}>{statusLabel(t, node.check)}</span>
               {reasonLabel(t, node.check?.reason) && <small>{reasonLabel(t, node.check?.reason)}</small>}
@@ -281,6 +373,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
         })}</tbody></table></div>
       </> : <div className="tools-empty compact"><p>{nodes ? t("The pool is empty. Add proxies above, then give them to profiles from Replace proxies or a profile's edit form.") : t("Loading…")}</p></div>}
     </section>
+    <AiProxyPolicyField />
   </>;
 }
 
@@ -322,31 +415,57 @@ export function PoolSelectionFields({ value, onChange, disabled }: { value: stri
 }
 
 /** "From the pool" in a profile's edit form: saves the chosen node as the profile's proxy. */
-export function PoolProxyPicker({ profileId, onAssigned }: { profileId: string; onAssigned: (result: { restartRequired?: true }) => void }) {
+/** Why a switch stopped, for the person who asked for it. */
+function switchFailure(t: (key: string, vars?: Record<string, string | number>) => string, failure: unknown): string {
+  const { code, retryAfterMs } = failure as { code?: string; retryAfterMs?: number };
+  switch (code) {
+    case "pool_exhausted": return t("This proxy already has as many profiles as its sharing limit allows.");
+    case "node_unavailable": return t("This proxy is not available in the pool");
+    case "rate_limited": return t("This profile changed its proxy moments ago. Try again in {seconds} s.", { seconds: Math.ceil((retryAfterMs ?? 30_000) / 1000) });
+    case "profile_busy": return t("This profile is already changing its proxy.");
+    case "switch_check_failed": return t("The new proxy did not pass its check. Nothing was changed.");
+    case "teardown_unconfirmed": return t("The browser could not be closed for certain, so it keeps its current proxy.");
+    case "reopen_failed": return t("The new proxy is saved, but the browser did not reopen. Open it again.");
+    case "exit_is_direct": return t("After reopening, the browser's traffic left from this computer's own address, so it was closed.");
+    default: return t("Could not save");
+  }
+}
+
+export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId: string; running?: boolean; onAssigned: (result: SwitchAnswer) => void }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [nodes, setNodes] = useState<PoolNodeView[] | null>(null);
   const [choice, setChoice] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState<SwitchHistoryView[]>([]);
   useEffect(() => { if (open) void fetchPool().then(setNodes, () => setNodes([])); }, [open]);
+  useEffect(() => { void fetchSwitchHistory(profileId).then(setHistory, () => setHistory([])); }, [profileId, busy]);
+  const last = history[0];
+  const lastLine = last && <small className="pool-picker-message">{t("Last change: {when} · {from} → {to} · {by} · {outcome}", {
+    when: new Date(last.at).toLocaleString(), from: last.from, to: last.to,
+    by: last.by === "dashboard" ? t("you") : last.by.replace(/^mcp:/, "MCP · "),
+    outcome: last.outcome === "failed" ? t("not changed") : last.outcome === "reopened" ? t("reopened") : t("saved"),
+  })}</small>;
   if (!open) return <>
     <button type="button" className="btn proxy-check-btn" onClick={() => { setOpen(true); setMessage(null); }}>{t("From the pool…")}</button>
     {message && <small className="pool-picker-message">{message}</small>}
+    {lastLine}
   </>;
   const usable = (nodes ?? []).filter((node) => !node.disabled);
   const assign = async () => {
+    if (running && !window.confirm(t("Change this open browser's exit? Its session is saved, it closes, and it reopens on the new exit with its tabs. Timezone and WebRTC follow the new exit."))) return;
     setBusy(true); setMessage(null);
     try {
-      const result = await assignPoolNode(profileId, choice);
-      setMessage(result.sharedWith.length
-        ? t("Saved. This exit is shared with {names}.", { names: result.sharedWith.map((p) => p.name || p.id).join(", ") })
-        : t("Saved."));
+      const result = await switchPoolNode(profileId, choice);
+      const shared = result.sharedWith.length ? " " + t("This exit is shared with {names}.", { names: result.sharedWith.map((p) => p.name || p.id).join(", ") }) : "";
+      setMessage((result.applied === "reopened"
+        ? t("Changed. The browser reopened on the new exit ({country}).", { country: result.exit?.country ?? "—" })
+        : t("Saved. The profile uses the new exit from its next start.")) + shared);
       onAssigned(result);
       setOpen(false);
     } catch (failure) {
-      const code = (failure as { code?: string }).code;
-      setMessage(code === "pool_exhausted" ? t("This proxy already has as many profiles as its sharing limit allows.") : t("Could not save"));
+      setMessage(switchFailure(t, failure));
     } finally { setBusy(false); }
   };
   return <div className="pool-picker">
@@ -361,8 +480,111 @@ export function PoolProxyPicker({ profileId, onAssigned }: { profileId: string; 
         </option>;
       })}
     </Select>
-    <button type="button" className="btn primary" disabled={!choice || busy} onClick={() => void assign()}>{t("Use this proxy")}</button>
+    <button type="button" className="btn primary" disabled={!choice || busy} onClick={() => void assign()}>{busy ? t("Checking the new exit…") : running ? t("Change and reopen") : t("Use this proxy")}</button>
     <button type="button" className="btn" onClick={() => setOpen(false)}>{t("Cancel")}</button>
     {message && <small>{message}</small>}
+  </div>;
+}
+
+/** A profile's proxy that is a pool node: shown by name, never edited as text. */
+export function PoolNodeField({ nodeId, onManual }: { nodeId: string; onManual: () => void }) {
+  const { t } = useTranslation();
+  const [node, setNode] = useState<PoolNodeView | null | undefined>(undefined);
+  useEffect(() => { void fetchPool().then((nodes) => setNode(nodes.find((n) => n.id === nodeId) ?? null), () => setNode(null)); }, [nodeId]);
+  return <div className="fld-row">
+    <div className="fld grow">
+      <span>{t("Proxy from the pool")}</span>
+      <div className="pool-node-field">
+        {node === undefined ? t("Loading…")
+          : node === null ? <span className="pool-warn">{t("This node is no longer in the pool. The profile will not open until you choose another proxy.")}</span>
+          : <><strong>{node.name}</strong><small>{node.protocol} · {nodeCountry(node).code ?? "—"} · {statusLabel(t, node.check)}{node.removedFromSource ? ` · ${t("no longer in its subscription")}` : ""}</small></>}
+      </div>
+      <small>{t("Runs through this profile's own proxy kernel.")}</small>
+    </div>
+    <button type="button" className="btn" onClick={onManual}>{t("Type a proxy instead")}</button>
+  </div>;
+}
+
+function subscriptionNotice(t: (key: string, vars?: Record<string, string | number>) => string, result: SubscriptionResult): string {
+  const parts = [t("Added {added} · kept {kept} · no longer listed {removed}", { added: result.added, kept: result.kept, removed: result.removed })];
+  if (result.unsupported.length) parts.push(t("{count} not supported", { count: result.unsupported.length }) + `: ${[...new Set(result.unsupported.map((row) => row.reason))].slice(0, 3).join("; ")}`);
+  if (result.infoEntries) parts.push(t("{count} provider notices skipped", { count: result.infoEntries }));
+  if (result.nonNodes) parts.push(t("{count} entries are not exits (direct, reject, groups)", { count: result.nonNodes }));
+  return parts.join(" · ");
+}
+
+/* ---------- AI proxy changes (MCP) ---------- */
+
+type AiProxyPolicy = "ask" | "allow_pool" | "deny";
+interface PendingApproval { id: string; profileId: string; profileName: string; client: string; from: string; to: string; reopens: boolean; expiresAt: number }
+
+async function approvalsCall<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(`/ui/api/proxy-approvals${path}`, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const parsed: any = await response.json().catch(() => null);
+  if (!response.ok || parsed?.ok !== true) throw new ProxyPoolClientError(typeof parsed?.error === "string" ? parsed.error : "Request failed");
+  return parsed as T;
+}
+const fetchApprovals = () => approvalsCall<{ pending: PendingApproval[]; policy: AiProxyPolicy }>("");
+
+/** The standing answer to proxy changes an AI asks for through MCP. */
+export function AiProxyPolicyField() {
+  const { t } = useTranslation();
+  const [policy, setPolicy] = useState<AiProxyPolicy | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { void fetchApprovals().then((r) => setPolicy(r.policy), () => setPolicy("ask")); }, []);
+  return <section className="tools-panel proxy-input-panel">
+    <div className="tools-panel-head"><div><h3>{t("AI proxy changes")}</h3><p>{t("An AI connected through MCP can give a profile a pool proxy. Changing a profile's exit shows its sites an IP change.")}</p></div></div>
+    <div className="tools-panel-body">
+      <label className="fld"><span>{t("When an AI asks to change a proxy")}</span>
+        <Select value={policy ?? "ask"} disabled={!policy} onChange={(e) => {
+          const next = e.target.value as AiProxyPolicy;
+          setError(null);
+          void approvalsCall<{ policy: AiProxyPolicy }>("/policy", { policy: next }).then((r) => setPolicy(r.policy), () => setError(t("Could not save")));
+        }}>
+          <option value="ask">{t("Ask me each time")}</option>
+          <option value="allow_pool">{t("Allow pool proxies without asking")}</option>
+          <option value="deny">{t("Never allow")}</option>
+        </Select></label>
+      {error && <div className="tools-alert" role="alert">{error}</div>}
+    </div>
+  </section>;
+}
+
+/**
+ * Questions from AI clients waiting for a person: shown over any page of the dashboard, so an
+ * approval does not depend on which view is open. Unanswered ones are refused after a minute.
+ */
+export function ProxyApprovalPrompts() {
+  const { t } = useTranslation();
+  const [pending, setPending] = useState<PendingApproval[]>([]);
+  const [answering, setAnswering] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const poll = useCallback(async () => {
+    try { setPending((await fetchApprovals()).pending); } catch { /* keep what is shown; the next poll retries */ }
+  }, []);
+  useEffect(() => {
+    void poll();
+    const timer = setInterval(() => { void poll(); setNow(Date.now()); }, 2000);
+    return () => clearInterval(timer);
+  }, [poll]);
+  if (!pending.length) return null;
+  const answer = async (id: string, approve: boolean) => {
+    setAnswering(id);
+    try { await approvalsCall("/answer", { id, approve }); } catch { /* it expired or was replaced; the poll clears it */ }
+    finally { setAnswering(null); await poll(); }
+  };
+  return <div className="proxy-approvals" role="region" aria-label={t("AI proxy changes")}>
+    {pending.map((item) => <div key={item.id} className="proxy-approval" role="alertdialog" aria-labelledby={`approval-${item.id}`}>
+      <strong id={`approval-${item.id}`}>{t("{client} wants to change the proxy of {profile}", { client: item.client, profile: item.profileName })}</strong>
+      <p className="tools-mono">{item.from} → {item.to}</p>
+      <p>{item.reopens ? t("The open browser will save its tabs, close and reopen on the new exit.") : t("The profile uses it from its next start.")}
+        {" "}{t("Refused automatically in {seconds} s.", { seconds: Math.max(0, Math.ceil((item.expiresAt - now) / 1000)) })}</p>
+      <div className="proxy-actions">
+        <button type="button" className="btn" disabled={answering === item.id} onClick={() => void answer(item.id, false)}>{t("Deny")}</button>
+        <button type="button" className="btn primary" disabled={answering === item.id} onClick={() => void answer(item.id, true)}>{t("Allow")}</button>
+      </div>
+    </div>)}
   </div>;
 }

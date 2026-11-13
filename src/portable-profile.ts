@@ -5,6 +5,9 @@ import { normalizeProfileHardware } from "./fingerprint.ts";
 import { assertValidProfile, isDisplayScale } from "./profile-validation.ts";
 import { normalizeBundle } from "./session.ts";
 
+/** Why a profile whose proxy is a proxy-pool node arrives held on another computer. */
+export const POOL_PROXY_NOT_PORTABLE = "This profile used a proxy-pool node on another computer. Choose its proxy before opening it.";
+
 function portableSession(raw: unknown): PortableSessionV1 {
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as { cookies?: unknown }).cookies)) {
     throw new Error("portable session must include a cookies array");
@@ -50,8 +53,12 @@ export function encodePortableProfile(profile: Profile, sessionBundle?: string):
     email: profile.email ?? "",
     emailPassword: profile.emailPassword ?? "",
     twofa: profile.twofa,
-    proxy: profile.proxy ? { ...profile.proxy } : null,
-    ...(profile.proxyError ? { proxyError: profile.proxyError } : {}),
+    // A proxy-pool node exists only on this computer. It never travels as "no proxy" (that would
+    // open the profile direct elsewhere): the copy is held until someone chooses its proxy.
+    proxy: profile.proxy && profile.proxy.type !== "pool" ? { ...profile.proxy, type: profile.proxy.type } : null,
+    ...(profile.proxy?.type === "pool"
+      ? { proxyError: POOL_PROXY_NOT_PORTABLE }
+      : profile.proxyError ? { proxyError: profile.proxyError } : {}),
     extensionAssignments: [...(profile.extensions ?? [])],
     tags: [...(profile.tags ?? [])],
     ua: profile.ua,
