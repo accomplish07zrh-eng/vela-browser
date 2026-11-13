@@ -52,17 +52,19 @@ test("8,000 profiles across nine folders check each unique proxy once with four 
   expect(JSON.stringify(events)).not.toContain('"user":');
 });
 
-test("missing, invalid and unsupported proxies are not reported dead", async () => {
+test("missing and invalid proxies are not reported dead, and HTTPS proxies are checked", async () => {
   const events: ProxyProgressEvent[] = [];
+  const checked: string[] = [];
   await checkProfileProxies([
     profile("missing", "one", { proxy: null }),
     profile("invalid", "one", { proxy: null, proxyError: "old invalid value" }),
     profile("https", "one", { proxy: { ...proxy, type: "https" } }),
   ], (e) => events.push(e), () => false, {
-    direct: async () => { throw new Error("not needed"); },
-    check: async () => { throw new Error("must not check"); },
+    direct: async () => null,
+    check: async (p) => { checked.push(p.type); return { status: "working", attempts: 3, successes: 3, ip: "203.0.113.4" }; },
   });
-  expect(events.filter((e) => e.type === "check").map((e) => e.row.status)).toEqual(["missing", "invalid", "unsupported"]);
+  expect(events.filter((e) => e.type === "check").map((e) => e.row.status)).toEqual(["missing", "invalid", "working"]);
+  expect(checked).toEqual(["https"]);
 });
 
 test("lookup failures remain unknown and cancellation stops scheduling", async () => {

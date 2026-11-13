@@ -127,11 +127,14 @@ export async function lookupExitLocation(
   proxy: ProxySpec | null,
   fetchFn: FetchLike = (url, init) => fetch(url, init),
 ): Promise<ExitLocation | null> {
+  // A pool node is reached only through its kernel; the launcher looks it up there.
+  if (proxy?.type === "pool") return null;
   let relay: ProxyRelay | undefined;
   try {
     if (proxy) {
       relay = await startProxyRelay({
-        type: proxy.type === "socks5" ? "socks5" : "http",
+        // The proxy's own protocol: an HTTPS proxy is reached over TLS.
+        type: proxy.type,
         host: proxy.host,
         port: Number(proxy.port),
         user: proxy.user,

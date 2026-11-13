@@ -18,7 +18,8 @@ export type ProxyInput = {
   pass?: unknown;
 };
 
-const PROXY_TYPES = new Set<ProxyType>(["http", "https", "socks5"]);
+const PROXY_TYPES = new Set<ProxyType>(["http", "https", "socks5", "pool"]);
+const POOL_NODE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function normalizeProxyType(value: unknown, fallback: ProxyType = "http"): ProxyType {
   const raw = String(value ?? "").trim().toLowerCase();
@@ -83,8 +84,14 @@ export function normalizeProxySpec(input: ProxyInput | ProxySpec | null | undefi
   const user = String(input.user ?? "").trim();
   const pass = String(input.pass ?? "");
   if (!user && pass) throw new Error("proxy password requires a non-empty username");
+  const type = normalizeProxyType(input.type);
+  if (type === "pool") {
+    // A pool node by id: no address, no credentials of its own.
+    if (!POOL_NODE_ID.test(hostRaw) || portRaw !== "0" || user || pass) throw new Error("invalid proxy pool node");
+    return { type, host: hostRaw, port: "0", user: "", pass: "" };
+  }
   return {
-    type: normalizeProxyType(input.type),
+    type,
     host: normalizeHost(hostRaw),
     port: normalizePort(portRaw),
     user,
@@ -167,6 +174,7 @@ function authorityHost(host: string): string {
 
 /** Host/port form for redacted displays; brackets make IPv6 unambiguous. */
 export function proxyHostPort(proxy: ProxySpec): string {
+  if (proxy.type === "pool") return proxy.host;
   return `${authorityHost(proxy.host)}:${proxy.port}`;
 }
 
@@ -180,12 +188,14 @@ export function proxyIdentityKey(input: ProxyInput | ProxySpec | null): string {
 
 /** AdsPower-compatible editable/export form, including optional credentials. */
 export function proxyLegacyString(proxy: ProxySpec): string {
+  if (proxy.type === "pool") return proxy.host;
   const base = proxyHostPort(proxy);
   return proxy.user ? `${base}:${proxy.user}:${proxy.pass}` : base;
 }
 
 /** Render a canonical proxy URL suitable for CloakBrowser's --proxy-server. */
 export function proxyUrl(proxy: ProxySpec): string {
+  if (proxy.type === "pool") throw new Error("a proxy pool node has no URL; it runs through the proxy kernel");
   const auth = proxy.user
     ? `${encodeURIComponent(proxy.user)}:${encodeURIComponent(proxy.pass)}@`
     : "";
