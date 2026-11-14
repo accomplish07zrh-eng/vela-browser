@@ -1,0 +1,31 @@
+.first-run { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; width: min(620px, calc(100% - 32px)); max-height: calc(100% - 16px); overflow: auto; margin: 0; padding: 30px 32px 24px; border-radius: 22px; background: var(--surface); box-shadow: var(--shadow-paper), 0 0 0 1px var(--line); display: grid; align-content: start; gap: 18px; }
+.first-run header h2 { margin: 0 0 6px; font-family: var(--font-display, var(--font)); font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+.first-run header p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+.first-run-steps { display: flex; gap: 18px; margin: 18px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+.first-run-steps li { display: inline-flex; align-items: center; gap: 8px; }
+.first-run-steps span { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line-strong, var(--line)); font-size: 12px; font-variant-numeric: tabular-nums; }
+.first-run-steps li.on { color: var(--ink); font-weight: 600; }
+.first-run-steps li.on span { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.first-run-steps li.done span { background: color-mix(in srgb, var(--focus-accent) 18%, transparent); border-color: transparent; }
+.first-run-body { display: grid; gap: 14px; }
+.first-run-body .segmented { justify-self: start; }
+.first-run-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.first-run-actions .spacer { flex: 1; }
+.first-run-check { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
+.first-run-check .ok { color: var(--success-ink, var(--ink)); }
+.first-run-check .bad, .first-run-error { color: var(--danger-ink); font-size: 13px; }
+.first-run-error { margin: 0; }
+.first-run-nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; max-height: 240px; overflow: auto; }
+.first-run-nodes button { display: grid; gap: 3px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.first-run-nodes button:hover { background: var(--surface-hover); }
+.first-run-nodes button.on { border-color: var(--focus-accent); box-shadow: 0 0 0 1px var(--focus-accent); }
+.first-run-nodes strong { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.first-run-nodes span { color: var(--muted); font-size: 12px; }
+.first-run-warn, .first-run-note { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--surface-hover); color: var(--muted); font-size: 13px; line-height: 1.6; }
+.first-run-warn { background: var(--danger-soft); color: var(--danger-ink); }
+.first-run-summary { display: grid; gap: 6px; margin: 0; }
+.first-run-summary > div { display: grid; grid-template-columns: 90px 1fr; gap: 10px; font-size: 13.5px; }
+.first-run-summary dt { color: var(--muted); }
+.first-run-summary dd { margin: 0; overflow-wrap: anywhere; }
+.first-run-skip { justify-self: center; padding: 4px 8px; border: 0; background: none; color: var(--muted); font: 12.5px var(--font); cursor: pointer; }
+.first-run-skip:hover { color: var(--ink); text-decoration: underline; }

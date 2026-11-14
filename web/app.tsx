@@ -2824,7 +2824,7 @@ function App() {
       </aside>
 
       <div className="wall" inert={view !== "workbench"}>
-        <WorkbenchPage profiles={profiles} groups={existingGroups} folders={folders} group={group} onGroupChange={setGroup} onOpenProfiles={() => setView("profiles")} onRefresh={refreshRoster} locateId={workbenchLocate.id} locateRevision={workbenchLocate.revision} covered={view !== "workbench"} />
+        <WorkbenchPage profiles={profiles} groups={existingGroups} folders={folders} group={group} onGroupChange={setGroup} onOpenProfiles={() => setView("profiles")} onRefresh={refreshRoster} onImport={openBulk} locateId={workbenchLocate.id} locateRevision={workbenchLocate.revision} covered={view !== "workbench"} />
       </div>
 
       {view !== "workbench" && <button type="button" className="sheet-dismiss" aria-label={t("Back to the workbench")} title={t("Back to the workbench")} onClick={() => setView("workbench")}><span /></button>}

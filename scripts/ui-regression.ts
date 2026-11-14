@@ -52,11 +52,20 @@ const appConfig = new AppConfigStore(join(root, "app-config.json")); appConfig.s
 const launcher = { reconcileOrphans: async () => {}, certifiedActive: async () => false, listRuntimeDownloads: () => [], isIdentityCertified: () => true, dataDriveFreeBytes: () => null } as unknown as Launcher;
 const dashboard = serveDashboard({ launcher, store, port: 0, appConfig, agentNonce: "7".repeat(64), paths: statePaths(root) });
 const url = `http://127.0.0.1:${dashboard.port}`;
+// A second dashboard with no profiles at all, for the first-run guide.
+const emptyRoot = mkdtempSync(join(tmpdir(), "vela-ui-regression-empty-"));
+const emptyStore = new ProfileStore(join(emptyRoot, "profiles.sqlite"));
+const emptyConfig = new AppConfigStore(join(emptyRoot, "app-config.json")); emptyConfig.setMode("local");
+const emptyDashboard = serveDashboard({ launcher, store: emptyStore, port: 0, appConfig: emptyConfig, agentNonce: "7".repeat(64), paths: statePaths(emptyRoot) });
+const emptyUrl = `http://127.0.0.1:${emptyDashboard.port}`;
 
 type Step = (page: any) => Promise<void>;
 const dock = (tip: string): Step => async (page) => { await page.locator(`.sidebar.dock [data-tip="${tip}"]`).first().click(); };
 const tab = (name: string): Step => async (page) => { await page.getByRole("tab", { name }).click(); };
-const SHOTS: Array<{ name: string; steps: Step[] }> = [
+const SHOTS: Array<{ name: string; steps: Step[]; empty?: boolean }> = [
+  { name: "first-run-1", steps: [], empty: true },
+  { name: "first-run-2", steps: [async (page) => { await page.getByRole("button", { name: "下一步", exact: true }).click(); }], empty: true },
+  { name: "first-run-3", steps: [async (page) => { await page.getByRole("button", { name: "下一步", exact: true }).click(); }, async (page) => { await page.getByRole("radio", { name: "直连" }).click(); }, async (page) => { await page.getByRole("button", { name: "下一步", exact: true }).click(); }], empty: true },
   { name: "workbench", steps: [] },
   { name: "profiles", steps: [dock("所有环境")] },
   { name: "profiles-selected", steps: [dock("所有环境"), async (page) => { await page.locator("tbody tr input[type=checkbox]").nth(1).check(); await page.locator("tbody tr input[type=checkbox]").nth(3).check(); }] },
@@ -107,7 +116,7 @@ const results: Array<{ file: string; status: "new" | "same" | "changed"; ratio: 
 try {
   for (const theme of THEMES) for (const size of SIZES) {
     const context = await browser.newContext({ viewport: size, colorScheme: theme, locale: "zh-CN", timezoneId: "Asia/Shanghai", reducedMotion: "reduce" });
-    await context.addCookies([{ name: "aliasmode.shell.theme", value: theme, url }]);
+    await context.addCookies([{ name: "aliasmode.shell.theme", value: theme, url }, { name: "aliasmode.shell.theme", value: theme, url: emptyUrl }]);
     await context.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = { metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main", windowLabel: "main" } },
         transformCallback: () => 1, invoke: async (cmd: string) => cmd.includes("is_maximized") ? false : "7".repeat(64) };
@@ -118,10 +127,10 @@ try {
     for (const shot of SHOTS) {
       if (only && !shot.name.includes(only)) continue;
       const file = `${shot.name}-${theme}-${size.width}x${size.height}.png`;
-      await page.goto(url); await page.waitForTimeout(1500);
+      await page.goto(shot.empty ? emptyUrl : url); await page.waitForTimeout(1500);
       try { for (const step of shot.steps) { await step(page); await page.waitForTimeout(700); } }
       catch (error) { console.log(`${file}: could not reach (${(error as Error).message.split("\n")[0]})`); continue; }
-      await page.mouse.move(size.width - 5, 5); await page.waitForTimeout(500);
+      await page.mouse.move(3, Math.round(size.height / 2)); await page.waitForTimeout(500);
       const shotPng: Buffer = await page.screenshot();
       writeFileSync(join(outDir, file), shotPng);
       const basePath = join(baselineDir, file);
@@ -143,9 +152,9 @@ try {
   }
 } finally {
   await browser.close();
-  dashboard.stop(true);
-  store.close();
-  rmSync(root, { recursive: true, force: true });
+  dashboard.stop(true); emptyDashboard.stop(true);
+  store.close(); emptyStore.close();
+  rmSync(root, { recursive: true, force: true }); rmSync(emptyRoot, { recursive: true, force: true });
 }
 
 const changed = results.filter((item) => item.status === "changed");
