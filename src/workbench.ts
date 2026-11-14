@@ -6,6 +6,7 @@ import type { LaunchInfo } from "./types.ts";
 import { callWebKitOwner } from "./webkit-runtime.ts";
 import { callFirefoxOwner } from "./firefox-runtime.ts";
 import { CdpWorkbench } from "./workbench-cdp.ts";
+import { addStep, RECORDED_KEYS, recordingSource, type RecordedStep, type RecordedTarget } from "./recording.ts";
 import { validWorkbenchInput, workbenchFrameInterval, workbenchFrameWidth, workbenchStreamInterval, type WorkbenchRefreshTier, type WorkbenchAdapter, type WorkbenchFrame, type WorkbenchInput, type WorkbenchStreamOptions, type WorkbenchTab } from "./workbench-protocol.ts";
 
 export const WORKBENCH_PATH = "/ui/api/workbench/connect";
@@ -147,6 +148,7 @@ export class WorkbenchConnection {
   /** Tabs that sent no live frame (a tab the browser is not painting): they are polled instead. */
   private polledTargets = new Set<string>();
   private streamChange = Promise.resolve();
+  private recording?: { language?: string; steps: RecordedStep[]; startUrl: string; viewport?: { width: number; height: number }; down?: { x: number; y: number; target: RecordedTarget | null }; check?: { step: Extract<RecordedStep, { kind: "click" }>; url: string } };
 
   constructor(private hub: WorkbenchHub, launch: LaunchInfo, private adapter: WorkbenchAdapter) {
     this.generation = workbenchGeneration(launch); this.profileId = launch.profileId;
@@ -229,13 +231,29 @@ export class WorkbenchConnection {
       return;
     }
     if (message.action === "release") { await this.releaseInput(); return; }
+    if (message.action === "record") {
+      if (message.on === true) {
+        this.recording = { language: typeof message.language === "string" ? message.language.slice(0, 16) : undefined, steps: [], startUrl: await this.tabUrl(), viewport: await this.adapter.viewport?.().catch(() => undefined) };
+        this.send({ type: "recording", on: true, steps: 0 });
+      } else if (this.recording) {
+        await this.settleClick();
+        const { steps, startUrl, viewport, language } = this.recording; this.recording = undefined;
+        await this.adapter.stopDescribing?.().catch(() => {});
+        this.send({ type: "recording", on: false, steps: steps.length, source: steps.length ? recordingSource({ startUrl, steps, viewport, language, recordedAt: new Date() }) : "" });
+      }
+      return;
+    }
     if (message.action === "input") {
       if ((!this.visible && !this.following) || message.targetId !== this.targetId || !validWorkbenchInput(message.input)) return;
       const input: WorkbenchInput = message.input;
       this.hub.options.activity?.touch(this.profileId);
       if (input.kind === "key") { if (input.event === "down") this.keys.set(input.code, input); else this.keys.delete(input.code); }
       if (input.kind === "pointer") this.pointer = input.buttons ? input : undefined;
-      await this.adapter.input(input); return;
+      const recorded = this.recording?.steps.length;
+      if (this.recording) await this.record(input);
+      await this.adapter.input(input);
+      if (this.recording && this.recording.steps.length !== recorded) this.send({ type: "recording", on: true, steps: this.recording.steps.length });
+      return;
     }
     if (!["refresh", "select", "new", "close"].includes(message.action)) return;
     if (message.action !== "refresh") { await this.releaseInput(); this.hub.options.activity?.touch(this.profileId); }
@@ -293,6 +311,52 @@ export class WorkbenchConnection {
         if (this.streamKey === key && epoch <= this.captureEpoch) { this.polledTargets.add(targetId); this.streamKey = ""; this.schedule(); }
       }
     }).catch(() => {});
+  }
+  private async tabUrl(): Promise<string> {
+    const targetId = this.targetId;
+    return (await this.adapter.tabs().catch(() => [])).find((tab) => tab.id === targetId)?.url ?? "";
+  }
+  /** Marks the last click as one that opened another page, so the script waits for it. */
+  private async settleClick(): Promise<void> {
+    const check = this.recording?.check;
+    if (!check) return;
+    this.recording!.check = undefined;
+    if (await this.tabUrl() !== check.url) check.step.navigated = true;
+  }
+  /** Turns one input into a script step. Text is counted, never kept. */
+  private async record(input: WorkbenchInput): Promise<void> {
+    const recording = this.recording!;
+    if (input.kind === "pointer" && input.event === "down") {
+      await this.settleClick();
+      const target = await Promise.race([
+        this.adapter.describe?.(input.x, input.y).catch(() => null) ?? Promise.resolve(null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 400)),
+      ]);
+      recording.down = { x: input.x, y: input.y, target: target ?? null };
+      return;
+    }
+    if (input.kind === "pointer" && input.event === "up") {
+      const down = recording.down; recording.down = undefined;
+      if (!down || Math.hypot(down.x - input.x, down.y - input.y) > 6) return;
+      const step: Extract<RecordedStep, { kind: "click" }> = { kind: "click", x: down.x, y: down.y, clicks: Math.max(1, input.clicks), button: input.button, target: down.target };
+      const before = recording.steps.length;
+      addStep(recording.steps, step);
+      const last = recording.steps.at(-1);
+      if (last?.kind === "click") recording.check = { step: recording.steps.length > before ? step : last, url: await this.tabUrl() };
+      return;
+    }
+    if (input.kind === "pointer") return;
+    await this.settleClick();
+    if (input.kind === "text") { addStep(recording.steps, { kind: "type", length: [...input.text].length }); return; }
+    if (input.kind === "wheel") { if (input.dy) addStep(recording.steps, { kind: "scroll", dy: input.dy }); return; }
+    if (input.event !== "down") return;
+    // Ctrl and Meta combinations (select all, paste) are steps; corrections while typing belong to the typing.
+    const combo = input.modifiers & 6;
+    if (combo && input.key.length === 1) {
+      addStep(recording.steps, { kind: "press", key: `${input.modifiers & 2 ? "Control+" : "Meta+"}${input.key.length === 1 ? input.key.toLowerCase() : input.key}` });
+    } else if (!combo && (RECORDED_KEYS.has(input.key) || (input.key === "Backspace" && recording.steps.at(-1)?.kind !== "type"))) {
+      addStep(recording.steps, { kind: "press", key: input.modifiers & 8 && input.key === "Tab" ? "Shift+Tab" : input.key });
+    }
   }
   private async releaseInput(): Promise<void> {
     for (const key of this.keys.values()) await this.adapter.input({ ...key, event: "up", modifiers: 0 }).catch(() => {});

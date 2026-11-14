@@ -6,6 +6,8 @@ export interface ViewportState {
   frame?: { data: string; width: number; height: number };
   viewport?: { width: number; height: number };
   error?: string;
+  /** Recording this card's input into a script; source arrives once, when it stops. */
+  recording?: { on: boolean; steps: number; source?: string };
 }
 
 /** The UI only receives a local display lease; browser credentials stay in the sidecar. */
@@ -44,7 +46,7 @@ export class ViewportClient {
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.profileId !== this.profileId) return;
         if (message.type === "ready") {
-          this.publish({ status: this.visible ? "live" : "paused", generation: message.generation, targetId: message.targetId, tabs: message.tabs, viewport: message.viewport, error: undefined });
+          this.publish({ recording: undefined, status: this.visible ? "live" : "paused", generation: message.generation, targetId: message.targetId, tabs: message.tabs, viewport: message.viewport, error: undefined });
           this.retries = 0;
           this.presentation = ""; this.activity(this.tier, this.frozen, this.following, this.width); return;
         }
@@ -52,6 +54,7 @@ export class ViewportClient {
         if (message.generation !== this.state.generation) return;
         if (message.type === "tabs") this.publish({ tabs: message.tabs, targetId: message.targetId, viewport: message.viewport, ...(message.targetId !== this.state.targetId ? { frame: undefined } : {}) });
         if (message.type === "frame" && message.targetId === this.state.targetId && !this.frozen && this.visible) this.publish({ status: "live", viewport: { width: message.width, height: message.height }, frame: { data: message.data, width: message.width, height: message.height }, error: undefined });
+        if (message.type === "recording") this.publish({ recording: { on: message.on === true, steps: Number(message.steps) || 0, ...(typeof message.source === "string" ? { source: message.source } : {}) } });
         if (message.type === "error") this.publish({ status: "error", error: message.error });
         if (message.type === "ended") { this.publish({ status: "ended", error: "This environment has stopped or restarted." }); socket.close(); }
         if (message.type === "frame-error" && !this.state.frame) this.publish({ error: message.error });

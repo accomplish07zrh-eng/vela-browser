@@ -1,5 +1,7 @@
 import type { WorkbenchAdapter, WorkbenchFrame, WorkbenchInput, WorkbenchStreamOptions, WorkbenchTab } from "./workbench-protocol.ts";
 
+const RECORDABLE_ROLES = new Set(["button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "combobox", "listbox", "option", "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "treeitem", "slider", "spinbutton"]);
+
 interface LiveStream { session: string; onFrame(frame: WorkbenchFrame): void; minInterval: number; lastAck: number; stopped: boolean }
 
 /** One control socket belongs to exactly one browser launch. */
@@ -12,6 +14,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
   private target?: string;
   private disposed = false;
   private live?: LiveStream;
+  private accessible?: string;
 
   constructor(endpoint: string) {
     const url = new URL(endpoint);
@@ -132,6 +135,27 @@ export class CdpWorkbench implements WorkbenchAdapter {
     const metrics = await this.send("Page.getLayoutMetrics", {}, this.session);
     const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
     return { width: viewport.clientWidth, height: viewport.clientHeight };
+  }
+
+  async describe(x: number, y: number): Promise<{ role: string; name: string } | null> {
+    if (!this.session) return null;
+    const session = this.session;
+    const { backendNodeId } = await this.send("DOM.getNodeForLocation", { x: Math.round(x), y: Math.round(y), ignorePointerEventsNone: true }, session);
+    if (!backendNodeId) return null;
+    // The accessibility tree is only built for a tab while recording asks for it.
+    if (this.accessible !== session) { await this.send("Accessibility.enable", {}, session); this.accessible = session; }
+    const { nodes } = await this.send("Accessibility.getAXNodeAndAncestors", { backendNodeId }, session);
+    for (const node of nodes ?? []) {
+      const role = String(node.role?.value ?? ""), name = String(node.name?.value ?? "").trim();
+      if (node.ignored || !RECORDABLE_ROLES.has(role)) continue;
+      return name && name.length <= 120 ? { role, name } : null;
+    }
+    return null;
+  }
+
+  async stopDescribing(): Promise<void> {
+    const session = this.accessible; this.accessible = undefined;
+    if (session && session === this.session) await this.send("Accessibility.disable", {}, session).catch(() => {});
   }
 
   async input(input: WorkbenchInput): Promise<void> {

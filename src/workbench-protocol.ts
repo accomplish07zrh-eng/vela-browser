@@ -51,6 +51,10 @@ export interface WorkbenchAdapter {
   stream?(options: WorkbenchStreamOptions, onFrame: (frame: WorkbenchFrame) => void,
     onPointer?: (pointer: { x: number; y: number; phase: "move" | "down" | "up" }) => void): Promise<() => Promise<void>>;
   viewport?(): Promise<{ width: number; height: number }>;
+  /** What a person would call the control at this point of the page, for recording; read from the browser's accessibility tree, never by running code in the page. */
+  describe?(x: number, y: number): Promise<{ role: string; name: string } | null>;
+  /** Recording stopped: let the browser drop what describe() needed. */
+  stopDescribing?(): Promise<void>;
   input(input: WorkbenchInput): Promise<void>;
   /** Detach control only; never close the managed browser or persistent context. */
   dispose(): void | Promise<void>;
