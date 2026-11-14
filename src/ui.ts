@@ -55,6 +55,7 @@ import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
 import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
+import { TaskError } from "./tasks.ts";
 import type { PythonRuntime } from "./python-runtime.ts";
 import { runtimeDownloads } from "./runtime-download.ts";
 import { COOLING_DEFAULTS, normalizeCoolingSettings } from "./cooling.ts";
@@ -519,7 +520,7 @@ export interface UiRuntimeOptions {
   mcpTunnel?: import("./mcp-tunnel.ts").McpTunnelLifecycle;
   defaultCloudUrl?: string;
 
-  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime };
+  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime; tasks?: import("./tasks.ts").TaskRunner };
   appConfig?: AppConfigStore;
   /** Re-applies taskbar-hidden mode right after the setting changes. */
   taskbarMode?: import("./taskbar.ts").TaskbarMode;
@@ -577,6 +578,27 @@ export async function handleUiRequest(
       if (rejected) return rejected;
     }
     try {
+      // Automated tasks: saved scripts in order, by hand or on a schedule (tasks.ts).
+      if (pathname === "/ui/api/scripts/tasks" || pathname.startsWith("/ui/api/scripts/tasks/")) {
+        const tasks = scripts.tasks;
+        if (!tasks) return noStoreJson({ ok: false, error: "Tasks need the desktop app" }, 503);
+        try {
+          if (pathname === "/ui/api/scripts/tasks" && req.method === "GET") return noStoreJson({ ok: true, ...tasks.list() });
+          const body = req.method === "POST" ? await req.json().catch(() => null) as Record<string, unknown> | null : null;
+          if (pathname === "/ui/api/scripts/tasks/save" && req.method === "POST") return noStoreJson({ ok: true, task: tasks.save(body?.task) });
+          const id = typeof body?.id === "string" ? body.id : "";
+          if (pathname === "/ui/api/scripts/tasks/delete" && req.method === "POST") { tasks.delete(id); return noStoreJson({ ok: true }); }
+          if (pathname === "/ui/api/scripts/tasks/run" && req.method === "POST") {
+            // It runs on; the dashboard follows it through the script run and the task history.
+            void tasks.run(id).catch(() => {});
+            return noStoreJson({ ok: true });
+          }
+          return noStoreJson({ ok: false, error: "Unknown task operation" }, 404);
+        } catch (error) {
+          if (error instanceof TaskError) return noStoreJson({ ok: false, error: error.message }, error.status);
+          throw error;
+        }
+      }
       if (pathname === "/ui/api/scripts/run") {
         if (req.method === "GET") return noStoreJson({ ok: true, run: scripts.runner.status() });
         if (req.method === "POST") return noStoreJson({ ok: true, run: scripts.runner.start(await req.json()) });
