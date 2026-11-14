@@ -562,6 +562,28 @@ export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId:
   </div>;
 }
 
+/**
+ * Picks a pool node for profiles that do not exist yet (the new-profile form). A node without room
+ * for all of them cannot be chosen; one already used by others says so.
+ */
+export function PoolNodeSelect({ value, count = 1, disabled, onChange }: { value: string; count?: number; disabled?: boolean; onChange: (nodeId: string) => void }) {
+  const { t } = useTranslation();
+  const [nodes, setNodes] = useState<PoolNodeView[] | null>(null);
+  useEffect(() => { void fetchPool().then(setNodes, () => setNodes([])); }, []);
+  const usable = (nodes ?? []).filter((node) => !node.disabled);
+  const chosen = usable.find((node) => node.id === value);
+  return <label className="fld grow">
+    <span>{t("Proxy from the pool")}</span>
+    <Select value={value} disabled={disabled} aria-label={t("Proxy from the pool")} onChange={(e) => onChange(e.target.value)}>
+      <option value="">{nodes ? (usable.length ? t("Choose a proxy…") : t("The pool is empty")) : t("Loading…")}</option>
+      {usable.map((node) => <option key={node.id} value={node.id} disabled={nodeRoom(node) < count}>
+        {`${node.name} · ${nodeCountry(node).code ?? "—"} · ${statusLabel(t, node.check)} · ${node.profiles.length}/${node.maxProfiles ?? "∞"}`}
+      </option>)}
+    </Select>
+    {chosen && chosen.profiles.length > 0 && <small className="pool-picker-message">{t("Shares its exit with {count} profiles.", { count: chosen.profiles.length })}</small>}
+  </label>;
+}
+
 /** A profile's proxy that is a pool node: shown by name, never edited as text. */
 export function PoolNodeField({ nodeId, onManual }: { nodeId: string; onManual: () => void }) {
   const { t } = useTranslation();

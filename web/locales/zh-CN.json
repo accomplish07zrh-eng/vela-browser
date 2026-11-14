@@ -1069,5 +1069,7 @@
   "Not allowed": "不允许",
   "Writing guide": "编写指南",
   "Guide topic": "指南主题",
-  "AI automation": "AI 操控"
+  "AI automation": "AI 操控",
+  "The pool is empty": "代理池是空的",
+  "Shares its exit with {count} profiles.": "已有 {count} 个环境在用这个出口。"
 }

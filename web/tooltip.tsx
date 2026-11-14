@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./tooltip.css";
+import { overlayHost, TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 
 /**
  * Vela Browser's own tooltips for every `title` in the app, in place of the system's square yellow
@@ -64,6 +65,7 @@ export function Tooltips() {
   const [shown, setShown] = useState<Shown | null>(null);
   const [place, setPlace] = useState<{ x: number; y: number; side: "top" | "bottom" } | null>(null);
   const bubble = useRef<HTMLDivElement>(null);
+  useTopLayer(bubble, !!shown);
   const timer = useRef<number | undefined>(undefined);
   const closedAt = useRef(0);
   const current = useRef<Element | null>(null);
@@ -149,12 +151,13 @@ export function Tooltips() {
   return createPortal(
     <div
       ref={bubble}
+      {...TOP_LAYER_PROPS}
       className={`vtip${place ? ` shown ${place.side}` : ""}`}
       role="tooltip"
       style={place ? { left: place.x, top: place.y } : undefined}
     >
       {shown.text}
     </div>,
-    document.querySelector(".app") ?? document.body,
+    overlayHost(shown.anchor),
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 import { createPortal } from "react-dom";
 import { useTranslation } from "./i18n.tsx";
 import "./dialog.css";
+import { overlayHost, TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 
 /**
  * Vela Browser's own confirm and notice dialogs, in place of the browser's: those open as a plain
@@ -59,6 +60,8 @@ export function DialogHost() {
   const [current, setCurrent] = useState<Request | null>(null);
   const [leaving, setLeaving] = useState(false);
   const card = useRef<HTMLDivElement>(null);
+  const backdrop = useRef<HTMLDivElement>(null);
+  useTopLayer(backdrop, !!current);
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -103,7 +106,7 @@ export function DialogHost() {
   const notice = current.kind === "notice";
   const danger = !!current.danger && !notice;
   return createPortal(
-    <div className={`modal-backdrop vdialog-backdrop${leaving ? " leaving" : ""}`} onMouseDown={(event) => { if (event.target === event.currentTarget) answer(notice); }}>
+    <div ref={backdrop} {...TOP_LAYER_PROPS} className={`modal-backdrop vdialog-backdrop${leaving ? " leaving" : ""}`} onMouseDown={(event) => { if (event.target === event.currentTarget) answer(notice); }}>
       <div
         ref={card}
         className={`modal vdialog${danger ? " danger" : ""}${leaving ? " leaving" : ""}`}
@@ -131,6 +134,6 @@ export function DialogHost() {
         </div>
       </div>
     </div>,
-    document.querySelector(".app") ?? document.body,
+    overlayHost(),
   );
 }
