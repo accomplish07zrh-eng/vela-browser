@@ -632,8 +632,104 @@ test("MCP lists the guide, profile update, script and plugin tools and serves bu
     expect(pluginsListed.structuredContent).toEqual({
       plugins: [{ id: "demo", name: "Demo", version: "1.0.0", description: "Desc", tools: ["plugin_demo_read"] }],
     });
+
+    const readScript: any = await client.callTool({ name: "vela_script_read", arguments: { scriptId: "s1" } });
+    expect(readScript.structuredContent?.script?.id).toBe("s1");
+
+    const startedRun: any = await client.callTool({ name: "vela_script_run", arguments: { scriptId: "s1", profileIds: ["p1"] } });
+    expect(startedRun.structuredContent?.run?.id).toBe("r1");
+
+    const stoppedRun: any = await client.callTool({ name: "vela_script_stop", arguments: {} });
+    expect(stoppedRun.structuredContent?.run?.status).toBe("stopping");
+
+    const savedPlugin: any = await client.callTool({
+      name: "vela_plugin_save",
+      arguments: {
+        pluginId: "demo",
+        manifest: { name: "Demo", version: "1.0.0", tools: [{ name: "read", description: "Read" }] },
+        module: "export default () => ({ read: () => 1 });",
+      },
+    });
+    expect(savedPlugin.structuredContent?.pluginId).toBe("demo");
+    expect(tools.vela_script_save?.inputSchema?.properties?.scriptId).toMatchObject({ minLength: 1 });
+    expect((tools.vela_script_run?.inputSchema?.properties?.concurrency as any)?.description).toContain("Defaults to 10.");
   } finally {
     await client.close();
     await host.close();
+  }
+});
+
+test("plugin tools with pdf in their name work on Firefox, and Chromium refreshes plugins on open(select: false) and call", async () => {
+  const ffRuntime = new FirefoxRuntime("firefox");
+  const origCall = ffRuntime.call.bind(ffRuntime);
+  ffRuntime.call = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === "firefox.tools.list") {
+      return {
+        tools: [
+          { name: "browser_snapshot", description: "Snap", inputSchema: { type: "object", properties: {} } },
+          { name: "browser_pdf_save", description: "PDF", inputSchema: { type: "object", properties: {} } },
+          { name: "plugin_pdf_reader_read", description: "Reads PDF metadata", inputSchema: { type: "object", properties: {} } },
+        ],
+      };
+    }
+    if (method === "firefox.tools.call") {
+      ffRuntime.calls.push({ method, params: structuredClone(params) });
+      return { content: [{ type: "text", text: `called:${params.name}` }] };
+    }
+    return origCall(method, params);
+  };
+  const ffHost = await createVelaBrowserMcp({ discovered: { client: ffRuntime }, playwright: new FakePlaywright() });
+  const ffClient = new Client({ name: "Test", version: "1" }, { capabilities: {} });
+  const [s1, c1] = InMemoryTransport.createLinkedPair();
+  await Promise.all([ffHost.server.connect(s1), ffClient.connect(c1)]);
+  try {
+    await ffClient.callTool({ name: "vela_browser_open", arguments: { profileId: "ff-1" } });
+    const ffTools = (await ffClient.listTools()).tools.map((t) => t.name);
+    expect(ffTools).not.toContain("browser_pdf_save");
+    expect(ffTools).toContain("plugin_pdf_reader_read");
+    const callRes: any = await ffClient.callTool({ name: "plugin_pdf_reader_read", arguments: {} });
+    expect(callRes.isError).not.toBe(true);
+    expect(callRes.content[0].text).toBe("called:plugin_pdf_reader_read");
+  } finally {
+    await ffClient.close();
+    await ffHost.close();
+  }
+
+  let enabled = false;
+  class DynamicPluginRuntime extends FakeRuntime {
+    override async call(method: string, params: Record<string, unknown> = {}) {
+      if (method === "plugins.list") {
+        this.calls.push({ method, params: structuredClone(params) });
+        return {
+          plugins: enabled
+            ? [{ id: "dyn", name: "Dyn", version: "1.0.0", revision: "1", module: "C:\\plugins\\dyn\\index.mjs", tools: [{ name: "ping", toolName: "plugin_dyn_ping", title: "Ping", description: "Ping", readOnly: true, inputSchema: { type: "object", properties: {} } }] }]
+            : [],
+        };
+      }
+      return super.call(method, params);
+    }
+  }
+  const crRuntime = new DynamicPluginRuntime();
+  const crPlaywright = new FakePlaywright();
+  const crHost = await createVelaBrowserMcp({ discovered: { client: crRuntime }, playwright: crPlaywright });
+  const crClient = new Client({ name: "Test", version: "1" }, { capabilities: {} });
+  const [s2, c2] = InMemoryTransport.createLinkedPair();
+  await Promise.all([crHost.server.connect(s2), crClient.connect(c2)]);
+  try {
+    await crClient.callTool({ name: "vela_browser_open", arguments: { profileId: "cr-1", select: true } });
+    expect((await crClient.listTools()).tools.map((t) => t.name)).not.toContain("plugin_dyn_ping");
+
+    // Enable plugin then reopen with select: false -> tools refresh for already-attached profile.
+    enabled = true;
+    await crClient.callTool({ name: "vela_browser_open", arguments: { profileId: "cr-1", select: false } });
+    expect((await crClient.listTools()).tools.map((t) => t.name)).toContain("plugin_dyn_ping");
+
+    // Disable plugin while still selected -> next plugin tool call refreshes and refuses disabled plugin tool.
+    enabled = false;
+    const disabledCall: any = await crClient.callTool({ name: "plugin_dyn_ping", arguments: {} });
+    expect(disabledCall.isError).toBe(true);
+  } finally {
+    await crClient.close();
+    await crHost.close();
   }
 });

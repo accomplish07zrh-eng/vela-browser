@@ -558,6 +558,7 @@
         "properties": {
           "scriptId": {
             "type": "string",
+            "minLength": 1,
             "description": "Optional. The script to replace."
           },
           "name": {
@@ -622,7 +623,7 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 50,
-            "description": "Browsers at a time. Defaults to the app's setting."
+            "description": "Browsers at a time. Defaults to 10."
           }
         },
         "required": [

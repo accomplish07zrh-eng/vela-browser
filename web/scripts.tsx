@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { guideText } from "../agent/guides.mjs";
 import { Select } from "./select.tsx";
 import "./scripts.css";
@@ -61,14 +61,14 @@ const GUIDE_TABS: readonly { id: GuideTopic; label: string }[] = [
 
 function renderInlineMarkdown(text: string): ReactNode[] {
   const parts: ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  const pattern = /(`[^`]+`|\*\*(?:(?!\*\*).)+\*\*)/g;
   let last = 0;
   for (const match of text.matchAll(pattern)) {
     const at = match.index ?? 0;
     if (at > last) parts.push(text.slice(last, at));
     const token = match[0];
     if (token.startsWith("`")) parts.push(<code key={at}>{token.slice(1, -1)}</code>);
-    else parts.push(<strong key={at}>{token.slice(2, -2)}</strong>);
+    else parts.push(<strong key={at}>{renderInlineMarkdown(token.slice(2, -2))}</strong>);
     last = at + token.length;
   }
   if (last < text.length) parts.push(text.slice(last));
@@ -76,8 +76,39 @@ function renderInlineMarkdown(text: string): ReactNode[] {
 }
 
 function splitTableRow(line: string): string[] {
-  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return trimmed.split("|").map((cell) => cell.trim());
+  const trimmed = line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+  let inCode = false;
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const ch = trimmed[i]!;
+    if (ch === "\\" && trimmed[i + 1] === "|" && !inCode) {
+      current += "|";
+      i += 1;
+      continue;
+    }
+    if (ch === "`") inCode = !inCode;
+    if (ch === "|" && !inCode) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+const CJK_BOUNDARY = /[\u3400-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/;
+function joinParagraph(parts: string[]): string {
+  let out = "";
+  for (const part of parts) {
+    if (!part) continue;
+    if (!out) { out = part; continue; }
+    const needsSpace = !(CJK_BOUNDARY.test(out[out.length - 1]!) || CJK_BOUNDARY.test(part[0]!));
+    out += needsSpace ? ` ${part}` : part;
+  }
+  return out;
 }
 
 function isTableRule(line: string): boolean {
@@ -139,7 +170,9 @@ export function GuideMarkdown({ markdown }: { markdown: string }) {
         <div className="guide-table-wrap" key={blocks.length}>
           <table>
             <thead><tr>{headers.map((cell, cellIndex) => <th key={cellIndex}>{renderInlineMarkdown(cell)}</th>)}</tr></thead>
-            <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInlineMarkdown(cell)}</td>)}</tr>)}</tbody>
+            <tbody>{rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>{headers.map((_, cellIndex) => <td key={cellIndex}>{renderInlineMarkdown(row[cellIndex] ?? "")}</td>)}</tr>
+            ))}</tbody>
           </table>
         </div>,
       );
@@ -172,23 +205,41 @@ export function GuideMarkdown({ markdown }: { markdown: string }) {
       paragraph.push(lines[index]!.trim());
       index += 1;
     }
-    blocks.push(<p key={blocks.length}>{renderInlineMarkdown(paragraph.join(" "))}</p>);
+    blocks.push(<p key={blocks.length}>{renderInlineMarkdown(joinParagraph(paragraph))}</p>);
   }
   return <div className="guide-markdown">{blocks}</div>;
 }
 
-function ScriptGuideDrawer({ onClose }: { onClose: () => void }) {
+export function ScriptGuideDrawer({ onClose }: { onClose: () => void }) {
   const { t, language } = useTranslation();
   const [topic, setTopic] = useState<GuideTopic>("scripts");
   const dialog = useRef<HTMLDialogElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const body = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     dialog.current?.showModal();
+    closeButton.current?.focus({ preventScroll: true });
     return () => {
       dialog.current?.close();
       if (previous?.isConnected) previous.focus({ preventScroll: true });
     };
   }, []);
+  useEffect(() => {
+    if (body.current) body.current.scrollTop = 0;
+  }, [topic]);
+  const moveTab = (event: KeyboardEvent<HTMLDivElement>) => {
+    const index = GUIDE_TABS.findIndex((item) => item.id === topic);
+    let next = -1;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % GUIDE_TABS.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + GUIDE_TABS.length) % GUIDE_TABS.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = GUIDE_TABS.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    setTopic(GUIDE_TABS[next]!.id);
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  };
   return (
     <dialog
       ref={dialog}
@@ -203,13 +254,16 @@ function ScriptGuideDrawer({ onClose }: { onClose: () => void }) {
     >
       <header className="guide-drawer-head">
         <h2 id="scripts-guide-title">{t("Writing guide")}</h2>
-        <div className="segmented" role="tablist" aria-label={t("Guide topic")}>
+        <div className="segmented" role="tablist" aria-label={t("Guide topic")} onKeyDown={moveTab}>
           {GUIDE_TABS.map((item) => (
             <button
               key={item.id}
+              id={`guide-tab-${item.id}`}
               type="button"
               role="tab"
               aria-selected={topic === item.id}
+              aria-controls="guide-drawer-panel"
+              tabIndex={topic === item.id ? 0 : -1}
               className={topic === item.id ? "active" : ""}
               onClick={() => setTopic(item.id)}
             >
@@ -217,11 +271,11 @@ function ScriptGuideDrawer({ onClose }: { onClose: () => void }) {
             </button>
           ))}
         </div>
-        <button autoFocus type="button" className="iconbtn" title={t("Close")} aria-label={t("Close")} onClick={onClose}>
+        <button ref={closeButton} type="button" className="iconbtn" title={t("Close")} aria-label={t("Close")} onClick={onClose}>
           <svg className="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
         </button>
       </header>
-      <div className="guide-drawer-body">
+      <div ref={body} id="guide-drawer-panel" role="tabpanel" aria-labelledby={`guide-tab-${topic}`} className="guide-drawer-body">
         <GuideMarkdown markdown={guideText(topic, language)} />
       </div>
     </dialog>
@@ -254,10 +308,10 @@ const SAMPLES: Record<ScriptLanguage, { file: string; comment: string; source: s
 const KEYWORDS = /^(?:export|default|async|await|const|let|return|if|else|for|of|in|new|def|import|from|as|None|True|False|null|undefined|true|false)$/;
 
 /** Source with quiet colouring: comments, strings, keywords and numbers. Text only, never HTML. */
-export function CodeBlock({ source, className = "" }: { source: string; className?: string }) {
+export const CodeBlock = memo(function CodeBlock({ source, className = "" }: { source: string; className?: string }) {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   return <pre className={`script-code ${className}`.trim()}><code>{lines.map((line, index) => <span className="code-line" key={index}>{tokens(line)}{"\n"}</span>)}</code></pre>;
-}
+});
 
 function tokens(line: string): ReactNode[] {
   const parts: ReactNode[] = [];

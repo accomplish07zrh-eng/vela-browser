@@ -40,7 +40,7 @@ Vela Browser keeps many browser profiles, each with its own fingerprint, proxy, 
 `,
   scripts: `# Writing scripts
 
-A script runs once in each profile it is started for, in that profile's own browser, with its fingerprint, proxy and sign-ins exactly as Vela Browser set them. Scripts use Playwright.
+A script runs once in each Chromium or Firefox profile it is started for (WebKit is not supported), in that profile's own browser, with its fingerprint, proxy and sign-ins exactly as Vela Browser set them. Scripts use Playwright.
 
 ## JavaScript (.mjs)
 
@@ -85,8 +85,8 @@ Python downloads its runtime the first time a Python script runs.
 
 ## Run it
 
-From the app: select profiles, **Run script**, choose the script, give the inputs and how many browsers run at once.
-From an AI: \`vela_script_save\` (approved by the user) then \`vela_script_run\` with \`scriptId\`, \`profileIds\`, \`inputs\` and \`concurrency\`; follow it with \`vela_script_run_status\`, which returns the run and its log.
+- From the app: select profiles, **Run script**, choose the script, give the inputs and how many browsers run at once.
+- From an AI: \`vela_script_save\` (approved by the user) then \`vela_script_run\` with \`scriptId\`, \`profileIds\`, \`inputs\` and \`concurrency\`; follow it with \`vela_script_run_status\`, which returns the run and its log.
 `,
   plugins: `# Writing plugins
 
@@ -182,7 +182,7 @@ Vela Browser 里有很多浏览器环境，每个都有自己的指纹、代理�
 `,
   scripts: `# 脚本编写指南
 
-脚本会在你选中的每个环境里各运行一次，跑在那个环境自己的浏览器里，指纹、代理、登录状态都保持 Vela Browser 设好的样子。脚本基于 Playwright。
+脚本会在你选中的每个 Chromium 或 Firefox 环境里各运行一次（不支持 WebKit），跑在那个环境自己的浏览器里，指纹、代理、登录状态都保持 Vela Browser 设好的样子。脚本基于 Playwright。
 
 ## JavaScript（.mjs）
 
@@ -227,8 +227,8 @@ async def run(*, page, context, inputs, profile, log, **_):
 
 ## 怎么运行
 
-在应用里：勾选环境，点**运行脚本**，选好脚本、填入 inputs 和同时运行的浏览器数量。
-让 AI 来：\`vela_script_save\`（由用户批准）后，用 \`vela_script_run\` 传 \`scriptId\`、\`profileIds\`、\`inputs\` 和 \`concurrency\`；再用 \`vela_script_run_status\` 查看进度，它会返回运行状态和日志。
+- 在应用里：勾选环境，点**运行脚本**，选好脚本、填入 inputs 和同时运行的浏览器数量。
+- 让 AI 来：\`vela_script_save\`（由用户批准）后，用 \`vela_script_run\` 传 \`scriptId\`、\`profileIds\`、\`inputs\` 和 \`concurrency\`；再用 \`vela_script_run_status\` 查看进度，它会返回运行状态和日志。
 `,
   plugins: `# 插件编写指南
 

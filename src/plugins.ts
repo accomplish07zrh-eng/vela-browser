@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -208,6 +209,7 @@ export function writeExamplePlugin(directory: string): string {
 }
 
 const MAX_MODULE_BYTES = 512 * 1024;
+const WINDOWS_RESERVED_STEM = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 
 /** What an AI may write for a plugin: the manifest and one module, nothing else. */
 export interface PluginDraft {
@@ -221,14 +223,22 @@ export interface PluginDraft {
  * temporary folder first and read back with the same rules. Returns the files to write.
  */
 export function preparePlugin(draft: PluginDraft): { id: string; files: { name: string; content: string }[]; tools: string[] } {
-  if (!PLUGIN_ID.test(draft.id)) throw new Error("A plugin id uses a-z, 0-9 and -, up to 32 characters");
+  if (!PLUGIN_ID.test(draft.id) || WINDOWS_RESERVED_STEM.test(draft.id)) {
+    throw new Error("A plugin id uses a-z, 0-9 and -, up to 32 characters");
+  }
   if (!draft.manifest || typeof draft.manifest !== "object" || Array.isArray(draft.manifest)) throw new Error("The manifest must be an object");
   if (typeof draft.module !== "string" || !draft.module.trim()) throw new Error("The module is empty");
   if (Buffer.byteLength(draft.module, "utf8") > MAX_MODULE_BYTES) throw new Error("The module is larger than 512 KB");
   const manifest: Record<string, unknown> = { ...draft.manifest, id: draft.id };
   const main = manifest.main === undefined ? "index.mjs" : manifest.main;
   // One file next to the manifest: an AI does not get to place files anywhere else.
-  if (typeof main !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,60}\.(?:mjs|js)$/.test(main)) throw new Error("main must be a .mjs or .js file name in the plugin folder");
+  if (
+    typeof main !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,60}\.(?:mjs|js)$/.test(main)
+    || WINDOWS_RESERVED_STEM.test(main.replace(/\.(?:mjs|js)$/i, ""))
+  ) {
+    throw new Error("main must be a .mjs or .js file name in the plugin folder");
+  }
   const staging = mkdtempSync(join(tmpdir(), "vela-plugin-"));
   try {
     const folder = join(staging, draft.id);
@@ -243,9 +253,22 @@ export function preparePlugin(draft: PluginDraft): { id: string; files: { name: 
   }
 }
 
-/** Writes a prepared plugin into the plugins folder; other files already in its folder stay. */
+/** Writes a prepared plugin atomically per file (module before manifest); other files in its folder stay. */
 export function writePlugin(directory: string, prepared: { id: string; files: { name: string; content: string }[] }): void {
   const folder = join(directory, prepared.id);
   mkdirSync(folder, { recursive: true });
-  for (const file of prepared.files) writeFileSync(join(folder, file.name), file.content, "utf8");
+  // Write module files before the manifest so concurrent scans never observe a manifest pointing at a missing module.
+  const ordered = [
+    ...prepared.files.filter((file) => file.name !== PLUGIN_MANIFEST),
+    ...prepared.files.filter((file) => file.name === PLUGIN_MANIFEST),
+  ];
+  for (const file of ordered) {
+    const temp = join(folder, `.tmp-${randomUUID()}`);
+    try {
+      writeFileSync(temp, file.content, "utf8");
+      renameSync(temp, join(folder, file.name));
+    } finally {
+      rmSync(temp, { force: true });
+    }
+  }
 }

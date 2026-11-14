@@ -13,7 +13,7 @@ import {
 import { discoverRuntime } from "./runtime-client.mjs";
 import { PlaywrightToolProxy } from "./playwright-proxy.mjs";
 import { createHumanizer } from "./humanize.mjs";
-import { pluginTools } from "./plugins.mjs";
+import { isPluginTool, pluginTools } from "./plugins.mjs";
 import { GUIDE_TOPICS, guideText } from "./guides.mjs";
 
 function packageVersion() {
@@ -29,7 +29,7 @@ const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: fal
 const FIREFOX_FILTERED_TOOLS = new Set(["browser_close", "browser_install", "browser_pdf_save"]);
 
 function firefoxTools(tools) {
-  return tools.filter((tool) => !FIREFOX_FILTERED_TOOLS.has(tool.name) && !/pdf/i.test(tool.name));
+  return tools.filter((tool) => !FIREFOX_FILTERED_TOOLS.has(tool.name) && (isPluginTool(tool.name) || !/pdf/i.test(tool.name)));
 }
 
 function safeBrowserResult(value) {
@@ -344,7 +344,7 @@ const ALIAS_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        scriptId: { type: "string", description: "Optional. The script to replace." },
+        scriptId: { type: "string", minLength: 1, description: "Optional. The script to replace." },
         name: { type: "string", minLength: 1, maxLength: 120 },
         description: { type: "string", maxLength: 500 },
         language: { type: "string", enum: ["javascript", "python"] },
@@ -364,7 +364,7 @@ const ALIAS_TOOLS = [
         scriptId: { type: "string", minLength: 1 },
         profileIds: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, maxItems: 500 },
         inputs: { type: "object", description: "Given to the script as inputs." },
-        concurrency: { type: "integer", minimum: 1, maximum: 50, description: "Browsers at a time. Defaults to the app's setting." },
+        concurrency: { type: "integer", minimum: 1, maximum: 50, description: "Browsers at a time. Defaults to 10." },
       },
       required: ["scriptId", "profileIds"],
       additionalProperties: false,
@@ -525,19 +525,23 @@ export async function createVelaBrowserMcp(options = {}) {
     advertisedTools = current;
     await server.sendToolListChanged().catch(() => {});
   };
-  const withTarget = (tool) => ({
-    ...tool,
-    inputSchema: {
-      ...tool.inputSchema,
-      properties: {
-        ...(tool.inputSchema?.properties ?? {}),
-        profileId: {
-          type: "string",
-          description: "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard.",
+  const withTarget = (tool) => {
+    const props = tool.inputSchema?.properties;
+    const properties = props && typeof props === "object" && !Array.isArray(props) ? props : {};
+    return {
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: {
+          ...properties,
+          profileId: {
+            type: "string",
+            description: "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard.",
+          },
         },
       },
-    },
-  });
+    };
+  };
 
   /**
    * Sends the humanizer's pointer to Vela Browser, which draws it over this browser's card on the
@@ -765,8 +769,11 @@ export async function createVelaBrowserMcp(options = {}) {
             throw error;
           }
         } else {
-          // Ready for parallel actions addressed by profileId; a failure here retries on first use.
-          await attachSession(args.profileId, known).catch(() => {});
+          // Ready for parallel actions addressed by profileId; refresh plugins if already attached.
+          const previous = sessions.get(args.profileId);
+          const session = await attachSession(args.profileId, known).catch(() => undefined);
+          if (session && session === previous) await refreshPlugins(args.profileId, session).catch(() => {});
+          if (args.profileId === selectedProfileId) await publishTools().catch(() => {});
         }
         return toolResult(safeBrowserResult({
           profileId: opened.profileId,
@@ -803,6 +810,10 @@ export async function createVelaBrowserMcp(options = {}) {
       const target = typeof requested === "string" && requested ? requested : selectedProfileId;
       if (!target) throw new Error("select an open Vela Browser browser first");
       const session = await sessionFor(target);
+      if (session.engine === "chromium" && (isPluginTool(name) || (name === "browser_batch" && Array.isArray(toolArgs.steps) && toolArgs.steps.some((step) => isPluginTool(step?.tool))))) {
+        await refreshPlugins(target, session);
+        if (target === selectedProfileId) await publishTools().catch(() => {});
+      }
       const known = (tool) => toolsFor(session).some((entry) => entry.name === tool);
       const actOne = (tool, toolArguments) => session.engine !== "chromium"
         ? runtime.call(`${session.engine}.tools.call`, { profileId: target, name: tool, arguments: toolArguments, humanize: { ...humanize, agent: agent() } })

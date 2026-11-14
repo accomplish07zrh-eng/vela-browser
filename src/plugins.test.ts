@@ -97,15 +97,19 @@ test("preparePlugin validates id, manifest and a plain main filename inside the 
   };
   const validModule = "export default () => ({ read: () => ({ ok: true }) });";
 
-  for (const badId of ["", "Upper", "../escape", "a_b", "x".repeat(33)]) {
+  for (const badId of ["", "Upper", "../escape", "a_b", "con", "nul", "x".repeat(33)]) {
     expect(() => preparePlugin({ id: badId, manifest: validManifest, module: validModule }))
       .toThrow("a-z, 0-9 and -");
   }
 
-  for (const badMain of ["../outside.mjs", "sub/index.mjs", "sub\\index.mjs", "/abs.mjs", "index.ts", ""]) {
+  for (const badMain of ["../outside.mjs", "sub/index.mjs", "sub\\index.mjs", "/abs.mjs", "index.ts", "CON.mjs", "nul.js", ""]) {
     expect(() => preparePlugin({ id: "good-id", manifest: { ...validManifest, main: badMain }, module: validModule }))
       .toThrow("main must be a .mjs or .js file name in the plugin folder");
   }
+
+  expect(() => preparePlugin({ id: "good-id", manifest: validManifest, module: "   " })).toThrow("empty");
+  expect(() => preparePlugin({ id: "good-id", manifest: validManifest, module: "x".repeat(512 * 1024 + 1) })).toThrow("512 KB");
+  expect(() => preparePlugin({ id: "good-id", manifest: [] as any, module: validModule })).toThrow("object");
 
   const prepared = preparePlugin({ id: "good-id", manifest: validManifest, module: validModule });
   expect(prepared.id).toBe("good-id");
@@ -113,8 +117,11 @@ test("preparePlugin validates id, manifest and a plain main filename inside the 
   expect(prepared.files.map((f) => f.name)).toEqual(["vela-plugin.json", "index.mjs"]);
 
   const root = folder();
+  mkdirSync(join(root, "good-id"), { recursive: true });
+  writeFileSync(join(root, "good-id", "notes.txt"), "keep me");
   writePlugin(root, prepared);
   const { infos, specs } = scanPlugins(root);
   expect(infos[0]!.error).toBeUndefined();
   expect(specs[0]!.id).toBe("good-id");
+  expect(require("node:fs").readFileSync(join(root, "good-id", "notes.txt"), "utf8")).toBe("keep me");
 });

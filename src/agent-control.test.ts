@@ -967,3 +967,62 @@ test("plugins.save rejects invalid manifests before asking or writing, and write
     expect(scanned.specs.map((spec) => spec.id)).toEqual(["page-title"]);
   } finally { h.close(); }
 });
+
+test("pending code approvals do not block unrelated calls, include short scriptId on update, and cancel on disconnect", async () => {
+  const h = codeHarness("ask");
+  try {
+    const saved = await h.library.save({ name: "Shared Name", description: "", language: "javascript", source: "export default async () => {};" });
+    const other = await h.library.save({ name: "Shared Name", description: "", language: "python", source: "async def run(**_): pass" });
+
+    // Waiting approvals stay non-blocking for profiles.list and isolate updates by scriptId.
+    const req1 = h.session.enqueue(wire("scripts.save", {
+      scriptId: saved.id, name: "Shared Name", language: "javascript", source: "export default async () => 1;",
+    }));
+    const req2 = h.session.enqueue(wire("scripts.save", {
+      scriptId: other.id, name: "Shared Name", language: "python", source: "async def run(**_): return 2",
+    }));
+    const listed = await h.session.enqueue(wire("profiles.list"));
+    expect(listed.ok).toBe(true);
+    expect(h.codeApprovals.list()).toHaveLength(2);
+    expect(h.codeApprovals.list().map((item) => item.detail)).toEqual([
+      `javascript · ${saved.id.slice(0, 8)}`,
+      `python · ${other.id.slice(0, 8)}`,
+    ]);
+
+    // Disconnect cancels both pending approvals immediately instead of hanging 5 minutes.
+    await h.session.disconnect();
+    expect((await req1).error?.code).toBe("connection_closed");
+    expect((await req2).error?.code).toBe("connection_closed");
+    expect(h.codeApprovals.list()).toEqual([]);
+  } finally { h.close(); }
+});
+
+test("plugins.save rejects colliding tool names before requesting approval, and scripts.run validates concurrency strictly", async () => {
+  const h = codeHarness("ask");
+  try {
+    h.setPolicy("allow");
+    expect((await h.session.enqueue(wire("plugins.save", {
+      pluginId: "a-b",
+      manifest: { name: "AB", version: "1.0.0", tools: [{ name: "read", description: "r" }] },
+      module: "export default () => ({ read: () => 1 });",
+    }))).ok).toBe(true);
+
+    h.setPolicy("ask");
+    const clash = await h.session.enqueue(wire("plugins.save", {
+      pluginId: "a",
+      manifest: { name: "A", version: "1.0.0", tools: [{ name: "b_read", description: "clash" }] },
+      module: "export default () => ({ b_read: () => 2 });",
+    }));
+    expect(clash.ok).toBe(false);
+    expect(clash.error?.code).toBe("invalid_request");
+    expect(clash.error?.message).toContain("plugin_a_b_read");
+    expect(h.codeApprovals.list()).toEqual([]);
+
+    const saved = await h.library.save({ name: "S", description: "", language: "javascript", source: "export default async () => {};" });
+    const badConcurrency = await h.session.enqueue(wire("scripts.run", {
+      scriptId: saved.id, profileIds: ["p1"], concurrency: true,
+    }));
+    expect(badConcurrency.ok).toBe(false);
+    expect(badConcurrency.error?.code).toBe("invalid_request");
+  } finally { h.close(); }
+});

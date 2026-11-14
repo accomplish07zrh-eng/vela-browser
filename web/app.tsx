@@ -305,7 +305,7 @@ function PluginsCard({ flash }: { flash: (message: string) => void }) {
   const [listing, setListing] = useState<PluginListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [codePolicy, setCodePolicyState] = useState<AiCodePolicy>("ask");
+  const [codePolicy, setCodePolicyState] = useState<AiCodePolicy | null>(null);
   const [policySaving, setPolicySaving] = useState(false);
   const policySeq = useRef(0);
   const run = (task: () => Promise<PluginListing | void>) => {
@@ -319,20 +319,20 @@ function PluginsCard({ flash }: { flash: (message: string) => void }) {
     fetchPlugins().then(setListing).catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)));
     fetchCodeApprovals()
       .then((result) => { if (policySeq.current === 0) setCodePolicyState(result.policy); })
-      .catch(() => {});
+      .catch(() => { if (policySeq.current === 0) setCodePolicyState("ask"); });
   }, []);
   const updateCodePolicy = (next: AiCodePolicy) => {
-    if (next === codePolicy) return;
+    if (!codePolicy || next === codePolicy) return;
     const previous = codePolicy;
     const seq = ++policySeq.current;
     setCodePolicyState(next);
     setPolicySaving(true);
     setCodePolicy(next)
       .then((saved) => { if (policySeq.current === seq) setCodePolicyState(saved.policy); })
-      .catch((caught) => {
+      .catch(() => {
         if (policySeq.current === seq) {
           setCodePolicyState(previous);
-          flash(caught instanceof Error ? caught.message : String(caught));
+          flash(t("Could not save"));
         }
       })
       .finally(() => { if (policySeq.current === seq) setPolicySaving(false); });
@@ -387,7 +387,8 @@ function PluginsCard({ flash }: { flash: (message: string) => void }) {
             className="segmented"
             role="radiogroup"
             aria-labelledby="ai-code-policy-label"
-            onKeyDown={(event) => moveSegmentedChoice(event, ["ask", "allow", "deny"] as const, codePolicy, updateCodePolicy)}
+            aria-busy={policySaving || !codePolicy}
+            onKeyDown={(event) => moveSegmentedChoice(event, ["ask", "allow", "deny"] as const, codePolicy ?? "ask", updateCodePolicy)}
           >
             {([["ask", "Ask each time"], ["allow", "Save directly"], ["deny", "Not allowed"]] as const).map(([value, label]) => (
               <button
@@ -395,8 +396,8 @@ function PluginsCard({ flash }: { flash: (message: string) => void }) {
                 type="button"
                 role="radio"
                 aria-checked={codePolicy === value}
-                tabIndex={codePolicy === value ? 0 : -1}
-                disabled={policySaving}
+                tabIndex={(codePolicy ?? "ask") === value ? 0 : -1}
+                disabled={!codePolicy}
                 className={codePolicy === value ? "active" : ""}
                 onClick={() => updateCodePolicy(value)}
               >
@@ -2599,8 +2600,10 @@ function App() {
 
   return (
     <>
-    <ProxyApprovalPrompts />
-    <CodeApprovalPrompts />
+    <div className="approval-dock">
+      <ProxyApprovalPrompts />
+      <CodeApprovalPrompts />
+    </div>
     <div
       className="app"
       data-view={view}

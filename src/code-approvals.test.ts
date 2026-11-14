@@ -80,3 +80,29 @@ test("the dashboard lists waiting AI code changes, answers them, and persists th
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("AbortSignal cancels a pending code approval, and dedupeKey isolates same-named scripts", async () => {
+  const queue = new CodeApprovalQueue();
+  const abort = new AbortController();
+  const aborted = queue.request(sampleScript, 60_000, abort.signal);
+  expect(queue.list()).toHaveLength(1);
+  const id = queue.list()[0]!.id;
+  abort.abort();
+  expect(await aborted).toBe("aborted");
+  expect(queue.list()).toEqual([]);
+  expect(queue.answer(id, true)).toBe(false);
+
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  expect(await queue.request(sampleScript, 60_000, alreadyAborted.signal)).toBe("aborted");
+
+  const first = queue.request({ ...sampleScript, dedupeKey: "script:s1", detail: "javascript · s1" });
+  const second = queue.request({ ...sampleScript, dedupeKey: "script:s2", detail: "javascript · s2" });
+  expect(queue.list().map((entry) => entry.detail)).toEqual(["javascript · s1", "javascript · s2"]);
+  const replacement = queue.request({ ...sampleScript, dedupeKey: "script:s1", detail: "javascript · s1-v2" });
+  expect(await first).toBe("denied");
+  expect(queue.list().map((entry) => entry.detail)).toEqual(["javascript · s2", "javascript · s1-v2"]);
+  for (const item of queue.list()) queue.answer(item.id, true);
+  expect(await second).toBe("approved");
+  expect(await replacement).toBe("approved");
+});

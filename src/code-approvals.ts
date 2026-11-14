@@ -5,7 +5,7 @@
  * Unanswered requests are refused after a while; nothing waits forever.
  */
 
-import { randomUUID } from "node:crypto";
+import { ApprovalQueue, type ApprovalOutcome } from "./approval-queue.ts";
 
 /** "ask": every AI save waits for a person. "allow": saves go through. "deny": none. */
 export type AiCodePolicy = "ask" | "allow" | "deny";
@@ -17,58 +17,47 @@ export interface CodeApprovalRequest {
   action: "create" | "update";
   /** What it is called: the script's title, or the plugin's id. */
   title: string;
+  /** Optional stable key for replacement (e.g. scriptId); falls back to kind + title. */
+  dedupeKey?: string;
   /** The AI client, as it named itself to the MCP server. */
   client: string;
-  /** For a script: "javascript" or "python". For a plugin: its tool names. */
+  /** For a script: "javascript" or "python" (plus short id when updating). For a plugin: its tool names. */
   detail: string;
   /** Every file it would write, in full, for the person to read. */
   files: { name: string; content: string }[];
 }
 
-export interface PendingCodeApproval extends CodeApprovalRequest {
+export interface PendingCodeApproval extends Omit<CodeApprovalRequest, "dedupeKey"> {
   id: string;
   requestedAt: number;
   expiresAt: number;
 }
 
-export type CodeApprovalOutcome = "approved" | "denied" | "timeout";
+export type CodeApprovalOutcome = ApprovalOutcome;
 
 export class CodeApprovalQueue {
-  private pending = new Map<string, PendingCodeApproval & { settle: (outcome: CodeApprovalOutcome) => void }>();
+  private readonly queue: ApprovalQueue<CodeApprovalRequest>;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(now: () => number = Date.now) {
+    this.queue = new ApprovalQueue(
+      5 * 60_000,
+      (request) => `${request.kind}:${request.dedupeKey ?? request.title}`,
+      now,
+    );
+  }
 
-  /** Wait for a person's answer; `timeoutMs` without one is a refusal. */
-  request(request: CodeApprovalRequest, timeoutMs = 5 * 60_000): Promise<CodeApprovalOutcome> {
-    // One open question per thing: a newer request for the same script or plugin replaces the old.
-    for (const entry of this.pending.values()) {
-      if (entry.kind === request.kind && entry.title === request.title) entry.settle("denied");
-    }
-    return new Promise((resolve) => {
-      const id = randomUUID();
-      const requestedAt = this.now();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const settle = (outcome: CodeApprovalOutcome) => {
-        if (!this.pending.has(id)) return;
-        this.pending.delete(id);
-        if (timer) clearTimeout(timer);
-        resolve(outcome);
-      };
-      this.pending.set(id, { ...request, id, requestedAt, expiresAt: requestedAt + timeoutMs, settle });
-      timer = setTimeout(() => settle("timeout"), timeoutMs);
-    });
+  /** Wait for a person's answer; `timeoutMs` without one is a refusal. Aborted on disconnect. */
+  request(request: CodeApprovalRequest, timeoutMs = 5 * 60_000, signal?: AbortSignal): Promise<CodeApprovalOutcome> {
+    return this.queue.request(request, timeoutMs, signal);
   }
 
   /** The questions waiting for an answer, oldest first. */
   list(): PendingCodeApproval[] {
-    return [...this.pending.values()].map(({ settle: _settle, ...entry }) => entry).sort((a, b) => a.requestedAt - b.requestedAt);
+    return this.queue.list().map(({ dedupeKey: _dedupeKey, ...entry }) => entry);
   }
 
-  /** Answer one. False when it is no longer waiting (answered, replaced or expired). */
+  /** Answer one. False when it is no longer waiting (answered, replaced, aborted, or expired). */
   answer(id: string, approve: boolean): boolean {
-    const entry = this.pending.get(id);
-    if (!entry) return false;
-    entry.settle(approve ? "approved" : "denied");
-    return true;
+    return this.queue.answer(id, approve);
   }
 }

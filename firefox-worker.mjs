@@ -315,7 +315,7 @@ async function run() {
   const hasPages = trackFirefoxPages(context);
   const workbench = new FirefoxWorkbench(context);
   const devtools = new BrowserDevtools(context, { engine: "firefox" });
-  const plugins = new PluginHost({ context, engine: "firefox", profileId: input.profileId, devtools });
+  const plugins = new PluginHost({ context, engine: "firefox", profileId: input.profileId, devtools, log: (msg) => process.stderr.write(`${msg}\n`) });
   // What the user downloads lands in their Downloads folder, not in Playwright's temporary one.
   keepDownloads(context);
   let humanizer;
@@ -392,6 +392,7 @@ async function run() {
       await closePlaywrightServer().catch(() => {});
       await context.close();
       devtools.dispose();
+      plugins.dispose();
     } catch (error) {
       closing = false;
       closed = false;
@@ -456,8 +457,9 @@ async function run() {
       return [...bridge.tools.filter((tool) => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS, ...pluginTools(payload.plugins)];
     }
     if (name === "mcp-call") {
-      if (typeof payload.name !== "string" || /pdf/i.test(payload.name)) throw typed("invalid_request");
+      if (typeof payload.name !== "string") throw typed("invalid_request");
       if (isPluginTool(payload.name)) return plugins.call(payload.plugins, payload.name, payload.arguments ?? {});
+      if (/pdf/i.test(payload.name)) throw typed("invalid_request");
       const bridge = await initializeOfficial();
       if (DEVTOOLS_TOOL_NAMES.has(payload.name)) return devtools.call(payload.name, payload.arguments ?? {}).catch(error => ({ isError: true, content: [{ type: "text", text: error.message }] }));
       if (!bridge.tools.some((tool) => tool.name === payload.name && !/pdf/i.test(tool.name))) throw typed("invalid_request");
