@@ -548,6 +548,8 @@ export interface UiRuntimeOptions {
   audit?: import("./audit.ts").AuditLog;
   /** The AIs connected right now. */
   connectedAgents?: () => string[];
+  /** Snapshots of profiles and backups of their sign-ins. */
+  snapshots?: import("./snapshots.ts").SnapshotStore;
 }
 
 /**
@@ -939,6 +941,48 @@ export async function handleUiRequest(
       return new Response("\ufeff" + auditCsv(entries), { headers: { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store", "Content-Disposition": "attachment; filename=\"vela-activity.csv\"" } });
     }
     return noStoreJson({ ok: true, entries, actors: options.audit.actors() });
+  }
+
+  // Snapshots: list, take one by hand, roll back, delete; and the backups as a whole.
+  const snapshotRoute = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/snapshots(?:\/([^/]+)(\/restore)?)?$/);
+  if (snapshotRoute || pathname === "/ui/api/snapshots" || pathname === "/ui/api/snapshots/backup") {
+    if (remote || !options.snapshots) return noStoreJson({ ok: false, error: "Snapshots are unavailable" }, 503);
+    const snapshots = options.snapshots;
+    try {
+      if (pathname === "/ui/api/snapshots" && req.method === "GET") {
+        return noStoreJson({ ok: true, usage: snapshots.usage(), enabled: options.appConfig?.read().sessionBackups !== false, directory: snapshots.dir });
+      }
+      if (pathname === "/ui/api/snapshots" && req.method === "POST") {
+        const body = await req.json().catch(() => ({}));
+        if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 503);
+        const { sessionBackups: _old, ...rest } = options.appConfig.read();
+        options.appConfig.write(body?.enabled === false ? { ...rest, sessionBackups: false } : rest);
+        return noStoreJson({ ok: true, usage: snapshots.usage(), enabled: body?.enabled !== false, directory: snapshots.dir });
+      }
+      if (pathname === "/ui/api/snapshots/backup" && req.method === "POST") {
+        const { backupSessions } = await import("./snapshots.ts");
+        return noStoreJson({ ok: true, saved: backupSessions(store, snapshots), usage: snapshots.usage() });
+      }
+      const profileId = decodeURIComponent(snapshotRoute![1]!);
+      const snapshotId = snapshotRoute![2] ? decodeURIComponent(snapshotRoute![2]) : undefined;
+      if (!store.getProfile(profileId)) return noStoreJson({ ok: false, error: "Profile not found" }, 404);
+      if (!snapshotId && req.method === "GET") return noStoreJson({ ok: true, snapshots: snapshots.list(profileId) });
+      if (!snapshotId && req.method === "POST") {
+        const profile = store.getProfile(profileId)!;
+        return noStoreJson({ ok: true, snapshot: snapshots.save(profile, store.getSessionBundle(profileId), "manual") });
+      }
+      if (snapshotId && snapshotRoute![3] && req.method === "POST") {
+        const { restoreSnapshot } = await import("./snapshots.ts");
+        return noStoreJson({ ok: true, ...restoreSnapshot(store, snapshots, profileId, snapshotId) });
+      }
+      if (snapshotId && !snapshotRoute![3] && req.method === "DELETE") {
+        snapshots.remove(profileId, snapshotId);
+        return noStoreJson({ ok: true });
+      }
+      return noStoreJson({ ok: false, error: "Unknown snapshot operation" }, 404);
+    } catch (error) {
+      return noStoreJson({ ok: false, error: msg(error) }, 400);
+    }
   }
 
   // Which groups each AI may use.

@@ -4,6 +4,7 @@ import { useTranslation } from "./i18n.tsx";
 import { profileNeedsAttention } from "./profile-management.ts";
 import { trapDialogTab } from "./dialog-focus.ts";
 import { TagChip } from "./tags.tsx";
+import { SnapshotsSection } from "./snapshots.tsx";
 
 type StoredSummary = Pick<EditProfile, "platformOs" | "resolution" | "timezone" | "locale" | "cores" | "hardware" | "extensions">;
 
@@ -77,6 +78,7 @@ export function ProfileDetailDrawer({ profile, number, browser, canEdit, busy, o
         <div><dt>{t("Last opened")}</dt><dd>{time(profile.lastOpenAt)}</dd></div>
         {profile.running && <div><dt>{t("Current session")}</dt><dd>{time(profile.startedAt)}</dd></div>}
       </dl>{profile.restartPending && <p className="management-note">{t("Saved changes apply at the next start.")}</p>}</section>
+      {canEdit && <SnapshotsSection profileId={profile.id} running={profile.running} />}
     </div>
     <footer>{canEdit && <button type="button" className="btn" onClick={onEdit}>{t("Edit profile")}</button>}<span className="spacer" /><button type="button" className="btn primary" disabled={busy || !!profile.mobilePersona} onClick={onToggle}>{busy ? t("Processing…") : profile.running ? t("Close browser") : t("Open browser")}</button></footer>
   </dialog>;

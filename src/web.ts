@@ -29,6 +29,7 @@ import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { TaskRunner, TaskStore } from "./tasks.ts";
 import { AuditLog } from "./audit.ts";
+import { backupSessions, SnapshotStore } from "./snapshots.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
@@ -277,6 +278,17 @@ export function serveDashboard(opts: DashboardServerOptions) {
   };
   // What AIs, scripts and tasks did, kept for six months next to the profiles.
   const audit = opts.paths && !opts.remote ? new AuditLog(join(opts.paths.root, "audit")) : undefined;
+  // Snapshots before fingerprint and proxy changes, and a daily backup of sign-ins that changed.
+  const snapshots = opts.paths && !opts.remote ? new SnapshotStore(join(opts.paths.root, "snapshots"), () => store.secretBox()) : undefined;
+  if (snapshots) store.attachSnapshots(snapshots);
+  const runBackups = () => {
+    if (!snapshots) return;
+    try { if (opts.appConfig?.read().sessionBackups === false) return; } catch { /* defaults on */ }
+    try { const count = backupSessions(store, snapshots); if (count) log(`backed up the sign-ins of ${count} profile(s)`); } catch { /* next round */ }
+  };
+  const backupTimer = snapshots ? setInterval(runBackups, 6 * 3600_000) : undefined;
+  const firstBackup = snapshots ? setTimeout(runBackups, 3 * 60_000) : undefined;
+  (backupTimer as any)?.unref?.(); (firstBackup as any)?.unref?.();
   const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, false) : undefined;
   // The desktop app downloads Python for Python scripts; a source checkout uses python3.
   const python = library && resolvePlaywrightRuntime().kind === "packaged"
@@ -465,6 +477,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
           proxyApprovals,
           codeApprovals,
           ...(audit ? { audit } : {}),
+          ...(snapshots ? { snapshots } : {}),
           connectedAgents: () => agentHub?.connectedAgents() ?? [],
           shutdownSignal: shutdownController.signal,
         });
@@ -482,6 +495,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   return Object.assign(server, {
     async stop(closeActiveConnections?: boolean) {
       cooling?.stop();
+      clearInterval(backupTimer); clearTimeout(firstBackup);
       taskbarMode?.stop();
       shutdownController.abort();
       await Promise.allSettled([

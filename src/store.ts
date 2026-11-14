@@ -28,7 +28,8 @@ import { ProxyPool } from "./proxy-pool.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { assertValidProfile } from "./profile-validation.ts";
 import { mergeCookies } from "./parse.ts";
-import { secretBoxForDatabase } from "./secret-box.ts";
+import { secretBoxForDatabase, type SecretBox } from "./secret-box.ts";
+import { identityChanges, type SnapshotStore } from "./snapshots.ts";
 
 export class ProfileStore {
   private db: Database;
@@ -295,10 +296,23 @@ export class ProfileStore {
   }
 
   private pool?: ProxyPool;
+  private box?: SecretBox;
+  /** This data directory's own key (DPAPI-protected on Windows), for the pool and for snapshots. */
+  secretBox(): SecretBox {
+    return this.box ??= secretBoxForDatabase(this.path, { log: (message) => console.warn(message) });
+  }
   /** The proxy pool, kept in this same database file. */
   get proxyPool(): ProxyPool {
-    // Its secrets are sealed with this data directory's own key (DPAPI-protected on Windows).
-    return this.pool ??= new ProxyPool(this.db, Date.now, secretBoxForDatabase(this.path, { log: (message) => console.warn(message) }));
+    return this.pool ??= new ProxyPool(this.db, Date.now, this.secretBox());
+  }
+
+  private snapshots?: SnapshotStore;
+  /** From now on, a fingerprint or proxy change first saves a snapshot of what it replaces. */
+  attachSnapshots(snapshots: SnapshotStore): void { this.snapshots = snapshots; }
+
+  /** Arms the saved sign-ins of a snapshot to be put back at the browser's next start. */
+  armSessionRestore(id: string, bundle: string): void {
+    this.db.query(`UPDATE profiles SET session_json = ?, session_restore_pending = 1 WHERE id = ?`).run(bundle, id);
   }
 
   close(): void {
@@ -348,6 +362,15 @@ export class ProfileStore {
     const storedHardware = existing?.hardware_json || "";
     if (!p.hardware && storedHardware) p = { ...p, hardware: JSON.parse(storedHardware) };
     if (!this.getLaunch(p.id)) p = completeProfileFingerprint(p);
+    // Compared once the incoming profile is filled in, so an omitted field is not a change.
+    if (this.snapshots && !this.snapshots.paused) {
+      const before = this.getProfile(p.id);
+      const changed = before ? identityChanges(before, p) : [];
+      if (before && changed.length) {
+        try { this.snapshots.save(before, this.getSessionBundle(p.id), "before-change", changed); }
+        catch (error) { console.warn(`snapshot before change was not saved: ${error instanceof Error ? error.message : error}`); }
+      }
+    }
     const browser = normalizeProfileEngine(p.engine, p.firefox, p.webkit);
     if (p.proxy && p.proxyError) throw new Error("profile cannot contain both a valid proxy and a proxy quarantine error");
     const proxy = p.proxyError ? null : normalizeProxySpec(p.proxy);
@@ -633,6 +656,8 @@ export class ProfileStore {
     this.db.query(`DELETE FROM launches WHERE profile_id = ?`).run(id);
     this.db.query(`DELETE FROM agent_temporary_profiles WHERE profile_id = ?`).run(id);
     const res = this.db.query(`DELETE FROM profiles WHERE id = ?`).run(id);
+    // A profile deleted for good takes its snapshots with it.
+    if (Number(res.changes) > 0) { try { this.snapshots?.removeProfile(id); } catch { /* best effort */ } }
     return Number(res.changes) > 0;
   }
 

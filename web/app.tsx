@@ -3,6 +3,7 @@ import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect
 import { TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 import { parseTags, TagBatchDialog, TagChip, TagInput, TagList } from "./tags.tsx";
 import { ActivityCard, AiAccessCard } from "./ai-settings.tsx";
+import { BackupsCard } from "./snapshots.tsx";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
@@ -168,6 +169,7 @@ const PAGE_TITLES: Record<"profiles" | "workbench" | "scripts" | "settings" | "e
 const SETTINGS_TABS = [
   { key: "general", label: "General" },
   { key: "ai", label: "AI and records" },
+  { key: "data", label: "Data and security" },
   { key: "advanced", label: "Advanced" },
 ] as const;
 
@@ -3721,6 +3723,12 @@ function App() {
             <>
               <AiAccessCard flash={flash} />
               <ActivityCard flash={flash} />
+            </>
+          )}
+
+          {settingsTab === "data" && (
+            <>
+              <BackupsCard flash={flash} />
             </>
           )}
 

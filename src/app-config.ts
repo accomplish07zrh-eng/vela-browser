@@ -28,6 +28,8 @@ export interface AppConfig {
   aiCodeChanges?: "allow" | "deny";
   /** Which groups each AI may use. Absent means every AI may use every profile. */
   aiAccess?: AiAccessSettings;
+  /** Set to false when the user turned off the daily backup of sign-ins. */
+  sessionBackups?: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -65,6 +67,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     ...(raw.aiProxyChanges === "allow_pool" || raw.aiProxyChanges === "deny" ? { aiProxyChanges: raw.aiProxyChanges } : {}),
     ...(raw.aiCodeChanges === "allow" || raw.aiCodeChanges === "deny" ? { aiCodeChanges: raw.aiCodeChanges } : {}),
     ...(normalizeAiAccess(raw.aiAccess) ? { aiAccess: normalizeAiAccess(raw.aiAccess)! } : {}),
+    ...(raw.sessionBackups === false ? { sessionBackups: false } : {}),
   };
 }
 

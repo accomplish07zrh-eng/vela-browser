@@ -99,7 +99,7 @@ test("dashboard contains long roster labels inside the window", () => {
   // Every truncatable cell carries its full value as a title, so hovering shows
   // what the ellipsis hid.
   expect(app).toContain('title={`${p.name}\\n${p.id}`}');
-  expect(app).toContain('title={p.tags?.length ? p.tags.join(", ") : "No tags"}');
+  expect(app).toContain('title={p.tags?.length ? p.tags.join(", ") : t("No tags")}');
   expect(app).toContain('title={p.proxyError || p.proxy || "no proxy"}');
   // Fixed layout plus per-column clipping keeps a long value inside its cell.
   expect(styles).toContain("table-layout: fixed");
