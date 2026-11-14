@@ -1,6 +1,7 @@
 import { Children, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import "./select.css";
+import { overlayHost, TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 
 interface Choice { value: string; label: ReactNode; text: string; disabled: boolean; group?: string }
 
@@ -55,6 +56,7 @@ export function Select({ value, onChange, children, className, disabled, id, tit
   const [active, setActive] = useState(-1);
   const [place, setPlace] = useState<{ left: number; top: number; width: number; maxHeight: number; up: boolean } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
+  useTopLayer(panel, open && !!place);
   const typed = useRef({ text: "", at: 0 });
   const listId = useId();
 
@@ -130,7 +132,7 @@ export function Select({ value, onChange, children, className, disabled, id, tit
       <svg className="vselect-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.75 3 3 3-3" /></svg>
     </button>
     {open && place && createPortal(
-      <div ref={panel} id={listId} role="listbox" className={`vselect-panel${place.up ? " up" : ""}`} tabIndex={-1}
+      <div ref={panel} {...TOP_LAYER_PROPS} id={listId} role="listbox" className={`vselect-panel${place.up ? " up" : ""}`} tabIndex={-1}
         style={{ left: place.left, top: place.top, minWidth: place.width, maxHeight: place.maxHeight }} onKeyDown={onKeyDown}>
         {list.map((choice, index) => {
           const header = choice.group && choice.group !== lastGroup ? <div className="vselect-group" key={`group-${index}`}>{choice.group}</div> : null;
@@ -144,7 +146,7 @@ export function Select({ value, onChange, children, className, disabled, id, tit
             </div>];
         })}
       </div>,
-      document.querySelector(".app") ?? document.body,
+      overlayHost(trigger.current),
     )}
   </>;
 }

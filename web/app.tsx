@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
-import { PoolNodeField, PoolProxyPicker, ProxyApprovalPrompts } from "./proxy-pool.tsx";
+import { PoolNodeField, PoolNodeSelect, PoolProxyPicker, ProxyApprovalPrompts } from "./proxy-pool.tsx";
 import { CodeApprovalPrompts, fetchCodeApprovals, setCodePolicy, type AiCodePolicy } from "./code-approvals.tsx";
 import { WorkbenchPage } from "./workbench.tsx";
 import { CommandPalette, type SearchTarget } from "./command-palette.tsx";
@@ -4046,26 +4046,36 @@ function App() {
                   <div className="fld-row">
                     <label className="fld type">
                       <span>{t("Proxy type")}</span>
-                      <Select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
+                      <Select value={form.proxyType} onChange={(e) => {
+                        const next = e.target.value;
+                        // A pool node is chosen by name, never typed: switching either way clears the address.
+                        if (next === "pool" || form.proxyType === "pool") { setF("host", ""); setF("port", ""); setF("user", ""); setF("pass", ""); }
+                        setF("proxyType", next);
+                      }}>
                         <option value="http">http</option>
                         <option value="https">https</option>
                         <option value="socks5">socks5</option>
+                        <option value="pool">{t("Proxy pool")}</option>
                       </Select>
                     </label>
-                    <label className="fld grow">
-                      <span>{t("Host")}</span>
-                      <input value={form.host} placeholder={t("blank = no proxy")} onChange={(e) => setF("host", e.target.value)} />
-                    </label>
-                    <label className="fld port">
-                      <span>{t("Port")}</span>
-                      <input value={form.port} inputMode="numeric" placeholder="8080" onChange={(e) => setF("port", e.target.value)} />
-                    </label>
+                    {form.proxyType === "pool"
+                      ? <PoolNodeSelect value={form.host} count={createBatch ? Math.max(1, Number(createCount) || 1) : 1} onChange={(nodeId) => { setF("host", nodeId); setF("port", "0"); }} />
+                      : <>
+                        <label className="fld grow">
+                          <span>{t("Host")}</span>
+                          <input value={form.host} placeholder={t("blank = no proxy")} onChange={(e) => setF("host", e.target.value)} />
+                        </label>
+                        <label className="fld port">
+                          <span>{t("Port")}</span>
+                          <input value={form.port} inputMode="numeric" placeholder="8080" onChange={(e) => setF("port", e.target.value)} />
+                        </label>
+                      </>}
                   </div>
-                  <div className="fld-row">
+                  {form.proxyType !== "pool" && <div className="fld-row">
                     <label className="fld grow"><span>{t("Proxy user")}</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
                     <label className="fld grow"><span>{t("Proxy pass")}</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
-                  </div>
-                  <div className="proxy-check-actions">
+                  </div>}
+                  {form.proxyType !== "pool" && <div className="proxy-check-actions">
                     <button
                       type="button"
                       className="btn proxy-check-btn"
@@ -4076,7 +4086,7 @@ function App() {
                       <Icon name="activity" className="sm" />
                       {createProxyCheck.checking ? t("Checking…") : t("Check proxy")}
                     </button>
-                  </div>
+                  </div>}
                 </div>
               </details>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
