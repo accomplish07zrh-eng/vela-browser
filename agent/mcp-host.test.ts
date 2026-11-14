@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -702,7 +704,7 @@ test("plugin tools with pdf in their name work on Firefox, and Chromium refreshe
         this.calls.push({ method, params: structuredClone(params) });
         return {
           plugins: enabled
-            ? [{ id: "dyn", name: "Dyn", version: "1.0.0", revision: "1", module: "C:\\plugins\\dyn\\index.mjs", tools: [{ name: "ping", toolName: "plugin_dyn_ping", title: "Ping", description: "Ping", readOnly: true, inputSchema: { type: "object", properties: {} } }] }]
+            ? [{ id: "dyn", name: "Dyn", version: "1.0.0", revision: "1", module: resolve(tmpdir(), "plugins", "dyn", "index.mjs"), tools: [{ name: "ping", toolName: "plugin_dyn_ping", title: "Ping", description: "Ping", readOnly: true, inputSchema: { type: "object", properties: {} } }] }]
             : [],
         };
       }
