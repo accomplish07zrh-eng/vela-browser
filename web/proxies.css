@@ -387,3 +387,12 @@
 .proxy-approval { padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-shadow: 0 12px 32px rgba(var(--shadow-rgb), .18); font-size: 12px; line-height: 1.6; }
 .proxy-approval p { margin: 6px 0 0; color: var(--ink-soft); }
 .proxy-approval .proxy-actions { justify-content: flex-end; margin-top: 10px; }
+
+/* The subscription table sizes its columns to what they hold: the name and its host take the room,
+   counts and dates stay narrow, the actions never push the table into a sideways scroll. */
+.proxy-page .proxy-table.pool-sub-table { table-layout: auto; min-width: 0; width: 100%; }
+.proxy-page .pool-sub-table td:first-child { min-width: 180px; }
+.proxy-page .pool-sub-table td:not(:first-child), .proxy-page .pool-sub-table th:not(:first-child) { white-space: nowrap; }
+.proxy-page .pool-sub-table td small.pool-warn { white-space: normal; max-width: 220px; }
+.proxy-page .pool-sub-table .pool-sub-select { min-width: 140px; }
+.proxy-page .pool-sub-table .proxy-actions { display: flex; flex-wrap: nowrap; gap: 6px; justify-content: flex-end; }
