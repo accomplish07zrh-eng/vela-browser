@@ -2,6 +2,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 import { parseTags, TagBatchDialog, TagChip, TagInput, TagList } from "./tags.tsx";
+import { ActivityCard, AiAccessCard } from "./ai-settings.tsx";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
@@ -166,6 +167,7 @@ const PAGE_TITLES: Record<"profiles" | "workbench" | "scripts" | "settings" | "e
 
 const SETTINGS_TABS = [
   { key: "general", label: "General" },
+  { key: "ai", label: "AI and records" },
   { key: "advanced", label: "Advanced" },
 ] as const;
 
@@ -3712,6 +3714,13 @@ function App() {
             );
           })()}
 
+            </>
+          )}
+
+          {settingsTab === "ai" && (
+            <>
+              <AiAccessCard flash={flash} />
+              <ActivityCard flash={flash} />
             </>
           )}
 

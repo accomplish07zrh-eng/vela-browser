@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { normalizeCoolingSettings, type CoolingSettings } from "./cooling.ts";
 import { parseKernelDnsEnvironment, type KernelDnsEnvironment } from "./kernel-config.ts";
+import { normalizeAiAccess, type AiAccessSettings } from "./ai-access.ts";
 
 export type AppMode = "unconfigured" | "local" | "cloud";
 
@@ -25,6 +26,8 @@ export interface AppConfig {
   aiProxyChanges?: "allow_pool" | "deny";
   /** Whether scripts and plugins an AI writes are saved: ask each time (absent), always, or never. */
   aiCodeChanges?: "allow" | "deny";
+  /** Which groups each AI may use. Absent means every AI may use every profile. */
+  aiAccess?: AiAccessSettings;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -61,6 +64,7 @@ export function parseAppConfig(value: unknown): AppConfig {
       ? { disabledPlugins: [...new Set(raw.disabledPlugins.filter((id): id is string => typeof id === "string" && id.length <= 64))].sort() } : {}),
     ...(raw.aiProxyChanges === "allow_pool" || raw.aiProxyChanges === "deny" ? { aiProxyChanges: raw.aiProxyChanges } : {}),
     ...(raw.aiCodeChanges === "allow" || raw.aiCodeChanges === "deny" ? { aiCodeChanges: raw.aiCodeChanges } : {}),
+    ...(normalizeAiAccess(raw.aiAccess) ? { aiAccess: normalizeAiAccess(raw.aiAccess)! } : {}),
   };
 }
 

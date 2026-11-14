@@ -469,7 +469,8 @@ test("MCP cannot call retired account tools or forward them to the runtime", asy
         const result = await client.callTool({ name, arguments: {} });
         expect(result.isError).toBe(true);
       }
-      expect(runtime.calls).toEqual([]);
+      // Only the client's name reaches the runtime; the retired tools never do.
+      expect(runtime.calls).toEqual([{ method: "session.identify", params: { name: "Test" } }]);
     } finally { await client.close(); await host.close(); }
   });
 

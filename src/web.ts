@@ -28,6 +28,7 @@ import {
 import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { TaskRunner, TaskStore } from "./tasks.ts";
+import { AuditLog } from "./audit.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
@@ -274,6 +275,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const aiProxyPolicy = (): AiProxyPolicy => {
     try { return opts.appConfig?.read().aiProxyChanges ?? "ask"; } catch { return "ask"; }
   };
+  // What AIs, scripts and tasks did, kept for six months next to the profiles.
+  const audit = opts.paths && !opts.remote ? new AuditLog(join(opts.paths.root, "audit")) : undefined;
   const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, false) : undefined;
   // The desktop app downloads Python for Python scripts; a source checkout uses python3.
   const python = library && resolvePlaywrightRuntime().kind === "packaged"
@@ -284,6 +287,12 @@ export function serveDashboard(opts: DashboardServerOptions) {
     runner: new ScriptSupervisor({
       root: opts.paths!.root, library, launcher, store, admission, python,
       remote: opts.remote,   log,
+      report: (entry) => audit?.record({
+        actor: { kind: "script", name: entry.scriptName }, action: "script.run", ok: entry.ok,
+        profileId: entry.profileId, profileName: entry.profileName,
+        detail: entry.startedBy ? `${entry.status}, started by ${entry.startedBy.kind === "ai" ? "AI " : entry.startedBy.kind === "task" ? "task " : ""}${entry.startedBy.name}` : entry.status,
+        ...(entry.error ? { error: entry.error } : {}),
+      }),
     }),
   } : undefined;
   // Saved scripts in order over chosen profiles, by hand or on a schedule; one run at a time.
@@ -319,6 +328,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
         ...(opts.paths && !opts.remote ? { pluginsRoot: pluginsDirectory(opts.paths.root) } : {}),
         codeApprovals,
         aiCodePolicy,
+        aiAccess: () => opts.appConfig?.read().aiAccess,
+        ...(audit ? { audit } : {}),
         log,
       })
     : undefined;
@@ -453,6 +464,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
           runtimeMode,
           proxyApprovals,
           codeApprovals,
+          ...(audit ? { audit } : {}),
+          connectedAgents: () => agentHub?.connectedAgents() ?? [],
           shutdownSignal: shutdownController.signal,
         });
         if (ui) return ui;

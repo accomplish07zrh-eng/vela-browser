@@ -930,6 +930,7 @@ test("scripts.run always forces useCredentials=false", async () => {
       inputs: { url: "https://example.com" },
       useCredentials: false,
       concurrency: 2,
+      startedBy: { kind: "ai", name: "unknown" },
     }]);
   } finally { h.close(); }
 });
@@ -1025,4 +1026,42 @@ test("plugins.save rejects colliding tool names before requesting approval, and 
     expect(badConcurrency.ok).toBe(false);
     expect(badConcurrency.error?.code).toBe("invalid_request");
   } finally { h.close(); }
+});
+
+test("an AI only sees and uses profiles in the groups it was given, and what it does is recorded", async () => {
+  const profiles = [
+    { id: "shop1", name: "Shop 1", group: "Shops", tags: [], platform: "" },
+    { id: "mail1", name: "Mail 1", group: "Mail", tags: [], platform: "" },
+    { id: "sub1", name: "Sub 1", group: "Shops/EU", tags: [], platform: "" },
+  ];
+  const recorded: any[] = [];
+  const store = {
+    getLaunch: () => null,
+    listProfiles: () => profiles,
+    getProfile: (id: string) => profiles.find((profile) => profile.id === id) ?? null,
+    listFolders: () => [{ name: "Shops", parentName: null, label: "" }, { name: "Mail", parentName: null, label: "" }, { name: "Shops/EU", parentName: "Shops", label: "" }],
+  };
+  const deps = {
+    launcher: { reconcileOrphans: async () => {}, certifiedActive: async () => false } as any,
+    store: store as any,
+    admission: { run: async (_operation: unknown, fn: () => Promise<unknown>) => await fn() } as any,
+    aiAccess: () => ({ default: "none" as const, agents: { "claude code": ["Shops"] } }),
+    audit: { record: (entry: any) => recorded.push(entry) } as any,
+  };
+  const claude = new AgentControlSession(deps);
+  await claude.enqueue(wire("session.identify", { name: "Claude Code" }));
+  // A second name cannot replace the first.
+  await claude.enqueue(wire("session.identify", { name: "Cursor" }));
+  expect(claude.agentName).toBe("Claude Code");
+  const listed = await claude.enqueue(wire("profiles.list"));
+  expect((listed.result as any).profiles.map((profile: any) => profile.id)).toEqual(["shop1", "sub1"]);
+  const refused = await claude.enqueue(wire("browser.status", { profileId: "mail1" }));
+  expect(refused.error?.code).toBe("not_permitted");
+  expect(recorded.at(-1)).toMatchObject({ actor: { kind: "ai", name: "Claude Code" }, action: "browser.status", ok: false });
+  await claude.enqueue(wire("session.audit", { profileId: "shop1", tool: "browser_navigate", detail: "https://shop.example/?token=abc", ok: true }));
+  expect(recorded.at(-1)).toMatchObject({ action: "page.browser_navigate", profileName: "Shop 1", ok: true });
+  // An AI with no rule of its own gets the default: here, nothing.
+  const other = new AgentControlSession(deps);
+  await other.enqueue(wire("session.identify", { name: "Cursor" }));
+  expect(((await other.enqueue(wire("profiles.list"))).result as any).profiles).toEqual([]);
 });

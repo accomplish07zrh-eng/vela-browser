@@ -175,7 +175,7 @@ export class TaskStore {
 
 export interface TaskRunnerDeps {
   store: TaskStore;
-  runner: { start(request: { scriptId: string; profileIds: string[]; inputs: Record<string, unknown>; useCredentials: boolean; concurrency?: number }): ScriptRun; settled(): Promise<void>; status(): ScriptRun | null };
+  runner: { start(request: { scriptId: string; profileIds: string[]; inputs: Record<string, unknown>; useCredentials: boolean; concurrency?: number; startedBy?: { kind: "ai" | "task" | "user"; name: string } }): ScriptRun; settled(): Promise<void>; status(): ScriptRun | null };
   /** The profiles a target names right now, in a stable order. */
   resolveProfiles(target: TaskTarget): string[];
   scriptName(scriptId: string): Promise<string>;
@@ -290,7 +290,7 @@ export class TaskRunner {
       while (pending.length && report.attempts <= task.retries) {
         report.attempts++;
         try {
-          this.deps.runner.start({ scriptId: step.scriptId, profileIds: pending, inputs: step.inputs, useCredentials: task.useCredentials, concurrency: task.concurrency });
+          this.deps.runner.start({ scriptId: step.scriptId, profileIds: pending, inputs: step.inputs, useCredentials: task.useCredentials, concurrency: task.concurrency, startedBy: { kind: "task", name: task.name } });
         } catch (error) {
           report.failed = pending.length;
           report.failures = pending.map((profileId) => ({ profileId, name: profileId, error: error instanceof Error ? error.message : String(error) }));

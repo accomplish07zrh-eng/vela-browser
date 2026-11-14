@@ -544,6 +544,10 @@ export interface UiRuntimeOptions {
   shutdownSignal?: AbortSignal;
   /** Mode whose runtimes were wired when this process started. */
   runtimeMode?: "local";
+  /** What AIs, scripts and tasks did. */
+  audit?: import("./audit.ts").AuditLog;
+  /** The AIs connected right now. */
+  connectedAgents?: () => string[];
 }
 
 /**
@@ -915,6 +919,47 @@ export async function handleUiRequest(
     options.codeApprovals,
   );
   if (codeApprovalResponse) return codeApprovalResponse;
+
+  // The record of what AIs, scripts and tasks did.
+  if ((pathname === "/ui/api/audit" || pathname === "/ui/api/audit.csv") && req.method === "GET") {
+    if (!options.audit) return noStoreJson({ ok: false, error: "The activity record is unavailable" }, 503);
+    const params = new URL(req.url).searchParams;
+    const kind = params.get("kind");
+    const query = {
+      ...(kind === "ai" || kind === "script" || kind === "task" || kind === "user" ? { actorKind: kind as import("./audit.ts").AuditActorKind } : {}),
+      ...(params.get("actor") ? { actor: params.get("actor")! } : {}),
+      ...(params.get("profileId") ? { profileId: params.get("profileId")! } : {}),
+      ...(params.get("q") ? { text: params.get("q")! } : {}),
+      ...(Number(params.get("since")) > 0 ? { since: Number(params.get("since")) } : {}),
+      limit: pathname.endsWith(".csv") ? 5000 : Math.min(Number(params.get("limit")) || 300, 2000),
+    };
+    const entries = options.audit.query(query);
+    if (pathname.endsWith(".csv")) {
+      const { auditCsv } = await import("./audit.ts");
+      return new Response("\ufeff" + auditCsv(entries), { headers: { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store", "Content-Disposition": "attachment; filename=\"vela-activity.csv\"" } });
+    }
+    return noStoreJson({ ok: true, entries, actors: options.audit.actors() });
+  }
+
+  // Which groups each AI may use.
+  if (pathname === "/ui/api/ai-access") {
+    if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 503);
+    const { normalizeAiAccess, AI_ACCESS_DEFAULT, agentKey } = await import("./ai-access.ts");
+    if (req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      const access = normalizeAiAccess(body?.access);
+      if (!access) return noStoreJson({ ok: false, error: "Invalid access settings" }, 400);
+      const config = options.appConfig.read();
+      options.appConfig.write({ ...config, aiAccess: access });
+    } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    const access = options.appConfig.read().aiAccess ?? AI_ACCESS_DEFAULT;
+    const known = new Set<string>([
+      ...(options.connectedAgents?.() ?? []).map(agentKey),
+      ...(options.audit?.actors().filter((actor) => actor.kind === "ai" && actor.name !== "unknown").map((actor) => agentKey(actor.name)) ?? []),
+      ...Object.keys(access.agents),
+    ]);
+    return noStoreJson({ ok: true, access, agents: [...known].sort(), connected: (options.connectedAgents?.() ?? []).map(agentKey), groups: store.listGroups() });
+  }
 
   if (pathname === "/ui/api/proxy-pool" || pathname.startsWith("/ui/api/proxy-pool/")) {
     if (remote) return noStoreJson({ ok: false, error: "The proxy pool is unavailable in legacy remote mode" }, 400);
