@@ -958,3 +958,31 @@ export async function fetchScriptLog(runId: string, offset: number): Promise<{ t
   if (typeof body.text !== "string" || !Number.isFinite(body.nextOffset)) throw new Error("Script log returned invalid data");
   return { text: body.text, nextOffset: body.nextOffset };
 }
+
+// ---- Automated tasks (src/tasks.ts): saved scripts in order, by hand or on a schedule ----
+export type TaskSchedule = { kind: "manual" } | { kind: "daily"; time: string; days?: number[] } | { kind: "interval"; minutes: number };
+export interface TaskDefinition {
+  id: string; name: string; enabled: boolean;
+  target: { profileIds?: string[]; groups?: string[]; tags?: string[] };
+  steps: Array<{ scriptId: string; inputs: Record<string, unknown> }>;
+  concurrency: number; retries: number; useCredentials: boolean; schedule: TaskSchedule;
+  createdAt: number; updatedAt: number; lastRunAt?: number; nextRunAt?: number | null;
+}
+export interface TaskRunRecord {
+  id: string; taskId: string; taskName: string; trigger: "schedule" | "manual";
+  startedAt: number; finishedAt?: number; outcome: "running" | "succeeded" | "partial" | "failed" | "skipped"; note?: string; profiles: number;
+  steps: Array<{ scriptId: string; scriptName: string; attempts: number; succeeded: number; failed: number; cancelled: number; failures: Array<{ profileId: string; name: string; error?: string }> }>;
+}
+export async function fetchTasks(): Promise<{ tasks: TaskDefinition[]; history: TaskRunRecord[]; runningTaskId: string | null }> {
+  const body = await scriptRequest("/ui/api/scripts/tasks");
+  return { tasks: Array.isArray(body.tasks) ? body.tasks : [], history: Array.isArray(body.history) ? body.history : [], runningTaskId: body.runningTaskId ?? null };
+}
+export async function saveTask(task: Partial<TaskDefinition>): Promise<TaskDefinition> {
+  return (await scriptRequest("/ui/api/scripts/tasks/save", { method: "POST", body: JSON.stringify({ task }) })).task;
+}
+export async function deleteTask(id: string): Promise<void> {
+  await scriptRequest("/ui/api/scripts/tasks/delete", { method: "POST", body: JSON.stringify({ id }) });
+}
+export async function runTask(id: string): Promise<void> {
+  await scriptRequest("/ui/api/scripts/tasks/run", { method: "POST", body: JSON.stringify({ id }) });
+}

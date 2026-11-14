@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, type KeyboardEvent, type ReactNode }
 import { guideText } from "../agent/guides.mjs";
 import { Select } from "./select.tsx";
 import "./scripts.css";
+import { TasksPanel } from "./tasks.tsx";
 import { confirmDialog } from "./dialog.tsx";
 import { trapDialogTab } from "./dialog-focus.ts";
 import { NumberInput } from "./controls.tsx";
@@ -50,7 +51,7 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-type ScriptsTab = "mine" | "library";
+type ScriptsTab = "mine" | "library" | "tasks";
 type GuideTopic = "scripts" | "plugins" | "automation";
 
 const GUIDE_TABS: readonly { id: GuideTopic; label: string }[] = [
@@ -527,6 +528,7 @@ export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => v
             {t("My scripts")}{scripts.length > 0 && <span className="scripts-count">{scripts.length}</span>}
           </button>
           <button className={tab === "library" ? "active" : ""} role="tab" aria-selected={tab === "library"} type="button" onClick={() => setTab("library")}>{t("Public library")}</button>
+          <button className={tab === "tasks" ? "active" : ""} role="tab" aria-selected={tab === "tasks"} type="button" onClick={() => setTab("tasks")}>{t("Automated tasks")}</button>
         </div>
         <p className="scripts-note">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2.2" /><path d="M8 11V8a4 4 0 1 1 8 0v3" /></svg>
@@ -537,7 +539,7 @@ export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => v
       </div>
       {guideOpen && <ScriptGuideDrawer onClose={() => setGuideOpen(false)} />}
       {error && <div className="modal-err" role="alert">{error}</div>}
-      {tab === "library" ? <PublicLibrary onImported={imported} /> : <>
+      {tab === "tasks" ? <TasksPanel /> : tab === "library" ? <PublicLibrary onImported={imported} /> : <>
         {currentRun && <button className="scripts-run-note" type="button" onClick={onViewRun}>{t("{scriptName}: {status}. View run", { scriptName: currentRun.scriptName, status: currentRun.status })}</button>}
         <PythonRuntimeNote status={python} onDownload={downloadPython} />
         {scripts.length === 0 ? <ScriptsWelcome busy={busy} onImport={() => importRef.current?.click()} onLibrary={() => setTab("library")} /> : <div className="scripts-layout">
