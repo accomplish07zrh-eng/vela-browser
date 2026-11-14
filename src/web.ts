@@ -31,6 +31,7 @@ import { TaskRunner, TaskStore } from "./tasks.ts";
 import { AuditLog } from "./audit.ts";
 import { backupSessions, SnapshotStore } from "./snapshots.ts";
 import { setTunBypass } from "./egress-binding.ts";
+import { MobileView } from "./mobile-view.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
@@ -330,6 +331,24 @@ export function serveDashboard(opts: DashboardServerOptions) {
     log,
   }) : undefined;
   tasks?.start();
+  // Watching from a phone: its own read-only listener, started only when turned on in Settings.
+  const mobileView = workbenchHub && !opts.remote ? new MobileView({
+    profiles: () => {
+      const running = new Set(store.listLaunches().map((launch) => launch.profileId));
+      return store.listProfiles().map((profile) => ({ id: profile.id, name: profile.name, group: profile.group ?? "", running: running.has(profile.id), engine: profile.engine }));
+    },
+    snapshot: (id) => workbenchHub.snapshot(id, 480),
+    activity: () => {
+      const run = scripts?.runner.status();
+      const listing = tasks?.list();
+      const task = listing?.runningTaskId ? listing.tasks.find((item) => item.id === listing.runningTaskId) : undefined;
+      return {
+        script: run && run.status !== "finished" ? { name: run.scriptName, total: run.profiles.length, done: run.profiles.filter((item) => ["succeeded", "failed", "cancelled"].includes(item.status)).length, failed: run.profiles.filter((item) => item.status === "failed").length } : null,
+        task: task ? { name: task.name } : null,
+      };
+    },
+  }) : undefined;
+  try { if (mobileView && opts.appConfig?.read().mobileView === true) mobileView.start(); } catch (error) { log(`phone view could not start: ${error instanceof Error ? error.message : error}`); }
   // Scripts and plugins an AI writes wait here for a person to read them (unless the user allowed them).
   const codeApprovals = new CodeApprovalQueue();
   const aiCodePolicy = (): AiCodePolicy => {
@@ -491,6 +510,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
           ...(audit ? { audit } : {}),
           ...(snapshots ? { snapshots } : {}),
           connectedAgents: () => agentHub?.connectedAgents() ?? [],
+          ...(mobileView ? { mobileView } : {}),
           shutdownSignal: shutdownController.signal,
         });
         if (ui) return ui;
@@ -508,6 +528,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
     async stop(closeActiveConnections?: boolean) {
       cooling?.stop();
       clearInterval(backupTimer); clearTimeout(firstBackup);
+      mobileView?.stop();
       taskbarMode?.stop();
       shutdownController.abort();
       await Promise.allSettled([

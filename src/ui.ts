@@ -550,6 +550,8 @@ export interface UiRuntimeOptions {
   connectedAgents?: () => string[];
   /** Snapshots of profiles and backups of their sign-ins. */
   snapshots?: import("./snapshots.ts").SnapshotStore;
+  /** Watching from a phone on the same network. */
+  mobileView?: import("./mobile-view.ts").MobileView;
 }
 
 /**
@@ -961,6 +963,34 @@ export async function handleUiRequest(
     return noStoreJson({ ok: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? (egress.currentInterface() ?? await egress.refreshInterface()) : await egress.detectPhysicalInterface() });
   }
 
+  // Watching from a phone: on or off, the addresses to open, and the PIN.
+  if (pathname === "/ui/api/mobile-view" || pathname === "/ui/api/mobile-view/pin") {
+    const view = options.mobileView;
+    if (!view || !options.appConfig) return noStoreJson({ ok: false, error: "The phone view is unavailable" }, 503);
+    const { lanAddresses } = await import("./mobile-view.ts");
+    try {
+      if (pathname.endsWith("/pin") && req.method === "POST") { if (view.running) view.newPin(); }
+      else if (req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as { enabled?: unknown };
+        if (typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "enabled must be true or false" }, 400);
+        if (body.enabled) view.start(); else view.stop();
+        const { mobileView: _old, ...rest } = options.appConfig.read();
+        options.appConfig.write(body.enabled ? { ...rest, mobileView: true } : rest);
+      } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+      return noStoreJson({ ok: true, enabled: view.running, port: view.port ?? null, pin: view.running ? view.currentPin : null, addresses: lanAddresses() });
+    } catch (error) {
+      return noStoreJson({ ok: false, error: msg(error) }, 500);
+    }
+  }
+
+  // How many browsers to start at once, from the memory free right now.
+  if (pathname === "/ui/api/launch-batch" && req.method === "GET") {
+    const { launchBatchSize, readMemory } = await import("./cooling.ts");
+    const { cpus } = await import("node:os");
+    const sample = readMemory();
+    return noStoreJson({ ok: true, size: launchBatchSize(sample, cpus().length), availableMb: Math.round(sample.available / 1048576), totalMb: Math.round(sample.total / 1048576) });
+  }
+
   // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.
   if (pathname === "/ui/api/data-encryption") {
     if (remote || !options.appConfig) return noStoreJson({ ok: false, error: "Data encryption is unavailable" }, 400);
@@ -1104,7 +1134,8 @@ export async function handleUiRequest(
         return rejected;
       }
     }
-    return handleProxyPoolRequest(req, store, options, {
+    // Nodes added to the pool may need the proxy kernel: it starts downloading in the background.
+    const poolResponse = handleProxyPoolRequest(req, store, options, {
       assign: (id, proxy, opts) => assignProfileProxy(store, id, proxy, options, opts),
       kernels: launcher.kernels,
       switchProxy: (profileId, nodeId, by) => switchProfileProxy({
@@ -1112,6 +1143,8 @@ export async function handleUiRequest(
         ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
       }, { profileId, nodeId, by }),
     });
+    if (req.method !== "GET") void poolResponse.then(() => { try { launcher.prefetchProxyKernel?.(); } catch { /* next time */ } });
+    return poolResponse;
   }
 
   if (pathname.startsWith("/ui/api/proxies/")) {

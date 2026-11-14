@@ -129,3 +129,28 @@ export function TunBypassCard() {
     </div>
   </section>;
 }
+
+/** Settings: watching the running browsers from a phone on the same network. */
+export function MobileViewCard({ flash }: { flash(message: string): void }) {
+  const { t } = useTranslation();
+  const [state, setState] = useState<{ enabled: boolean; port: number | null; pin: string | null; addresses: string[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { call<any>("/ui/api/mobile-view").then(setState, () => setState(null)); }, []);
+  if (!state) return null;
+  const act = (path: string, body?: unknown) => { setBusy(true); call<any>(path, "POST", body).then(setState, (error) => flash(String(error.message ?? error))).finally(() => setBusy(false)); };
+  return <section className="settings-card mobile-card">
+    <header><svg className="icon sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2" /><path d="M11 17.5h2" /></svg><h2>{t("Phone view")}</h2></header>
+    <div className="card-body">
+      <p>{t("Watch the running browsers, their pages and how scripts and tasks are going from a phone on the same Wi-Fi. It only shows; nothing can be clicked or changed from the phone.")}</p>
+      <div className="settings-row"><span>{t("Phone view")}</span>
+        <label className="plugin-switch"><input type="checkbox" role="switch" checked={state.enabled} disabled={busy} onChange={(event) => act("/ui/api/mobile-view", { enabled: event.target.checked })} />
+          <span>{state.enabled ? t("On") : t("Off")}</span></label>
+      </div>
+      {state.enabled && <div className="mobile-access">
+        <div><span>{t("Open on the phone")}</span>{state.addresses.length ? state.addresses.map((address) => <strong key={address} className="mono">http://{address}:{state.port}</strong>) : <em>{t("No local network address found")}</em>}</div>
+        <div><span>{t("PIN")}</span><strong className="mobile-pin mono">{state.pin}</strong><button type="button" className="btn sm" disabled={busy} onClick={() => act("/ui/api/mobile-view/pin")}>{t("New PIN")}</button></div>
+      </div>}
+      <p className="cardnote">{t("The first time, Windows may ask whether Vela Browser may use the network: allow private networks only. A new PIN is made each time the app starts.")}</p>
+    </div>
+  </section>;
+}

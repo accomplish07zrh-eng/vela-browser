@@ -1110,8 +1110,9 @@ export class Launcher {
     this.dnsEnvironment = opts.dnsEnvironment ?? (() => "auto");
     const kernelWorkDir = join(dirname(resolve(this.dataRoot)), "kernels");
     clearKernelWorkDir(kernelWorkDir);
+    this.ensureKernelFn = () => (opts.ensureKernel ?? ((root) => ensureKernel(root, { log: (msg) => this.log(msg) })))(this.chromiumRuntimeRoot);
     this.kernels = opts.kernels ?? new KernelSupervisor({
-      binary: () => (opts.ensureKernel ?? ((root) => ensureKernel(root, { log: (msg) => this.log(msg) })))(this.chromiumRuntimeRoot),
+      binary: () => this.ensureKernelFn(),
       workDir: kernelWorkDir,
       resolveDns: () => this.kernelDnsSelector.resolve(this.dnsEnvironment()),
       onDnsFailure: (primaryServer) => this.kernelDnsSelector.markFailed(primaryServer),
@@ -1271,6 +1272,7 @@ export class Launcher {
    */
   prefetchBrowserRuntimes(profiles: readonly Profile[]): void {
     this.prefetchFirefoxFontPacks(profiles);
+    this.prefetchProxyKernel(profiles);
     if (!this.runtimesPruned) {
       this.runtimesPruned = true;
       const inUse = this.store.listLaunches().flatMap((launch) => launch.binaryPath ? [launch.binaryPath] : []);
@@ -1283,6 +1285,20 @@ export class Launcher {
     if (chromium.some((profile) => profile.chromiumRuntime) && supportsChromium155Host(this.hostPlatform, this.hostArch)) {
       this.prefetchRuntime("Vela Chromium", this.ensureAliasmodeChromiumFn, (executable) => this.shareStoppedProfilesComponents(executable));
     }
+  }
+
+  private ensureKernelFn: () => Promise<InstalledKernel>;
+  /**
+   * The proxy kernel (sing-box), downloaded ahead when a profile uses a pool node or the pool holds
+   * nodes only the kernel can run, so the first such profile or pool check does not wait for it.
+   */
+  prefetchProxyKernel(profiles: readonly Profile[] = []): void {
+    if (this.runtimePrefetches.has("Proxy kernel")) return;
+    let needed = profiles.some((profile) => profile.proxy?.type === "pool");
+    if (!needed) { try { needed = this.store.proxyPool.list().some((node) => !!node.outbound); } catch { needed = false; } }
+    if (!needed) return;
+    this.runtimePrefetches.add("Proxy kernel");
+    this.ensureKernelFn().catch((error) => this.log(`Proxy kernel download failed: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   private prefetchRuntime(label: string, ensure: (root: string) => Promise<string>, ready?: (executable: string) => Promise<void>): void {

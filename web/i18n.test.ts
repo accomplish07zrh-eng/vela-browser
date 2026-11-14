@@ -15,7 +15,7 @@ const tables = {
 // source, or the translation is dead.
 test("every bundled locale key is an English string used in the web source", async () => {
   const sources = await Promise.all(
-    ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "approval-queue.tsx", "code-approvals.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "titlebar.tsx", "select.tsx", "dialog.tsx", "tasks.tsx", "../src/tasks.ts", "proxy-pool.tsx", "recording-dialog.tsx", "tags.tsx", "ai-settings.tsx", "snapshots.tsx", "health.tsx", "tun-bypass.tsx", "../src/workbench.ts", "../src/snapshots.ts", "../src/health.ts", "../src/store.ts", "../src/ui.ts", "../src/egress-binding.ts"]
+    ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "approval-queue.tsx", "code-approvals.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "titlebar.tsx", "select.tsx", "dialog.tsx", "tasks.tsx", "../src/tasks.ts", "proxy-pool.tsx", "recording-dialog.tsx", "tags.tsx", "ai-settings.tsx", "snapshots.tsx", "health.tsx", "tun-bypass.tsx", "first-run.tsx", "shortcuts.tsx", "../src/workbench.ts", "../src/snapshots.ts", "../src/health.ts", "../src/store.ts", "../src/ui.ts", "../src/egress-binding.ts"]
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
   const source = sources.join("\n").replaceAll("\r\n", "\n");
@@ -26,7 +26,7 @@ test("every bundled locale key is an English string used in the web source", asy
 });
 
 test("zh-CN covers all literal translation keys in the approval, script, and pool panels", async () => {
-  const files = ["approval-queue.tsx", "code-approvals.tsx", "scripts.tsx", "proxy-pool.tsx", "recording-dialog.tsx", "workbench.tsx", "tags.tsx", "tasks.tsx", "ai-settings.tsx", "snapshots.tsx", "health.tsx", "tun-bypass.tsx"];
+  const files = ["approval-queue.tsx", "code-approvals.tsx", "scripts.tsx", "proxy-pool.tsx", "recording-dialog.tsx", "workbench.tsx", "tags.tsx", "tasks.tsx", "ai-settings.tsx", "snapshots.tsx", "health.tsx", "tun-bypass.tsx", "first-run.tsx", "shortcuts.tsx"];
   const missing: string[] = [];
   for (const file of files) {
     const text = await Bun.file(new URL(`./${file}`, import.meta.url)).text();

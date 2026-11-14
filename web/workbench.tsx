@@ -9,6 +9,7 @@ import { useTranslation } from "./i18n.tsx";
 import { ViewportClient, type ViewportState } from "./workbench-client.ts";
 import { VirtualCursor } from "./virtual-cursor.tsx";
 import { RecordingDialog } from "./recording-dialog.tsx";
+import { FirstRunGuide, firstRunDismissed } from "./first-run.tsx";
 import { workbenchLayout, workbenchPosition, workbenchLocate, workbenchSnap, workbenchSpring, workbenchFocusBox, workbenchRefreshTier, viewportPoint, workbenchFollowerInput, type ViewportBox } from "./workbench-layout.ts";
 import "./workbench.css";
 
@@ -193,13 +194,14 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
   </article>;
 });
 
-export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange, onOpenProfiles, onRefresh, locateId, locateRevision, covered = false }: {
+export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange, onOpenProfiles, onRefresh, onImport, locateId, locateRevision, covered = false }: {
   profiles: UiProfile[]; groups: string[]; folders: FolderInfo[]; group: string; onGroupChange(group: string): void;
-  onOpenProfiles(): void; onRefresh(): Promise<unknown>; locateId?: string | null; locateRevision?: number;
+  onOpenProfiles(): void; onRefresh(): Promise<unknown>; onImport?(): void; locateId?: string | null; locateRevision?: number;
   /** A sheet is open over the wall: keep the last frames, stop streaming and ignore keys. */
   covered?: boolean;
 }) {
   const { t } = useTranslation();
+  const [guideSkipped, setGuideSkipped] = useState(firstRunDismissed);
   const root = useRef<HTMLElement>(null), scroller = useRef<HTMLDivElement>(null), canvasId = useId();
   const records = useRef(new Map<string, ViewportHandle>()), dots = useRef(new Map<string, HTMLButtonElement>());
   const [size, setSize] = useState({ width: 1000, height: 600 }), [overview, setOverview] = useState(false), [showStopped, setShowStopped] = useState(false);
@@ -648,7 +650,8 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
         {highlighted && <style>{`[data-viewport="${CSS.escape(highlighted)}"] { animation: viewport-locate 420ms var(--spring-control); }`}</style>}
         {marquee && <div className="workbench-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
       </div>
-      {!displayed.length && <div className="workbench-empty"><Glyph name="lanes" /><h2>{t("Your browsers, together")}</h2><p>{t("Open environments in this group to bring their live pages into the workbench.")}</p><button type="button" className="btn primary" onClick={onOpenProfiles}>{t("Open environments")}</button></div>}
+      {!profiles.length && !guideSkipped && !covered && <FirstRunGuide onDone={() => { void onRefresh(); }} onSkip={() => setGuideSkipped(true)} onImport={() => onImport?.()} />}
+      {!displayed.length && (profiles.length > 0 || guideSkipped) && <div className="workbench-empty"><Glyph name="lanes" /><h2>{t("Your browsers, together")}</h2><p>{t("Open environments in this group to bring their live pages into the workbench.")}</p><button type="button" className="btn primary" onClick={onOpenProfiles}>{t("Open environments")}</button></div>}
     </div>
     {laneLabels && !focused && <div className="workbench-lanes">
       {laneLabels.map((lane, row) => <button type="button" key={lane.name} className={`workbench-lane${activeRow === row ? " active" : ""}${layout.wraps[row] ? " wraps" : ""}`} style={{ top: layout.tracks[row]!.y, height: layout.tracks[row]!.height - 32 }}

@@ -221,7 +221,7 @@ test("arbitrary JavaScript and native protocol changes work by default without a
     expect(context.cdpConnections).toBe(1);
     expect(context.cdpCalls.map(c => c.method)).toEqual(["DOM.setAttributeValue", "Runtime.evaluate"]);
     const names = new Set(DEVTOOLS_TOOLS.map(tool => tool.name));
-    expect(names.size).toBe(15);
+    expect(names.size).toBe(19);
     expect(names.has("browser_devtools_fetch")).toBe(true);
     expect(names.has("browser_devtools_storage_edit")).toBe(true);
   } finally { observer.dispose(); }

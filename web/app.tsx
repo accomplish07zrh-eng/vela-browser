@@ -3,8 +3,10 @@ import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect
 import { TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 import { parseTags, TagBatchDialog, TagChip, TagInput, TagList } from "./tags.tsx";
 import { ActivityCard, AiAccessCard } from "./ai-settings.tsx";
-import { BackupsCard, DataEncryptionCard, TunBypassCard } from "./snapshots.tsx";
+import { BackupsCard, DataEncryptionCard, MobileViewCard, TunBypassCard } from "./snapshots.tsx";
 import { HealthScore, HealthSheet, type HealthRow } from "./health.tsx";
+import { keyLabel, SHORTCUTS, ShortcutsSheet, useShortcuts } from "./shortcuts.tsx";
+import { resetFirstRun } from "./first-run.tsx";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
@@ -1208,6 +1210,7 @@ function App() {
   const [engineFilter, setEngineFilter] = useState<ProfileEngineFilter>("all");
   const [tagFilter, setTagFilter] = useState("");
   const [tagBatchOpen, setTagBatchOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // The self-check: open for every profile, for the selection, or on one profile's findings.
   const [healthOpen, setHealthOpen] = useState<{ ids?: string[]; focus?: string } | null>(null);
   const [health, setHealth] = useState<Map<string, HealthRow>>(new Map());
@@ -1461,6 +1464,19 @@ function App() {
   };
 
   const openSettings = () => setView("settings");
+  /** One place for every command, whether it comes from the palette or a shortcut. */
+  const runCommand = (id: string) => {
+    if (id === "new") openCreate();
+    else if (id === "import") openBulk();
+    else if (id === "theme") chooseTheme(theme === "dark" ? "light" : "dark");
+    else if (id === "settings") openSettings();
+    else if (id === "settings-ai" || id === "settings-data") { setSettingsTab(id === "settings-ai" ? "ai" : "data"); openSettings(); }
+    else if (id === "health") { setView("profiles"); setHealthOpen({}); }
+    else if (id === "shortcuts") setShortcutsOpen((open) => !open);
+    else if (id === "guide") { resetFirstRun(); setView("workbench"); flash(t("The guide shows on the workbench when there are no profiles yet.")); }
+    else if (["workbench", "profiles", "proxies", "scripts", "trash", "extensions"].includes(id)) setView(id as "workbench" | "profiles" | "proxies" | "scripts" | "trash" | "extensions");
+  };
+  useShortcuts(runCommand);
 
   useEffect(() => {
     const invoke = desktopInvoke();
@@ -2403,13 +2419,13 @@ function App() {
   };
 
   // ---- Bulk open / close (bounded concurrency) ----
-  const bulkRun = async (op: (id: string) => Promise<any>, pick: (p: UiProfile) => boolean) => {
+  const bulkRun = async (op: (id: string) => Promise<any>, pick: (p: UiProfile) => boolean, batch = 4) => {
     const ids = [...selected].filter((id) => { const p = profiles.find((x) => x.id === id); return p && pick(p); });
     if (!ids.length) return;
     setActionErr(null);
     setBusy((b) => { const n = { ...b }; ids.forEach((id) => (n[id] = true)); return n; });
     const issues: string[] = [];
-    await runPool(ids, 4, async (id) => {
+    await runPool(ids, batch, async (id) => {
       try {
         const r = await op(id);
         if (r?.ok === false) issues.push(`${id}: ${r.error || "action failed"}`);
@@ -2422,7 +2438,12 @@ function App() {
     setBusy((b) => { const n = { ...b }; ids.forEach((id) => delete n[id]); return n; });
     if (issues.length > 0) setActionErr(issues.join("; "));
   };
-  const openSelected = () => bulkRun(openProfile, (p) => !p.running && !p.mobilePersona);
+  // Browsers start in batches as large as the free memory holds, so a big selection does not stall the computer.
+  const openSelected = async () => {
+    let batch = 4;
+    try { const response = await fetch("/ui/api/launch-batch"); if (response.ok) batch = Math.max(1, Number((await response.json()).size) || 4); } catch { /* the usual four */ }
+    await bulkRun(openProfile, (p) => !p.running && !p.mobilePersona, batch);
+  };
   const closeSelected = () => bulkRun(closeProfile, (p) => p.running);
   const convertSelectedMobile = async () => {
     const ids = [...selected].filter((id) => profiles.find((p) => p.id === id)?.mobilePersona);
@@ -2819,7 +2840,7 @@ function App() {
       </aside>
 
       <div className="wall" inert={view !== "workbench"}>
-        <WorkbenchPage profiles={profiles} groups={existingGroups} folders={folders} group={group} onGroupChange={setGroup} onOpenProfiles={() => setView("profiles")} onRefresh={refreshRoster} locateId={workbenchLocate.id} locateRevision={workbenchLocate.revision} covered={view !== "workbench"} />
+        <WorkbenchPage profiles={profiles} groups={existingGroups} folders={folders} group={group} onGroupChange={setGroup} onOpenProfiles={() => setView("profiles")} onRefresh={refreshRoster} onImport={openBulk} locateId={workbenchLocate.id} locateRevision={workbenchLocate.revision} covered={view !== "workbench"} />
       </div>
 
       {view !== "workbench" && <button type="button" className="sheet-dismiss" aria-label={t("Back to the workbench")} title={t("Back to the workbench")} onClick={() => setView("workbench")}><span /></button>}
@@ -2836,11 +2857,11 @@ function App() {
         <div className="headactions">
           <CommandPalette profiles={profiles} groups={existingGroups}
             commands={[
-              { id: "workbench", label: t("Multi-view workbench") }, { id: "profiles", label: t("All profiles") },
-              { id: "new", label: t("New Profile") }, { id: "import", label: t("Import profiles") },
-              { id: "proxies", label: t("Proxies") }, { id: "settings", label: t("Settings") },
-              { id: "theme", label: t(theme === "dark" ? "Switch to light appearance" : "Switch to dark appearance") },
-            ].filter((command) => true)}
+              ...SHORTCUTS.filter((item) => item.id !== "palette").map((item) => ({ id: item.id, label: item.id === "theme" ? t(theme === "dark" ? "Switch to light appearance" : "Switch to dark appearance") : t(item.label), keys: keyLabel(item.keys) })),
+              { id: "settings-ai", label: `${t("Settings")} · ${t("AI and records")}` },
+              { id: "settings-data", label: `${t("Settings")} · ${t("Data and security")}` },
+              { id: "guide", label: t("Show the first-run guide") },
+            ]}
             onChoose={(target: SearchTarget) => {
               setDetailId(null);
               if (target.kind === "profile") {
@@ -2852,12 +2873,9 @@ function App() {
               } else if (target.kind === "group") selectFolder(target.id);
               else if (target.kind === "proxy") setView("proxies");
               else if (target.kind === "script") { setSearchScriptId(target.id); setView("scripts"); }
-              else if (target.id === "new") openCreate();
-              else if (target.id === "import") openBulk();
-              else if (target.id === "theme") chooseTheme(theme === "dark" ? "light" : "dark");
-              else if (target.id === "settings") openSettings();
-              else if (["workbench", "profiles", "proxies"].includes(target.id)) setView(target.id as "workbench" | "profiles" | "proxies");
+              else runCommand(target.id);
             }} />
+          {shortcutsOpen && <ShortcutsSheet onClose={() => setShortcutsOpen(false)} />}
           {view === "profiles" && <>
           {/* Health snapshots are pushed by automation workers through the hub, so
               in Local mode this list is always empty (see ui.ts: the local roster
@@ -3747,6 +3765,7 @@ function App() {
               <BackupsCard flash={flash} />
               <DataEncryptionCard flash={flash} />
               <TunBypassCard />
+              <MobileViewCard flash={flash} />
             </>
           )}
 
