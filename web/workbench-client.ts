@@ -19,6 +19,9 @@ export class ViewportClient {
   private following = false;
   private presentation = "";
   private width?: number;
+  /** Reconnect attempts since the last good connection, and the one that is waiting. */
+  private retries = 0;
+  private retryTimer?: ReturnType<typeof setTimeout>;
   /** The AI's pointer goes straight to whoever draws it, outside React, many times a second. */
   readonly pointerListeners = new Set<(pointer: { x: number; y: number; phase: "move" | "down" | "up"; agent?: string }) => void>();
   private state: ViewportState = { status: "connecting", generation: "", targetId: "", tabs: [] };
@@ -42,6 +45,7 @@ export class ViewportClient {
         if (message.profileId !== this.profileId) return;
         if (message.type === "ready") {
           this.publish({ status: this.visible ? "live" : "paused", generation: message.generation, targetId: message.targetId, tabs: message.tabs, viewport: message.viewport, error: undefined });
+          this.retries = 0;
           this.presentation = ""; this.activity(this.tier, this.frozen, this.following, this.width); return;
         }
         if (message.type === "error" && !this.state.generation) { this.publish({ status: "error", error: message.error }); return; }
@@ -56,8 +60,9 @@ export class ViewportClient {
           for (const listener of this.pointerListeners) listener({ x: message.x, y: message.y, phase: message.phase, agent });
         }
       };
-      socket.onerror = () => this.publish({ status: "error", error: "Browser connection lost. Reconnect to try again." });
-      socket.onclose = () => { if (this.state.status !== "ended") this.publish({ status: "error", error: "Browser connection lost. Reconnect to try again." }); };
+      // A dropped connection to a browser that is still open comes back by itself.
+      socket.onerror = () => this.lost(socket);
+      socket.onclose = () => this.lost(socket);
     } catch (error) { this.publish({ status: "error", error: error instanceof Error ? error.message : String(error) }); }
   }
   command(action: string, extra: object = {}): void {
@@ -82,6 +87,20 @@ export class ViewportClient {
     }
     if (!this.visible && this.state.status === "live") this.publish({ status: "paused" });
   }
+  /**
+   * The connection dropped while the browser is still open (the app was busy, the computer slept,
+   * the browser restarted): try again after 1, 2, 4, 8 and 15 seconds, then every 30. A browser that
+   * stopped says so itself ("ended") and is not retried.
+   */
+  private lost(socket: WebSocket): void {
+    if (this.disposed || socket !== this.socket || this.state.status === "ended") return;
+    this.socket = undefined;
+    const delay = [1000, 2000, 4000, 8000, 15000][this.retries] ?? 30000;
+    this.retries++;
+    this.publish({ status: "connecting", error: "Connection lost. Reconnecting…" });
+    clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => { if (!this.disposed) void this.connect(); }, delay);
+  }
   release(): void { this.command("release"); }
-  dispose(): void { this.release(); this.disposed = true; this.socket?.close(); }
+  dispose(): void { this.release(); this.disposed = true; clearTimeout(this.retryTimer); this.socket?.close(); }
 }

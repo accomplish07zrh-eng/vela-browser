@@ -27,7 +27,6 @@
   "Reconnect": "重新连接",
   "Open the desktop app to use the workbench.": "请在桌面应用中打开多视口工作台。",
   "Workbench authorization failed": "工作台授权失败",
-  "Browser connection lost. Reconnect to try again.": "浏览器连接已中断，请尝试重新连接。",
   "This environment has stopped or restarted.": "此环境已关闭或重新启动。",
   "language.label": "语言",
   "language.nativeName": "简体中文",
@@ -1069,5 +1068,9 @@
   "Not allowed": "不允许",
   "Writing guide": "编写指南",
   "Guide topic": "指南主题",
-  "AI automation": "AI 操控"
+  "AI automation": "AI 操控",
+  "Browser connection lost. Reconnect to try again.": "浏览器连接已中断，请尝试重新连接。",
+  "A proxy client on this computer runs in TUN mode": "本机的代理客户端开着 TUN 模式",
+  "Every profile's connection also passes through it, so traffic goes through two proxies and that client's rules decide the real exit. Switch the client to system-proxy mode, or add this rule at the top of its rules so Vela Browser connects directly:": "每个环境的连接都会先经过它，等于套了两层代理，最终出口由它的规则决定。可以把客户端改成系统代理模式，或者把下面这条规则放到它的规则最前面，让 Vela Browser 直接连接：",
+  "Afterwards, check a profile on this page: its exit should be the node's address.": "改完后在本页检测一下环境：出口应该是节点的地址。"
 }

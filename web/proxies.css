@@ -396,3 +396,11 @@
 .proxy-page .pool-sub-table td small.pool-warn { white-space: normal; max-width: 220px; }
 .proxy-page .pool-sub-table .pool-sub-select { min-width: 140px; }
 .proxy-page .pool-sub-table .proxy-actions { display: flex; flex-wrap: nowrap; gap: 6px; justify-content: flex-end; }
+
+/* This computer's proxy client in TUN mode: said once at the top of the proxy page. */
+.proxy-page .tun-notice { margin-bottom: 16px; display: grid; gap: 6px; }
+.proxy-page .tun-notice strong { font-size: 13px; }
+.proxy-page .tun-notice p { margin: 0; }
+.proxy-page .tun-rule { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--surface); }
+.proxy-page .tun-rule code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font: 12px/1.5 var(--mono, monospace); }
+.proxy-page .tun-foot { color: var(--muted); }
