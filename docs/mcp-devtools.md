@@ -18,6 +18,9 @@ Each environment keeps its existing persistent context, process, cookies, proxy,
 | `browser_devtools_storage_edit` | Set, remove and clear cookies or local/session storage; JavaScript can modify IndexedDB and Cache Storage |
 | `browser_devtools_fetch` | HTTP requests through the actual page/frame's browser network stack, including text or binary POST data |
 | `browser_devtools_protocol` | Any native CDP command supported by the existing Chromium engine, including commands that change the page |
+| `browser_devtools_performance` | Load and runtime insight: time to first byte, first and largest contentful paint, layout shift, long tasks, DOM size, slowest and largest resources, with plain findings against the Core Web Vitals thresholds |
+| `browser_devtools_block` | Block requests by resource type or URL glob for the whole profile (for example images and media to save proxy traffic); set, list with a blocked count, clear |
+| `browser_devtools_wait` | Wait until a request containing a URL part finishes (optionally by method and status), or until the page's network has been idle for a given time |
 
 Chromium attaches to the profile's existing CDP context. Firefox and WebKit run tools inside their existing native context owner. Firefox developer page operations use its native `mw:` execution channel, so page variables and typed arrays are accessible while ordinary automation retains its isolated world. Worker evaluation uses the worker's own context. CDP is Chromium-specific; Firefox and WebKit use the cross-engine developer tools and JavaScript. Engine support for service workers, TLS metadata and other browser APIs remains native; WebKit retains its experimental status and existing platform capabilities.
 

@@ -665,14 +665,15 @@ export async function createVelaBrowserMcp(options = {}) {
 
   // Vela Browser applies its per-AI group permissions and keeps its record under this client's name.
   let identified;
-  const identify = () => identified ??= runtime.call("session.identify", { name: agent() }).catch(() => {});
+  // An older Vela Browser, or a runtime that refuses the call, simply keeps the connection unnamed.
+  const identify = () => identified ??= (async () => { try { await runtime.call("session.identify", { name: agent() }); } catch { /* unnamed */ } })();
   /** Page actions in Chromium reach the browser directly, so they are reported for the record. */
   const reportAction = (profileId, tool, args, result, error) => {
     const detail = tool === "browser_navigate" && typeof args?.url === "string" ? args.url
       : tool === "browser_batch" && Array.isArray(args?.steps) ? args.steps.map((step) => step?.tool).filter(Boolean).join(", ") : undefined;
     const failed = !!error || !!result?.isError;
     const reason = error ? safeError(error) : failed ? (result?.content ?? []).map((part) => part?.text).filter(Boolean).join(" ").slice(0, 300) : undefined;
-    void runtime.call("session.audit", { profileId, tool, ok: !failed, ...(detail ? { detail } : {}), ...(reason ? { error: reason } : {}) }).catch(() => {});
+    void (async () => { try { await runtime.call("session.audit", { profileId, tool, ok: !failed, ...(detail ? { detail } : {}), ...(reason ? { error: reason } : {}) }); } catch { /* the record is best effort */ } })();
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {

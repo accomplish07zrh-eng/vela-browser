@@ -55,6 +55,18 @@ export const DEVTOOLS_TOOLS = [
   tool("browser_devtools_protocol", "Send a native Chrome DevTools Protocol command to a page in this existing Chromium profile and return its result. All commands supported by the engine are available, including developer changes. Firefox/WebKit use the cross-engine developer tools and JavaScript evaluation instead of CDP.", {
     pageId, method: string, params: { type: "object", additionalProperties: true },
   }, ["method"], false),
+  tool("browser_devtools_performance", "Measure how the selected page loaded and runs, like a DevTools performance insight: time to first byte, first and largest contentful paint, layout shift, main-thread long tasks, DOM size, and the slowest and largest resources. Returns the numbers and plain findings such as 'LCP 3.4 s is slow'. Reads the page's own performance records; nothing is changed.", {
+    pageId, frameId: string, top: { type: "integer", minimum: 1, maximum: 20, default: 5 },
+  }),
+  tool("browser_devtools_block", "Block requests in this profile by resource type (image, media, font, stylesheet…) or URL pattern (glob such as **/*.mp4 or *://ads.example.com/*), for example to save proxy traffic or speed up a run. action 'set' replaces the rules, 'clear' removes them, 'list' shows them and how many requests were blocked. Rules last until cleared or the browser is detached. Blocked requests fail like an offline resource; pages may notice missing images.", {
+    action: { type: "string", enum: ["set", "clear", "list"] },
+    resourceTypes: { type: "array", items: { type: "string", enum: ["image", "media", "font", "stylesheet", "script", "xhr", "fetch", "websocket", "other"] } },
+    urlPatterns: { type: "array", items: string, maxItems: 50 },
+  }, ["action"], false),
+  tool("browser_devtools_wait", "Wait for the network instead of a fixed delay: until a request whose URL contains urlIncludes finishes (optionally with a given method or status), or, without urlIncludes, until the page's network has been idle for idleMs. Counts only requests that start after the call unless since is given. Returns the matching request record or how long it took to settle.", {
+    pageId, urlIncludes: string, method: string, status: { type: "integer", minimum: 100, maximum: 599 }, since: cursor,
+    idleMs: { type: "integer", minimum: 100, maximum: 10000, default: 500 }, timeoutMs: { type: "integer", minimum: 500, maximum: 120000, default: 15000 },
+  }),
 ];
 export const DEVTOOLS_TOOL_NAMES = new Set(DEVTOOLS_TOOLS.map(t => t.name));
 
@@ -471,12 +483,116 @@ export class BrowserDevtools {
       if (this.closed || page.isClosed()) throw new Error("This page's developer session has closed");
       return result({ pageId: this.pageIds.get(page), method: args.method, value: await session.send(args.method, args.params ?? {}) });
     }
+    if (name === "browser_devtools_performance") {
+      const { page, frame } = this.selectFrame(args);
+      const top = integer(args.top, 5, 1, 20);
+      const value = await evaluate(frame, async (input) => {
+        const supported = (typeof PerformanceObserver !== "undefined" && PerformanceObserver.supportedEntryTypes) || [];
+        // Buffered observers hand back what already happened; they are disconnected right away.
+        const collect = (type) => new Promise((resolve) => {
+          if (!supported.includes(type)) { resolve(null); return; }
+          const entries = [];
+          try {
+            const observer = new PerformanceObserver((list) => { entries.push(...list.getEntries()); });
+            observer.observe({ type, buffered: true });
+            setTimeout(() => { try { entries.push(...observer.takeRecords()); observer.disconnect(); } catch {} resolve(entries); }, 60);
+          } catch { resolve(null); }
+        });
+        const [lcp, shifts, longTasks] = await Promise.all([collect("largest-contentful-paint"), collect("layout-shift"), collect("longtask")]);
+        const navigation = performance.getEntriesByType("navigation")[0];
+        const paints = Object.fromEntries(performance.getEntriesByType("paint").map((entry) => [entry.name, Math.round(entry.startTime)]));
+        const resources = performance.getEntriesByType("resource").map((entry) => ({
+          url: entry.name.slice(0, 300), type: entry.initiatorType, ms: Math.round(entry.duration), bytes: entry.transferSize || 0,
+          thirdParty: (() => { try { return new URL(entry.name).hostname !== location.hostname; } catch { return false; } })(),
+        }));
+        // Layout shifts right after input do not count, as in the Core Web Vitals definition.
+        const cls = shifts ? Math.round(shifts.filter((entry) => !entry.hadRecentInput).reduce((sum, entry) => sum + entry.value, 0) * 1000) / 1000 : null;
+        const blocking = longTasks ? longTasks.reduce((sum, entry) => sum + Math.max(0, entry.duration - 50), 0) : null;
+        const last = lcp && lcp.length ? lcp[lcp.length - 1] : null;
+        return {
+          url: location.href,
+          navigation: navigation ? { ttfb: Math.round(navigation.responseStart - navigation.startTime), domContentLoaded: Math.round(navigation.domContentLoadedEventEnd), load: Math.round(navigation.loadEventEnd), transferBytes: navigation.transferSize, protocol: navigation.nextHopProtocol, type: navigation.type } : null,
+          firstContentfulPaint: paints["first-contentful-paint"] ?? null,
+          largestContentfulPaint: last ? { ms: Math.round(last.startTime), element: last.element ? `${last.element.tagName.toLowerCase()}${last.element.id ? "#" + last.element.id : ""}` : null, url: last.url ? last.url.slice(0, 300) : null } : null,
+          cumulativeLayoutShift: cls,
+          longTasks: longTasks ? { count: longTasks.length, blockingMs: Math.round(blocking) } : null,
+          domNodes: document.getElementsByTagName("*").length,
+          memory: performance.memory ? { usedJsHeapMb: Math.round(performance.memory.usedJSHeapSize / 1048576) } : null,
+          resources: { count: resources.length, bytes: resources.reduce((sum, item) => sum + item.bytes, 0), thirdPartyCount: resources.filter((item) => item.thirdParty).length,
+            slowest: [...resources].sort((a, b) => b.ms - a.ms).slice(0, input.top), largest: [...resources].sort((a, b) => b.bytes - a.bytes).slice(0, input.top).filter((item) => item.bytes > 0) },
+        };
+      }, { top }, this.mainWorld);
+      // Plain findings against the Core Web Vitals thresholds.
+      const findings = [];
+      const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
+      if (value.largestContentfulPaint) findings.push(value.largestContentfulPaint.ms > 4000 ? `LCP ${seconds(value.largestContentfulPaint.ms)} is poor (good is 2.5 s or less)` : value.largestContentfulPaint.ms > 2500 ? `LCP ${seconds(value.largestContentfulPaint.ms)} needs improvement (good is 2.5 s or less)` : `LCP ${seconds(value.largestContentfulPaint.ms)} is good`);
+      if (value.cumulativeLayoutShift !== null) findings.push(value.cumulativeLayoutShift > 0.25 ? `Layout shift ${value.cumulativeLayoutShift} is poor (good is 0.1 or less)` : value.cumulativeLayoutShift > 0.1 ? `Layout shift ${value.cumulativeLayoutShift} needs improvement` : `Layout shift ${value.cumulativeLayoutShift} is good`);
+      if (value.longTasks && value.longTasks.blockingMs > 200) findings.push(`The main thread was blocked for ${value.longTasks.blockingMs} ms by ${value.longTasks.count} long tasks`);
+      if (value.navigation && value.navigation.ttfb > 800) findings.push(`The server took ${value.navigation.ttfb} ms to answer (good is 800 ms or less)`);
+      if (value.domNodes > 1500) findings.push(`The page has ${value.domNodes} DOM elements, which slows layout`);
+      if (value.resources.bytes > 5 * 1048576) findings.push(`The page downloaded ${(value.resources.bytes / 1048576).toFixed(1)} MB`);
+      const slow = value.resources.slowest[0];
+      if (slow && slow.ms > 2000) findings.push(`The slowest resource took ${seconds(slow.ms)}: ${slow.url}`);
+      return result({ pageId: this.pageIds.get(page), frameId: this.frameId(frame, page), findings, ...value });
+    }
+    if (name === "browser_devtools_block") {
+      if (!["set", "clear", "list"].includes(args.action)) throw new Error("action must be set, clear or list");
+      if (args.action === "set") {
+        const types = Array.isArray(args.resourceTypes) ? args.resourceTypes.filter((type) => typeof type === "string") : [];
+        const patterns = Array.isArray(args.urlPatterns) ? args.urlPatterns.filter((pattern) => typeof pattern === "string" && pattern.trim()).slice(0, 50) : [];
+        if (!types.length && !patterns.length) throw new Error("Give resourceTypes or urlPatterns to block, or use action clear");
+        const toRegExp = (glob) => new RegExp("^" + glob.trim().replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\u0000/g, ".*").replace(/\?/g, ".") + "$", "i");
+        this.blocking = { types: new Set(types), patterns, expressions: patterns.map(toRegExp), blocked: this.blocking?.blocked ?? 0 };
+        if (!this.blockHandler) {
+          this.blockHandler = async (route) => {
+            const rules = this.blocking, request = route.request();
+            if (rules && (rules.types.has(request.resourceType()) || rules.expressions.some((expression) => expression.test(request.url())))) {
+              rules.blocked++;
+              await route.abort("blockedbyclient").catch(() => {});
+            } else await route.fallback().catch(() => {});
+          };
+          await this.context.route("**/*", this.blockHandler);
+        }
+      } else if (args.action === "clear" && this.blockHandler) {
+        await this.context.unroute("**/*", this.blockHandler).catch(() => {});
+        this.blockHandler = undefined; this.blocking = undefined;
+      }
+      return result({ active: !!this.blockHandler, resourceTypes: [...(this.blocking?.types ?? [])], urlPatterns: this.blocking?.patterns ?? [], blocked: this.blocking?.blocked ?? 0 });
+    }
+    if (name === "browser_devtools_wait") {
+      const timeout = integer(args.timeoutMs, 15000, 500, 120000), idle = integer(args.idleMs, 500, 100, 10000);
+      const since = args.since === undefined ? this.sequence : integer(args.since, 0, 0);
+      const pageId = args.pageId ? this.pageIds.get(this.selectPage(args.pageId)) : undefined;
+      const started = Date.now();
+      const records = () => [...this.requests.values()].map((item) => item.data).filter((data) => (!pageId || data.pageId === pageId));
+      // Streams and sockets never finish; a request pending for half a minute is treated the same way.
+      const lingering = (data) => ["websocket", "eventsource"].includes(data.resourceType) || Date.now() - Date.parse(data.timestamp) > 30000;
+      let quietSince = Date.now();
+      while (Date.now() - started < timeout) {
+        if (this.closed) throw new Error("This browser's developer session has closed");
+        if (args.urlIncludes) {
+          const match = records().find((data) => data.sequence > since && ["finished", "failed"].includes(data.state) && data.url.includes(args.urlIncludes)
+            && (!args.method || data.method === String(args.method).toUpperCase()) && (args.status === undefined || data.status === args.status));
+          if (match) return result({ matched: true, waitedMs: Date.now() - started, request: match, cursor: this.sequence });
+        } else {
+          const busy = records().filter((data) => data.state === "pending" && !lingering(data)).length;
+          if (busy) quietSince = Date.now();
+          else if (Date.now() - quietSince >= idle) return result({ idle: true, waitedMs: Date.now() - started, cursor: this.sequence });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const pending = records().filter((data) => data.state === "pending" && !lingering(data)).slice(0, 10).map((data) => ({ requestId: data.requestId, url: data.url, resourceType: data.resourceType }));
+      throw new Error(args.urlIncludes
+        ? `No request containing "${args.urlIncludes}" finished within ${timeout} ms`
+        : `The network did not go quiet within ${timeout} ms; still loading: ${pending.map((item) => item.url).join(", ").slice(0, 600) || "nothing visible"}`);
+    }
     throw new Error(`Unknown developer tool: ${name}`);
   }
   dispose() {
     if (this.closed) return;
     this.closed = true;
     for (const emitter of [...this.listeners.keys()]) this.unlisten(emitter);
+    if (this.blockHandler) { void this.context.unroute("**/*", this.blockHandler).catch(() => {}); this.blockHandler = undefined; }
     for (const pending of this.protocolSessions.values()) void pending.then(session => session.detach()).catch(() => {});
     this.protocolSessions.clear();
     this.events.length = 0; this.requests.clear(); this.pages.clear(); this.frames.clear(); this.workers.clear();
