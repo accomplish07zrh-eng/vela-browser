@@ -24,7 +24,8 @@ try {
   await page.locator('.sidebar button[title]').filter({ hasText: /^(Settings|设置|Настройки)$/ }).click();
   await page.locator('[role="tablist"]').waitFor();
   const tabs = await page.locator('[role="tablist"] [role="tab"]').allTextContents();
-  assert.equal(tabs.length, 2);
+  // General, AI and records, Data and security, Advanced: none of them about accounts or teams.
+  assert.equal(tabs.length, 4);
   assert(!tabs.some((text) => /account|team|账户|团队|аккаунт|команда/i.test(text)));
   assert.equal(await page.locator('input[type="password"]').count(), 0);
 
