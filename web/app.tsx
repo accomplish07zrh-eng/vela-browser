@@ -4,6 +4,7 @@ import { TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 import { parseTags, TagBatchDialog, TagChip, TagInput, TagList } from "./tags.tsx";
 import { ActivityCard, AiAccessCard } from "./ai-settings.tsx";
 import { BackupsCard } from "./snapshots.tsx";
+import { HealthScore, HealthSheet, type HealthRow } from "./health.tsx";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
@@ -249,6 +250,7 @@ function writeSetting(key: string, value: string): void {
  * `.icon` rule in styles.css controls size and color for all of them.
  */
 const ICONS = {
+  shield: <><path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z" /><path d="m9 12 2.2 2.2L15.5 10" /></>,
   tag: <><path d="M3.5 12.6V4.5a1 1 0 0 1 1-1h8.1l8 8a1.5 1.5 0 0 1 0 2.1l-6.9 6.9a1.5 1.5 0 0 1-2.1 0z" /><circle cx="8" cy="8" r="1.4" /></>,
   plus: <path d="M12 5v14M5 12h14" />,
   import: <><path d="M12 3v12" /><path d="M8 11l4 4 4-4" /><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></>,
@@ -1206,6 +1208,11 @@ function App() {
   const [engineFilter, setEngineFilter] = useState<ProfileEngineFilter>("all");
   const [tagFilter, setTagFilter] = useState("");
   const [tagBatchOpen, setTagBatchOpen] = useState(false);
+  // The self-check: open for every profile, for the selection, or on one profile's findings.
+  const [healthOpen, setHealthOpen] = useState<{ ids?: string[]; focus?: string } | null>(null);
+  const [health, setHealth] = useState<Map<string, HealthRow>>(new Map());
+  useEffect(() => { loadHealth(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadHealth = () => { void fetch("/ui/api/health").then((response) => response.ok ? response.json() : null).then((data) => { if (data?.reports) setHealth(new Map((data.reports as HealthRow[]).map((row) => [row.profileId, row]))); }).catch(() => {}); };
   const [detailId, setDetailId] = useState<string | null>(null);
   const [profilePage, setProfilePage] = useState(0);
   const [pageSize, setPageSize] = useState(readPageSize);
@@ -2876,6 +2883,13 @@ function App() {
           <button
             type="button"
             className="iconbtn tip"
+            data-tip={t("Self-check")}
+            aria-label={t("Self-check every profile")}
+            onClick={() => setHealthOpen({})}
+          ><Icon name="shield" /></button>
+          <button
+            type="button"
+            className="iconbtn tip"
             data-tip={t("Refresh")}
             aria-label={t("Refresh profiles")}
             disabled={refreshing}
@@ -3073,6 +3087,7 @@ function App() {
               <Icon name="laptop" className="sm" />Convert mobile ({selectedMobileCount})
             </button>
           )}
+          <button className="btn tip" type="button" data-tip={t("Check the selected profiles for anything that gives them away")} onClick={() => setHealthOpen({ ids: [...selected] })}><Icon name="shield" className="sm" />{t("Self-check")}</button>
           <button className="btn tip" type="button" data-tip={t("Add or remove tags on the selected profiles")} onClick={() => setTagBatchOpen(true)}><Icon name="tag" className="sm" />{t("Tags")}</button>
           {/* Bulk edits preserve each environment’s stored identity. */}
           <div className="menuwrap" ref={exportRef}>
@@ -3179,6 +3194,7 @@ function App() {
                     <td className="col-name" title={`${p.name}\n${p.id}`}>
                       <span className="name-cell">
                         <button type="button" className="profile-name-link" aria-label={t("View details for {profile}", { profile: p.name })} onClick={() => setDetailId(p.id)}><span className="n">{p.name}<FingerprintBadge p={p} /></span></button>
+                        {health.get(p.id) && health.get(p.id)!.level !== "good" && <HealthScore row={health.get(p.id)!} onClick={() => setHealthOpen({ focus: p.id })} />}
                         {!columnVisible("tags") && p.tags?.length ? <span className="profile-name-tags"><TagList tags={p.tags} activeTag={tagFilter} onPick={(tag) => setTagFilter(tagFilter === tag ? "" : tag)} /></span> : null}
                         <span className="sub">
                           {p.id}
@@ -4544,6 +4560,8 @@ function App() {
         selectedProfiles={scriptRunProfiles}
         onClose={() => setScriptRunOpen(false)}
       />
+      {healthOpen && <HealthSheet ids={healthOpen.ids} focus={healthOpen.focus} onClose={() => { setHealthOpen(null); loadHealth(); }}
+        onOpenProfile={(id) => { setHealthOpen(null); setDetailId(id); }} />}
       {tagBatchOpen && <TagBatchDialog profiles={profiles.filter((profile) => selected.has(profile.id))} suggestions={profileTags}
         onClose={() => setTagBatchOpen(false)} onDone={() => { setTagBatchOpen(false); void load(); }} />}
     </div>

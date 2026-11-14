@@ -1,0 +1,53 @@
+.modal.health-modal { width: min(920px, calc(100vw - 32px)); max-height: min(90vh, 900px); }
+.health-body { display: grid; gap: 14px; }
+.health-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
+.health-average { display: grid; justify-items: start; }
+.health-average strong { font-family: var(--font-display, var(--font)); font-size: 34px; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
+.health-average span { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.health-counts { display: flex; flex-wrap: wrap; gap: 14px; flex: 1; font-size: 13px; }
+.health-counts span::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; vertical-align: 0; }
+.health-counts .poor::before { background: var(--danger-fill); }
+.health-counts .fair::before { background: var(--warn, #c8902f); }
+.health-counts .good::before { background: var(--success, #4f8a5b); }
+.health-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.health-error { margin: 0; color: var(--danger-ink); font-size: 13px; }
+.health-tabs { justify-self: start; }
+.health-tab-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--danger-soft); color: var(--danger-ink); font-size: 11px; }
+.health-filter { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+
+.health-score { display: inline-grid; place-items: center; min-width: 30px; height: 22px; padding: 0 6px; border: 0; border-radius: 6px; font: 600 12px/1 var(--font); font-variant-numeric: tabular-nums; cursor: default; }
+button.health-score { cursor: pointer; }
+.health-score.good { background: color-mix(in srgb, var(--success, #4f8a5b) 14%, transparent); color: var(--success-ink, #3d6e47); }
+.health-score.fair { background: color-mix(in srgb, var(--warn, #c8902f) 16%, transparent); color: var(--warn-ink, #8a6420); }
+.health-score.poor { background: var(--danger-soft); color: var(--danger-ink); }
+
+.health-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.health-list > li { display: flex; gap: 12px; align-items: flex-start; padding: 12px 2px; border-bottom: 1px solid var(--line); }
+.health-list > li.focus { background: color-mix(in srgb, var(--focus-accent) 7%, transparent); }
+.health-row-main { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.health-row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.health-name { padding: 0; border: 0; background: none; color: var(--ink); font: 600 13.5px var(--font); cursor: pointer; text-align: left; }
+button.health-name:hover { text-decoration: underline; }
+.health-group { color: var(--muted); font-size: 12px; }
+.health-exit { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.health-issues { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; }
+.health-issues li { position: relative; padding-left: 14px; font-size: 12.5px; line-height: 1.5; }
+.health-issues li::before { content: ""; position: absolute; left: 0; top: .55em; width: 6px; height: 6px; border-radius: 50%; }
+.health-issues li.high { color: var(--danger-ink); }
+.health-issues li.high::before { background: var(--danger-fill); }
+.health-issues li.medium::before { background: var(--warn, #c8902f); }
+.health-issues li.low { color: var(--muted); }
+.health-issues li.low::before { background: var(--line-strong, var(--muted)); }
+
+.health-links h3 { margin: 18px 0 8px; font-size: 13px; font-weight: 600; }
+.health-links h3:first-of-type { margin-top: 4px; }
+.links-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.links-list > li { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); }
+.links-list > li.high { border-color: var(--danger-line); background: var(--danger-soft); }
+.links-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; font-size: 13px; }
+.links-head span { color: var(--muted); font-size: 12px; }
+.links-risk { margin-left: auto; }
+.links-risk.high { color: var(--danger-ink) !important; font-weight: 600; }
+.links-profiles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.links-profile { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; background: var(--surface-hover); font-size: 12px; }
+.links-profile em { font-style: normal; color: var(--muted); }

@@ -20,7 +20,7 @@ import type { StatePaths } from "./paths.ts";
 import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
-import { handleProxyPoolRequest } from "./proxy-pool-api.ts";
+import { handleProxyPoolRequest, runPoolChecks } from "./proxy-pool-api.ts";
 import { poolNodeTimezone, saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
 import { handleTrashRequest } from "./trash.ts";
 import {
@@ -556,6 +556,9 @@ export interface UiRuntimeOptions {
  * Handle a `/ui/api/*` request. Returns null for any other path so the caller
  * can fall through to the AdsPower API handler.
  */
+/** The last exit check of each profile, loaded once per process. */
+let healthCache: import("./health.ts").ExitCache | undefined;
+
 export async function handleUiRequest(
   req: Request,
   launcher: Launcher,
@@ -941,6 +944,55 @@ export async function handleUiRequest(
       return new Response("\ufeff" + auditCsv(entries), { headers: { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store", "Content-Disposition": "attachment; filename=\"vela-activity.csv\"" } });
     }
     return noStoreJson({ ok: true, entries, actors: options.audit.actors() });
+  }
+
+  // Self-check: each profile's health, and checking the exits it depends on.
+  if (pathname === "/ui/api/health" || pathname === "/ui/api/health/check") {
+    if (remote) return noStoreJson({ ok: false, error: "The self-check is unavailable in legacy remote mode" }, 400);
+    const { assessProfile, associations, sharedExits, ExitCache } = await import("./health.ts");
+    const cache = healthCache ??= new ExitCache(options.paths ? join(options.paths.root, "health.json") : undefined);
+    const profiles = store.listProfiles();
+    if (pathname === "/ui/api/health/check" && req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as { ids?: unknown };
+      const wanted = Array.isArray(body.ids) && body.ids.length ? new Set(body.ids.map(String)) : undefined;
+      const targets = profiles.filter((profile) => !wanted || wanted.has(profile.id));
+      const pool = store.proxyPool;
+      // Pool nodes are checked once each, through the kernel, however many profiles use them.
+      const nodeIds = [...new Set(targets.filter((profile) => profile.proxy?.type === "pool").map((profile) => profile.proxy!.host))];
+      const nodes = nodeIds.map((id) => pool.get(id)).filter((node): node is NonNullable<typeof node> => !!node);
+      if (nodes.length) {
+        await runPoolChecks(store, nodes, {
+          ...(launcher.kernels ? { kernels: launcher.kernels } : {}),
+          ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
+          ...(options.shutdownSignal ? { signal: options.shutdownSignal } : {}),
+        }).catch(() => {});
+      }
+      const queue = [...targets];
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+        for (let profile = queue.shift(); profile; profile = queue.shift()) {
+          const now = Date.now();
+          if (!profile.proxy) { cache.set(profile.id, { status: "ok", checkedAt: now, via: "direct" }); continue; }
+          if (profile.proxy.type === "pool") {
+            const check = pool.get(profile.proxy.host)?.check;
+            cache.set(profile.id, check
+              ? { status: check.status === "working" || check.status === "unstable" ? "ok" : "failed", ...(check.status === "unstable" ? { unstable: true } : {}), ip: check.ip, country: check.country, city: check.city, timezone: check.timezone, rotating: check.rotating, reason: check.reason, checkedAt: check.checkedAt, via: "pool" }
+              : { status: "failed", reason: "not checked", checkedAt: now, via: "pool" });
+            continue;
+          }
+          try {
+            const result = await (options.proxyCheck ?? runProxyCheck)(profile.proxy);
+            cache.set(profile.id, { status: result.status === "working" || result.status === "unstable" ? "ok" : "failed", ...(result.status === "unstable" ? { unstable: true } : {}), ip: result.ip, country: result.country, city: result.city, timezone: result.timezone, rotating: result.rotating, reason: result.reason, checkedAt: now, via: "proxy" });
+          } catch { cache.set(profile.id, { status: "failed", reason: "check failed", checkedAt: now, via: "proxy" }); }
+        }
+      }));
+    } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    cache.forget(new Set(profiles.map((profile) => profile.id)));
+    const shared = sharedExits(cache.all());
+    const reports = profiles.map((profile) => ({
+      ...assessProfile(profile, cache.get(profile.id), { sharedExit: shared.get(profile.id) }),
+      name: profile.name, group: profile.group ?? "", tags: profile.tags ?? [],
+    })).sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+    return noStoreJson({ ok: true, reports, associations: associations(profiles, cache.all()) });
   }
 
   // Snapshots: list, take one by hand, roll back, delete; and the backups as a whole.
