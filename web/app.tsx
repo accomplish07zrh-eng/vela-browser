@@ -5,6 +5,7 @@ import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
 import { PoolNodeField, PoolProxyPicker, ProxyApprovalPrompts } from "./proxy-pool.tsx";
+import { CodeApprovalPrompts, fetchCodeApprovals, setCodePolicy, type AiCodePolicy } from "./code-approvals.tsx";
 import { WorkbenchPage } from "./workbench.tsx";
 import { CommandPalette, type SearchTarget } from "./command-palette.tsx";
 import "./design-tokens.css";
@@ -304,6 +305,9 @@ function PluginsCard({ flash }: { flash: (message: string) => void }) {
   const [listing, setListing] = useState<PluginListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [codePolicy, setCodePolicyState] = useState<AiCodePolicy>("ask");
+  const [policySaving, setPolicySaving] = useState(false);
+  const policySeq = useRef(0);
   const run = (task: () => Promise<PluginListing | void>) => {
     setBusy(true);
     task()
@@ -313,7 +317,26 @@ function PluginsCard({ flash }: { flash: (message: string) => void }) {
   };
   useEffect(() => {
     fetchPlugins().then(setListing).catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)));
+    fetchCodeApprovals()
+      .then((result) => { if (policySeq.current === 0) setCodePolicyState(result.policy); })
+      .catch(() => {});
   }, []);
+  const updateCodePolicy = (next: AiCodePolicy) => {
+    if (next === codePolicy) return;
+    const previous = codePolicy;
+    const seq = ++policySeq.current;
+    setCodePolicyState(next);
+    setPolicySaving(true);
+    setCodePolicy(next)
+      .then((saved) => { if (policySeq.current === seq) setCodePolicyState(saved.policy); })
+      .catch((caught) => {
+        if (policySeq.current === seq) {
+          setCodePolicyState(previous);
+          flash(caught instanceof Error ? caught.message : String(caught));
+        }
+      })
+      .finally(() => { if (policySeq.current === seq) setPolicySaving(false); });
+  };
   if (error) return null;
   const plugins = listing?.plugins ?? [];
   return (
@@ -358,6 +381,30 @@ function PluginsCard({ flash }: { flash: (message: string) => void }) {
             ))}
           </ul>
         )}
+        <div className="plugin-code-policy">
+          <span id="ai-code-policy-label">{t("Scripts and plugins written by AI")}</span>
+          <div
+            className="segmented"
+            role="radiogroup"
+            aria-labelledby="ai-code-policy-label"
+            onKeyDown={(event) => moveSegmentedChoice(event, ["ask", "allow", "deny"] as const, codePolicy, updateCodePolicy)}
+          >
+            {([["ask", "Ask each time"], ["allow", "Save directly"], ["deny", "Not allowed"]] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={codePolicy === value}
+                tabIndex={codePolicy === value ? 0 : -1}
+                disabled={policySaving}
+                className={codePolicy === value ? "active" : ""}
+                onClick={() => updateCodePolicy(value)}
+              >
+                {t(label)}
+              </button>
+            ))}
+          </div>
+        </div>
         {listing?.directory && <p className="cardnote">{t("Plugins folder")}: <span className="mono">{listing.directory}</span></p>}
         <p className="cardnote">{t("Changes reach the AI the next time it selects a browser.")}</p>
       </div>
@@ -2553,6 +2600,7 @@ function App() {
   return (
     <>
     <ProxyApprovalPrompts />
+    <CodeApprovalPrompts />
     <div
       className="app"
       data-view={view}

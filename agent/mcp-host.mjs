@@ -294,7 +294,7 @@ const ALIAS_TOOLS = [
       required: ["steps"],
       additionalProperties: false,
     },
-  },,
+  },
   {
     name: "vela_guide",
     description: "Read Vela Browser's built-in guide before larger work: \"automation\" (driving profiles efficiently and what needs a person), \"scripts\" (writing JavaScript or Python scripts that run in many profiles) or \"plugins\" (writing plugins that add tools).",
@@ -410,14 +410,27 @@ const SNAPSHOT_RETURNING = /^browser_(click|type|fill_form|select_option|press_k
 /** Tools a batch never runs: lifecycle belongs to Vela Browser, and a batch does not nest. */
 const NOT_IN_BATCH = new Set(["browser_batch", "browser_close", "browser_install", "vela_browser_close"]);
 
+const LEGACY_ALIAS_TOOLS = new Set([
+  "aliasmode_profiles_list",
+  "aliasmode_profile_create",
+  "aliasmode_profile_delete",
+  "aliasmode_browser_open",
+  "aliasmode_browser_select",
+  "aliasmode_browser_status",
+  "aliasmode_browser_close",
+  "aliasmode_proxy_pool_list",
+  "aliasmode_proxy_pool_check",
+  "aliasmode_browser_set_proxy",
+  "aliasmode_humanize",
+]);
+
 /**
  * Earlier versions named the Vela Browser tools aliasmode_*. They are listed as vela_* now; a
  * script or saved prompt that still calls an old name reaches the same tool.
  */
 export function canonicalToolName(name) {
-  if (typeof name !== "string" || !name.startsWith("aliasmode_")) return name;
-  const current = `vela_${name.slice("aliasmode_".length)}`;
-  return ALIAS_TOOLS.some((tool) => tool.name === current) ? current : name;
+  if (typeof name !== "string" || !LEGACY_ALIAS_TOOLS.has(name)) return name;
+  return `vela_${name.slice("aliasmode_".length)}`;
 }
 
 /** Tells the AI where the extra calls go, so it does not take a snapshot it already has. */

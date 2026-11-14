@@ -161,3 +161,42 @@
 :root[data-theme="dark"] .app .main .scripts-page .script-row .script-lang.python { color: #8db9e6; }
 .scripts-welcome-text { max-width: 520px; }
 .app .main .scripts-welcome-hint { max-width: none; }
+
+/* ---- Writing guide side drawer ---- */
+.guide-drawer {
+  position: fixed; inset: 12px 12px 12px auto; margin: 0; width: min(620px, calc(100vw - 24px));
+  height: calc(100dvh - 24px); max-height: none; max-width: none; padding: 0; border: 0; border-radius: 16px;
+  color: var(--ink); background: var(--surface); box-shadow: var(--shadow-paper); overflow: hidden;
+}
+.guide-drawer[open] { display: flex; flex-direction: column; animation: guide-drawer-in 360ms var(--spring-layout, ease); }
+.guide-drawer::backdrop { background: rgba(43, 35, 23, .14); }
+:root[data-theme="dark"] .guide-drawer::backdrop { background: rgba(15, 12, 8, .3); }
+@keyframes guide-drawer-in { from { opacity: 0; transform: translateX(36px); } to { opacity: 1; transform: translateX(0); } }
+.guide-drawer-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 18px 20px 14px 24px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.guide-drawer-head h2 { margin: 0 auto 0 0; font: 500 18px/1.3 var(--font-title); }
+.guide-drawer-head .iconbtn { border: 0; background: transparent; box-shadow: none; }
+.guide-drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px 28px; scrollbar-width: thin; }
+
+.guide-markdown { display: flex; flex-direction: column; gap: 12px; font-size: 13.5px; line-height: 1.7; color: var(--ink-soft); }
+.guide-markdown h1 { margin: 0; font: 500 22px/1.3 var(--font-title); color: var(--ink); }
+.guide-markdown h2 { margin: 10px 0 0; font: 600 15px/1.4 var(--font); color: var(--ink); }
+.guide-markdown h3 { margin: 6px 0 0; font: 600 13.5px/1.4 var(--font); color: var(--ink); }
+.guide-markdown p { margin: 0; text-wrap: pretty; }
+.guide-markdown ul, .guide-markdown ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.guide-markdown code {
+  padding: 1px 5px; border-radius: 5px; background: var(--field-bg); color: var(--ink);
+  font: 12px/1.5 var(--mono, ui-monospace, monospace);
+}
+.guide-markdown .guide-code {
+  padding: 12px 14px; border-radius: 12px; background: var(--code-bg, #1f1c18); color: var(--code-ink, #ece6da);
+}
+.guide-markdown .guide-code code { padding: 0; background: transparent; color: inherit; font: inherit; }
+.guide-table-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 10px; }
+.guide-markdown table { width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 1.55; }
+.guide-markdown th, .guide-markdown td { padding: 8px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line-soft); }
+.guide-markdown th { font-weight: 600; color: var(--ink); background: var(--surface-sunken); }
+.guide-markdown tr:last-child td { border-bottom: 0; }
+@media (prefers-reduced-motion: reduce) { .guide-drawer[open] { animation: none; } }

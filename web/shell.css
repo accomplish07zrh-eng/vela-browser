@@ -462,6 +462,8 @@
 .app .main .plugin-tools code { font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; color: var(--ink); overflow-wrap: anywhere; }
 .app .main .plugin-tools .tag { padding: 1px 7px; border-radius: 999px; background: var(--surface-sunken); color: var(--muted); font-size: 11px; }
 .app .main .plugin-tools .tag.warn { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); color: var(--ink); }
+.app .main .plugin-code-policy { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
+.app .main .plugin-code-policy > span { font-size: 13px; font-weight: 500; color: var(--ink); }
 .app .wall .workbench-ring-dot[data-status="cooled"] span { background: transparent; box-shadow: inset 0 0 0 1px var(--status-idle); }
 
 /* ── Wide windows: pages of forms and cards keep a readable measure, centred, their title with them.

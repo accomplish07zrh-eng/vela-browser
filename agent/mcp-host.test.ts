@@ -557,3 +557,83 @@ test("MCP proxy tools: list and check the pool, change a profile's proxy as this
   await client.close();
   await host.close();
 });
+
+test("MCP lists the guide, profile update, script and plugin tools and serves built-in guides", async () => {
+  class CodeRuntime extends FakeRuntime {
+    override async call(method: string, params: Record<string, unknown> = {}): Promise<any> {
+      if (["scripts.list", "scripts.get", "scripts.save", "scripts.run", "scripts.stop", "plugins.save"].includes(method)) {
+        this.calls.push({ method, params: structuredClone(params) });
+        if (method === "scripts.list") return { scripts: [{ id: "s1", name: "Title", language: "javascript" }] };
+        if (method === "scripts.get") return { script: { id: "s1", name: "Title", language: "javascript", source: "export default async () => {};" } };
+        if (method === "scripts.save") return { script: { id: "s1", name: params.name, language: params.language, revision: 1 } };
+        if (method === "scripts.run") return { run: { id: "r1", status: "running" } };
+        if (method === "scripts.stop") return { run: { id: "r1", status: "stopping" } };
+        if (method === "plugins.save") return { pluginId: params.pluginId, tools: ["plugin_demo_read"] };
+      }
+      if (method === "scripts.status") {
+        this.calls.push({ method, params: structuredClone(params) });
+        return { run: { id: "r1", status: "finished" } };
+      }
+      if (method === "scripts.log") {
+        this.calls.push({ method, params: structuredClone(params) });
+        return { text: "ok\n", nextOffset: 3 };
+      }
+      if (method === "plugins.list") {
+        this.calls.push({ method, params: structuredClone(params) });
+        return { plugins: [{ id: "demo", name: "Demo", version: "1.0.0", description: "Desc", tools: [{ toolName: "plugin_demo_read" }] }] };
+      }
+      return super.call(method, params);
+    }
+  }
+
+  const runtime = new CodeRuntime();
+  const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright: new FakePlaywright() });
+  const client = new Client({ name: "Claude Code", version: "1" }, { capabilities: {} });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const tools = Object.fromEntries((await client.listTools()).tools.map((tool) => [tool.name, tool]));
+    for (const expected of [
+      "vela_guide", "vela_profile_update", "vela_scripts_list", "vela_script_read",
+      "vela_script_save", "vela_script_run", "vela_script_run_status", "vela_script_stop",
+      "vela_plugins_list", "vela_plugin_save",
+    ]) {
+      expect(tools[expected]).toBeDefined();
+    }
+    expect(tools.vela_guide?.annotations?.readOnlyHint).toBe(true);
+
+    const enGuide: any = await client.callTool({ name: "vela_guide", arguments: { topic: "scripts" } });
+    expect(enGuide.isError).not.toBe(true);
+    expect(enGuide.content[0].text).toContain("# Writing scripts");
+
+    const zhGuide: any = await client.callTool({ name: "vela_guide", arguments: { topic: "plugins", language: "zh-CN" } });
+    expect(zhGuide.isError).not.toBe(true);
+    expect(zhGuide.content[0].text).toContain("# 插件编写指南");
+
+    const resources = await client.listResources();
+    expect(resources.resources.map((r) => r.uri)).toContain("vela://guide/en/scripts");
+    expect(resources.resources.map((r) => r.uri)).toContain("vela://guide/zh-CN/plugins");
+    const readRes = await client.readResource({ uri: "vela://guide/zh-CN/automation" });
+    expect((readRes.contents[0] as { text?: string }).text).toContain("# 用 AI 操控 Vela Browser");
+
+    await client.callTool({ name: "vela_profile_update", arguments: { profileId: "p1", name: "Renamed", group: "G", tags: ["a"] } });
+    expect(runtime.calls.at(-1)).toEqual({ method: "profiles.update", params: { profileId: "p1", set: { name: "Renamed", group: "G", tags: ["a"] } } });
+
+    await client.callTool({ name: "vela_script_save", arguments: { name: "Demo", language: "javascript", source: "export default async () => {};" } });
+    expect(runtime.calls.at(-1)).toEqual({
+      method: "scripts.save",
+      params: { name: "Demo", language: "javascript", source: "export default async () => {};", client: "Claude Code" },
+    });
+
+    const runStatus: any = await client.callTool({ name: "vela_script_run_status", arguments: { logOffset: 0 } });
+    expect(runStatus.structuredContent).toEqual({ run: { id: "r1", status: "finished" }, log: { text: "ok\n", nextOffset: 3 } });
+
+    const pluginsListed: any = await client.callTool({ name: "vela_plugins_list", arguments: {} });
+    expect(pluginsListed.structuredContent).toEqual({
+      plugins: [{ id: "demo", name: "Demo", version: "1.0.0", description: "Desc", tools: ["plugin_demo_read"] }],
+    });
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});

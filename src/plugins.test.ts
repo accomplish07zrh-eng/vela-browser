@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PLUGIN_MANIFEST, pluginToolName, scanPlugins, writeExamplePlugin } from "./plugins.ts";
+import { PLUGIN_MANIFEST, pluginToolName, preparePlugin, scanPlugins, writeExamplePlugin, writePlugin } from "./plugins.ts";
 
 function folder() { return mkdtempSync(join(tmpdir(), "vela-plugins-")); }
 function plugin(root: string, id: string, manifest: Record<string, unknown> | string, module = "export default () => ({});") {
@@ -87,4 +87,34 @@ test("a missing plugins folder lists nothing; the example plugin is valid and no
   writeFileSync(join(root, "page-info", "index.mjs"), "// edited by the user");
   writeExamplePlugin(root);
   expect(require("node:fs").readFileSync(join(root, "page-info", "index.mjs"), "utf8")).toBe("// edited by the user");
+});
+
+test("preparePlugin validates id, manifest and a plain main filename inside the plugin folder", () => {
+  const validManifest = {
+    name: "Page info",
+    version: "1.0.0",
+    tools: [{ name: "read", description: "Reads.", readOnly: true }],
+  };
+  const validModule = "export default () => ({ read: () => ({ ok: true }) });";
+
+  for (const badId of ["", "Upper", "../escape", "a_b", "x".repeat(33)]) {
+    expect(() => preparePlugin({ id: badId, manifest: validManifest, module: validModule }))
+      .toThrow("a-z, 0-9 and -");
+  }
+
+  for (const badMain of ["../outside.mjs", "sub/index.mjs", "sub\\index.mjs", "/abs.mjs", "index.ts", ""]) {
+    expect(() => preparePlugin({ id: "good-id", manifest: { ...validManifest, main: badMain }, module: validModule }))
+      .toThrow("main must be a .mjs or .js file name in the plugin folder");
+  }
+
+  const prepared = preparePlugin({ id: "good-id", manifest: validManifest, module: validModule });
+  expect(prepared.id).toBe("good-id");
+  expect(prepared.tools).toEqual(["plugin_good_id_read"]);
+  expect(prepared.files.map((f) => f.name)).toEqual(["vela-plugin.json", "index.mjs"]);
+
+  const root = folder();
+  writePlugin(root, prepared);
+  const { infos, specs } = scanPlugins(root);
+  expect(infos[0]!.error).toBeUndefined();
+  expect(specs[0]!.id).toBe("good-id");
 });

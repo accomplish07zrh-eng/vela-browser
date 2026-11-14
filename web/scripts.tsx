@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { guideText } from "../agent/guides.mjs";
 import { Select } from "./select.tsx";
 import "./scripts.css";
 import { confirmDialog } from "./dialog.tsx";
+import { trapDialogTab } from "./dialog-focus.ts";
 import { NumberInput } from "./controls.tsx";
 import type {
   PublishedScript,
@@ -49,6 +51,182 @@ function errorText(error: unknown): string {
 }
 
 type ScriptsTab = "mine" | "library";
+type GuideTopic = "scripts" | "plugins" | "automation";
+
+const GUIDE_TABS: readonly { id: GuideTopic; label: string }[] = [
+  { id: "scripts", label: "Scripts" },
+  { id: "plugins", label: "Plugins" },
+  { id: "automation", label: "AI automation" },
+];
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const parts: ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    const at = match.index ?? 0;
+    if (at > last) parts.push(text.slice(last, at));
+    const token = match[0];
+    if (token.startsWith("`")) parts.push(<code key={at}>{token.slice(1, -1)}</code>);
+    else parts.push(<strong key={at}>{token.slice(2, -2)}</strong>);
+    last = at + token.length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+function isTableRule(line: string): boolean {
+  return /^\|(?:\s*:?-+:?\s*\|)+\s*$/.test(line.trim());
+}
+
+function isBlockStarter(line: string, nextLine?: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+  if (trimmed.startsWith("```")) return true;
+  if (/^#{1,3}\s+/.test(trimmed)) return true;
+  if (/^-\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed)) return true;
+  if (trimmed.startsWith("|") && nextLine !== undefined && isTableRule(nextLine)) return true;
+  return false;
+}
+
+/** Minimal Markdown renderer for the built-in guides: headings, paragraphs, lists, tables, inline code and CodeBlock. Never uses innerHTML. */
+export function GuideMarkdown({ markdown }: { markdown: string }) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index]!;
+    const trimmed = line.trim();
+    if (!trimmed) { index += 1; continue; }
+
+    if (trimmed.startsWith("```")) {
+      index += 1;
+      const codeLines: string[] = [];
+      while (index < lines.length && !lines[index]!.trim().startsWith("```")) {
+        codeLines.push(lines[index]!);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push(<CodeBlock key={blocks.length} source={codeLines.join("\n")} className="guide-code" />);
+      continue;
+    }
+
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      const level = heading[1]!.length;
+      const content = renderInlineMarkdown(heading[2]!);
+      if (level === 1) blocks.push(<h1 key={blocks.length}>{content}</h1>);
+      else if (level === 2) blocks.push(<h2 key={blocks.length}>{content}</h2>);
+      else blocks.push(<h3 key={blocks.length}>{content}</h3>);
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith("|") && index + 1 < lines.length && isTableRule(lines[index + 1]!)) {
+      const headers = splitTableRow(line);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && lines[index]!.trim().startsWith("|")) {
+        rows.push(splitTableRow(lines[index]!));
+        index += 1;
+      }
+      blocks.push(
+        <div className="guide-table-wrap" key={blocks.length}>
+          <table>
+            <thead><tr>{headers.map((cell, cellIndex) => <th key={cellIndex}>{renderInlineMarkdown(cell)}</th>)}</tr></thead>
+            <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInlineMarkdown(cell)}</td>)}</tr>)}</tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
+    if (/^-\s+/.test(trimmed)) {
+      const items: string[] = [];
+      while (index < lines.length && /^-\s+/.test(lines[index]!.trim())) {
+        items.push(lines[index]!.trim().replace(/^-\s+/, ""));
+        index += 1;
+      }
+      blocks.push(<ul key={blocks.length}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderInlineMarkdown(item)}</li>)}</ul>);
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index]!.trim())) {
+        items.push(lines[index]!.trim().replace(/^\d+\.\s+/, ""));
+        index += 1;
+      }
+      blocks.push(<ol key={blocks.length}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderInlineMarkdown(item)}</li>)}</ol>);
+      continue;
+    }
+
+    const paragraph: string[] = [trimmed];
+    index += 1;
+    while (index < lines.length && !isBlockStarter(lines[index]!, lines[index + 1])) {
+      paragraph.push(lines[index]!.trim());
+      index += 1;
+    }
+    blocks.push(<p key={blocks.length}>{renderInlineMarkdown(paragraph.join(" "))}</p>);
+  }
+  return <div className="guide-markdown">{blocks}</div>;
+}
+
+function ScriptGuideDrawer({ onClose }: { onClose: () => void }) {
+  const { t, language } = useTranslation();
+  const [topic, setTopic] = useState<GuideTopic>("scripts");
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialog.current?.showModal();
+    return () => {
+      dialog.current?.close();
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, []);
+  return (
+    <dialog
+      ref={dialog}
+      className="guide-drawer"
+      aria-labelledby="scripts-guide-title"
+      onKeyDown={trapDialogTab}
+      onCancel={(event) => { event.preventDefault(); event.stopPropagation(); onClose(); }}
+      onPointerDown={(event) => {
+        const box = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < box.left || event.clientY < box.top || event.clientX > box.right || event.clientY > box.bottom) onClose();
+      }}
+    >
+      <header className="guide-drawer-head">
+        <h2 id="scripts-guide-title">{t("Writing guide")}</h2>
+        <div className="segmented" role="tablist" aria-label={t("Guide topic")}>
+          {GUIDE_TABS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={topic === item.id}
+              className={topic === item.id ? "active" : ""}
+              onClick={() => setTopic(item.id)}
+            >
+              {t(item.label)}
+            </button>
+          ))}
+        </div>
+        <button autoFocus type="button" className="iconbtn" title={t("Close")} aria-label={t("Close")} onClick={onClose}>
+          <svg className="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+        </button>
+      </header>
+      <div className="guide-drawer-body">
+        <GuideMarkdown markdown={guideText(topic, language)} />
+      </div>
+    </dialog>
+  );
+}
 
 function languageName(language: ScriptLanguage): string {
   return language === "python" ? "Python" : "JavaScript";
@@ -172,6 +350,7 @@ export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => v
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [script, setScript] = useState<ScriptRecord | null>(null);
   const [tab, setTab] = useState<ScriptsTab>("mine");
+  const [guideOpen, setGuideOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [currentRun, setCurrentRun] = useState<ScriptRun | null>(null);
@@ -299,8 +478,10 @@ export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => v
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2.2" /><path d="M8 11V8a4 4 0 1 1 8 0v3" /></svg>
           {t("Scripts, runs and logs stay on this computer.")}
         </p>
+        <button className="btn ghost" type="button" onClick={() => setGuideOpen(true)}>{t("Writing guide")}</button>
         {tab === "mine" && scripts.length > 0 && <button className="btn primary" type="button" disabled={busy} onClick={() => importRef.current?.click()}>{t("Import script")}</button>}
       </div>
+      {guideOpen && <ScriptGuideDrawer onClose={() => setGuideOpen(false)} />}
       {error && <div className="modal-err" role="alert">{error}</div>}
       {tab === "library" ? <PublicLibrary onImported={imported} /> : <>
         {currentRun && <button className="scripts-run-note" type="button" onClick={onViewRun}>{t("{scriptName}: {status}. View run", { scriptName: currentRun.scriptName, status: currentRun.status })}</button>}
