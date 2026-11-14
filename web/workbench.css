@@ -123,3 +123,16 @@
   animation: ai-cursor-ring 640ms cubic-bezier(.2, .8, .3, 1) forwards; }
 @keyframes ai-cursor-ring { from { opacity: 1; transform: translate3d(var(--x), var(--y), 0) scale(.25); } 60% { opacity: .65; } to { opacity: 0; transform: translate3d(var(--x), var(--y), 0) scale(1.6); } }
 @media (prefers-reduced-motion: reduce) { .ai-cursor, .ai-cursor svg { transition: none; } }
+
+/* Recording a card's input into a script. */
+.browser-viewport.recording { border-color: var(--danger-line); box-shadow: 0 0 0 1px var(--danger-line); }
+.viewport-controls .viewport-record.on { color: var(--danger-ink); }
+.viewport-recording { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; white-space: nowrap; color: var(--danger-ink); }
+.viewport-recording i { width: 7px; height: 7px; border-radius: 50%; background: var(--danger-fill); animation: viewport-recording-pulse 1.4s ease-in-out infinite; }
+@keyframes viewport-recording-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .viewport-recording i { animation: none; } }
+.modal.recording-modal { width: min(720px, calc(100vw - 32px)); max-height: min(86vh, 820px); }
+.recording-body { display: grid; gap: 14px; }
+.recording-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.recording-source { min-height: 280px; max-height: 46vh; resize: vertical; font-family: var(--mono, ui-monospace, monospace); font-size: 12.5px; line-height: 1.55; white-space: pre; tab-size: 2; }
+.recording-error { margin: 0; color: var(--danger-ink); font-size: 13px; }

@@ -239,3 +239,38 @@ test("explicit synchronization can control an offscreen follower without capturi
     expect(f.launches.size).toBe(2);
   } finally { await a.dispose(); }
 });
+
+test("recording turns the card's input into a script without keeping what was typed", async () => {
+  const f = fixture();
+  let url = "https://example.test/login";
+  const original = f.hub.options.adapter!;
+  f.hub.options.adapter = (launch) => ({
+    ...original(launch),
+    tabs: async () => [{ id: "tab-1", title: "one", url }],
+    describe: async (x) => x < 100 ? { role: "textbox", name: "Email" } : null,
+    input: async (input) => { if (input.kind === "pointer" && input.event === "up" && input.x > 100) url = "https://example.test/home"; },
+  });
+  const sent: any[] = [];
+  const a = await f.hub.connect("a");
+  try {
+    await a.start((value) => sent.push(value)); await enable(a);
+    const send = (input: WorkbenchInput) => a.enqueue({ action: "input", generation: a.generation, targetId: "tab-1", input });
+    const click = async (x: number) => {
+      await send({ kind: "pointer", event: "down", x, y: 40, button: "left", buttons: 1, clicks: 1, modifiers: 0 });
+      await send({ kind: "pointer", event: "up", x, y: 40, button: "left", buttons: 0, clicks: 1, modifiers: 0 });
+    };
+    await a.enqueue({ action: "record", generation: a.generation, on: true });
+    await click(50);
+    await send({ kind: "text", text: "secret@example.test" });
+    await send({ kind: "key", event: "down", key: "Enter", code: "Enter", keyCode: 13, modifiers: 0 });
+    await click(400);
+    await a.enqueue({ action: "record", generation: a.generation, on: false });
+    const done = sent.findLast((message) => message.type === "recording");
+    expect(done.on).toBe(false); expect(done.steps).toBe(4);
+    expect(done.source).toContain(`await page.goto("https://example.test/login");`);
+    expect(done.source).toContain(`getByRole("textbox", { name: "Email", exact: true })`);
+    expect(done.source).toContain(`await page.keyboard.press("Enter");`);
+    expect(done.source).toContain(`await page.mouse.click(400, 40);\n  await page.waitForLoadState();`);
+    expect(done.source).not.toContain("secret");
+  } finally { await a.dispose(); }
+});

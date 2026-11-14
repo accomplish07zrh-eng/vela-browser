@@ -8,15 +8,16 @@ import type { WorkbenchInput, WorkbenchRefreshTier } from "../src/workbench-prot
 import { useTranslation } from "./i18n.tsx";
 import { ViewportClient, type ViewportState } from "./workbench-client.ts";
 import { VirtualCursor } from "./virtual-cursor.tsx";
+import { RecordingDialog } from "./recording-dialog.tsx";
 import { workbenchLayout, workbenchPosition, workbenchLocate, workbenchSnap, workbenchSpring, workbenchFocusBox, workbenchRefreshTier, viewportPoint, workbenchFollowerInput, type ViewportBox } from "./workbench-layout.ts";
 import "./workbench.css";
 
-type GlyphName = "expand" | "shrink" | "tabs" | "close" | "plus" | "left" | "right" | "refresh" | "play" | "pause" | "grid" | "ring" | "search" | "raise" | "master" | "link" | "code" | "proxy" | "eye" | "lanes";
+type GlyphName = "expand" | "shrink" | "tabs" | "close" | "plus" | "left" | "right" | "refresh" | "play" | "pause" | "grid" | "ring" | "search" | "raise" | "master" | "link" | "code" | "proxy" | "eye" | "lanes" | "record" | "stop";
 function Glyph({ name }: { name: GlyphName }) {
   const paths: Record<GlyphName, string> = {
     expand: "M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5", shrink: "M3 8h5V3m8 0v5h5M8 21v-5H3m18 0h-5v5", tabs: "M8 4h12v13M4 8h12v12H4z", close: "m6 6 12 12M6 18 18 6", plus: "M12 5v14M5 12h14", left: "m14 6-6 6 6 6", right: "m10 6 6 6-6 6", refresh: "M20 8a8 8 0 1 0 0 8M20 3v5h-5", play: "m9 5 11 7-11 7V5Z", pause: "M9 5v14M15 5v14",
     grid: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z", ring: "M22 12c0 4-4.5 7-10 7S2 16 2 12s4.5-7 10-7 10 3 10 7Zm-6-2 3 3 3-3", lanes: "M3 6.5h11M10 12h11M3 17.5h11M18 6.5h3M3 12h3M18 17.5h3", eye: "M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Zm9.5 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", search: "M20 20l-5-5M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z", raise: "M14 3h7v7m0-7L10 14M10 5H3v16h16v-7", master: "M4 18.5h16M5 15.5 3.5 7l5 3.5L12 5l3.5 5.5 5-3.5L19 15.5Z",
-    link: "m9 15 6-6M8 17l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 0 1-1a4 4 0 1 1 6 6l-4 4a4 4 0 0 1-6 0", code: "m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18", proxy: "M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4Z",
+    link: "m9 15 6-6M8 17l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 0 1-1a4 4 0 1 1 6 6l-4 4a4 4 0 0 1-6 0", code: "m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18", proxy: "M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4Z", record: "M12 19a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm0-4a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", stop: "M7 7h10v10H7z",
   };
   return <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
@@ -75,9 +76,12 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
   onFocus(id: string): void; onMaster(id: string): void; onAction(action: "start" | "stop" | "raise", ids: string[]): void;
   onInput(id: string, input: WorkbenchInput): void; onHover(id: string | null): void;
 }) {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const [state, setState] = useState<ViewportState>({ status: "connecting", generation: "", targetId: "", tabs: [] });
   const [tabsOpen, setTabsOpen] = useState(false), [retry, setRetry] = useState(0);
+  const [recorded, setRecorded] = useState<{ source: string; steps: number } | null>(null);
+  const recording = state.recording?.on === true;
+  useEffect(() => { if (state.recording && !state.recording.on && state.recording.source) setRecorded({ source: state.recording.source, steps: state.recording.steps }); }, [state.recording]);
   const host = useRef<HTMLElement>(null), surface = useRef<HTMLDivElement>(null), input = useRef<HTMLTextAreaElement>(null);
   const client = useRef<ViewportClient | null>(null), snapshot = useRef(state), focusedRef = useRef(focused), inputRef = useRef(onInput);
   const keys = useRef(new Set<string>()), pointerButton = useRef<"left" | "middle" | "right">("left");
@@ -118,7 +122,7 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
   };
   const status = viewStatus(profile, state);
   const labels: Record<ViewStatus, string> = { running: t("running"), loading: t("Connecting…"), "proxy-error": t("Proxy error"), disconnected: t("Disconnected"), idle: t("Not started"), cooled: t("Cooled") };
-  return <article ref={host} data-viewport={profile.id} data-status={status} className={`browser-viewport${selected ? " selected" : ""}${focused ? " expanded" : ""}${obscured ? " obscured" : ""}${master ? " master" : ""}`}
+  return <article ref={host} data-viewport={profile.id} data-status={status} className={`browser-viewport${selected ? " selected" : ""}${focused ? " expanded" : ""}${obscured ? " obscured" : ""}${master ? " master" : ""}${recording ? " recording" : ""}`}
     aria-label={t("Browser viewport: {name}", { name: profile.name })} aria-current={selected ? "true" : undefined} tabIndex={0}
     style={{ "--group-color": groupColor(profile.group), "--arrival-delay": `${Math.min(order, 12) * 24}ms`, viewTransitionName: `environment-${Array.from(profile.id).map((character) => character.codePointAt(0)!.toString(16)).join("-")}` } as CSSProperties}
     onClick={(event) => { if (!focused) onSelect(profile.id, event); }} onDoubleClick={() => { if (profile.running) onFocus(profile.id); else if (profile.cooled) onAction("start", [profile.id]); }}
@@ -151,6 +155,9 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
       {profile.running && <>
         <button type="button" aria-label={t("Bring browser to front")} title={t("Bring browser to front")} onClick={() => onAction("raise", [profile.id])}><Glyph name="raise" /></button>
         <button type="button" aria-label={t("Show or hide tabs")} title={t("Show or hide tabs")} aria-expanded={tabsOpen} onClick={() => setTabsOpen(!tabsOpen)}><Glyph name="tabs" /></button>
+        {(focused || recording) && <button type="button" className={recording ? "viewport-record on" : "viewport-record"} aria-pressed={recording}
+          aria-label={t(recording ? "Stop recording and make a script" : "Record what you do into a script")} title={t(recording ? "Stop recording and make a script" : "Record what you do into a script")}
+          onClick={() => client.current?.command("record", { on: !recording, language })}><Glyph name={recording ? "stop" : "record"} /></button>}
         <button type="button" aria-label={t("Set as control browser")} title={t("Set as control browser")} aria-pressed={master} onClick={() => onMaster(profile.id)}><Glyph name="master" /></button>
         <button type="button" aria-label={t(focused ? "Collapse viewport" : "Expand viewport")} title={t(focused ? "Collapse viewport" : "Expand viewport")} onClick={() => onFocus(profile.id)}><Glyph name={focused ? "shrink" : "expand"} /></button>
         <button type="button" aria-label={t("Stop this environment")} title={t("Stop this environment")} onClick={() => onAction("stop", [profile.id])}><Glyph name="close" /></button>
@@ -178,9 +185,11 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
     <footer className="viewport-footer" title={`${profile.name} · #${numberOf(profile)} · ${labels[status]}`}>
       <span className={`status-dot viewport-dot ${status}`} aria-label={labels[status]} /><span className="viewport-name">{profile.name}</span><span className="viewport-number">#{numberOf(profile)}</span>
       {master ? <span className="viewport-role"><Glyph name="master" />{t("Control")}</span> : following ? <span title={t("Following the control browser")}><Glyph name="link" /></span> : null}<span className="spacer" />
+      {recording && <span className="viewport-recording" role="status"><i aria-hidden="true" />{t("Recording · {count} steps", { count: state.recording?.steps ?? 0 })}</span>}
       {script && <span className="viewport-script" title={script.name}><Glyph name="code" />{script.progress}%</span>}
       <span className={`viewport-region${profile.proxyError ? " bad" : ""}`} title={profile.proxyError || (profile.proxy ? t("Proxy region has not been checked") : t("Direct connection"))}>{profile.proxy ? <Glyph name="proxy" /> : null}{profile.proxy ? t("Proxy") : t("Direct")}</span><KernelIcon engine={profile.engine} />
     </footer>
+    {recorded && <RecordingDialog source={recorded.source} steps={recorded.steps} profileName={profile.name} onClose={() => setRecorded(null)} />}
   </article>;
 });
 
