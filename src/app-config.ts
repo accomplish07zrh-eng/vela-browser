@@ -34,6 +34,8 @@ export interface AppConfig {
   encryptData?: boolean;
   /** Connections to profiles' proxies go around this computer's TUN proxy client. */
   tunBypass?: boolean;
+  /** A phone on the same network may watch the running browsers (read only, with a PIN). */
+  mobileView?: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -74,6 +76,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     ...(raw.sessionBackups === false ? { sessionBackups: false } : {}),
     ...(raw.encryptData === true ? { encryptData: true } : {}),
     ...(raw.tunBypass === true ? { tunBypass: true } : {}),
+    ...(raw.mobileView === true ? { mobileView: true } : {}),
   };
 }
 

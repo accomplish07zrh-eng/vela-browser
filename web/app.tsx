@@ -3,7 +3,7 @@ import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect
 import { TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 import { parseTags, TagBatchDialog, TagChip, TagInput, TagList } from "./tags.tsx";
 import { ActivityCard, AiAccessCard } from "./ai-settings.tsx";
-import { BackupsCard, DataEncryptionCard, TunBypassCard } from "./snapshots.tsx";
+import { BackupsCard, DataEncryptionCard, MobileViewCard, TunBypassCard } from "./snapshots.tsx";
 import { HealthScore, HealthSheet, type HealthRow } from "./health.tsx";
 import { keyLabel, SHORTCUTS, ShortcutsSheet, useShortcuts } from "./shortcuts.tsx";
 import { resetFirstRun } from "./first-run.tsx";
@@ -3765,6 +3765,7 @@ function App() {
               <BackupsCard flash={flash} />
               <DataEncryptionCard flash={flash} />
               <TunBypassCard />
+              <MobileViewCard flash={flash} />
             </>
           )}
 

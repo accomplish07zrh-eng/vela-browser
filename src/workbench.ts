@@ -115,6 +115,23 @@ export class WorkbenchHub {
     return new WorkbenchConnection(this, launch, adapter);
   }
   allowed(id: string): boolean | Promise<boolean> { return this.options.canControl?.(id) ?? true; }
+
+  /**
+   * One small picture of a running browser's current tab, and that tab's title, for watching
+   * from elsewhere (the phone view). Reads only: no input, no tab change visible to the page.
+   */
+  async snapshot(id: string, width = 480): Promise<{ frame: WorkbenchFrame; title: string; url: string } | null> {
+    const launch = this.options.store.getLaunch(id);
+    if (!launch || (launch.engine === "firefox" && !launch.firefoxOwner) || (launch.engine === "webkit" && !launch.webkitOwner)) return null;
+    const adapter = this.options.adapter?.(launch) ?? (launch.engine === "webkit" ? new ContextAdapter(launch.webkitOwner!, callWebKitOwner) : launch.engine === "firefox" ? new ContextAdapter(launch.firefoxOwner!) : new CdpWorkbench(launch.ws));
+    try {
+      const tabs = await adapter.tabs();
+      if (!tabs.length) return null;
+      await adapter.select(tabs[0]!.id);
+      return { frame: await adapter.frame(false, width), title: tabs[0]!.title, url: tabs[0]!.url };
+    } catch { return null; }
+    finally { try { await adapter.dispose(); } catch { /* already gone */ } }
+  }
 }
 
 /** A lease owns only display/control resources, never the managed browser. */

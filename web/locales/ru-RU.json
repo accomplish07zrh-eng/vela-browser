@@ -1334,5 +1334,12 @@
   "Go to": "Перейти",
   "Shortcuts wait while you type in a field or work inside a browser on the workbench.": "Сочетания не срабатывают, пока вы печатаете в поле или работаете в браузере на рабочем столе.",
   "Show the first-run guide": "Показать первые шаги",
-  "The guide shows on the workbench when there are no profiles yet.": "Подсказка появится на рабочем столе, когда окружений ещё нет."
+  "The guide shows on the workbench when there are no profiles yet.": "Подсказка появится на рабочем столе, когда окружений ещё нет.",
+  "Phone view": "Просмотр с телефона",
+  "Watch the running browsers, their pages and how scripts and tasks are going from a phone on the same Wi-Fi. It only shows; nothing can be clicked or changed from the phone.": "Смотрите с телефона в той же сети Wi-Fi, какие браузеры запущены, их страницы и ход скриптов и задач. Только просмотр: с телефона ничего нельзя нажать или изменить.",
+  "Open on the phone": "Открыть на телефоне",
+  "No local network address found": "Локальный адрес не найден",
+  "PIN": "PIN",
+  "New PIN": "Новый PIN",
+  "The first time, Windows may ask whether Vela Browser may use the network: allow private networks only. A new PIN is made each time the app starts.": "При первом включении Windows может спросить, разрешить ли Vela Browser доступ к сети: разрешите только частные сети. При каждом запуске приложения создаётся новый PIN."
 }

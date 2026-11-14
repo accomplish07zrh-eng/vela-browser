@@ -1332,5 +1332,12 @@
   "Go to": "前往",
   "Shortcuts wait while you type in a field or work inside a browser on the workbench.": "在输入框里打字、或在工作台的浏览器里操作时，快捷键不会生效。",
   "Show the first-run guide": "显示首次使用引导",
-  "The guide shows on the workbench when there are no profiles yet.": "没有环境时，引导会显示在工作台上。"
+  "The guide shows on the workbench when there are no profiles yet.": "没有环境时，引导会显示在工作台上。",
+  "Phone view": "手机查看",
+  "Watch the running browsers, their pages and how scripts and tasks are going from a phone on the same Wi-Fi. It only shows; nothing can be clicked or changed from the phone.": "在同一个 Wi-Fi 下用手机查看正在运行的浏览器、当前页面，以及脚本和自动任务的进度。只能看，手机上不能点击或修改任何东西。",
+  "Open on the phone": "手机上打开",
+  "No local network address found": "没找到局域网地址",
+  "PIN": "PIN",
+  "New PIN": "换一个 PIN",
+  "The first time, Windows may ask whether Vela Browser may use the network: allow private networks only. A new PIN is made each time the app starts.": "第一次开启时，Windows 可能会询问是否允许 Vela Browser 使用网络：只勾选专用网络即可。每次启动应用都会生成新的 PIN。"
 }

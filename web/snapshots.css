@@ -24,3 +24,9 @@
 .tun-bypass-result.ok .tun-bypass-verdict dd { color: var(--success-ink, var(--ink)); font-weight: 600; }
 .tun-bypass-result.bad .tun-bypass-verdict dd { color: var(--danger-ink); font-weight: 600; }
 .tun-card .card-body > p:first-child, .encryption-card .card-body > p:first-child { margin: 0 0 8px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.mobile-card .card-body > p:first-child { margin: 0 0 8px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.mobile-access { display: grid; gap: 10px; margin: 6px 0 4px; padding: 12px 14px; border-radius: 12px; background: var(--surface-hover); }
+.mobile-access > div { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
+.mobile-access span { min-width: 92px; color: var(--muted); }
+.mobile-access strong { font-size: 14px; }
+.mobile-pin { font-size: 22px !important; letter-spacing: .3em; }

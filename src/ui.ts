@@ -550,6 +550,8 @@ export interface UiRuntimeOptions {
   connectedAgents?: () => string[];
   /** Snapshots of profiles and backups of their sign-ins. */
   snapshots?: import("./snapshots.ts").SnapshotStore;
+  /** Watching from a phone on the same network. */
+  mobileView?: import("./mobile-view.ts").MobileView;
 }
 
 /**
@@ -959,6 +961,26 @@ export async function handleUiRequest(
       egress.setTunBypass(body.enabled);
     } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
     return noStoreJson({ ok: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? (egress.currentInterface() ?? await egress.refreshInterface()) : await egress.detectPhysicalInterface() });
+  }
+
+  // Watching from a phone: on or off, the addresses to open, and the PIN.
+  if (pathname === "/ui/api/mobile-view" || pathname === "/ui/api/mobile-view/pin") {
+    const view = options.mobileView;
+    if (!view || !options.appConfig) return noStoreJson({ ok: false, error: "The phone view is unavailable" }, 503);
+    const { lanAddresses } = await import("./mobile-view.ts");
+    try {
+      if (pathname.endsWith("/pin") && req.method === "POST") { if (view.running) view.newPin(); }
+      else if (req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as { enabled?: unknown };
+        if (typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "enabled must be true or false" }, 400);
+        if (body.enabled) view.start(); else view.stop();
+        const { mobileView: _old, ...rest } = options.appConfig.read();
+        options.appConfig.write(body.enabled ? { ...rest, mobileView: true } : rest);
+      } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+      return noStoreJson({ ok: true, enabled: view.running, port: view.port ?? null, pin: view.running ? view.currentPin : null, addresses: lanAddresses() });
+    } catch (error) {
+      return noStoreJson({ ok: false, error: msg(error) }, 500);
+    }
   }
 
   // How many browsers to start at once, from the memory free right now.
