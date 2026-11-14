@@ -5,6 +5,8 @@ import { parseTags, TagBatchDialog, TagChip, TagInput, TagList } from "./tags.ts
 import { ActivityCard, AiAccessCard } from "./ai-settings.tsx";
 import { BackupsCard, DataEncryptionCard, TunBypassCard } from "./snapshots.tsx";
 import { HealthScore, HealthSheet, type HealthRow } from "./health.tsx";
+import { keyLabel, SHORTCUTS, ShortcutsSheet, useShortcuts } from "./shortcuts.tsx";
+import { resetFirstRun } from "./first-run.tsx";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
@@ -1208,6 +1210,7 @@ function App() {
   const [engineFilter, setEngineFilter] = useState<ProfileEngineFilter>("all");
   const [tagFilter, setTagFilter] = useState("");
   const [tagBatchOpen, setTagBatchOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // The self-check: open for every profile, for the selection, or on one profile's findings.
   const [healthOpen, setHealthOpen] = useState<{ ids?: string[]; focus?: string } | null>(null);
   const [health, setHealth] = useState<Map<string, HealthRow>>(new Map());
@@ -1461,6 +1464,19 @@ function App() {
   };
 
   const openSettings = () => setView("settings");
+  /** One place for every command, whether it comes from the palette or a shortcut. */
+  const runCommand = (id: string) => {
+    if (id === "new") openCreate();
+    else if (id === "import") openBulk();
+    else if (id === "theme") chooseTheme(theme === "dark" ? "light" : "dark");
+    else if (id === "settings") openSettings();
+    else if (id === "settings-ai" || id === "settings-data") { setSettingsTab(id === "settings-ai" ? "ai" : "data"); openSettings(); }
+    else if (id === "health") { setView("profiles"); setHealthOpen({}); }
+    else if (id === "shortcuts") setShortcutsOpen((open) => !open);
+    else if (id === "guide") { resetFirstRun(); setView("workbench"); flash(t("The guide shows on the workbench when there are no profiles yet.")); }
+    else if (["workbench", "profiles", "proxies", "scripts", "trash", "extensions"].includes(id)) setView(id as "workbench" | "profiles" | "proxies" | "scripts" | "trash" | "extensions");
+  };
+  useShortcuts(runCommand);
 
   useEffect(() => {
     const invoke = desktopInvoke();
@@ -2841,11 +2857,11 @@ function App() {
         <div className="headactions">
           <CommandPalette profiles={profiles} groups={existingGroups}
             commands={[
-              { id: "workbench", label: t("Multi-view workbench") }, { id: "profiles", label: t("All profiles") },
-              { id: "new", label: t("New Profile") }, { id: "import", label: t("Import profiles") },
-              { id: "proxies", label: t("Proxies") }, { id: "settings", label: t("Settings") },
-              { id: "theme", label: t(theme === "dark" ? "Switch to light appearance" : "Switch to dark appearance") },
-            ].filter((command) => true)}
+              ...SHORTCUTS.filter((item) => item.id !== "palette").map((item) => ({ id: item.id, label: item.id === "theme" ? t(theme === "dark" ? "Switch to light appearance" : "Switch to dark appearance") : t(item.label), keys: keyLabel(item.keys) })),
+              { id: "settings-ai", label: `${t("Settings")} · ${t("AI and records")}` },
+              { id: "settings-data", label: `${t("Settings")} · ${t("Data and security")}` },
+              { id: "guide", label: t("Show the first-run guide") },
+            ]}
             onChoose={(target: SearchTarget) => {
               setDetailId(null);
               if (target.kind === "profile") {
@@ -2857,12 +2873,9 @@ function App() {
               } else if (target.kind === "group") selectFolder(target.id);
               else if (target.kind === "proxy") setView("proxies");
               else if (target.kind === "script") { setSearchScriptId(target.id); setView("scripts"); }
-              else if (target.id === "new") openCreate();
-              else if (target.id === "import") openBulk();
-              else if (target.id === "theme") chooseTheme(theme === "dark" ? "light" : "dark");
-              else if (target.id === "settings") openSettings();
-              else if (["workbench", "profiles", "proxies"].includes(target.id)) setView(target.id as "workbench" | "profiles" | "proxies");
+              else runCommand(target.id);
             }} />
+          {shortcutsOpen && <ShortcutsSheet onClose={() => setShortcutsOpen(false)} />}
           {view === "profiles" && <>
           {/* Health snapshots are pushed by automation workers through the hub, so
               in Local mode this list is always empty (see ui.ts: the local roster

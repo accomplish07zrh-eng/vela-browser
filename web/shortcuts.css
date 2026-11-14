@@ -1,0 +1,10 @@
+.modal.shortcuts-modal { width: min(560px, calc(100vw - 32px)); }
+.shortcuts-body { display: grid; gap: 18px; }
+.shortcuts-body h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--muted); }
+.shortcuts-body dl { display: grid; gap: 2px; margin: 0; }
+.shortcuts-body dl > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.shortcuts-body dd { margin: 0; }
+.shortcuts-body kbd, .workspace-index .workspace-index-results kbd {
+  display: inline-block; min-width: 22px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--line-strong, var(--line));
+  background: var(--surface-hover); color: var(--ink); font: 500 11.5px/1.5 var(--mono, ui-monospace, monospace); text-align: center; white-space: nowrap;
+}

@@ -3,7 +3,7 @@ import { fetchScripts, type UiProfile } from "./api.ts";
 import { useTranslation } from "./i18n.tsx";
 
 export interface SearchTarget { kind: "profile" | "group" | "proxy" | "script" | "command"; id: string }
-interface SearchEntry extends SearchTarget { label: string; detail: string; words?: string }
+interface SearchEntry extends SearchTarget { label: string; detail: string; words?: string; keys?: string }
 
 function proxyAddress(proxy: string): string {
   const publicPart = proxy.replace(/\/\/[^/]*@/, "//");
@@ -13,7 +13,7 @@ function proxyAddress(proxy: string): string {
 
 /** An index into the existing workspace; selecting a script never runs it. */
 export function CommandPalette({ profiles, groups, commands, onChoose }: {
-  profiles: UiProfile[]; groups: string[]; commands: { id: string; label: string }[];
+  profiles: UiProfile[]; groups: string[]; commands: { id: string; label: string; keys?: string }[];
   onChoose(target: SearchTarget): void;
 }) {
   const { t } = useTranslation(), listId = useId();
@@ -38,7 +38,7 @@ export function CommandPalette({ profiles, groups, commands, onChoose }: {
     return () => { live = false; dialog.current?.close(); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
   }, [open]);
   const entries = useMemo<SearchEntry[]>(() => [
-    ...commands.map((command) => ({ kind: "command" as const, id: command.id, label: command.label, detail: t("Command") })),
+    ...commands.map((command) => ({ kind: "command" as const, id: command.id, label: command.label, detail: t("Command"), ...(command.keys ? { keys: command.keys } : {}) })),
     ...profiles.filter((profile) => !profile.lockedBy).map((profile) => ({ kind: "profile" as const, id: profile.id, label: profile.name, detail: `${profile.customNo || profile.serial || profile.id} · ${profile.running ? t("running") : t("Not started")}`, words: `${profile.id} ${profile.group} ${(profile.tags ?? []).join(" ")}` })),
     ...groups.map((name) => ({ kind: "group" as const, id: name, label: name, detail: t("Group") })),
     ...profiles.filter((profile) => profile.proxy).map((profile) => ({ kind: "proxy" as const, id: profile.id, label: proxyAddress(profile.proxy!) || t("Proxy"), detail: `${t("Proxy")} · ${profile.name}` })),
@@ -67,7 +67,7 @@ export function CommandPalette({ profiles, groups, commands, onChoose }: {
         }} />
       <div id={listId} className="workspace-index-results" role="listbox" aria-label={t("Workspace results")}>
         {results.map((entry, order) => <button type="button" role="option" tabIndex={-1} id={`${listId}-${order}`} key={`${entry.kind}-${entry.id}`} aria-selected={order === index}
-          onPointerMove={() => setActive(order)} onClick={() => choose(entry)}><span className="workspace-index-number">{String(order + 1).padStart(2, "0")}</span><span>{entry.label}</span><small>{entry.detail}</small></button>)}
+          onPointerMove={() => setActive(order)} onClick={() => choose(entry)}><span className="workspace-index-number">{String(order + 1).padStart(2, "0")}</span><span>{entry.label}</span><small>{entry.keys ? <kbd>{entry.keys}</kbd> : entry.detail}</small></button>)}
         {!results.length && <p className="workspace-index-empty">{t("Nothing here yet. Try another name.")}</p>}
         {loading && <div className="workspace-index-skeleton" aria-label={t("Loading scripts…")}><i /><i /></div>}
       </div>

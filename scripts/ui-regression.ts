@@ -67,6 +67,8 @@ const SHOTS: Array<{ name: string; steps: Step[]; empty?: boolean }> = [
   { name: "first-run-2", steps: [async (page) => { await page.getByRole("button", { name: "下一步", exact: true }).click(); }], empty: true },
   { name: "first-run-3", steps: [async (page) => { await page.getByRole("button", { name: "下一步", exact: true }).click(); }, async (page) => { await page.getByRole("radio", { name: "直连" }).click(); }, async (page) => { await page.getByRole("button", { name: "下一步", exact: true }).click(); }], empty: true },
   { name: "workbench", steps: [] },
+  { name: "shortcuts", steps: [async (page) => { await page.keyboard.press("Shift+Slash"); }] },
+  { name: "palette", steps: [async (page) => { await page.keyboard.press("Control+K"); }] },
   { name: "profiles", steps: [dock("所有环境")] },
   { name: "profiles-selected", steps: [dock("所有环境"), async (page) => { await page.locator("tbody tr input[type=checkbox]").nth(1).check(); await page.locator("tbody tr input[type=checkbox]").nth(3).check(); }] },
   { name: "profile-detail", steps: [dock("所有环境"), async (page) => { await page.locator(".profile-name-link").first().click(); }] },

@@ -1324,5 +1324,13 @@
   "It opens here on the workbench. Double-click its card to work in it; the timezone and language follow its exit.": "它会在工作台上打开。双击卡片就能在里面操作；时区和语言会跟着出口自动设置。",
   "Create and open": "创建并打开",
   "Skip, I know my way around": "跳过，我自己来",
-  "Continue": "下一步"
+  "Continue": "下一步",
+  "Search and commands": "搜索与命令",
+  "Switch light and dark": "切换浅色/深色",
+  "Keyboard shortcuts": "键盘快捷键",
+  "Do": "操作",
+  "Go to": "前往",
+  "Shortcuts wait while you type in a field or work inside a browser on the workbench.": "在输入框里打字、或在工作台的浏览器里操作时，快捷键不会生效。",
+  "Show the first-run guide": "显示首次使用引导",
+  "The guide shows on the workbench when there are no profiles yet.": "没有环境时，引导会显示在工作台上。"
 }

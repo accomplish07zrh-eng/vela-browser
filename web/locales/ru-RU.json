@@ -1326,5 +1326,13 @@
   "It opens here on the workbench. Double-click its card to work in it; the timezone and language follow its exit.": "Оно откроется здесь, на рабочем столе. Дважды щёлкните карточку, чтобы работать в нём; часовой пояс и язык подстроятся под выход.",
   "Create and open": "Создать и открыть",
   "Skip, I know my way around": "Пропустить, я разберусь сам",
-  "Continue": "Далее"
+  "Continue": "Далее",
+  "Search and commands": "Поиск и команды",
+  "Switch light and dark": "Светлая или тёмная тема",
+  "Keyboard shortcuts": "Сочетания клавиш",
+  "Do": "Действия",
+  "Go to": "Перейти",
+  "Shortcuts wait while you type in a field or work inside a browser on the workbench.": "Сочетания не срабатывают, пока вы печатаете в поле или работаете в браузере на рабочем столе.",
+  "Show the first-run guide": "Показать первые шаги",
+  "The guide shows on the workbench when there are no profiles yet.": "Подсказка появится на рабочем столе, когда окружений ещё нет."
 }
