@@ -19,6 +19,11 @@ import type { ProxySpec } from "./types.ts";
 import { runPoolChecks } from "./proxy-pool-api.ts";
 import { ProxySwitchError, proxyLabel, saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
 import type { AiProxyPolicy, ProxyApprovalQueue } from "./proxy-approvals.ts";
+import type { AiCodePolicy, CodeApprovalQueue, CodeApprovalRequest } from "./code-approvals.ts";
+import { preparePlugin, writePlugin } from "./plugins.ts";
+import type { ScriptLibrary, ScriptSupervisor } from "./scripts.ts";
+import { existsSync as pathExists } from "node:fs";
+import { join as joinPath } from "node:path";
 
 export const AGENT_CONTROL_PROTOCOL = "aliasmode-agent-v1";
 export const AGENT_CONTROL_PATH = "/api/agent/v1/connect";
@@ -65,6 +70,14 @@ export interface AgentControlDeps {
   proxyTimezoneFetch?: import("./geoip.ts").FetchLike;
   /** The AI's human-like pointer, drawn over the browser's card on the workbench. */
   pointer?: (profileId: string, pointer: import("./workbench.ts").WorkbenchPointer) => void;
+  /** Saved scripts and their runner: an AI lists, writes (with approval) and runs them. */
+  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor };
+  /** The plugins folder, where a plugin an AI wrote lands once approved. */
+  pluginsRoot?: string;
+  /** People approve the scripts and plugins an AI asks to save here. */
+  codeApprovals?: CodeApprovalQueue;
+  /** The user's choice for code an AI saves. Defaults to asking each time. */
+  aiCodePolicy?: () => AiCodePolicy;
 
   log?: (message: string) => void;
 }
@@ -306,7 +319,7 @@ export class AgentControlSession {
       case "profiles.create":
         return await this.createProfile(params);
       case "profiles.update":
-        throw agentError("accounts_removed", "Cloud profile editing has been removed; use the local profile editor");
+        return this.updateProfile(params);
       case "profiles.delete":
         return await this.deleteProfile(stringParam(params, "profileId"));
       case "browser.open":
@@ -315,6 +328,22 @@ export class AgentControlSession {
         return await this.profileStatus(stringParam(params, "profileId"));
       case "plugins.list":
         return { plugins: this.pluginSpecs() };
+      case "plugins.save":
+        return await this.savePlugin(params);
+      case "scripts.list":
+        return { scripts: await this.scriptDeps().library.list() };
+      case "scripts.get":
+        return { script: await this.scriptDeps().library.get(stringParam(params, "scriptId")) };
+      case "scripts.save":
+        return await this.saveScript(params);
+      case "scripts.run":
+        return { run: this.runScript(params) };
+      case "scripts.status":
+        return { run: this.scriptDeps().runner.status() };
+      case "scripts.log":
+        return this.scriptLog(params);
+      case "scripts.stop":
+        return { run: await this.scriptDeps().runner.stop() };
       case "proxyPool.list":
         return { nodes: this.listPoolNodes(params) };
       case "proxyPool.check":
@@ -447,6 +476,116 @@ export class AgentControlSession {
    * or (by default) a person approves this one change on the dashboard. Then it is the same
    * switch as the dashboard's, recorded as made by this AI client.
    */
+  private clientName(params: Record<string, unknown>): string {
+    return (typeof params.client === "string" && params.client.trim() ? params.client.trim() : "AI").slice(0, 60);
+  }
+
+  /**
+   * An AI renames a profile, moves it to another group or changes its tags. Nothing about its
+   * identity, proxy or sign-ins can change this way; those stay with the person and the editor.
+   */
+  private updateProfile(params: Record<string, unknown>) {
+    const profileId = stringParam(params, "profileId");
+    const { store } = this.deps;
+    const profile = store.getProfile(profileId);
+    if (!profile) throw agentError("no_such_profile", "no such profile");
+    const set = object(params.set);
+    const unknown = Object.keys(set).filter((key) => !["name", "group", "tags"].includes(key));
+    if (unknown.length) throw agentError("invalid_request", `Only name, group and tags can be changed here, not ${unknown.join(", ")}`);
+    const next = { ...profile };
+    if ("name" in set) {
+      if (typeof set.name !== "string" || set.name.length > 120) throw agentError("invalid_request", "name must be text of at most 120 characters");
+      next.name = set.name.trim();
+    }
+    if ("group" in set) {
+      if (typeof set.group !== "string" || set.group.length > 120) throw agentError("invalid_request", "group must be text of at most 120 characters");
+      next.group = set.group.trim();
+    }
+    if ("tags" in set) {
+      if (!Array.isArray(set.tags) || set.tags.length > 50 || !set.tags.every((tag) => typeof tag === "string" && tag.length <= 60)) {
+        throw agentError("invalid_request", "tags must be at most 50 strings of at most 60 characters");
+      }
+      next.tags = [...new Set((set.tags as string[]).map((tag) => tag.trim()).filter(Boolean))];
+    }
+    store.upsertProfile(next);
+    return { profile: { id: next.id, name: next.name, group: next.group, tags: next.tags ?? [] } };
+  }
+
+  private scriptDeps(): { library: ScriptLibrary; runner: ScriptSupervisor } {
+    if (!this.deps.scripts) throw agentError("unsupported", "Scripts need the Vela Browser desktop app");
+    return this.deps.scripts;
+  }
+
+  /** The user's setting decides whether code an AI wrote is saved: never, always, or (by default) after a person reads it. */
+  private async approveCode(request: CodeApprovalRequest): Promise<void> {
+    const policy = this.deps.aiCodePolicy?.() ?? "ask";
+    if (policy === "deny") throw agentError("approval_denied", "Saving scripts and plugins from an AI is turned off in Vela Browser");
+    if (policy === "allow") return;
+    if (!this.deps.codeApprovals) throw agentError("approval_denied", "No one can approve this now; nothing was saved");
+    const outcome = await this.deps.codeApprovals.request(request);
+    if (outcome === "timeout") throw agentError("approval_timeout", "No one approved it in time; nothing was saved");
+    if (outcome === "denied") throw agentError("approval_denied", "It was not approved; nothing was saved");
+  }
+
+  private async saveScript(params: Record<string, unknown>) {
+    const { library } = this.scriptDeps();
+    const scriptId = typeof params.scriptId === "string" && params.scriptId ? params.scriptId : undefined;
+    const language = params.language === "python" || params.language === "javascript" ? params.language : null;
+    if (!language) throw agentError("invalid_request", "language must be javascript or python");
+    if (typeof params.name !== "string" || !params.name.trim() || params.name.length > 120) throw agentError("invalid_request", "name must be 1 to 120 characters");
+    if (params.description !== undefined && (typeof params.description !== "string" || params.description.length > 500)) throw agentError("invalid_request", "description must be at most 500 characters");
+    if (typeof params.source !== "string" || !params.source.trim()) throw agentError("invalid_request", "source is empty");
+    if (Buffer.byteLength(params.source, "utf8") > 1024 * 1024) throw agentError("invalid_request", "source is larger than 1 MB");
+    const name = params.name.trim(), description = typeof params.description === "string" ? params.description : "", source = params.source;
+    const existing = scriptId ? await library.get(scriptId) : null;
+    await this.approveCode({
+      kind: "script", action: existing ? "update" : "create", title: name, client: this.clientName(params), detail: language,
+      files: [{ name: `${name}.${language === "python" ? "py" : "mjs"}`, content: source }],
+    });
+    const saved = await library.save({ name, description, language, source }, scriptId, existing?.revision);
+    return { script: { id: saved.id, name: saved.name, language: saved.language, revision: saved.revision } };
+  }
+
+  private runScript(params: Record<string, unknown>) {
+    const { runner } = this.scriptDeps();
+    const scriptId = stringParam(params, "scriptId");
+    const profileIds = params.profileIds;
+    if (!Array.isArray(profileIds) || !profileIds.length || profileIds.length > 500 || !profileIds.every((id) => typeof id === "string" && id)) {
+      throw agentError("invalid_request", "profileIds must list 1 to 500 profiles");
+    }
+    for (const id of profileIds as string[]) if (!this.deps.store.getProfile(id)) throw agentError("no_such_profile", `no such profile: ${id}`);
+    const inputs = params.inputs === undefined ? {} : object(params.inputs);
+    const concurrency = params.concurrency === undefined ? undefined : Number(params.concurrency);
+    if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 50)) throw agentError("invalid_request", "concurrency must be 1 to 50");
+    // Saved sign-ins never go to a script an AI starts.
+    return runner.start({ scriptId, profileIds: profileIds as string[], inputs, useCredentials: false, ...(concurrency ? { concurrency } : {}) });
+  }
+
+  private scriptLog(params: Record<string, unknown>) {
+    const { runner } = this.scriptDeps();
+    const offset = typeof params.offset === "number" && Number.isInteger(params.offset) && params.offset >= 0 ? params.offset : 0;
+    const read = runner.log(stringParam(params, "runId"), offset);
+    const limit = 64 * 1024;
+    return read.text.length > limit
+      ? { text: read.text.slice(0, limit), nextOffset: offset + Buffer.byteLength(read.text.slice(0, limit), "utf8"), truncated: true }
+      : read;
+  }
+
+  private async savePlugin(params: Record<string, unknown>) {
+    const root = this.deps.pluginsRoot;
+    if (!root) throw agentError("unsupported", "Plugins need the Vela Browser desktop app");
+    const id = stringParam(params, "pluginId");
+    let prepared: ReturnType<typeof preparePlugin>;
+    try { prepared = preparePlugin({ id, manifest: object(params.manifest), module: typeof params.module === "string" ? params.module : "" }); }
+    catch (error) { throw agentError("invalid_request", error instanceof Error ? error.message : String(error)); }
+    await this.approveCode({
+      kind: "plugin", action: pathExists(joinPath(root, id)) ? "update" : "create", title: id, client: this.clientName(params),
+      detail: prepared.tools.join(", "), files: prepared.files,
+    });
+    writePlugin(root, prepared);
+    return { pluginId: id, tools: prepared.tools, note: "Select or open a browser again to load the plugin's tools." };
+  }
+
   private async setProfileProxy(params: Record<string, unknown>) {
     const profileId = stringParam(params, "profileId");
     const nodeId = stringParam(params, "nodeId");

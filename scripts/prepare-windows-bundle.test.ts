@@ -99,6 +99,7 @@ function workspace(): string {
     "mcp-host.mjs",
     "playwright-proxy.mjs",
     "devtools.mjs",
+    "guides.mjs",
     "plugins.mjs",
     "downloads.mjs",
     "humanize.mjs",

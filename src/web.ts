@@ -44,6 +44,7 @@ import {
   validAgentAuthorization,
 } from "./agent-control.ts";
 import { ProxyApprovalQueue, type AiProxyPolicy } from "./proxy-approvals.ts";
+import { CodeApprovalQueue, type AiCodePolicy } from "./code-approvals.ts";
 import {
   LifecycleAdmissionController,
   dispatchWithLifecycleAdmission,
@@ -272,6 +273,23 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const aiProxyPolicy = (): AiProxyPolicy => {
     try { return opts.appConfig?.read().aiProxyChanges ?? "ask"; } catch { return "ask"; }
   };
+  const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, false) : undefined;
+  // The desktop app downloads Python for Python scripts; a source checkout uses python3.
+  const python = library && resolvePlaywrightRuntime().kind === "packaged"
+    ? new PythonRuntime(join(opts.paths!.root, "runtimes"), { log })
+    : undefined;
+  const scripts = library && agentNonce ? {
+    library, nonce: agentNonce, python,
+    runner: new ScriptSupervisor({
+      root: opts.paths!.root, library, launcher, store, admission, python,
+      remote: opts.remote,   log,
+    }),
+  } : undefined;
+  // Scripts and plugins an AI writes wait here for a person to read them (unless the user allowed them).
+  const codeApprovals = new CodeApprovalQueue();
+  const aiCodePolicy = (): AiCodePolicy => {
+    try { return opts.appConfig?.read().aiCodeChanges ?? "ask"; } catch { return "ask"; }
+  };
   const agentHub = agentNonce
     ? new AgentControlHub({
         launcher,
@@ -285,21 +303,13 @@ export function serveDashboard(opts: DashboardServerOptions) {
         pointer: (profileId, pointer) => workbenchHub?.pointer(profileId, pointer),
         proxyApprovals,
         aiProxyPolicy,
+        ...(scripts ? { scripts: { library: scripts.library, runner: scripts.runner } } : {}),
+        ...(opts.paths && !opts.remote ? { pluginsRoot: pluginsDirectory(opts.paths.root) } : {}),
+        codeApprovals,
+        aiCodePolicy,
         log,
       })
     : undefined;
-  const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, false) : undefined;
-  // The desktop app downloads Python for Python scripts; a source checkout uses python3.
-  const python = library && resolvePlaywrightRuntime().kind === "packaged"
-    ? new PythonRuntime(join(opts.paths!.root, "runtimes"), { log })
-    : undefined;
-  const scripts = library && agentNonce ? {
-    library, nonce: agentNonce, python,
-    runner: new ScriptSupervisor({
-      root: opts.paths!.root, library, launcher, store, admission, python,
-      remote: opts.remote,   log,
-    }),
-  } : undefined;
   // Desktop only: idle browsers cool down when memory runs short and come back signed in.
   const finished = new Set(["succeeded", "failed", "cancelled", "skipped"]);
   const cooling = agentNonce && opts.appConfig && !opts.remote ? new CoolingMonitor({
@@ -430,6 +440,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
           scripts,
           runtimeMode,
           proxyApprovals,
+          codeApprovals,
           shutdownSignal: shutdownController.signal,
         });
         if (ui) return ui;

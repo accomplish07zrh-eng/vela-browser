@@ -531,6 +531,8 @@ export interface UiRuntimeOptions {
   health?: UiHealthMetadata | null;
   /** Proxy changes an AI asked for, waiting for a person (see proxy-approvals.ts). */
   proxyApprovals?: import("./proxy-approvals.ts").ProxyApprovalQueue;
+  /** Scripts and plugins an AI asked to save, waiting for a person (see code-approvals.ts). */
+  codeApprovals?: import("./code-approvals.ts").CodeApprovalQueue;
   timezoneFetch?: FetchLike;
   proxyCheck?: (proxy: ProxySpec) => Promise<ProxyCheckResult>;
   extensionFetch?: ExtensionFetch;
@@ -851,6 +853,32 @@ export async function handleUiRequest(
     if (pathname === "/ui/api/proxy-approvals/answer") {
       if (typeof body?.id !== "string" || typeof body.approve !== "boolean") return noStoreJson({ ok: false, error: "Invalid answer" }, 400);
       const answered = options.proxyApprovals?.answer(body.id, body.approve) ?? false;
+      return noStoreJson({ ok: answered, ...(answered ? {} : { error: "This request is no longer waiting" }) }, answered ? 200 : 409);
+    }
+    return noStoreJson({ ok: false, error: "Unknown approval operation" }, 404);
+  }
+
+  // Scripts and plugins an AI wrote: the questions waiting for a person, the answers, and the policy.
+  if (pathname === "/ui/api/code-approvals" && req.method === "GET") {
+    let policy: string = "ask";
+    try { policy = options.appConfig?.read().aiCodeChanges ?? "ask"; } catch {}
+    return noStoreJson({ ok: true, pending: options.codeApprovals?.list() ?? [], policy });
+  }
+  if (pathname.startsWith("/ui/api/code-approvals/") && req.method === "POST") {
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+    if (pathname === "/ui/api/code-approvals/policy") {
+      const policy = body?.policy;
+      if (policy !== "ask" && policy !== "allow" && policy !== "deny") return noStoreJson({ ok: false, error: "Invalid policy" }, 400);
+      if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 500);
+      const { aiCodeChanges: _old, ...rest } = options.appConfig.read();
+      options.appConfig.write(policy === "ask" ? rest : { ...rest, aiCodeChanges: policy });
+      return noStoreJson({ ok: true, policy });
+    }
+    if (pathname === "/ui/api/code-approvals/answer") {
+      if (typeof body?.id !== "string" || typeof body.approve !== "boolean") return noStoreJson({ ok: false, error: "Invalid answer" }, 400);
+      const answered = options.codeApprovals?.answer(body.id, body.approve) ?? false;
       return noStoreJson({ ok: answered, ...(answered ? {} : { error: "This request is no longer waiting" }) }, answered ? 200 : 409);
     }
     return noStoreJson({ ok: false, error: "Unknown approval operation" }, 404);

@@ -6,12 +6,15 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { discoverRuntime } from "./runtime-client.mjs";
 import { PlaywrightToolProxy } from "./playwright-proxy.mjs";
 import { createHumanizer } from "./humanize.mjs";
 import { pluginTools } from "./plugins.mjs";
+import { GUIDE_TOPICS, guideText } from "./guides.mjs";
 
 function packageVersion() {
   try {
@@ -291,6 +294,114 @@ const ALIAS_TOOLS = [
       required: ["steps"],
       additionalProperties: false,
     },
+  },,
+  {
+    name: "vela_guide",
+    description: "Read Vela Browser's built-in guide before larger work: \"automation\" (driving profiles efficiently and what needs a person), \"scripts\" (writing JavaScript or Python scripts that run in many profiles) or \"plugins\" (writing plugins that add tools).",
+    annotations: toolAnnotations("Read a Vela Browser guide", { readOnly: true }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", enum: GUIDE_TOPICS },
+        language: { type: "string", description: "Optional. zh-CN for Chinese; English otherwise." },
+      },
+      required: ["topic"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "vela_profile_update",
+    description: "Rename a profile, move it to another group or set its tags. Its fingerprint, proxy and sign-ins cannot be changed this way.",
+    annotations: toolAnnotations("Update a profile's name, group or tags"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        profileId: { type: "string", minLength: 1 },
+        name: { type: "string", maxLength: 120 },
+        group: { type: "string", maxLength: 120 },
+        tags: { type: "array", items: { type: "string", maxLength: 60 }, maxItems: 50 },
+      },
+      required: ["profileId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "vela_scripts_list",
+    description: "List the saved scripts: id, name, language, description and revision.",
+    annotations: toolAnnotations("List Vela Browser scripts", { readOnly: true }),
+    inputSchema: EMPTY_SCHEMA,
+  },
+  {
+    name: "vela_script_read",
+    description: "Read one saved script, with its source.",
+    annotations: toolAnnotations("Read a Vela Browser script", { readOnly: true }),
+    inputSchema: { type: "object", properties: { scriptId: { type: "string", minLength: 1 } }, required: ["scriptId"], additionalProperties: false },
+  },
+  {
+    name: "vela_script_save",
+    description: "Save a new script, or a new version of one (pass scriptId). Read vela_guide topic \"scripts\" first. The user reads the code and approves it in Vela Browser unless they allowed AI code; the call waits for that answer and saves nothing when it is refused.",
+    annotations: toolAnnotations("Save a Vela Browser script", { destructive: true }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        scriptId: { type: "string", description: "Optional. The script to replace." },
+        name: { type: "string", minLength: 1, maxLength: 120 },
+        description: { type: "string", maxLength: 500 },
+        language: { type: "string", enum: ["javascript", "python"] },
+        source: { type: "string", minLength: 1 },
+      },
+      required: ["name", "language", "source"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "vela_script_run",
+    description: "Run a saved script once in each listed profile, several browsers at a time. Closed profiles are opened for the run. Returns the run; follow it with vela_script_run_status. Saved sign-ins are never passed to a run an AI starts.",
+    annotations: toolAnnotations("Run a Vela Browser script", { destructive: true, openWorld: true }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        scriptId: { type: "string", minLength: 1 },
+        profileIds: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, maxItems: 500 },
+        inputs: { type: "object", description: "Given to the script as inputs." },
+        concurrency: { type: "integer", minimum: 1, maximum: 50, description: "Browsers at a time. Defaults to the app's setting." },
+      },
+      required: ["scriptId", "profileIds"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "vela_script_run_status",
+    description: "The current or last script run: each profile's status and the run's log from logOffset on. Pass the returned nextOffset to read only what is new.",
+    annotations: toolAnnotations("Read a script run", { readOnly: true }),
+    inputSchema: { type: "object", properties: { logOffset: { type: "integer", minimum: 0 } }, additionalProperties: false },
+  },
+  {
+    name: "vela_script_stop",
+    description: "Stop the current script run. Profiles that already finished keep their results.",
+    annotations: toolAnnotations("Stop a script run", { destructive: true }),
+    inputSchema: EMPTY_SCHEMA,
+  },
+  {
+    name: "vela_plugins_list",
+    description: "List the enabled plugins and the tools they add.",
+    annotations: toolAnnotations("List Vela Browser plugins", { readOnly: true }),
+    inputSchema: EMPTY_SCHEMA,
+  },
+  {
+    name: "vela_plugin_save",
+    description: "Save a plugin: its vela-plugin.json manifest and its module. Read vela_guide topic \"plugins\" first. The user reads the code and approves it in Vela Browser unless they allowed AI code; its tools appear the next time a browser is selected.",
+    annotations: toolAnnotations("Save a Vela Browser plugin", { destructive: true }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        pluginId: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$" },
+        manifest: { type: "object", description: "The vela-plugin.json content; its id is set to pluginId." },
+        module: { type: "string", minLength: 1, description: "The module's source (export default function setup(vela) { ... })." },
+      },
+      required: ["pluginId", "manifest", "module"],
+      additionalProperties: false,
+    },
   },
 ];
 
@@ -368,7 +479,7 @@ export async function createVelaBrowserMcp(options = {}) {
   const runtime = discovered.client;
   const server = new Server(
     { name: "vela-browser", title: "Vela Browser", version: VERSION },
-    { capabilities: { tools: { listChanged: true } } },
+    { capabilities: { tools: { listChanged: true }, resources: {} } },
   );
   let selectedProfileId;
   const humanize = { enabled: true, speed: 1 };
@@ -522,6 +633,19 @@ export async function createVelaBrowserMcp(options = {}) {
     }
   };
 
+  // The built-in guides, also as resources for clients that read them.
+  const guideUri = (language, topic) => `vela://guide/${language}/${topic}`;
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: ["en", "zh-CN"].flatMap((language) => GUIDE_TOPICS.map((topic) => ({
+      uri: guideUri(language, topic), name: `Vela Browser guide: ${topic} (${language})`, mimeType: "text/markdown",
+    }))),
+  }));
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const match = /^vela:\/\/guide\/(en|zh-CN)\/([a-z]+)$/.exec(request.params.uri);
+    if (!match || !GUIDE_TOPICS.includes(match[2])) throw new Error("Unknown resource");
+    return { contents: [{ uri: request.params.uri, mimeType: "text/markdown", text: guideText(match[2], match[1]) }] };
+  });
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [...ALIAS_TOOLS, ...toolsFor(sessions.get(selectedProfileId)).map(withTarget).map(guideTool)],
   }));
@@ -533,6 +657,29 @@ export async function createVelaBrowserMcp(options = {}) {
       if (name === "vela_profiles_list") {
         return toolResult(await runtime.call("profiles.list"));
       }
+      if (name === "vela_guide") {
+        if (!GUIDE_TOPICS.includes(args.topic)) throw new Error(`topic must be one of ${GUIDE_TOPICS.join(", ")}`);
+        return { content: [{ type: "text", text: guideText(args.topic, args.language) }] };
+      }
+      if (name === "vela_profile_update") {
+        const { profileId, ...set } = args;
+        return toolResult(await runtime.call("profiles.update", { profileId, set }));
+      }
+      if (name === "vela_scripts_list") return toolResult(await runtime.call("scripts.list"));
+      if (name === "vela_script_read") return toolResult(await runtime.call("scripts.get", { scriptId: args.scriptId }));
+      if (name === "vela_script_save") return toolResult(await runtime.call("scripts.save", { ...args, client: agent() }));
+      if (name === "vela_script_run") return toolResult(await runtime.call("scripts.run", args));
+      if (name === "vela_script_stop") return toolResult(await runtime.call("scripts.stop"));
+      if (name === "vela_script_run_status") {
+        const { run } = await runtime.call("scripts.status");
+        const log = run ? await runtime.call("scripts.log", { runId: run.id, offset: args.logOffset ?? 0 }) : null;
+        return toolResult({ run, log });
+      }
+      if (name === "vela_plugins_list") {
+        const { plugins } = await runtime.call("plugins.list");
+        return toolResult({ plugins: (plugins ?? []).map((plugin) => ({ id: plugin.id, name: plugin.name, version: plugin.version, description: plugin.description, tools: (plugin.tools ?? []).map((tool) => tool.toolName) })) });
+      }
+      if (name === "vela_plugin_save") return toolResult(await runtime.call("plugins.save", { ...args, client: agent() }));
       if (name === "vela_proxy_pool_list") {
         return toolResult(await runtime.call("proxyPool.list", args));
       }
