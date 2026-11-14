@@ -60,6 +60,7 @@ import { runtimeDownloads } from "./runtime-download.ts";
 import { COOLING_DEFAULTS, normalizeCoolingSettings } from "./cooling.ts";
 import { parseKernelDnsEnvironment } from "./kernel-config.ts";
 import { PLUGIN_ID, pluginsDirectory, scanPlugins, writeExamplePlugin } from "./plugins.ts";
+import { detectFakeIpResolver } from "./network-environment.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -864,6 +865,12 @@ export async function handleUiRequest(
     }
     return null;
   };
+  // Whether this computer's own proxy client answers names with fake-ip addresses (TUN mode):
+  // then every profile's traffic also passes through that client, two proxies deep.
+  if (pathname === "/ui/api/network-environment" && req.method === "GET") {
+    return noStoreJson({ ok: true, fakeIp: await detectFakeIpResolver() });
+  }
+
   const proxyApprovalResponse = await approvalRoute(
     "/ui/api/proxy-approvals",
     ["ask", "allow_pool", "deny"],

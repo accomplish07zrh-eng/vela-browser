@@ -185,6 +185,30 @@ function AffectedProfiles({ profiles }: { profiles: ProxyCheckView["profiles"] }
   </details>;
 }
 
+/**
+ * This computer's own proxy client runs in TUN fake-ip mode: every profile's traffic also passes
+ * through it, two proxies deep, and its exit decides where the profile really comes from. Said once,
+ * with the two ways out; nothing is changed on the computer.
+ */
+function TunNotice() {
+  const { t } = useTranslation();
+  const [fakeIp, setFakeIp] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void fetch("/ui/api/network-environment").then((response) => response.json()).then((body) => { if (alive) setFakeIp(body?.fakeIp === true); }, () => {});
+    return () => { alive = false; };
+  }, []);
+  if (!fakeIp) return null;
+  const rule = "- PROCESS-PATH-REGEX,(?i).*\\\\(Vela Browser|com\\.velabrowser\\.desktop)\\\\.*,DIRECT";
+  return <section className="tools-notice tun-notice" role="note">
+    <strong>{t("A proxy client on this computer runs in TUN mode")}</strong>
+    <p>{t("Every profile's connection also passes through it, so traffic goes through two proxies and that client's rules decide the real exit. Switch the client to system-proxy mode, or add this rule at the top of its rules so Vela Browser connects directly:")}</p>
+    <div className="tun-rule"><code>{rule}</code><button type="button" className="btn sm" onClick={() => { void navigator.clipboard?.writeText(rule).then(() => setCopied(true), () => {}); }}>{copied ? t("Copied") : t("Copy")}</button></div>
+    <p className="tun-foot">{t("Afterwards, check a profile on this page: its exit should be the node's address.")}</p>
+  </section>;
+}
+
 export function ProxiesPage({ groups, folders = [], onChanged, active, profilesWithoutProxy = 0, store }: {
   groups: string[];
   folders?: FolderInfo[];
@@ -428,6 +452,7 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
   </>;
 
   return <div className="workspace proxy-page" hidden={!active}>
+    {active && <TunNotice />}
     {store ? store(tools) : <>
       <div className="tools-intro"><div><span className="tools-eyebrow">{t("PROXY TOOLS")}</span><h2>{t("Keep your profiles connected.")}</h2><p>{t("Check saved connections or replace proxies across entire folders.")}</p></div></div>
       {tools}
