@@ -51,3 +51,5 @@ button.health-name:hover { text-decoration: underline; }
 .links-profiles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .links-profile { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; background: var(--surface-hover); font-size: 12px; }
 .links-profile em { font-style: normal; color: var(--muted); }
+/* In the profile table the badge sits under the name, as small as the tags beside it. */
+.name-cell > .health-score { align-self: flex-start; justify-self: start; width: max-content; min-width: 30px; margin-top: 4px; }

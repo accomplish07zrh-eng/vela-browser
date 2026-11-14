@@ -1300,5 +1300,7 @@
   "No physical network adapter was found": "Физический сетевой адаптер не найден",
   "The connection did not use the physical adapter": "Подключение не использовало физический адаптер",
   "Around this computer's proxy client": "В обход прокси-клиента этого компьютера",
-  "When Clash, mihomo or sing-box runs in TUN mode here, every profile's traffic goes through it before reaching the profile's own proxy: two proxies deep, and its rules decide the path. Turned on, Vela Browser reaches profiles' proxies directly.": "Когда здесь в режиме TUN работает Clash, mihomo или sing-box, трафик каждого окружения сначала проходит через него и лишь затем — через прокси окружения: два прокси подряд, и путь решают его правила. Если включить, Vela Browser будет подключаться к прокси окружений напрямую."
+  "When Clash, mihomo or sing-box runs in TUN mode here, every profile's traffic goes through it before reaching the profile's own proxy: two proxies deep, and its rules decide the path. Turned on, Vela Browser reaches profiles' proxies directly.": "Когда здесь в режиме TUN работает Clash, mihomo или sing-box, трафик каждого окружения сначала проходит через него и лишь затем — через прокси окружения: два прокси подряд, и путь решают его правила. Если включить, Vela Browser будет подключаться к прокси окружений напрямую.",
+  "Looking for the physical network adapter…": "Поиск физического сетевого адаптера…",
+  "Saved in": "Хранится в"
 }

@@ -958,7 +958,7 @@ export async function handleUiRequest(
       options.appConfig.write(body.enabled ? { ...rest, tunBypass: true } : rest);
       egress.setTunBypass(body.enabled);
     } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
-    return noStoreJson({ ok: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? egress.currentInterface() : egress.detectPhysicalInterface() });
+    return noStoreJson({ ok: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? (egress.currentInterface() ?? await egress.refreshInterface()) : await egress.detectPhysicalInterface() });
   }
 
   // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.
@@ -985,12 +985,12 @@ export async function handleUiRequest(
   }
 
   // Self-check: each profile's health, and checking the exits it depends on.
-  if (pathname === "/ui/api/health" || pathname === "/ui/api/health/check") {
+  if (pathname === "/ui/api/profile-health" || pathname === "/ui/api/profile-health/check") {
     if (remote) return noStoreJson({ ok: false, error: "The self-check is unavailable in legacy remote mode" }, 400);
     const { assessProfile, associations, sharedExits, ExitCache } = await import("./health.ts");
     const cache = healthCache ??= new ExitCache(options.paths ? join(options.paths.root, "health.json") : undefined);
     const profiles = store.listProfiles();
-    if (pathname === "/ui/api/health/check" && req.method === "POST") {
+    if (pathname === "/ui/api/profile-health/check" && req.method === "POST") {
       const body = await req.json().catch(() => ({})) as { ids?: unknown };
       const wanted = Array.isArray(body.ids) && body.ids.length ? new Set(body.ids.map(String)) : undefined;
       const targets = profiles.filter((profile) => !wanted || wanted.has(profile.id));

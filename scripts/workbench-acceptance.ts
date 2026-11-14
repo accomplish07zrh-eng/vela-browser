@@ -6,6 +6,7 @@ import { ProfileStore } from "../src/store.ts";
 import { parseExport } from "../src/parse.ts";
 import { AppConfigStore } from "../src/app-config.ts";
 import { serveDashboard } from "../src/web.ts";
+import { statePaths } from "../src/paths.ts";
 import type { Launcher } from "../src/launcher.ts";
 import { startFirefoxOwner, callFirefoxOwner, closeFirefoxOwner } from "../src/firefox-runtime.ts";
 import { createHash } from "node:crypto";
@@ -52,7 +53,8 @@ if (firefoxPath) {
 }
 const appConfig = new AppConfigStore(join(root, "app-config.json")); appConfig.setMode("local");
 const launcher = { reconcileOrphans: async () => {}, certifiedActive: async (id: string) => !!store.getLaunch(id), listRuntimeDownloads: () => [], isIdentityCertified: () => true, dataDriveFreeBytes: () => null } as unknown as Launcher;
-const dashboard = serveDashboard({ launcher, store, port: 0, appConfig, agentNonce: nonce });
+// A data folder of its own, so snapshots, the activity record and the self-check cache work here too.
+const dashboard = serveDashboard({ launcher, store, port: 0, appConfig, agentNonce: nonce, paths: statePaths(root) });
 const report = { url: `http://127.0.0.1:${dashboard.port}`, fixtureState: fixture.stateUrl, fixtureContent: `http://127.0.0.1:${content.port}`, root, count: fixture.launches.length + owners.length, nonce, pid: process.pid };
 writeFileSync(join(reportRoot, "workbench-acceptance-session.json"), JSON.stringify(report, null, 2));
 console.log(JSON.stringify({ url: report.url, count: report.count, report: "reports/workbench-acceptance-session.json" }));

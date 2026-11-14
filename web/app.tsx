@@ -1212,7 +1212,7 @@ function App() {
   const [healthOpen, setHealthOpen] = useState<{ ids?: string[]; focus?: string } | null>(null);
   const [health, setHealth] = useState<Map<string, HealthRow>>(new Map());
   useEffect(() => { loadHealth(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const loadHealth = () => { void fetch("/ui/api/health").then((response) => response.ok ? response.json() : null).then((data) => { if (data?.reports) setHealth(new Map((data.reports as HealthRow[]).map((row) => [row.profileId, row]))); }).catch(() => {}); };
+  const loadHealth = () => { void fetch("/ui/api/profile-health").then((response) => response.ok ? response.json() : null).then((data) => { if (data?.reports) setHealth(new Map((data.reports as HealthRow[]).map((row) => [row.profileId, row]))); }).catch(() => {}); };
   const [detailId, setDetailId] = useState<string | null>(null);
   const [profilePage, setProfilePage] = useState(0);
   const [pageSize, setPageSize] = useState(readPageSize);

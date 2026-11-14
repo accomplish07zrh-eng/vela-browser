@@ -44,10 +44,10 @@ export function HealthSheet({ ids, focus, onClose, onOpenProfile }: { ids?: stri
     return () => { dialog.current?.close(); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
   }, []);
   const apply = useCallback((data: { reports: HealthRow[]; associations: Associations }) => { setRows(data.reports); setLinks(data.associations); }, []);
-  useEffect(() => { call<{ reports: HealthRow[]; associations: Associations }>("/ui/api/health").then(apply, (cause) => setError(String(cause.message ?? cause))); }, [apply]);
+  useEffect(() => { call<{ reports: HealthRow[]; associations: Associations }>("/ui/api/profile-health").then(apply, (cause) => setError(String(cause.message ?? cause))); }, [apply]);
   const run = async () => {
     setBusy(true); setError("");
-    try { apply(await call("/ui/api/health/check", { ids: ids ?? [] })); }
+    try { apply(await call("/ui/api/profile-health/check", { ids: ids ?? [] })); }
     catch (cause) { setError(t(cause instanceof Error ? cause.message : String(cause))); }
     finally { setBusy(false); }
   };

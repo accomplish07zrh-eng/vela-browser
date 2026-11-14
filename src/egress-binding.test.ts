@@ -55,3 +55,17 @@ test("the bypass module resolves names only with encrypted DNS, never with this 
   const source = readFileSync(join(import.meta.dir, "egress-binding.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/\s.*$/gm, "$1");
   expect(source).not.toMatch(/\bnode:dns\b|\bdns\s*\.\s*(lookup|resolve)|\bBun\.dns\b|\bgetaddrinfo\b/);
 });
+
+test("default routes are read from route print, best metric first", async () => {
+  const { parseDefaultRoutes } = await import("./egress-binding.ts");
+  const text = [
+    "IPv4 路由表", "===", "活动路由:", "网络目标        网络掩码          网关       接口   跃点数",
+    "          0.0.0.0          0.0.0.0      192.168.0.1    192.168.0.184     30",
+    "          0.0.0.0          0.0.0.0       198.18.0.2       198.18.0.1      0",
+    "        127.0.0.0        255.0.0.0            在链路上         127.0.0.1    331",
+  ].join("\r\n");
+  expect(parseDefaultRoutes(text)).toEqual([
+    { gateway: "198.18.0.2", address: "198.18.0.1", metric: 0 },
+    { gateway: "192.168.0.1", address: "192.168.0.184", metric: 30 },
+  ]);
+});

@@ -81,7 +81,7 @@ export function BackupsCard({ flash }: { flash(message: string): void }) {
       <div className="plugin-actions">
         <button type="button" className="btn" disabled={busy} onClick={() => { setBusy(true); call<any>("/ui/api/snapshots/backup", "POST").then((result) => { setState((current) => current ? { ...current, usage: result.usage } : current); flash(t("Backed up the sign-ins of {count} profiles.", { count: result.saved })); }, (error) => flash(String(error.message ?? error))).finally(() => setBusy(false)); }}>{t("Back up now")}</button>
       </div>
-      <p className="cardnote">{t("Folder")}: <span className="mono">{state.directory}</span></p>
+      <p className="cardnote">{t("Saved in")}: <span className="mono">{state.directory}</span></p>
     </div>
   </section>;
 }

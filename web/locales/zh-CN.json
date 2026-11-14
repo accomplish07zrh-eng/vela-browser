@@ -1298,5 +1298,7 @@
   "No physical network adapter was found": "没找到物理网卡",
   "The connection did not use the physical adapter": "连接没有走物理网卡",
   "Around this computer's proxy client": "绕过本机代理客户端",
-  "When Clash, mihomo or sing-box runs in TUN mode here, every profile's traffic goes through it before reaching the profile's own proxy: two proxies deep, and its rules decide the path. Turned on, Vela Browser reaches profiles' proxies directly.": "本机的 Clash、mihomo 或 sing-box 开着 TUN 模式时，每个环境的流量都要先经过它才到环境自己的代理：套了两层，路径由它的规则决定。开启后，Vela Browser 会直连各环境的代理。"
+  "When Clash, mihomo or sing-box runs in TUN mode here, every profile's traffic goes through it before reaching the profile's own proxy: two proxies deep, and its rules decide the path. Turned on, Vela Browser reaches profiles' proxies directly.": "本机的 Clash、mihomo 或 sing-box 开着 TUN 模式时，每个环境的流量都要先经过它才到环境自己的代理：套了两层，路径由它的规则决定。开启后，Vela Browser 会直连各环境的代理。",
+  "Looking for the physical network adapter…": "正在查找物理网卡…",
+  "Saved in": "保存位置"
 }

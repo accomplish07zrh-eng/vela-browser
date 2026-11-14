@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -21,25 +21,39 @@ const VIRTUAL = /tun|tap|wintun|utun|clash|meta|mihomo|sing-?box|v2ray|xray|neko
 const FAKE_IP = (address: string) => /^198\.(1[89])\./.test(address);
 const PRIVATE_OK = (address: string) => !address.startsWith("169.254.") && !FAKE_IP(address) && address !== "127.0.0.1";
 
-/** Windows names its adapters freely; its routing table says which one has the real gateway. */
-function windowsCandidates(): PhysicalInterface[] {
-  const script = "Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } | ForEach-Object { [pscustomobject]@{ n = $_.InterfaceAlias; d = $_.InterfaceDescription; a = ($_.IPv4Address | Select-Object -First 1).IPAddress; m = ($_.IPv4DefaultGateway | Select-Object -First 1).RouteMetric + $_.NetIPv4Interface.InterfaceMetric } } | Sort-Object m | ConvertTo-Json -Compress";
-  try {
-    const result = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 8000, windowsHide: true });
-    if (result.status !== 0 || !result.stdout.trim()) return [];
-    const parsed = JSON.parse(result.stdout);
-    return (Array.isArray(parsed) ? parsed : [parsed]).filter((item) => typeof item?.a === "string" && typeof item?.n === "string")
-      .map((item) => ({ name: item.n, address: item.a, description: String(item.d ?? "") }));
-  } catch { return []; }
+/** The default routes, best first, as "route print" lists them: fast, and the same in every language. */
+export function parseDefaultRoutes(text: string): Array<{ gateway: string; address: string; metric: number }> {
+  const out: Array<{ gateway: string; address: string; metric: number }> = [];
+  for (const line of text.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length === 5 && parts[0] === "0.0.0.0" && parts[1] === "0.0.0.0" && isIP(parts[3]!) === 4 && /^\d+$/.test(parts[4]!)) {
+      out.push({ gateway: parts[2]!, address: parts[3]!, metric: Number(parts[4]) });
+    }
+  }
+  return out.sort((a, b) => a.metric - b.metric);
+}
+
+/** Windows: the adapters that hold a default route, named from this computer's adapter list. */
+function windowsCandidates(): Promise<PhysicalInterface[]> {
+  return new Promise((resolve) => {
+    execFile("route", ["print", "-4", "0.0.0.0"], { encoding: "utf8", timeout: 5000, windowsHide: true }, (error, stdout) => {
+      if (error || !stdout) { resolve([]); return; }
+      const names = new Map<string, string>();
+      for (const [name, addresses] of Object.entries(networkInterfaces())) {
+        for (const address of addresses ?? []) if (address.family === "IPv4") names.set(address.address, name);
+      }
+      resolve(parseDefaultRoutes(stdout).map((route) => ({ name: names.get(route.address) ?? route.address, address: route.address, description: `gateway ${route.gateway}` })));
+    });
+  });
 }
 
 export function pickPhysicalInterface(candidates: PhysicalInterface[]): PhysicalInterface | null {
   return candidates.find((item) => isIP(item.address) === 4 && PRIVATE_OK(item.address) && !VIRTUAL.test(item.name) && !VIRTUAL.test(item.description ?? "")) ?? null;
 }
 
-export function detectPhysicalInterface(platform = process.platform): PhysicalInterface | null {
+export async function detectPhysicalInterface(platform = process.platform): Promise<PhysicalInterface | null> {
   if (platform === "win32") {
-    const picked = pickPhysicalInterface(windowsCandidates());
+    const picked = pickPhysicalInterface(await windowsCandidates());
     if (picked) return picked;
   }
   const list: PhysicalInterface[] = [];
@@ -115,15 +129,26 @@ export async function resolveDirect(name: string, localAddress: string, query = 
 
 let enabled = false;
 let cached: { at: number; value: PhysicalInterface | null } | undefined;
+let refreshing: Promise<PhysicalInterface | null> | undefined;
 
-export function setTunBypass(on: boolean): void { enabled = on; cached = undefined; }
+/** Looks the adapter up again in the background; connections keep using the last answer meanwhile. */
+export function refreshInterface(): Promise<PhysicalInterface | null> {
+  return refreshing ??= detectPhysicalInterface()
+    .then((value) => { cached = { at: Date.now(), value }; return value; }, () => cached?.value ?? null)
+    .finally(() => { refreshing = undefined; });
+}
+
+export function setTunBypass(on: boolean): void { enabled = on; if (on) void refreshInterface(); else cached = undefined; }
 export function tunBypassEnabled(): boolean { return enabled; }
 
-/** The adapter in use, looked up again at most every 30 seconds (networks change). */
+/**
+ * The adapter in use, never waiting: the last known one, refreshed in the background every 30
+ * seconds (networks change). Before the first answer there is none, so the usual path is taken.
+ */
 export function currentInterface(now = Date.now()): PhysicalInterface | null {
   if (!enabled) return null;
-  if (!cached || now - cached.at > 30_000) cached = { at: now, value: detectPhysicalInterface() };
-  return cached.value;
+  if (!cached || now - cached.at > 30_000) void refreshInterface();
+  return cached?.value ?? null;
 }
 
 /**
@@ -221,7 +246,7 @@ async function traceIp(localAddress?: string, timeoutMs = 6000): Promise<{ ip?: 
  * computer's default path when a TUN client is running.
  */
 export async function testTunBypass(): Promise<TunBypassTest> {
-  const physical = detectPhysicalInterface();
+  const physical = await detectPhysicalInterface();
   if (!physical) return { interface: null, ok: false, problem: "No physical network adapter was found" };
   const result: TunBypassTest = { interface: physical, ok: false };
   try {

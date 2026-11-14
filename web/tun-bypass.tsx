@@ -20,8 +20,10 @@ export function TunBypassControl({ compact = false }: { compact?: boolean }) {
   const [state, setState] = useState<{ enabled: boolean; interface: Physical | null } | null>(null);
   const [test, setTest] = useState<TestResult | null>(null);
   const [busy, setBusy] = useState<"toggle" | "test" | null>(null), [error, setError] = useState("");
-  useEffect(() => { call<any>("/ui/api/tun-bypass").then(setState, () => setState(null)); }, []);
-  if (!state) return null;
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => { call<any>("/ui/api/tun-bypass").then(setState, () => setUnavailable(true)); }, []);
+  if (unavailable) return null;
+  if (!state) return <div className={`tun-bypass${compact ? " compact" : ""}`}><p className="tun-bypass-note">{t("Looking for the physical network adapter…")}</p></div>;
   const toggle = async (enabled: boolean) => {
     setBusy("toggle"); setError("");
     try { setState(await call("/ui/api/tun-bypass", { enabled })); } catch (cause) { setError(t(cause instanceof Error ? cause.message : String(cause))); }
