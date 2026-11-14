@@ -15,7 +15,7 @@ const tables = {
 // source, or the translation is dead.
 test("every bundled locale key is an English string used in the web source", async () => {
   const sources = await Promise.all(
-    ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "approval-queue.tsx", "code-approvals.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "titlebar.tsx", "select.tsx", "dialog.tsx", "proxy-pool.tsx", "recording-dialog.tsx", "../src/workbench.ts"]
+    ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "approval-queue.tsx", "code-approvals.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "titlebar.tsx", "select.tsx", "dialog.tsx", "tasks.tsx", "../src/tasks.ts", "proxy-pool.tsx", "recording-dialog.tsx", "../src/workbench.ts"]
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
   const source = sources.join("\n").replaceAll("\r\n", "\n");

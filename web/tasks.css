@@ -1,0 +1,37 @@
+/* Automated tasks, the third tab of the scripts page: the list beside the task and its runs. */
+.app .main .scripts-page .tasks-new { width: 100%; margin-bottom: 6px; border-radius: 11px; }
+.app .main .scripts-page .task-mark { font-size: 14px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.app .main .scripts-page .task-mark.off { color: var(--faint); background: var(--field-bg); }
+.tasks-detail { gap: 14px; }
+.tasks-form { display: grid; gap: 14px; }
+.tasks-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tasks-chip {
+  height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+  color: var(--ink-soft); background: transparent; font: 500 12.5px/1 var(--font); transition: background .14s, color .14s, border-color .14s;
+}
+.tasks-chip:hover { background: var(--field-bg); }
+.tasks-chip.on { color: var(--on-fill, #fff); background: var(--accent-fill, var(--accent)); border-color: transparent; }
+.tasks-steps { display: grid; gap: 10px; margin: 0; padding-left: 20px; }
+.tasks-steps li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+.tasks-steps li .vselect { grid-column: 1; }
+.tasks-steps li .tasks-inputs { grid-column: 1; min-height: 56px; font: 12px/1.6 var(--mono, monospace); }
+.tasks-steps li > .btn { grid-column: 2; grid-row: 1; }
+.tasks-add { justify-self: start; align-self: flex-start; margin-top: 4px; }
+.tasks-when { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.tasks-time { width: 96px; text-align: center; font-variant-numeric: tabular-nums; }
+.tasks-enabled { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.tasks-save { display: flex; justify-content: flex-end; }
+.tasks-empty { min-height: 200px; }
+.tasks-history { display: grid; gap: 8px; margin-top: 8px; }
+.tasks-history h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+.tasks-run { border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; background: var(--surface); }
+.tasks-run > summary { padding: 10px 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tasks-run > summary small { color: var(--muted); }
+.tasks-run ul { margin: 0 0 10px; padding-left: 18px; display: grid; gap: 4px; font-size: 12.5px; }
+.tasks-run ul small { margin-left: 8px; color: var(--muted); }
+.tasks-failures { color: var(--danger-ink); }
+.tasks-outcome { padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--field-bg); color: var(--ink-soft); }
+.tasks-outcome.succeeded { color: #2f7a4d; background: color-mix(in srgb, #3fa96a 16%, transparent); }
+.tasks-outcome.partial { color: #9a6a12; background: color-mix(in srgb, #e0a131 18%, transparent); }
+.tasks-outcome.failed { color: var(--danger-ink); background: var(--danger-soft); }
+.tasks-outcome.running { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }

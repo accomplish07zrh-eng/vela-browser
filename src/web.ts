@@ -27,6 +27,7 @@ import {
 } from "./server.ts";
 import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
+import { TaskRunner, TaskStore } from "./tasks.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
@@ -285,6 +286,17 @@ export function serveDashboard(opts: DashboardServerOptions) {
       remote: opts.remote,   log,
     }),
   } : undefined;
+  // Saved scripts in order over chosen profiles, by hand or on a schedule; one run at a time.
+  const tasks = scripts && opts.paths && !opts.remote ? new TaskRunner({
+    store: new TaskStore(join(opts.paths.root, "tasks.json")),
+    runner: scripts.runner,
+    resolveProfiles: (target) => store.listProfiles().filter((profile) => target.profileIds?.includes(profile.id)
+      || target.groups?.includes(profile.group || "")
+      || (profile.tags ?? []).some((tag) => target.tags?.includes(tag))).map((profile) => profile.id),
+    scriptName: async (id) => (await scripts.library.get(id)).name,
+    log,
+  }) : undefined;
+  tasks?.start();
   // Scripts and plugins an AI writes wait here for a person to read them (unless the user allowed them).
   const codeApprovals = new CodeApprovalQueue();
   const aiCodePolicy = (): AiCodePolicy => {
@@ -437,7 +449,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
 
 
           health: opts.health,
-          scripts,
+          scripts: scripts && tasks ? { ...scripts, tasks } : scripts,
           runtimeMode,
           proxyApprovals,
           codeApprovals,
