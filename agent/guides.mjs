@@ -28,6 +28,9 @@ Vela Browser keeps many browser profiles, each with its own fingerprint, proxy, 
 - Wait for the network, not a fixed time: \`browser_devtools_wait\` returns when a request containing a URL part finishes, or when the page has gone quiet.
 - Save proxy traffic on long runs: \`browser_devtools_block\` with resourceTypes ["image", "media", "font"]; clear it when done.
 - When a page is slow or stuck, \`browser_devtools_performance\` says why (slow server, large downloads, long tasks), and \`browser_devtools_network\` with failedOnly shows what failed.
+- Wait for what a person would wait for: \`browser_devtools_wait\` with text ["Order placed", "Payment failed"] returns as soon as either appears.
+- A profile getting slow over a long run: \`browser_devtools_memory\` shows whether the page keeps growing; reload or close that tab.
+- A site that signs in with a passkey: \`browser_devtools_webauthn\` action add gives the page a virtual authenticator first.
 
 ## What needs a person
 
@@ -173,6 +176,9 @@ Vela Browser 里有很多浏览器环境，每个都有自己的指纹、代理�
 - 等网络而不是干等：\`browser_devtools_wait\` 会在某个网址的请求完成、或页面网络安静下来时返回。
 - 长时间跑任务想省代理流量：用 \`browser_devtools_block\` 屏蔽 ["image", "media", "font"]，结束后清除。
 - 页面慢或卡住：\`browser_devtools_performance\` 会说明原因（服务器慢、下载太大、长任务），\`browser_devtools_network\` 加 failedOnly 能看到哪些请求失败了。
+- 等人会等的东西：\`browser_devtools_wait\` 传 text ["下单成功", "支付失败"]，任意一个出现就返回。
+- 长时间运行后环境变慢：\`browser_devtools_memory\` 能看出页面是不是越用越大；刷新或关掉那个标签页。
+- 用通行密钥登录的网站：先用 \`browser_devtools_webauthn\` 的 add 给页面加一个虚拟认证器。
 
 ## 需要人来批准的
 

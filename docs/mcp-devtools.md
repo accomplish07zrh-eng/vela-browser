@@ -20,7 +20,11 @@ Each environment keeps its existing persistent context, process, cookies, proxy,
 | `browser_devtools_protocol` | Any native CDP command supported by the existing Chromium engine, including commands that change the page |
 | `browser_devtools_performance` | Load and runtime insight: time to first byte, first and largest contentful paint, layout shift, long tasks, DOM size, slowest and largest resources, with plain findings against the Core Web Vitals thresholds |
 | `browser_devtools_block` | Block requests by resource type or URL glob for the whole profile (for example images and media to save proxy traffic); set, list with a blocked count, clear |
-| `browser_devtools_wait` | Wait until a request containing a URL part finishes (optionally by method and status), or until the page's network has been idle for a given time |
+| `browser_devtools_wait` | Wait until any of several texts appears on the page, a request containing a URL part finishes (optionally by method and status), or the page's network has been idle for a given time |
+| `browser_devtools_mock` | Answer matching requests yourself (URL glob, optional method) with a status, content type, headers and text body, like DevTools network overrides; set, list with hit counts, clear |
+| `browser_devtools_memory` | JavaScript heap, DOM elements, event listeners, documents and frames of a page, with plain findings about pages that grow |
+| `browser_devtools_css` | The full CSS cascade of an element in Chromium: inline style and every matched rule with selector, origin, media and line, winning rule first |
+| `browser_devtools_webauthn` | A virtual passkey authenticator for a Chromium page: add, list the credentials sites registered, remove |
 
 Chromium attaches to the profile's existing CDP context. Firefox and WebKit run tools inside their existing native context owner. Firefox developer page operations use its native `mw:` execution channel, so page variables and typed arrays are accessible while ordinary automation retains its isolated world. Worker evaluation uses the worker's own context. CDP is Chromium-specific; Firefox and WebKit use the cross-engine developer tools and JavaScript. Engine support for service workers, TLS metadata and other browser APIs remains native; WebKit retains its experimental status and existing platform capabilities.
 

@@ -1339,7 +1339,7 @@
     },
     {
       "name": "browser_devtools_wait",
-      "description": "Wait for the network instead of a fixed delay: until a request whose URL contains urlIncludes finishes (optionally with a given method or status), or, without urlIncludes, until the page's network has been idle for idleMs. Counts only requests that start after the call unless since is given. Returns the matching request record or how long it took to settle.",
+      "description": "Wait for the page instead of a fixed delay: until any of several texts appears on the page (text), until a request whose URL contains urlIncludes finishes (optionally with a given method or status), or, with neither, until the page's network has been idle for idleMs. Requests count only when they start after the call unless since is given. Returns what matched and how long it took.",
       "annotations": {
         "title": "Browser wait",
         "readOnlyHint": true,
@@ -1352,6 +1352,17 @@
           "pageId": {
             "type": "string",
             "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "text": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20
+          },
+          "visibleOnly": {
+            "type": "boolean",
+            "default": true
           },
           "urlIncludes": {
             "type": "string"
@@ -1386,6 +1397,207 @@
             "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
           }
         },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_mock",
+      "description": "Answer requests in this profile yourself, like DevTools network overrides: each rule gives a URL glob (and optionally a method) and the status, content type, headers and text body to return instead of going to the network. Useful to skip a slow or broken script, or to test how a page reacts. action 'set' replaces the rules, 'clear' removes them, 'list' shows them with how often each answered. Rules last until cleared or the browser is detached.",
+      "annotations": {
+        "title": "Browser mock",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "set",
+              "clear",
+              "list"
+            ]
+          },
+          "rules": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "properties": {
+                "urlPattern": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "headers": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "urlPattern"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_memory",
+      "description": "How much memory the selected page uses: JavaScript heap, DOM elements, event listeners, documents and frames, with plain findings such as a page that keeps growing. Use it when a profile gets slow or the computer runs short of memory.",
+      "annotations": {
+        "title": "Browser memory",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_css",
+      "description": "The full CSS cascade of an element in a Chromium page, like the Styles panel: inline style, every matched rule with its selector, origin, media and line, from the winning rule down. Use browser_devtools_element for computed values in any engine.",
+      "annotations": {
+        "title": "Browser css",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "selector": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_webauthn",
+      "description": "A virtual passkey authenticator for the selected Chromium page, like the DevTools WebAuthn panel: 'add' one (platform by default, with user verification), 'list' it with the credentials sites registered on it, 'remove' it. Sites can then register and sign in with passkeys without a phone or security key. The credentials live only while the authenticator exists.",
+      "annotations": {
+        "title": "Browser webauthn",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "add",
+              "remove",
+              "list"
+            ]
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "ctap2",
+              "u2f"
+            ],
+            "default": "ctap2"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "internal",
+              "usb",
+              "nfc",
+              "ble",
+              "hybrid"
+            ],
+            "default": "internal"
+          },
+          "hasResidentKey": {
+            "type": "boolean",
+            "default": true
+          },
+          "hasUserVerification": {
+            "type": "boolean",
+            "default": true
+          },
+          "isUserVerified": {
+            "type": "boolean",
+            "default": true
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "action"
+        ],
         "additionalProperties": false
       }
     }
