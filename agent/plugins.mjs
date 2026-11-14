@@ -48,6 +48,7 @@ function failure(spec, error) {
 }
 
 export class PluginHost {
+  /** @param {{ context: any, engine: string, profileId?: string, devtools?: any, log?: (message: string) => void }} options */
   constructor({ context, engine, profileId, devtools, log = () => {} }) {
     this.context = context;
     this.engine = engine;
@@ -94,10 +95,14 @@ export class PluginHost {
       /** Calls a built-in developer tool of this environment, by its short or full name. */
       devtools: async (tool, args = {}) => {
         if (!this.devtools) throw new Error("developer tools are unavailable in this environment");
-        const name = tool.startsWith("browser_devtools_") ? tool : `browser_devtools_${tool}`;
+        const raw = String(tool ?? "");
+        const name = raw.startsWith("browser_devtools_") ? raw : `browser_devtools_${raw}`;
         return (await this.devtools.call(name, args)).structuredContent;
       },
-      log: (...values) => this.log(`[plugin ${spec.id}] ${values.map(value => typeof value === "string" ? value : JSON.stringify(value)).join(" ")}`),
+      log: (...values) => this.log(`[plugin ${spec.id}] ${values.map((value) => {
+        if (typeof value === "string") return value;
+        try { return JSON.stringify(value); } catch { return String(value); }
+      }).join(" ")}`),
     });
   }
 

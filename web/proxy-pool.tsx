@@ -3,6 +3,7 @@
  * Nothing here ever holds a node's credentials; the server keeps them.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApprovalCountdown, requestApprovalJson, useApprovalQueue } from "./approval-queue.tsx";
 import { Select } from "./select.tsx";
 import { NumberInput } from "./controls.tsx";
 import { confirmDialog } from "./dialog.tsx";
@@ -602,14 +603,8 @@ function subscriptionNotice(t: (key: string, vars?: Record<string, string | numb
 type AiProxyPolicy = "ask" | "allow_pool" | "deny";
 interface PendingApproval { id: string; profileId: string; profileName: string; client: string; from: string; to: string; reopens: boolean; expiresAt: number }
 
-async function approvalsCall<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/ui/api/proxy-approvals${path}`, body === undefined ? {} : {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  });
-  const parsed: any = await response.json().catch(() => null);
-  if (!response.ok || parsed?.ok !== true) throw new ProxyPoolClientError(typeof parsed?.error === "string" ? parsed.error : "Request failed");
-  return parsed as T;
-}
+const approvalsCall = <T,>(path: string, body?: unknown) =>
+  requestApprovalJson<T>(`/ui/api/proxy-approvals${path}`, body);
 const fetchApprovals = () => approvalsCall<{ pending: PendingApproval[]; policy: AiProxyPolicy }>("");
 
 /** The standing answer to proxy changes an AI asks for through MCP. */
@@ -655,29 +650,17 @@ export function AiProxyPolicyField() {
  */
 export function ProxyApprovalPrompts() {
   const { t } = useTranslation();
-  const [pending, setPending] = useState<PendingApproval[]>([]);
-  const [answering, setAnswering] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());
-  const poll = useCallback(async () => {
-    try { setPending((await fetchApprovals()).pending); } catch { /* keep what is shown; the next poll retries */ }
-  }, []);
-  useEffect(() => {
-    void poll();
-    const timer = setInterval(() => { void poll(); setNow(Date.now()); }, 2000);
-    return () => clearInterval(timer);
-  }, [poll]);
+  const loadPending = useCallback(async () => (await fetchApprovals()).pending, []);
+  const postAnswer = useCallback((id: string, approve: boolean) => approvalsCall("/answer", { id, approve }), []);
+  const { pending, answering, error, answer } = useApprovalQueue(loadPending, postAnswer);
   if (!pending.length) return null;
-  const answer = async (id: string, approve: boolean) => {
-    setAnswering(id);
-    try { await approvalsCall("/answer", { id, approve }); } catch { /* it expired or was replaced; the poll clears it */ }
-    finally { setAnswering(null); await poll(); }
-  };
   return <div className="proxy-approvals" role="region" aria-label={t("AI proxy changes")}>
-    {pending.map((item) => <div key={item.id} className="proxy-approval" role="alertdialog" aria-labelledby={`approval-${item.id}`}>
+    {error && <div className="tools-alert" role="alert">{t(error)}</div>}
+    {pending.map((item) => <div key={item.id} className="proxy-approval" role="alertdialog" aria-labelledby={`approval-${item.id}`} aria-describedby={`approval-note-${item.id}`}>
       <strong id={`approval-${item.id}`}>{t("{client} wants to change the proxy of {profile}", { client: item.client, profile: item.profileName })}</strong>
       <p className="tools-mono">{item.from} → {item.to}</p>
-      <p>{item.reopens ? t("The open browser will save its tabs, close and reopen on the new exit.") : t("The profile uses it from its next start.")}
-        {" "}{t("Refused automatically in {seconds} s.", { seconds: Math.max(0, Math.ceil((item.expiresAt - now) / 1000)) })}</p>
+      <p id={`approval-note-${item.id}`}>{item.reopens ? t("The open browser will save its tabs, close and reopen on the new exit.") : t("The profile uses it from its next start.")}
+        {" "}<ApprovalCountdown expiresAt={item.expiresAt} /></p>
       <div className="proxy-actions">
         <button type="button" className="btn" disabled={answering === item.id} onClick={() => void answer(item.id, false)}>{t("Deny")}</button>
         <button type="button" className="btn primary" disabled={answering === item.id} onClick={() => void answer(item.id, true)}>{t("Allow")}</button>

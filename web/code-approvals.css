@@ -1,0 +1,43 @@
+/* Pending AI approval dock (proxy + code cards stacked so they never overlap) above the bottom dock. */
+.approval-dock {
+  position: fixed; inset-inline-end: 16px; bottom: 104px; z-index: 61;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  max-height: calc(100vh - 140px); max-width: calc(100vw - 32px);
+  overflow: auto; padding: 8px; margin: -8px; pointer-events: none;
+}
+.approval-dock:empty { display: none; }
+.code-approvals { display: flex; flex-direction: column; gap: 10px; width: min(560px, calc(100vw - 32px)); }
+.code-approval {
+  pointer-events: auto;
+  padding: 16px 18px; border-radius: 16px; border: 1px solid var(--line-strong, var(--line));
+  background: var(--glass-modal, var(--surface)); -webkit-backdrop-filter: blur(18px) saturate(150%); backdrop-filter: blur(18px) saturate(150%);
+  color: var(--ink); box-shadow: 0 16px 40px rgba(var(--shadow-rgb, 43, 35, 23), .22); font-size: 12.5px; line-height: 1.6;
+  animation: code-approval-in 380ms var(--spring-layout, ease) backwards;
+}
+@keyframes code-approval-in { from { opacity: 0; transform: translateY(10px) scale(.98); } }
+.code-approval-error {
+  pointer-events: auto; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--danger, #c43c35); background: var(--surface); color: var(--danger, #c43c35); font-size: 12px;
+}
+.code-approval-head { display: flex; gap: 12px; align-items: center; }
+.code-approval-head > div { min-width: 0; }
+.code-approval-head strong { display: block; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.code-approval-head p { margin: 1px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.code-approval-kind { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; font: 700 11px/1 var(--mono, monospace);
+  color: #a2741e; background: color-mix(in srgb, #e8b04f 18%, transparent); }
+.code-approval-kind.python { color: #396ca8; background: color-mix(in srgb, #538cd2 18%, transparent); }
+.code-approval-kind.plugin { color: #5b4fc4; background: color-mix(in srgb, #8b68f2 16%, transparent); }
+:root[data-theme="dark"] .code-approval-kind { color: #e8c178; }
+:root[data-theme="dark"] .code-approval-kind.python { color: #8db9e6; }
+:root[data-theme="dark"] .code-approval-kind.plugin { color: #b8a3f8; }
+.code-approval-note { margin: 10px 0 0; color: var(--ink-soft); }
+.code-approval-toggle { margin-top: 8px; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
+.code-approval-toggle:hover { text-decoration: underline; }
+.code-approval-files { display: grid; gap: 10px; margin-top: 10px; }
+.code-approval-files figure { margin: 0; border-radius: 12px; overflow: hidden; background: var(--code-bg, #1f1c18); color: var(--code-ink, #ece6da); }
+.code-approval-files figcaption { padding: 7px 12px; font: 500 11.5px/1.4 var(--mono, monospace); color: rgba(236, 230, 218, .62); border-bottom: 1px solid rgba(255, 255, 255, .07); overflow-wrap: anywhere; }
+.code-approval-files .script-code { max-height: 40vh; padding: 10px 12px; font-size: 12px; }
+.code-approval-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.code-approval-foot small { margin-inline-end: auto; color: var(--faint); }
+.code-approval-foot .btn { height: 34px; padding: 0 16px; border-radius: 999px; }
+@media (prefers-reduced-motion: reduce) { .code-approval { animation: none; } }

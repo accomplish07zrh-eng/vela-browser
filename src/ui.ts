@@ -531,6 +531,8 @@ export interface UiRuntimeOptions {
   health?: UiHealthMetadata | null;
   /** Proxy changes an AI asked for, waiting for a person (see proxy-approvals.ts). */
   proxyApprovals?: import("./proxy-approvals.ts").ProxyApprovalQueue;
+  /** Scripts and plugins an AI asked to save, waiting for a person (see code-approvals.ts). */
+  codeApprovals?: import("./code-approvals.ts").CodeApprovalQueue;
   timezoneFetch?: FetchLike;
   proxyCheck?: (proxy: ProxySpec) => Promise<ProxyCheckResult>;
   extensionFetch?: ExtensionFetch;
@@ -829,32 +831,61 @@ export async function handleUiRequest(
     }
   }
 
-  // AI proxy changes: the questions waiting for a person, the answers, and the standing policy.
-  if (pathname === "/ui/api/proxy-approvals" && req.method === "GET") {
-    let policy: string = "ask";
-    try { policy = options.appConfig?.read().aiProxyChanges ?? "ask"; } catch {}
-    return noStoreJson({ ok: true, pending: options.proxyApprovals?.list() ?? [], policy });
-  }
-  if (pathname.startsWith("/ui/api/proxy-approvals/") && req.method === "POST") {
-    const rejected = rejectUntrustedJsonMutation(req);
-    if (rejected) return rejected;
-    const body = await req.json().catch(() => null) as Record<string, unknown> | null;
-    if (pathname === "/ui/api/proxy-approvals/policy") {
-      const policy = body?.policy;
-      if (policy !== "ask" && policy !== "allow_pool" && policy !== "deny") return noStoreJson({ ok: false, error: "Invalid policy" }, 400);
-      if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 500);
-      const config = options.appConfig.read();
-      const { aiProxyChanges: _old, ...rest } = config;
-      options.appConfig.write(policy === "ask" ? rest : { ...rest, aiProxyChanges: policy });
-      return noStoreJson({ ok: true, policy });
+  // AI proxy & code changes: pending questions, user answers, and standing policies.
+  const approvalRoute = async (
+    prefix: string,
+    policies: readonly string[],
+    readPolicy: () => string | undefined,
+    writePolicy: (next: string) => void,
+    queue: { list(): unknown[]; answer(id: string, approve: boolean): boolean } | undefined,
+  ): Promise<Response | null> => {
+    if (pathname === prefix && req.method === "GET") {
+      let policy = "ask";
+      try { policy = readPolicy() ?? "ask"; } catch {}
+      return noStoreJson({ ok: true, pending: queue?.list() ?? [], policy });
     }
-    if (pathname === "/ui/api/proxy-approvals/answer") {
-      if (typeof body?.id !== "string" || typeof body.approve !== "boolean") return noStoreJson({ ok: false, error: "Invalid answer" }, 400);
-      const answered = options.proxyApprovals?.answer(body.id, body.approve) ?? false;
-      return noStoreJson({ ok: answered, ...(answered ? {} : { error: "This request is no longer waiting" }) }, answered ? 200 : 409);
+    if (pathname.startsWith(`${prefix}/`) && req.method === "POST") {
+      const rejected = rejectUntrustedJsonMutation(req);
+      if (rejected) return rejected;
+      const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+      if (pathname === `${prefix}/policy`) {
+        const policy = body?.policy;
+        if (typeof policy !== "string" || !policies.includes(policy)) return noStoreJson({ ok: false, error: "Invalid policy" }, 400);
+        if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 500);
+        writePolicy(policy);
+        return noStoreJson({ ok: true, policy });
+      }
+      if (pathname === `${prefix}/answer`) {
+        if (typeof body?.id !== "string" || typeof body.approve !== "boolean") return noStoreJson({ ok: false, error: "Invalid answer" }, 400);
+        const answered = queue?.answer(body.id, body.approve) ?? false;
+        return noStoreJson({ ok: answered, ...(answered ? {} : { error: "This request is no longer waiting" }) }, answered ? 200 : 409);
+      }
+      return noStoreJson({ ok: false, error: "Unknown approval operation" }, 404);
     }
-    return noStoreJson({ ok: false, error: "Unknown approval operation" }, 404);
-  }
+    return null;
+  };
+  const proxyApprovalResponse = await approvalRoute(
+    "/ui/api/proxy-approvals",
+    ["ask", "allow_pool", "deny"],
+    () => options.appConfig?.read().aiProxyChanges,
+    (policy) => {
+      const { aiProxyChanges: _old, ...rest } = options.appConfig!.read();
+      options.appConfig!.write(policy === "ask" ? rest : { ...rest, aiProxyChanges: policy as "allow_pool" | "deny" });
+    },
+    options.proxyApprovals,
+  );
+  if (proxyApprovalResponse) return proxyApprovalResponse;
+  const codeApprovalResponse = await approvalRoute(
+    "/ui/api/code-approvals",
+    ["ask", "allow", "deny"],
+    () => options.appConfig?.read().aiCodeChanges,
+    (policy) => {
+      const { aiCodeChanges: _old, ...rest } = options.appConfig!.read();
+      options.appConfig!.write(policy === "ask" ? rest : { ...rest, aiCodeChanges: policy as "allow" | "deny" });
+    },
+    options.codeApprovals,
+  );
+  if (codeApprovalResponse) return codeApprovalResponse;
 
   if (pathname === "/ui/api/proxy-pool" || pathname.startsWith("/ui/api/proxy-pool/")) {
     if (remote) return noStoreJson({ ok: false, error: "The proxy pool is unavailable in legacy remote mode" }, 400);

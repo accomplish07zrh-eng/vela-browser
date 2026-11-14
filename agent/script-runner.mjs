@@ -81,9 +81,9 @@ async function run(input) {
 
 function errorText(error, input) {
   const text = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  return input?.engine === "firefox" && typeof input.endpoint === "string"
-    ? text.replaceAll(input.endpoint, "private Firefox endpoint")
-    : text;
+  if (typeof input?.endpoint !== "string" || !input.endpoint) return text;
+  const label = input.engine === "firefox" ? "private Firefox endpoint" : "private browser endpoint";
+  return text.replaceAll(input.endpoint, label);
 }
 
 let input;

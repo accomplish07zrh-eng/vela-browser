@@ -56,7 +56,7 @@ async function run() {
   if (!Number.isSafeInteger(browserPid) || browserPid <= 0) { await context.close(); throw error("runtime_unavailable"); }
   const workbench = new ContextWorkbench(context);
   const devtools = new BrowserDevtools(context);
-  const plugins = new PluginHost({ context, engine: "webkit", profileId: input.profileId, devtools });
+  const plugins = new PluginHost({ context, engine: "webkit", profileId: input.profileId, devtools, log: (msg) => process.stderr.write(`${msg}\n`) });
   // What the user downloads lands in their Downloads folder, not in Playwright's temporary one.
   keepDownloads(context);
   let official, humanizer;
@@ -173,14 +173,14 @@ async function run() {
       const pending = concurrent ? operate(value.operation, value.payload) : queue.then(() => operate(value.operation, value.payload));
       if (!concurrent) queue = pending.catch(() => {});
       const result = await pending;
-      if (value.operation === "close") { closing = true; await closeOfficial(); devtools.dispose(); await context.close(); }
+      if (value.operation === "close") { closing = true; await closeOfficial(); devtools.dispose(); plugins.dispose(); await context.close(); }
       send(response, 200, { ok: true, result });
       if (closing) { server.close(); server.closeIdleConnections(); }
     } catch (caught) {
       send(response, 400, { ok: false, error: { code: caught?.code || "operation_failed", message: "WebKit owner operation failed", ...(caught?.details ? { details: caught.details } : {}) } });
     }
   })(); });
-  const shutdown = () => { closing = true; devtools.dispose(); server.close(); server.closeIdleConnections(); void closeOfficial().finally(() => context.close()).catch(() => {}); };
+  const shutdown = () => { closing = true; devtools.dispose(); plugins.dispose(); server.close(); server.closeIdleConnections(); void closeOfficial().finally(() => context.close()).catch(() => {}); };
   context.once("close", shutdown);
   try { await new Promise((resolve, reject) => { server.once("error", reject); server.listen(Number(address.port), address.hostname, resolve); }); }
   catch (caught) { await context.close().catch(() => {}); throw caught; }

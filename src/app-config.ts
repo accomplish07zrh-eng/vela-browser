@@ -23,6 +23,8 @@ export interface AppConfig {
   disabledPlugins?: string[];
   /** Whether an AI may change a profile's proxy: ask each time (absent), allow pool nodes, or never. */
   aiProxyChanges?: "allow_pool" | "deny";
+  /** Whether scripts and plugins an AI writes are saved: ask each time (absent), always, or never. */
+  aiCodeChanges?: "allow" | "deny";
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -58,6 +60,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     ...(Array.isArray(raw.disabledPlugins) && raw.disabledPlugins.some(id => typeof id === "string")
       ? { disabledPlugins: [...new Set(raw.disabledPlugins.filter((id): id is string => typeof id === "string" && id.length <= 64))].sort() } : {}),
     ...(raw.aiProxyChanges === "allow_pool" || raw.aiProxyChanges === "deny" ? { aiProxyChanges: raw.aiProxyChanges } : {}),
+    ...(raw.aiCodeChanges === "allow" || raw.aiCodeChanges === "deny" ? { aiCodeChanges: raw.aiCodeChanges } : {}),
   };
 }
 

@@ -1054,5 +1054,20 @@
   "ids must be a list": "ids 必须是列表",
   "Choose a profile": "请选择一个环境",
   "The proxy pool is unavailable in legacy remote mode": "旧版远程模式下不可用代理池",
-  "Change exit": "更换出口"
+  "Change exit": "更换出口",
+  "Code from an AI": "AI 写的代码",
+  "{client} wants to save a new script": "{client} 想保存一个新脚本",
+  "{client} wants to change a script": "{client} 想修改脚本",
+  "{client} wants to add a plugin": "{client} 想添加一个插件",
+  "{client} wants to change a plugin": "{client} 想修改插件",
+  "It runs on this computer with your rights. Read it before you allow it.": "它会在本机以你的权限运行，请先看过代码再决定是否允许。",
+  "Hide the code": "收起代码",
+  "Read the code ({count} lines)": "查看代码（共 {count} 行）",
+  "Scripts and plugins written by AI": "AI 写的脚本和插件",
+  "Ask each time": "每次询问",
+  "Save directly": "直接保存",
+  "Not allowed": "不允许",
+  "Writing guide": "编写指南",
+  "Guide topic": "指南主题",
+  "AI automation": "AI 操控"
 }

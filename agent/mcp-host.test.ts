@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -556,4 +558,180 @@ test("MCP proxy tools: list and check the pool, change a profile's proxy as this
 
   await client.close();
   await host.close();
+});
+
+test("MCP lists the guide, profile update, script and plugin tools and serves built-in guides", async () => {
+  class CodeRuntime extends FakeRuntime {
+    override async call(method: string, params: Record<string, unknown> = {}): Promise<any> {
+      if (["scripts.list", "scripts.get", "scripts.save", "scripts.run", "scripts.stop", "plugins.save"].includes(method)) {
+        this.calls.push({ method, params: structuredClone(params) });
+        if (method === "scripts.list") return { scripts: [{ id: "s1", name: "Title", language: "javascript" }] };
+        if (method === "scripts.get") return { script: { id: "s1", name: "Title", language: "javascript", source: "export default async () => {};" } };
+        if (method === "scripts.save") return { script: { id: "s1", name: params.name, language: params.language, revision: 1 } };
+        if (method === "scripts.run") return { run: { id: "r1", status: "running" } };
+        if (method === "scripts.stop") return { run: { id: "r1", status: "stopping" } };
+        if (method === "plugins.save") return { pluginId: params.pluginId, tools: ["plugin_demo_read"] };
+      }
+      if (method === "scripts.status") {
+        this.calls.push({ method, params: structuredClone(params) });
+        return { run: { id: "r1", status: "finished" } };
+      }
+      if (method === "scripts.log") {
+        this.calls.push({ method, params: structuredClone(params) });
+        return { text: "ok\n", nextOffset: 3 };
+      }
+      if (method === "plugins.list") {
+        this.calls.push({ method, params: structuredClone(params) });
+        return { plugins: [{ id: "demo", name: "Demo", version: "1.0.0", description: "Desc", tools: [{ toolName: "plugin_demo_read" }] }] };
+      }
+      return super.call(method, params);
+    }
+  }
+
+  const runtime = new CodeRuntime();
+  const host = await createVelaBrowserMcp({ discovered: { client: runtime }, playwright: new FakePlaywright() });
+  const client = new Client({ name: "Claude Code", version: "1" }, { capabilities: {} });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([host.server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const tools = Object.fromEntries((await client.listTools()).tools.map((tool) => [tool.name, tool]));
+    for (const expected of [
+      "vela_guide", "vela_profile_update", "vela_scripts_list", "vela_script_read",
+      "vela_script_save", "vela_script_run", "vela_script_run_status", "vela_script_stop",
+      "vela_plugins_list", "vela_plugin_save",
+    ]) {
+      expect(tools[expected]).toBeDefined();
+    }
+    expect(tools.vela_guide?.annotations?.readOnlyHint).toBe(true);
+
+    const enGuide: any = await client.callTool({ name: "vela_guide", arguments: { topic: "scripts" } });
+    expect(enGuide.isError).not.toBe(true);
+    expect(enGuide.content[0].text).toContain("# Writing scripts");
+
+    const zhGuide: any = await client.callTool({ name: "vela_guide", arguments: { topic: "plugins", language: "zh-CN" } });
+    expect(zhGuide.isError).not.toBe(true);
+    expect(zhGuide.content[0].text).toContain("# 插件编写指南");
+
+    const resources = await client.listResources();
+    expect(resources.resources.map((r) => r.uri)).toContain("vela://guide/en/scripts");
+    expect(resources.resources.map((r) => r.uri)).toContain("vela://guide/zh-CN/plugins");
+    const readRes = await client.readResource({ uri: "vela://guide/zh-CN/automation" });
+    expect((readRes.contents[0] as { text?: string }).text).toContain("# 用 AI 操控 Vela Browser");
+
+    await client.callTool({ name: "vela_profile_update", arguments: { profileId: "p1", name: "Renamed", group: "G", tags: ["a"] } });
+    expect(runtime.calls.at(-1)).toEqual({ method: "profiles.update", params: { profileId: "p1", set: { name: "Renamed", group: "G", tags: ["a"] } } });
+
+    await client.callTool({ name: "vela_script_save", arguments: { name: "Demo", language: "javascript", source: "export default async () => {};" } });
+    expect(runtime.calls.at(-1)).toEqual({
+      method: "scripts.save",
+      params: { name: "Demo", language: "javascript", source: "export default async () => {};", client: "Claude Code" },
+    });
+
+    const runStatus: any = await client.callTool({ name: "vela_script_run_status", arguments: { logOffset: 0 } });
+    expect(runStatus.structuredContent).toEqual({ run: { id: "r1", status: "finished" }, log: { text: "ok\n", nextOffset: 3 } });
+
+    const pluginsListed: any = await client.callTool({ name: "vela_plugins_list", arguments: {} });
+    expect(pluginsListed.structuredContent).toEqual({
+      plugins: [{ id: "demo", name: "Demo", version: "1.0.0", description: "Desc", tools: ["plugin_demo_read"] }],
+    });
+
+    const readScript: any = await client.callTool({ name: "vela_script_read", arguments: { scriptId: "s1" } });
+    expect(readScript.structuredContent?.script?.id).toBe("s1");
+
+    const startedRun: any = await client.callTool({ name: "vela_script_run", arguments: { scriptId: "s1", profileIds: ["p1"] } });
+    expect(startedRun.structuredContent?.run?.id).toBe("r1");
+
+    const stoppedRun: any = await client.callTool({ name: "vela_script_stop", arguments: {} });
+    expect(stoppedRun.structuredContent?.run?.status).toBe("stopping");
+
+    const savedPlugin: any = await client.callTool({
+      name: "vela_plugin_save",
+      arguments: {
+        pluginId: "demo",
+        manifest: { name: "Demo", version: "1.0.0", tools: [{ name: "read", description: "Read" }] },
+        module: "export default () => ({ read: () => 1 });",
+      },
+    });
+    expect(savedPlugin.structuredContent?.pluginId).toBe("demo");
+    expect(tools.vela_script_save?.inputSchema?.properties?.scriptId).toMatchObject({ minLength: 1 });
+    expect((tools.vela_script_run?.inputSchema?.properties?.concurrency as any)?.description).toContain("Defaults to 10.");
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
+test("plugin tools with pdf in their name work on Firefox, and Chromium refreshes plugins on open(select: false) and call", async () => {
+  const ffRuntime = new FirefoxRuntime("firefox");
+  const origCall = ffRuntime.call.bind(ffRuntime);
+  ffRuntime.call = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === "firefox.tools.list") {
+      return {
+        tools: [
+          { name: "browser_snapshot", description: "Snap", inputSchema: { type: "object", properties: {} } },
+          { name: "browser_pdf_save", description: "PDF", inputSchema: { type: "object", properties: {} } },
+          { name: "plugin_pdf_reader_read", description: "Reads PDF metadata", inputSchema: { type: "object", properties: {} } },
+        ],
+      };
+    }
+    if (method === "firefox.tools.call") {
+      ffRuntime.calls.push({ method, params: structuredClone(params) });
+      return { content: [{ type: "text", text: `called:${params.name}` }] };
+    }
+    return origCall(method, params);
+  };
+  const ffHost = await createVelaBrowserMcp({ discovered: { client: ffRuntime }, playwright: new FakePlaywright() });
+  const ffClient = new Client({ name: "Test", version: "1" }, { capabilities: {} });
+  const [s1, c1] = InMemoryTransport.createLinkedPair();
+  await Promise.all([ffHost.server.connect(s1), ffClient.connect(c1)]);
+  try {
+    await ffClient.callTool({ name: "vela_browser_open", arguments: { profileId: "ff-1" } });
+    const ffTools = (await ffClient.listTools()).tools.map((t) => t.name);
+    expect(ffTools).not.toContain("browser_pdf_save");
+    expect(ffTools).toContain("plugin_pdf_reader_read");
+    const callRes: any = await ffClient.callTool({ name: "plugin_pdf_reader_read", arguments: {} });
+    expect(callRes.isError).not.toBe(true);
+    expect(callRes.content[0].text).toBe("called:plugin_pdf_reader_read");
+  } finally {
+    await ffClient.close();
+    await ffHost.close();
+  }
+
+  let enabled = false;
+  class DynamicPluginRuntime extends FakeRuntime {
+    override async call(method: string, params: Record<string, unknown> = {}) {
+      if (method === "plugins.list") {
+        this.calls.push({ method, params: structuredClone(params) });
+        return {
+          plugins: enabled
+            ? [{ id: "dyn", name: "Dyn", version: "1.0.0", revision: "1", module: resolve(tmpdir(), "plugins", "dyn", "index.mjs"), tools: [{ name: "ping", toolName: "plugin_dyn_ping", title: "Ping", description: "Ping", readOnly: true, inputSchema: { type: "object", properties: {} } }] }]
+            : [],
+        };
+      }
+      return super.call(method, params);
+    }
+  }
+  const crRuntime = new DynamicPluginRuntime();
+  const crPlaywright = new FakePlaywright();
+  const crHost = await createVelaBrowserMcp({ discovered: { client: crRuntime }, playwright: crPlaywright });
+  const crClient = new Client({ name: "Test", version: "1" }, { capabilities: {} });
+  const [s2, c2] = InMemoryTransport.createLinkedPair();
+  await Promise.all([crHost.server.connect(s2), crClient.connect(c2)]);
+  try {
+    await crClient.callTool({ name: "vela_browser_open", arguments: { profileId: "cr-1", select: true } });
+    expect((await crClient.listTools()).tools.map((t) => t.name)).not.toContain("plugin_dyn_ping");
+
+    // Enable plugin then reopen with select: false -> tools refresh for already-attached profile.
+    enabled = true;
+    await crClient.callTool({ name: "vela_browser_open", arguments: { profileId: "cr-1", select: false } });
+    expect((await crClient.listTools()).tools.map((t) => t.name)).toContain("plugin_dyn_ping");
+
+    // Disable plugin while still selected -> next plugin tool call refreshes and refuses disabled plugin tool.
+    enabled = false;
+    const disabledCall: any = await crClient.callTool({ name: "plugin_dyn_ping", arguments: {} });
+    expect(disabledCall.isError).toBe(true);
+  } finally {
+    await crClient.close();
+    await crHost.close();
+  }
 });

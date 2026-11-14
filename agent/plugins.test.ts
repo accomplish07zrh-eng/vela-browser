@@ -109,3 +109,20 @@ test("a tool may return its own MCP content, or any plain value", async () => {
   expect(await host.call(specs, "plugin_fixture_read", {})).toEqual({ content: [{ type: "text", text: "custom" }] });
   expect((await host.call(specs, "plugin_fixture_list", {})).structuredContent).toEqual({ value: [1, 2] });
 });
+
+test("vela.log handles circular and BigInt values safely without throwing", async () => {
+  const logs: string[] = [];
+  const module = moduleFile(`export default (vela) => ({
+    read() {
+      const circular = {};
+      circular.self = circular;
+      vela.log("hi", circular, 42n);
+      return { ok: true };
+    },
+  });`);
+  const host = new PluginHost({ context: { pages: () => [] }, engine: "chromium", profileId: "a", log: (m: string) => logs.push(m) });
+  const result = await host.call(spec(module), "plugin_fixture_read", {});
+  expect(result.isError).not.toBe(true);
+  expect(logs[0]).toContain("[plugin fixture] hi");
+  expect(logs[0]).toContain("42");
+});

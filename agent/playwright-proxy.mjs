@@ -78,7 +78,7 @@ export class PlaywrightToolProxy {
 
     try {
       this.devtools = new BrowserDevtools(context);
-      this.plugins = new PluginHost({ context, engine: "chromium", profileId, devtools: this.devtools });
+      this.plugins = new PluginHost({ context, engine: "chromium", profileId, devtools: this.devtools, log: (msg) => process.stderr.write(`${msg}\n`) });
       const official = await connectOfficial(
         this.version,
         async () => nonClosingContext(context),

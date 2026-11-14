@@ -15,7 +15,7 @@ const tables = {
 // source, or the translation is dead.
 test("every bundled locale key is an English string used in the web source", async () => {
   const sources = await Promise.all(
-    ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "titlebar.tsx", "select.tsx", "dialog.tsx", "proxy-pool.tsx", "../src/workbench.ts"]
+    ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "approval-queue.tsx", "code-approvals.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "titlebar.tsx", "select.tsx", "dialog.tsx", "proxy-pool.tsx", "../src/workbench.ts"]
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
   const source = sources.join("\n").replaceAll("\r\n", "\n");
@@ -23,6 +23,22 @@ test("every bundled locale key is an English string used in the web source", asy
     const stale = Object.keys(table).filter((key) => !key.startsWith("language.") && !source.includes(key));
     expect({ locale, stale }).toEqual({ locale, stale: [] });
   }
+});
+
+test("zh-CN covers all literal translation keys in the approval, script, and pool panels", async () => {
+  const files = ["approval-queue.tsx", "code-approvals.tsx", "scripts.tsx", "proxy-pool.tsx"];
+  const missing: string[] = [];
+  for (const file of files) {
+    const text = await Bun.file(new URL(`./${file}`, import.meta.url)).text();
+    for (const match of text.matchAll(/\bt\(\s*"([^"]+)"/g)) {
+      const key = match[1]!;
+      if (!(key in tables["zh-CN"]!)) missing.push(`${file}: ${key}`);
+    }
+  }
+  for (const key of ["Scripts and plugins written by AI", "Ask each time", "Save directly", "Not allowed", "Could not save"]) {
+    if (!(key in tables["zh-CN"]!)) missing.push(`app.tsx: ${key}`);
+  }
+  expect(missing).toEqual([]);
 });
 
 test("t() returns the translation for the active language", () => {

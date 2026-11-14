@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.8",
+  "aliasModeVersion": "0.1.9",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -432,6 +432,287 @@
         },
         "required": [
           "steps"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_guide",
+      "description": "Read Vela Browser's built-in guide before larger work: \"automation\" (driving profiles efficiently and what needs a person), \"scripts\" (writing JavaScript or Python scripts that run in many profiles) or \"plugins\" (writing plugins that add tools).",
+      "annotations": {
+        "title": "Read a Vela Browser guide",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "enum": [
+              "automation",
+              "scripts",
+              "plugins"
+            ]
+          },
+          "language": {
+            "type": "string",
+            "description": "Optional. zh-CN for Chinese; English otherwise."
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_profile_update",
+      "description": "Rename a profile, move it to another group or set its tags. Its fingerprint, proxy and sign-ins cannot be changed this way.",
+      "annotations": {
+        "title": "Update a profile's name, group or tags",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "group": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 60
+            },
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "profileId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_scripts_list",
+      "description": "List the saved scripts: id, name, language, description and revision.",
+      "annotations": {
+        "title": "List Vela Browser scripts",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_script_read",
+      "description": "Read one saved script, with its source.",
+      "annotations": {
+        "title": "Read a Vela Browser script",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scriptId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "scriptId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_script_save",
+      "description": "Save a new script, or a new version of one (pass scriptId). Read vela_guide topic \"scripts\" first. The user reads the code and approves it in Vela Browser unless they allowed AI code; the call waits for that answer and saves nothing when it is refused.",
+      "annotations": {
+        "title": "Save a Vela Browser script",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scriptId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional. The script to replace."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "javascript",
+              "python"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "name",
+          "language",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_script_run",
+      "description": "Run a saved script once in each listed profile, several browsers at a time. Closed profiles are opened for the run. Returns the run; follow it with vela_script_run_status. Saved sign-ins are never passed to a run an AI starts.",
+      "annotations": {
+        "title": "Run a Vela Browser script",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scriptId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "profileIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 500
+          },
+          "inputs": {
+            "type": "object",
+            "description": "Given to the script as inputs."
+          },
+          "concurrency": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Browsers at a time. Defaults to 10."
+          }
+        },
+        "required": [
+          "scriptId",
+          "profileIds"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_script_run_status",
+      "description": "The current or last script run: each profile's status and the run's log from logOffset on. Pass the returned nextOffset to read only what is new.",
+      "annotations": {
+        "title": "Read a script run",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "logOffset": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_script_stop",
+      "description": "Stop the current script run. Profiles that already finished keep their results.",
+      "annotations": {
+        "title": "Stop a script run",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_plugins_list",
+      "description": "List the enabled plugins and the tools they add.",
+      "annotations": {
+        "title": "List Vela Browser plugins",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_plugin_save",
+      "description": "Save a plugin: its vela-plugin.json manifest and its module. Read vela_guide topic \"plugins\" first. The user reads the code and approves it in Vela Browser unless they allowed AI code; its tools appear the next time a browser is selected.",
+      "annotations": {
+        "title": "Save a Vela Browser plugin",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pluginId": {
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$"
+          },
+          "manifest": {
+            "type": "object",
+            "description": "The vela-plugin.json content; its id is set to pluginId."
+          },
+          "module": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The module's source (export default function setup(vela) { ... })."
+          }
+        },
+        "required": [
+          "pluginId",
+          "manifest",
+          "module"
         ],
         "additionalProperties": false
       }

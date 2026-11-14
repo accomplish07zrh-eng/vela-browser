@@ -2584,3 +2584,35 @@ test("mutations enforce cross-origin/content-type guards, concurrent edit confli
   expect(s.getProfile("k1d0cd11")!.proxy).toBeNull();
   s.close();
 });
+
+test("plugins routes list, create the example plugin, toggle state, and enforce CSRF", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vela-ui-plugins-"));
+  const s = new ProfileStore(":memory:");
+  const appConfig = new AppConfigStore(join(root, "config.json"));
+  const call = (path: string, body?: unknown, headers: Record<string, string> = { "Content-Type": "application/json" }) =>
+    handleUiRequest(
+      new Request(`http://127.0.0.1:50400${path}`, body === undefined ? { method: "GET" } : { method: "POST", headers, body: JSON.stringify(body) }),
+      {} as never,
+      s,
+      null,
+      { paths: { root } as any, appConfig },
+    ).then((r) => r!);
+  try {
+    expect(await (await call("/ui/api/plugins")).json()).toMatchObject({ ok: true, plugins: [] });
+    expect((await call("/ui/api/plugins/example", {}, { "Sec-Fetch-Site": "cross-site", "Content-Type": "application/json" })).status).toBe(403);
+    const ex = await (await call("/ui/api/plugins/example", {})).json();
+    expect(ex.ok).toBe(true);
+    expect(ex.plugins.map((p: any) => p.id)).toEqual(["page-info"]);
+
+    const disabled = await (await call("/ui/api/plugins/state", { id: "page-info", enabled: false })).json();
+    expect(disabled.plugins[0].enabled).toBe(false);
+    expect(appConfig.read().disabledPlugins).toEqual(["page-info"]);
+
+    const enabled = await (await call("/ui/api/plugins/state", { id: "page-info", enabled: true })).json();
+    expect(enabled.plugins[0].enabled).toBe(true);
+    expect(appConfig.read().disabledPlugins).toBeUndefined();
+  } finally {
+    s.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

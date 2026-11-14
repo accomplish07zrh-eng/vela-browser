@@ -135,7 +135,7 @@ test("retired account methods cannot access a Cloud connection", async () => {
     ...h.deps,
     ...({ cloudConnection: new Proxy({}, { get() { throw new Error("retired Cloud connection accessed"); } }) } as any),
   });
-  for (const method of ["mcp.connectors.create", "mcp.connectors.list", "mcp.connectors.revoke", "profiles.update", "profiles.replaceProxies"]) {
+  for (const method of ["mcp.connectors.create", "mcp.connectors.list", "mcp.connectors.revoke", "profiles.replaceProxies"]) {
     expect(await session.enqueue(wire(method))).toMatchObject({ ok: false, error: { code: "accounts_removed" } });
   }
   expect(h.events).toEqual([]);
@@ -466,6 +466,12 @@ test.each([
 // ---- Proxy pool and proxy changes for AI clients ----
 
 import { ProfileStore } from "./store.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CodeApprovalQueue, type AiCodePolicy } from "./code-approvals.ts";
+import { scanPlugins } from "./plugins.ts";
+import { ScriptLibrary } from "./scripts.ts";
 import { ProxyApprovalQueue, type AiProxyPolicy } from "./proxy-approvals.ts";
 import { parseSubscription } from "./subscription.ts";
 
@@ -797,5 +803,226 @@ test("setProfileProxy updates attached session state when switching reopens an o
     const closed = await h.session.enqueue(wire("browser.close", { profileId: "profile1" }));
     expect(closed).toMatchObject({ ok: true, result: { closed: true } });
     expect(h.store.getLaunch("profile1")).toBeNull();
+  } finally { h.close(); }
+});
+
+test("profiles.update only allows name, group and tags and rejects other fields", async () => {
+  const h = poolHarness("ask");
+  try {
+    const before = h.store.getProfile("profile1")!;
+    for (const field of ["proxy", "username", "password", "platform", "resolution", "timezone"]) {
+      const rejected = await h.session.enqueue(wire("profiles.update", {
+        profileId: "profile1",
+        set: { name: "Renamed", [field]: "x" },
+      }));
+      expect(rejected.ok).toBe(false);
+      expect(rejected.error?.code).toBe("invalid_request");
+      expect(rejected.error?.message).toContain(field);
+    }
+    expect(h.store.getProfile("profile1")!.name).toBe(before.name);
+
+    const ok = await h.session.enqueue(wire("profiles.update", {
+      profileId: "profile1",
+      set: { name: "  Shop EU  ", group: "  EU  ", tags: [" vip ", "vip", "", "retail"] },
+    }));
+    expect(ok).toEqual({
+      protocol: AGENT_CONTROL_PROTOCOL,
+      id: 1,
+      ok: true,
+      result: { profile: { id: "profile1", name: "Shop EU", group: "EU", tags: ["vip", "retail"] } },
+    });
+    const after = h.store.getProfile("profile1")!;
+    expect(after.name).toBe("Shop EU");
+    expect(after.group).toBe("EU");
+    expect(after.tags).toEqual(["vip", "retail"]);
+    expect(after.proxy).toEqual(before.proxy);
+  } finally { h.close(); }
+});
+
+function codeHarness(policy: AiCodePolicy) {
+  const dir = mkdtempSync(join(tmpdir(), "vela-agent-code-"));
+  const store = new ProfileStore(":memory:");
+  store.upsertProfile({ ...buildNewProfile({ name: "One", group: "g" }, () => false), id: "p1" });
+  const library = new ScriptLibrary(dir, false);
+  const startCalls: unknown[] = [];
+  const runner = {
+    start: (req: unknown) => {
+      startCalls.push(req);
+      return { id: "run-1", scriptId: (req as any).scriptId, scriptName: "Demo", status: "running", profiles: [] };
+    },
+    status: () => null,
+    log: () => ({ text: "", nextOffset: 0 }),
+    stop: async () => null,
+  };
+  const codeApprovals = new CodeApprovalQueue();
+  const pluginsRoot = join(dir, "plugins");
+  let currentPolicy = policy;
+  const session = new AgentControlSession({
+    launcher: { reconcileOrphans: async () => {}, certifiedActive: async () => false } as any,
+    store,
+    admission: { run: async (_req: unknown, fn: () => Promise<unknown>) => await fn() } as any,
+    scripts: { library, runner: runner as any },
+    pluginsRoot,
+    codeApprovals,
+    aiCodePolicy: () => currentPolicy,
+  });
+  return {
+    dir, store, library, startCalls, codeApprovals, pluginsRoot, session,
+    setPolicy: (next: AiCodePolicy) => { currentPolicy = next; },
+    close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); },
+  };
+}
+
+test("scripts.save obeys ask, allow and deny policies", async () => {
+  const h = codeHarness("ask");
+  try {
+    const scriptParams = { name: "Check title", description: "Reads title", language: "javascript", source: "export default async () => {};", client: "Claude Code" };
+
+    // ask: waits for approval; denial saves nothing.
+    const deniedReq = h.session.enqueue(wire("scripts.save", scriptParams));
+    await new Promise((r) => setTimeout(r, 20));
+    const [pendingDeny] = h.codeApprovals.list();
+    expect(pendingDeny).toMatchObject({ kind: "script", action: "create", title: "Check title", client: "Claude Code", detail: "javascript" });
+    h.codeApprovals.answer(pendingDeny!.id, false);
+    expect((await deniedReq).error?.code).toBe("approval_denied");
+    expect(await h.library.list()).toEqual([]);
+
+    // ask: approval saves the script.
+    const approvedReq = h.session.enqueue(wire("scripts.save", scriptParams));
+    await new Promise((r) => setTimeout(r, 20));
+    h.codeApprovals.answer(h.codeApprovals.list()[0]!.id, true);
+    const approvedRes = await approvedReq;
+    expect(approvedRes.ok).toBe(true);
+    const savedId = (approvedRes.result as { script: { id: string } }).script.id;
+    expect(await h.library.list()).toHaveLength(1);
+
+    // allow: updates immediately without queueing an approval.
+    h.setPolicy("allow");
+    const allowedRes = await h.session.enqueue(wire("scripts.save", { ...scriptParams, scriptId: savedId, source: "export default async () => { return 1; };" }));
+    expect(allowedRes.ok).toBe(true);
+    expect(h.codeApprovals.list()).toEqual([]);
+    expect((await h.library.get(savedId)).source).toContain("return 1");
+
+    // deny: rejects immediately without queueing an approval or changing the saved script.
+    h.setPolicy("deny");
+    const policyDenied = await h.session.enqueue(wire("scripts.save", { ...scriptParams, scriptId: savedId, source: "export default async () => { return 2; };" }));
+    expect(policyDenied.error?.code).toBe("approval_denied");
+    expect(h.codeApprovals.list()).toEqual([]);
+    expect((await h.library.get(savedId)).source).toContain("return 1");
+  } finally { h.close(); }
+});
+
+test("scripts.run always forces useCredentials=false", async () => {
+  const h = codeHarness("allow");
+  try {
+    const saved = await h.library.save({ name: "Run test", description: "", language: "javascript", source: "export default async () => {};" });
+    const started = await h.session.enqueue(wire("scripts.run", {
+      scriptId: saved.id,
+      profileIds: ["p1"],
+      inputs: { url: "https://example.com" },
+      useCredentials: true,
+      concurrency: 2,
+    }));
+    expect(started.ok).toBe(true);
+    expect(h.startCalls).toEqual([{
+      scriptId: saved.id,
+      profileIds: ["p1"],
+      inputs: { url: "https://example.com" },
+      useCredentials: false,
+      concurrency: 2,
+    }]);
+  } finally { h.close(); }
+});
+
+test("plugins.save rejects invalid manifests before asking or writing, and writes valid plugins when allowed", async () => {
+  const h = codeHarness("ask");
+  try {
+    const invalid = await h.session.enqueue(wire("plugins.save", {
+      pluginId: "bad-plugin",
+      manifest: { name: "Bad", version: "1.0.0", tools: [] },
+      module: "export default () => ({});",
+    }));
+    expect(invalid.ok).toBe(false);
+    expect(invalid.error?.code).toBe("invalid_request");
+    expect(h.codeApprovals.list()).toEqual([]);
+    expect(scanPlugins(h.pluginsRoot).infos).toEqual([]);
+
+    const badMain = await h.session.enqueue(wire("plugins.save", {
+      pluginId: "bad-main",
+      manifest: { name: "Bad", version: "1.0.0", main: "../outside.mjs", tools: [{ name: "read", description: "x" }] },
+      module: "export default () => ({});",
+    }));
+    expect(badMain.error?.code).toBe("invalid_request");
+    expect(h.codeApprovals.list()).toEqual([]);
+
+    h.setPolicy("allow");
+    const valid = await h.session.enqueue(wire("plugins.save", {
+      pluginId: "page-title",
+      manifest: { name: "Page title", version: "1.0.0", tools: [{ name: "read", description: "Read title.", readOnly: true }] },
+      module: "export default (vela) => ({ read: () => vela.profileId });",
+    }));
+    expect(valid.ok).toBe(true);
+    expect(valid.result).toMatchObject({ pluginId: "page-title", tools: ["plugin_page_title_read"] });
+    const scanned = scanPlugins(h.pluginsRoot);
+    expect(scanned.specs.map((spec) => spec.id)).toEqual(["page-title"]);
+  } finally { h.close(); }
+});
+
+test("pending code approvals do not block unrelated calls, include short scriptId on update, and cancel on disconnect", async () => {
+  const h = codeHarness("ask");
+  try {
+    const saved = await h.library.save({ name: "Shared Name", description: "", language: "javascript", source: "export default async () => {};" });
+    const other = await h.library.save({ name: "Shared Name", description: "", language: "python", source: "async def run(**_): pass" });
+
+    // Waiting approvals stay non-blocking for profiles.list and isolate updates by scriptId.
+    const req1 = h.session.enqueue(wire("scripts.save", {
+      scriptId: saved.id, name: "Shared Name", language: "javascript", source: "export default async () => 1;",
+    }));
+    const req2 = h.session.enqueue(wire("scripts.save", {
+      scriptId: other.id, name: "Shared Name", language: "python", source: "async def run(**_): return 2",
+    }));
+    const listed = await h.session.enqueue(wire("profiles.list"));
+    expect(listed.ok).toBe(true);
+    expect(h.codeApprovals.list()).toHaveLength(2);
+    expect(h.codeApprovals.list().map((item) => item.detail)).toEqual([
+      `javascript · ${saved.id.slice(0, 8)}`,
+      `python · ${other.id.slice(0, 8)}`,
+    ]);
+
+    // Disconnect cancels both pending approvals immediately instead of hanging 5 minutes.
+    await h.session.disconnect();
+    expect((await req1).error?.code).toBe("connection_closed");
+    expect((await req2).error?.code).toBe("connection_closed");
+    expect(h.codeApprovals.list()).toEqual([]);
+  } finally { h.close(); }
+});
+
+test("plugins.save rejects colliding tool names before requesting approval, and scripts.run validates concurrency strictly", async () => {
+  const h = codeHarness("ask");
+  try {
+    h.setPolicy("allow");
+    expect((await h.session.enqueue(wire("plugins.save", {
+      pluginId: "a-b",
+      manifest: { name: "AB", version: "1.0.0", tools: [{ name: "read", description: "r" }] },
+      module: "export default () => ({ read: () => 1 });",
+    }))).ok).toBe(true);
+
+    h.setPolicy("ask");
+    const clash = await h.session.enqueue(wire("plugins.save", {
+      pluginId: "a",
+      manifest: { name: "A", version: "1.0.0", tools: [{ name: "b_read", description: "clash" }] },
+      module: "export default () => ({ b_read: () => 2 });",
+    }));
+    expect(clash.ok).toBe(false);
+    expect(clash.error?.code).toBe("invalid_request");
+    expect(clash.error?.message).toContain("plugin_a_b_read");
+    expect(h.codeApprovals.list()).toEqual([]);
+
+    const saved = await h.library.save({ name: "S", description: "", language: "javascript", source: "export default async () => {};" });
+    const badConcurrency = await h.session.enqueue(wire("scripts.run", {
+      scriptId: saved.id, profileIds: ["p1"], concurrency: true,
+    }));
+    expect(badConcurrency.ok).toBe(false);
+    expect(badConcurrency.error?.code).toBe("invalid_request");
   } finally { h.close(); }
 });
