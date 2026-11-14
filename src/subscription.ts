@@ -673,6 +673,35 @@ export interface FetchedSubscription {
 export const SUBSCRIPTION_USER_AGENTS = ["clash.meta", "v2rayN/7.0"];
 const MAX_BYTES = 5 * 1024 * 1024;
 
+function ipv6Groups(ip: string): number[] | null {
+  const [head = "", tail, extra] = ip.split("::");
+  if (extra !== undefined) return null;
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const fill = tail === undefined ? 0 : 8 - left.length - right.length;
+  if (fill < 0) return null;
+  const groups = [...left, ...Array(fill).fill("0"), ...right].map((group) => Number.parseInt(group, 16));
+  return groups.length === 8 && groups.every((group) => Number.isInteger(group) && group >= 0 && group <= 0xffff) ? groups : null;
+}
+
+/**
+ * 198.18.0.0/15 and 2001:2::/48: the benchmark ranges a proxy client in TUN fake-ip mode (Clash,
+ * mihomo, sing-box) answers every name with, then routes through itself. They are never a local
+ * network, so a subscription that resolves there is still fetched.
+ */
+export function isFakeIpAddress(raw: string): boolean {
+  const ip = raw.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split(".").map(Number);
+    return a === 198 && (b === 18 || b === 19);
+  }
+  if (isIP(ip) !== 6) return false;
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
+  if (mapped) return isFakeIpAddress(mapped[1]!);
+  const groups = ipv6Groups(ip);
+  return !!groups && groups[0] === 0x2001 && groups[1] === 0x0002 && groups[2] === 0;
+}
+
 async function assertPublicSubscriptionTarget(
   target: URL,
   opts: { allowPrivate?: boolean; lookupHost?: (host: string) => Promise<string[]> },
@@ -689,7 +718,7 @@ async function assertPublicSubscriptionTarget(
   } catch {
     return;
   }
-  if (addresses.some((ip) => isNonPublicIp(ip))) {
+  if (addresses.some((ip) => isNonPublicIp(ip) && !isFakeIpAddress(ip))) {
     throw new SubscriptionError("The subscription link cannot resolve to a local or private address");
   }
 }

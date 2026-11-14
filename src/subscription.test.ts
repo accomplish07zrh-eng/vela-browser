@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   fetchSubscription,
+  isFakeIpAddress,
   isInfoEntry,
   parseShareLink,
   parseSubscription,
@@ -274,4 +275,17 @@ test("fetchSubscription blocks private/loopback targets and parseSubscription st
   const parsed = parseSubscription(dangerousSingBox);
   expect(parsed.nodes).toEqual([]);
   expect(parsed.unsupported).toEqual([{ name: "bad-nested", reason: "tls certificate_path" }]);
+});
+
+test("a proxy client's fake-ip answer is not a local network, a real one still is", async () => {
+  for (const ip of ["198.18.3.150", "198.19.255.1", "2001:2::349", "2001:0002:0000::1", "::ffff:198.18.0.7"]) expect(isFakeIpAddress(ip)).toBe(true);
+  for (const ip of ["198.17.0.1", "198.20.0.1", "192.168.1.1", "2001:2:1::1", "2001:db8::1", "1.1.1.1"]) expect(isFakeIpAddress(ip)).toBe(false);
+  const { fetchFn } = fakeServer({ "https://sub.example/a": () => new Response(Buffer.from(LINKS).toString("base64")) });
+  // Clash in TUN fake-ip mode answers every name like this; the subscription is still fetched.
+  const fetched = await fetchSubscription("https://sub.example/a", { fetchFn, lookupHost: async () => ["198.18.3.150", "2001:2::349"] });
+  expect(fetched.parsed.nodes.length).toBe(10);
+  // A name that resolves into the local network is still refused, also next to a fake-ip answer.
+  for (const addresses of [["192.168.1.20"], ["198.18.0.1", "127.0.0.1"], ["fd00::1"]]) {
+    await expect(fetchSubscription("https://sub.example/a", { fetchFn, lookupHost: async () => addresses })).rejects.toThrow("local or private address");
+  }
 });
