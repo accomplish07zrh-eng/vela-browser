@@ -1074,5 +1074,7 @@
   "Browser connection lost. Reconnect to try again.": "Соединение с браузером потеряно. Попробуйте переподключиться.",
   "A proxy client on this computer runs in TUN mode": "Клиент прокси на этом компьютере работает в режиме TUN",
   "Every profile's connection also passes through it, so traffic goes through two proxies and that client's rules decide the real exit. Switch the client to system-proxy mode, or add this rule at the top of its rules so Vela Browser connects directly:": "Каждое подключение окружения тоже проходит через него: трафик идёт через два прокси, а реальный выход определяют правила этого клиента. Переключите клиент в режим системного прокси или добавьте это правило в начало его правил, чтобы Vela Browser подключался напрямую:",
-  "Afterwards, check a profile on this page: its exit should be the node's address.": "После этого проверьте окружение на этой странице: его выходом должен быть адрес узла."
+  "Afterwards, check a profile on this page: its exit should be the node's address.": "После этого проверьте окружение на этой странице: его выходом должен быть адрес узла.",
+  "The pool is empty": "Пул пуст",
+  "Shares its exit with {count} profiles.": "Этот выход уже используют окружения: {count}."
 }
