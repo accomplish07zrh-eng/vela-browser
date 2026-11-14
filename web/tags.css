@@ -1,0 +1,54 @@
+/* Tags: a coloured dot and a soft tint, one tone per tag. Groups stay plain, so the two never look alike. */
+.tag-chip {
+  --tag: 38 40% 46%;
+  display: inline-flex; align-items: center; gap: 0; max-width: 160px; height: 22px; border-radius: 999px;
+  background: hsl(var(--tag) / .11); color: hsl(var(--tag-ink, var(--tag)));
+  font-size: 12px; line-height: 1; white-space: nowrap; vertical-align: middle;
+}
+.tag-chip > span, .tag-chip > button:not(.tag-chip-remove) { display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 0 9px 0 8px; }
+.tag-chip > button:not(.tag-chip-remove) { height: 100%; border: 0; border-radius: inherit; background: none; color: inherit; font: inherit; cursor: pointer; }
+.tag-chip span { overflow: hidden; text-overflow: ellipsis; }
+.tag-chip i { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: hsl(var(--tag)); }
+.tag-chip.clickable:hover { background: hsl(var(--tag) / .18); }
+.tag-chip.active { background: hsl(var(--tag) / .22); box-shadow: inset 0 0 0 1px hsl(var(--tag) / .45); }
+.tag-chip > i + span, .tag-chip > span:first-child:not(:only-child) { padding-right: 9px; }
+.tag-chip-remove { display: inline-grid; place-items: center; width: 18px; height: 18px; margin: 0 3px 0 -5px; padding: 0; border: 0; border-radius: 50%; background: none; color: inherit; font-size: 14px; line-height: 1; opacity: .6; cursor: pointer; }
+.tag-chip-remove:hover { opacity: 1; background: hsl(var(--tag) / .16); }
+
+.tag-chip.tone-0 { --tag: 14 52% 50%; --tag-ink: 14 45% 38%; }
+.tag-chip.tone-1 { --tag: 34 62% 44%; --tag-ink: 32 55% 32%; }
+.tag-chip.tone-2 { --tag: 88 30% 40%; --tag-ink: 88 32% 28%; }
+.tag-chip.tone-3 { --tag: 152 32% 38%; --tag-ink: 152 35% 26%; }
+.tag-chip.tone-4 { --tag: 190 38% 38%; --tag-ink: 192 40% 28%; }
+.tag-chip.tone-5 { --tag: 218 40% 52%; --tag-ink: 218 38% 38%; }
+.tag-chip.tone-6 { --tag: 262 26% 54%; --tag-ink: 262 24% 40%; }
+.tag-chip.tone-7 { --tag: 330 34% 52%; --tag-ink: 330 32% 38%; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tag-chip { --tag-ink: var(--tag); background: hsl(var(--tag) / .16); filter: brightness(1.25); } }
+:root[data-theme="dark"] .tag-chip { --tag-ink: var(--tag); background: hsl(var(--tag) / .16); filter: brightness(1.25); }
+
+.tag-list { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.tag-more { flex: 0 0 auto; color: var(--muted); font-size: 11.5px; padding: 0 2px; }
+
+.tag-input {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-height: 44px; padding: 7px 10px; border-radius: 14px;
+  color: var(--ink); background: var(--field-bg); border: 1px solid transparent; box-shadow: var(--sh-field); cursor: text;
+  transition: background .13s var(--ease), border-color .13s var(--ease), box-shadow .13s var(--ease);
+}
+.tag-input:hover { background: var(--field-bg-focus); }
+.tag-input:focus-within { background: var(--field-bg-focus); border-color: var(--line-strong); box-shadow: var(--ring); }
+.app .tag-input.tag-input input.tag-draft.tag-draft:is(*, :hover, :focus), .tag-input.tag-input input.tag-draft.tag-draft:is(*, :hover, :focus) { flex: 1 1 90px; min-width: 90px; height: 28px; padding: 0 4px; border: 0; border-radius: 0; outline: 0; background: transparent; box-shadow: none; font-size: 14px; color: inherit; }
+.tag-suggestions[popover], .tag-suggestions {
+  position: fixed; inset: auto; margin: 0; z-index: 80; display: grid; gap: 2px; padding: 5px; max-height: 260px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface, #fff); color: inherit; box-shadow: 0 12px 32px rgba(var(--shadow-rgb), .14);
+}
+.tag-suggestions button { display: flex; align-items: center; height: 32px; padding: 0 6px; border: 0; border-radius: 7px; background: none; cursor: pointer; text-align: left; }
+.tag-suggestions button:hover, .tag-suggestions button.active { background: var(--surface-hover); }
+
+/* The profile table: tags sit under the name; the tag filter shows as a chip you can clear. */
+.profile-name-tags { display: flex; margin-top: 4px; }
+.tag-filter-active { display: inline-flex; align-items: center; gap: 6px; }
+
+.tag-batch { display: grid; gap: 12px; }
+.tag-batch-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-batch-row .tag-chip > button { gap: 6px; }
+.tag-batch small { color: var(--muted); }

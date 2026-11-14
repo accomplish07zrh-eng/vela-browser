@@ -1,6 +1,7 @@
 /** Best-effort import- and launch-time timezone enrichment and shared SOCKS5 tunneling. */
 
 import { connect as netConnect, type Socket } from "node:net";
+import { upstreamDial } from "./egress-binding.ts";
 import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
 import type { ProxySpec } from "./types.ts";
 import { localeForCountry, localeForTimezone } from "./profile-locale.ts";
@@ -69,7 +70,8 @@ export async function openSocks5Tunnel(
   timeoutMs: number,
   onSocket?: (socket: Socket) => void,
 ): Promise<Socket> {
-  const socket = netConnect({ host: proxy.host, port: Number(proxy.port) });
+  // Only the proxy's own address: with the TUN bypass on, through the physical adapter.
+  const socket = netConnect({ host: proxy.host, port: Number(proxy.port), ...upstreamDial(proxy.host) });
   onSocket?.(socket);
   socket.setNoDelay(true);
   try {

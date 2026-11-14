@@ -157,7 +157,8 @@ export interface ScriptRun {
   profiles: Array<{ id: string; name: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled"; error?: string; warning?: string }>;
 }
 
-interface RunRequest { scriptId: string; profileIds: string[]; inputs: Record<string, unknown>; useCredentials: boolean; concurrency?: number }
+export interface ScriptRunStarter { kind: "ai" | "task" | "user"; name: string }
+interface RunRequest { scriptId: string; profileIds: string[]; inputs: Record<string, unknown>; useCredentials: boolean; concurrency?: number; startedBy?: ScriptRunStarter }
 interface RunnerInput {
   endpoint: string;
   engine?: "firefox" | "webkit";
@@ -306,6 +307,8 @@ export class ScriptSupervisor {
     root: string; library: ScriptLibrary; execute?: ScriptExecution;
     /** The downloaded Python runtime of the desktop app; a source checkout runs python3. */
     python?: PythonRuntime;
+    /** Told how each profile of a run ended, for the record of what scripts did. */
+    report?: (entry: { scriptName: string; profileId: string; profileName: string; ok: boolean; status: string; error?: string; startedBy?: ScriptRunStarter }) => void;
   }) {}
 
   pause(): () => void {
@@ -502,6 +505,13 @@ export class ScriptSupervisor {
             }
           }
           await session.disconnect();
+          try {
+            this.options.report?.({
+              scriptName: run.view.scriptName, profileId: item.id, profileName: this.options.store.getProfile(item.id)?.name ?? item.name,
+              ok: item.status === "succeeded", status: item.status, ...(item.error ? { error: item.error } : {}),
+              ...(request.startedBy ? { startedBy: request.startedBy } : {}),
+            });
+          } catch { /* the record never fails a run */ }
         }
       };
       const profiles = run.view.profiles.values();

@@ -17,6 +17,7 @@
 import net from "node:net";
 import tls from "node:tls";
 import { openSocks5Tunnel } from "./geoip.ts";
+import { upstreamDial } from "./egress-binding.ts";
 import type { ProxySpec } from "./types.ts";
 
 export interface UpstreamProxy {
@@ -290,8 +291,8 @@ function connectTunnel(
     return;
   }
   const upSock = track(up.type === "https"
-    ? tls.connect({ host: up.host, port: up.port, ...(net.isIP(up.host) ? {} : { servername: up.host }) })
-    : net.connect({ host: up.host, port: up.port }));
+    ? tls.connect({ host: up.host, port: up.port, ...(net.isIP(up.host) ? {} : { servername: up.host }), ...upstreamDial(up.host) })
+    : net.connect({ host: up.host, port: up.port, ...upstreamDial(up.host) }));
   upSock.on("error", (e) => { log(`upstream CONNECT error for ${target}: ${e.message}`); client.destroy(); });
   client.on("error", () => upSock.destroy());
   // In particular, cover a browser abandoning CONNECT before the upstream has
@@ -474,8 +475,8 @@ function plainHttp(
   ].join("\r\n");
 
   const upSock = track(up.type === "https"
-    ? tls.connect({ host: up.host, port: up.port, ...(net.isIP(up.host) ? {} : { servername: up.host }) })
-    : net.connect({ host: up.host, port: up.port }));
+    ? tls.connect({ host: up.host, port: up.port, ...(net.isIP(up.host) ? {} : { servername: up.host }), ...upstreamDial(up.host) })
+    : net.connect({ host: up.host, port: up.port, ...upstreamDial(up.host) }));
   upSock.on("error", (e) => { log(`upstream HTTP error: ${e.message}`); client.destroy(); });
   client.on("error", () => upSock.destroy());
   client.once("close", () => upSock.destroy());

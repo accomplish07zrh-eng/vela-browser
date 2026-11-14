@@ -1,5 +1,10 @@
 import { Channel } from "@tauri-apps/api/core";
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
+import { parseTags, TagBatchDialog, TagChip, TagInput, TagList } from "./tags.tsx";
+import { ActivityCard, AiAccessCard } from "./ai-settings.tsx";
+import { BackupsCard, DataEncryptionCard, TunBypassCard } from "./snapshots.tsx";
+import { HealthScore, HealthSheet, type HealthRow } from "./health.tsx";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
@@ -164,6 +169,8 @@ const PAGE_TITLES: Record<"profiles" | "workbench" | "scripts" | "settings" | "e
 
 const SETTINGS_TABS = [
   { key: "general", label: "General" },
+  { key: "ai", label: "AI and records" },
+  { key: "data", label: "Data and security" },
   { key: "advanced", label: "Advanced" },
 ] as const;
 
@@ -243,6 +250,8 @@ function writeSetting(key: string, value: string): void {
  * `.icon` rule in styles.css controls size and color for all of them.
  */
 const ICONS = {
+  shield: <><path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z" /><path d="m9 12 2.2 2.2L15.5 10" /></>,
+  tag: <><path d="M3.5 12.6V4.5a1 1 0 0 1 1-1h8.1l8 8a1.5 1.5 0 0 1 0 2.1l-6.9 6.9a1.5 1.5 0 0 1-2.1 0z" /><circle cx="8" cy="8" r="1.4" /></>,
   plus: <path d="M12 5v14M5 12h14" />,
   import: <><path d="M12 3v12" /><path d="M8 11l4 4 4-4" /><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></>,
   /* Pulling a file INTO the app. A bare download tray reads as "save to disk",
@@ -1198,6 +1207,12 @@ function App() {
   const [statusFilter, setStatusFilter] = useState<ProfileStatusFilter>("all");
   const [engineFilter, setEngineFilter] = useState<ProfileEngineFilter>("all");
   const [tagFilter, setTagFilter] = useState("");
+  const [tagBatchOpen, setTagBatchOpen] = useState(false);
+  // The self-check: open for every profile, for the selection, or on one profile's findings.
+  const [healthOpen, setHealthOpen] = useState<{ ids?: string[]; focus?: string } | null>(null);
+  const [health, setHealth] = useState<Map<string, HealthRow>>(new Map());
+  useEffect(() => { loadHealth(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadHealth = () => { void fetch("/ui/api/profile-health").then((response) => response.ok ? response.json() : null).then((data) => { if (data?.reports) setHealth(new Map((data.reports as HealthRow[]).map((row) => [row.profileId, row]))); }).catch(() => {}); };
   const [detailId, setDetailId] = useState<string | null>(null);
   const [profilePage, setProfilePage] = useState(0);
   const [pageSize, setPageSize] = useState(readPageSize);
@@ -1662,6 +1677,9 @@ function App() {
   const pastedRecordCount = bulkText.trim() ? countPastedRecords(bulkText) : null;
 
   const folderMenuRef = useDismiss<HTMLSpanElement>(folderMenu !== null, () => setFolderMenu(null));
+  // The folder panel floats on a transformed layer that would clip a fixed menu; the menu goes to the top layer.
+  const folderMenuPanel = useRef<HTMLSpanElement>(null);
+  useTopLayer(folderMenuPanel, folderMenu !== null);
   const colsRef = useDismiss<HTMLDivElement>(colsOpen, () => setColsOpen(false));
   const nodesRef = useDismiss<HTMLDivElement>(nodesOpen, () => setNodesOpen(false));
   const exportRef = useDismiss<HTMLDivElement>(exportOpen, () => setExportOpen(false));
@@ -2731,14 +2749,14 @@ function App() {
                     {!appMode?.legacyRemote && (canEditGroup(g) ) && (
                       <span className="gactions menuwrap" ref={folderMenu === g ? folderMenuRef : undefined} onClick={(event) => event.stopPropagation()}>
                         <button type="button" title={t("Folder actions")} aria-label={t("Actions for {folder}", { folder: g })} aria-expanded={folderMenu === g} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setFolderMenuPosition({ left: rect.right + 8, top: Math.min(rect.top, window.innerHeight - 220) }); setFolderMenu(folderMenu === g ? null : g); }}><Icon name="more" className="sm" /></button>
-                        {folderMenu === g && <span className="popover folder-menu" style={folderMenuPosition} onClick={() => setFolderMenu(null)}>
+                        {folderMenu === g && <span ref={folderMenuPanel} {...TOP_LAYER_PROPS} className="popover folder-menu" style={folderMenuPosition} onClick={() => setFolderMenu(null)}>
                           {canEditGroup(g) && <>
                             <button className="pop-item" onClick={() => { setNewFolderParent(g); setSidebarGroupName(""); setAddingGroup(true); }}><Icon name="plus" className="sm" />{t("New subfolder")}</button>
                             <button className="pop-item" onClick={() => startRename(g)}><Icon name="edit" className="sm" />{t("Rename")}</button>
                           </>}
                           {<>
                             <button className="pop-item" onClick={() => { setMovingFolder(g); setFolderParent(folders.find((folder) => folder.name === g)?.parentName ?? ""); setFolderMoveErr(null); }}><Icon name="move" className="sm" />{t("Move to…")}</button>
-                            <button className="pop-item danger" disabled={folders.some((folder) => folder.parentName === g)} onClick={() => void removeGroup(g)}><Icon name="trash" className="sm" />{t("Delete")}</button>
+                            <button className="pop-item danger" disabled={folders.some((folder) => folder.parentName === g)} title={folders.some((folder) => folder.parentName === g) ? t("Move or delete its subfolders first") : undefined} onClick={() => void removeGroup(g)}><Icon name="trash" className="sm" />{t("Delete")}</button>
                           </>}
 
                         </span>}
@@ -2862,6 +2880,13 @@ function App() {
             )}
           </div>
           )}
+          <button
+            type="button"
+            className="iconbtn tip"
+            data-tip={t("Self-check")}
+            aria-label={t("Self-check every profile")}
+            onClick={() => setHealthOpen({})}
+          ><Icon name="shield" /></button>
           <button
             type="button"
             className="iconbtn tip"
@@ -3008,6 +3033,7 @@ function App() {
           <Select className="select quiet-select" aria-label={t("Filter by browser")} value={engineFilter} onChange={(event) => setEngineFilter(event.target.value as ProfileEngineFilter)}>
             <option value="all">{t("All browsers")}</option><option value="chromium">Chromium</option><option value="firefox">Firefox</option><option value="webkit">WebKit</option>
           </Select>
+          {tagFilter && <span className="tag-filter-active"><TagChip tag={tagFilter} active onRemove={() => setTagFilter("")} title={t("Showing profiles tagged “{tag}”", { tag: tagFilter })} /></span>}
           {(profileTags.length > 0 || tagFilter) && <Select className="select quiet-select" aria-label={t("Filter by tag")} value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
             <option value="">{t("All tags")}</option>{[...new Set([...profileTags, ...(tagFilter ? [tagFilter] : [])])].map((tag) => <option key={tag} value={tag}>{tag}</option>)}
           </Select>}
@@ -3061,6 +3087,8 @@ function App() {
               <Icon name="laptop" className="sm" />Convert mobile ({selectedMobileCount})
             </button>
           )}
+          <button className="btn tip" type="button" data-tip={t("Check the selected profiles for anything that gives them away")} onClick={() => setHealthOpen({ ids: [...selected] })}><Icon name="shield" className="sm" />{t("Self-check")}</button>
+          <button className="btn tip" type="button" data-tip={t("Add or remove tags on the selected profiles")} onClick={() => setTagBatchOpen(true)}><Icon name="tag" className="sm" />{t("Tags")}</button>
           {/* Bulk edits preserve each environment’s stored identity. */}
           <div className="menuwrap" ref={exportRef}>
             <button className="btn tip" data-tip={t("Export selected profiles")} disabled={!selected.size || !!exportProgress} onClick={() => setExportOpen((o) => !o)}>
@@ -3166,6 +3194,8 @@ function App() {
                     <td className="col-name" title={`${p.name}\n${p.id}`}>
                       <span className="name-cell">
                         <button type="button" className="profile-name-link" aria-label={t("View details for {profile}", { profile: p.name })} onClick={() => setDetailId(p.id)}><span className="n">{p.name}<FingerprintBadge p={p} /></span></button>
+                        {health.get(p.id) && health.get(p.id)!.level !== "good" && <HealthScore row={health.get(p.id)!} onClick={() => setHealthOpen({ focus: p.id })} />}
+                        {!columnVisible("tags") && p.tags?.length ? <span className="profile-name-tags"><TagList tags={p.tags} activeTag={tagFilter} onPick={(tag) => setTagFilter(tagFilter === tag ? "" : tag)} /></span> : null}
                         <span className="sub">
                           {p.id}
                           <span title={p.engine === "webkit" ? t(WEBKIT_NOTE) : p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>
@@ -3211,8 +3241,8 @@ function App() {
                   )}
                   {columnVisible("platform") && <td className="col-platform"><PlatformPill platform={p.platform} /></td>}
                   {columnVisible("tags") && (
-                    <td className="col-tags" title={p.tags?.length ? p.tags.join(", ") : "No tags"}>
-                      {p.tags?.length ? p.tags.map((t) => <span key={t} className="chip">{t}</span>) : <span className="muted">—</span>}
+                    <td className="col-tags" title={p.tags?.length ? p.tags.join(", ") : t("No tags")}>
+                      {p.tags?.length ? <TagList tags={p.tags} max={2} activeTag={tagFilter} onPick={(tag) => setTagFilter(tagFilter === tag ? "" : tag)} /> : <span className="muted">—</span>}
                     </td>
                   )}
                   {columnVisible("proxy") && (
@@ -3705,6 +3735,21 @@ function App() {
             </>
           )}
 
+          {settingsTab === "ai" && (
+            <>
+              <AiAccessCard flash={flash} />
+              <ActivityCard flash={flash} />
+            </>
+          )}
+
+          {settingsTab === "data" && (
+            <>
+              <BackupsCard flash={flash} />
+              <DataEncryptionCard flash={flash} />
+              <TunBypassCard />
+            </>
+          )}
+
           {settingsTab === "advanced" && (
             <>
               {!appMode?.legacyRemote && <PluginsCard flash={flash} />}
@@ -4184,8 +4229,9 @@ function App() {
                     {editEngine === "chromium" && !editChromiumRuntime && <small>{t(CLOAKBROWSER_NOTE)}</small>}
                   </label>
                   <label className="fld">
-                    <span>{t("Tags")} <span className="muted">{t("(comma-separated)")}</span></span>
-                    <input value={editForm.tags ?? ""} placeholder="warmup, us, priority" onChange={(e) => setEF("tags", e.target.value)} />
+                    <span>{t("Tags")}</span>
+                    <TagInput value={parseTags(editForm.tags ?? "")} suggestions={profileTags} onChange={(next) => setEF("tags", next.join(", "))} />
+                    <small>{t("Tags say what a profile is, such as its platform or stage; a profile can have several. Groups are where it lives.")}</small>
                   </label>
                   {editForm.proxyType === "pool" ? <PoolNodeField nodeId={editForm.proxy ?? ""} onManual={() => { setEF("proxyType", "http"); setEF("proxy", ""); }} /> : <div className="fld-row">
                     <label className="fld type">
@@ -4516,6 +4562,10 @@ function App() {
         selectedProfiles={scriptRunProfiles}
         onClose={() => setScriptRunOpen(false)}
       />
+      {healthOpen && <HealthSheet ids={healthOpen.ids} focus={healthOpen.focus} onClose={() => { setHealthOpen(null); loadHealth(); }}
+        onOpenProfile={(id) => { setHealthOpen(null); setDetailId(id); }} />}
+      {tagBatchOpen && <TagBatchDialog profiles={profiles.filter((profile) => selected.has(profile.id))} suggestions={profileTags}
+        onClose={() => setTagBatchOpen(false)} onDone={() => { setTagBatchOpen(false); void load(); }} />}
     </div>
     </>
   );

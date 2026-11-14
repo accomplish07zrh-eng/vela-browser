@@ -1,0 +1,26 @@
+.snapshots-note { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.snapshots-actions { margin-bottom: 10px; }
+.snapshots-message { margin: 0 0 10px; font-size: 12.5px; color: var(--success-ink, var(--ink)); }
+.snapshots-message.bad { color: var(--danger-ink); }
+.snapshots-empty { margin: 0; color: var(--muted); font-size: 13px; }
+.snapshots-list { list-style: none; margin: 0; padding: 0; }
+.snapshots-list li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.snapshot-main { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.snapshot-main strong { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snapshot-main span { color: var(--muted); font-size: 12px; }
+.snapshot-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.backups-card .card-body > p:first-child { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+/* Going around a TUN proxy client. */
+.tun-bypass { display: grid; gap: 8px; margin-top: 10px; }
+.tun-bypass.compact { padding-top: 10px; border-top: 1px solid var(--line); }
+.tun-bypass-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.tun-bypass-actions { display: flex; align-items: center; gap: 10px; }
+.tun-bypass-error { color: var(--danger-ink); font-size: 12.5px; }
+.tun-bypass-result { display: grid; gap: 4px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--surface-hover); font-size: 12.5px; }
+.tun-bypass-result > div { display: grid; grid-template-columns: 150px 1fr; gap: 10px; }
+.tun-bypass-result dt { color: var(--muted); }
+.tun-bypass-result dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tun-bypass-result.ok .tun-bypass-verdict dd { color: var(--success-ink, var(--ink)); font-weight: 600; }
+.tun-bypass-result.bad .tun-bypass-verdict dd { color: var(--danger-ink); font-weight: 600; }
+.tun-card .card-body > p:first-child, .encryption-card .card-body > p:first-child { margin: 0 0 8px; color: var(--muted); font-size: 13px; line-height: 1.6; }

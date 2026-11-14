@@ -221,7 +221,7 @@ test("arbitrary JavaScript and native protocol changes work by default without a
     expect(context.cdpConnections).toBe(1);
     expect(context.cdpCalls.map(c => c.method)).toEqual(["DOM.setAttributeValue", "Runtime.evaluate"]);
     const names = new Set(DEVTOOLS_TOOLS.map(tool => tool.name));
-    expect(names.size).toBe(12);
+    expect(names.size).toBe(15);
     expect(names.has("browser_devtools_fetch")).toBe(true);
     expect(names.has("browser_devtools_storage_edit")).toBe(true);
   } finally { observer.dispose(); }
@@ -318,4 +318,21 @@ test("cookies default to the selected page's site; other sites and the whole pro
     expect(all.cookies.map((c: any) => c.name)).toEqual(["here", "elsewhere"]);
     await expect(call("storage", { urls: "https://other.test/" })).rejects.toThrow(/urls/);
   } finally { observer.dispose(); }
+});
+
+test("the network wait settles on idle, matches a finished request, and the new tools are listed", async () => {
+  const names = DEVTOOLS_TOOLS.map((tool) => tool.name);
+  expect(names).toEqual(expect.arrayContaining(["browser_devtools_performance", "browser_devtools_block", "browser_devtools_wait"]));
+  const context = new Context();
+  const devtools = new BrowserDevtools(context as any);
+  const idle = (await devtools.call("browser_devtools_wait", { idleMs: 100, timeoutMs: 2000 })).structuredContent as any;
+  expect(idle.idle).toBe(true);
+  // A request that starts after the call and finishes is the one waited for.
+  const page = context.page;
+  const request = { url: () => "https://fixture.test/api/save", method: () => "POST", resourceType: () => "fetch", headers: () => ({}), frame: () => page.frame, redirectedFrom: () => null, timing: () => ({}) };
+  setTimeout(() => { context.emit("request", request); context.emit("requestfinished", request); }, 150);
+  const matched = (await devtools.call("browser_devtools_wait", { urlIncludes: "/api/save", method: "post", timeoutMs: 2000 })).structuredContent as any;
+  expect(matched.request.url).toBe("https://fixture.test/api/save");
+  await expect(devtools.call("browser_devtools_block", { action: "set" })).rejects.toThrow("resourceTypes or urlPatterns");
+  devtools.dispose();
 });

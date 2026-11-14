@@ -20,7 +20,7 @@ import type { StatePaths } from "./paths.ts";
 import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
-import { handleProxyPoolRequest } from "./proxy-pool-api.ts";
+import { handleProxyPoolRequest, runPoolChecks } from "./proxy-pool-api.ts";
 import { poolNodeTimezone, saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
 import { handleTrashRequest } from "./trash.ts";
 import {
@@ -544,12 +544,21 @@ export interface UiRuntimeOptions {
   shutdownSignal?: AbortSignal;
   /** Mode whose runtimes were wired when this process started. */
   runtimeMode?: "local";
+  /** What AIs, scripts and tasks did. */
+  audit?: import("./audit.ts").AuditLog;
+  /** The AIs connected right now. */
+  connectedAgents?: () => string[];
+  /** Snapshots of profiles and backups of their sign-ins. */
+  snapshots?: import("./snapshots.ts").SnapshotStore;
 }
 
 /**
  * Handle a `/ui/api/*` request. Returns null for any other path so the caller
  * can fall through to the AdsPower API handler.
  */
+/** The last exit check of each profile, loaded once per process. */
+let healthCache: import("./health.ts").ExitCache | undefined;
+
 export async function handleUiRequest(
   req: Request,
   launcher: Launcher,
@@ -916,6 +925,176 @@ export async function handleUiRequest(
   );
   if (codeApprovalResponse) return codeApprovalResponse;
 
+  // The record of what AIs, scripts and tasks did.
+  if ((pathname === "/ui/api/audit" || pathname === "/ui/api/audit.csv") && req.method === "GET") {
+    if (!options.audit) return noStoreJson({ ok: false, error: "The activity record is unavailable" }, 503);
+    const params = new URL(req.url).searchParams;
+    const kind = params.get("kind");
+    const query = {
+      ...(kind === "ai" || kind === "script" || kind === "task" || kind === "user" ? { actorKind: kind as import("./audit.ts").AuditActorKind } : {}),
+      ...(params.get("actor") ? { actor: params.get("actor")! } : {}),
+      ...(params.get("profileId") ? { profileId: params.get("profileId")! } : {}),
+      ...(params.get("q") ? { text: params.get("q")! } : {}),
+      ...(Number(params.get("since")) > 0 ? { since: Number(params.get("since")) } : {}),
+      limit: pathname.endsWith(".csv") ? 5000 : Math.min(Number(params.get("limit")) || 300, 2000),
+    };
+    const entries = options.audit.query(query);
+    if (pathname.endsWith(".csv")) {
+      const { auditCsv } = await import("./audit.ts");
+      return new Response("\ufeff" + auditCsv(entries), { headers: { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store", "Content-Disposition": "attachment; filename=\"vela-activity.csv\"" } });
+    }
+    return noStoreJson({ ok: true, entries, actors: options.audit.actors() });
+  }
+
+  // Going around this computer's TUN proxy client, and the test that proves it works.
+  if (pathname === "/ui/api/tun-bypass" || pathname === "/ui/api/tun-bypass/test") {
+    if (remote || !options.appConfig) return noStoreJson({ ok: false, error: "Unavailable" }, 400);
+    const egress = await import("./egress-binding.ts");
+    if (pathname.endsWith("/test") && req.method === "POST") return noStoreJson({ ok: true, test: await egress.testTunBypass() });
+    if (req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as { enabled?: unknown };
+      if (typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "enabled must be true or false" }, 400);
+      const { tunBypass: _old, ...rest } = options.appConfig.read();
+      options.appConfig.write(body.enabled ? { ...rest, tunBypass: true } : rest);
+      egress.setTunBypass(body.enabled);
+    } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    return noStoreJson({ ok: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? (egress.currentInterface() ?? await egress.refreshInterface()) : await egress.detectPhysicalInterface() });
+  }
+
+  // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.
+  if (pathname === "/ui/api/data-encryption") {
+    if (remote || !options.appConfig) return noStoreJson({ ok: false, error: "Data encryption is unavailable" }, 400);
+    try {
+      if (req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as { enabled?: unknown };
+        if (typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "enabled must be true or false" }, 400);
+        const box = store.secretBox();
+        if (body.enabled && !box.available) return noStoreJson({ ok: false, error: "This computer's key cannot be read right now, so nothing was encrypted. Try again in a moment." }, 409);
+        store.setFieldEncryption(body.enabled);
+        const result = store.reencryptFields();
+        const { encryptData: _old, ...rest } = options.appConfig.read();
+        options.appConfig.write(body.enabled ? { ...rest, encryptData: true } : rest);
+        return noStoreJson({ ok: true, enabled: body.enabled, protection: box.protection, ...result });
+      }
+      if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+      const box = store.secretBox();
+      return noStoreJson({ ok: true, enabled: store.fieldEncryption, protection: box.protection, available: box.available });
+    } catch (error) {
+      return noStoreJson({ ok: false, error: msg(error) }, 500);
+    }
+  }
+
+  // Self-check: each profile's health, and checking the exits it depends on.
+  if (pathname === "/ui/api/profile-health" || pathname === "/ui/api/profile-health/check") {
+    if (remote) return noStoreJson({ ok: false, error: "The self-check is unavailable in legacy remote mode" }, 400);
+    const { assessProfile, associations, sharedExits, ExitCache } = await import("./health.ts");
+    const cache = healthCache ??= new ExitCache(options.paths ? join(options.paths.root, "health.json") : undefined);
+    const profiles = store.listProfiles();
+    if (pathname === "/ui/api/profile-health/check" && req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as { ids?: unknown };
+      const wanted = Array.isArray(body.ids) && body.ids.length ? new Set(body.ids.map(String)) : undefined;
+      const targets = profiles.filter((profile) => !wanted || wanted.has(profile.id));
+      const pool = store.proxyPool;
+      // Pool nodes are checked once each, through the kernel, however many profiles use them.
+      const nodeIds = [...new Set(targets.filter((profile) => profile.proxy?.type === "pool").map((profile) => profile.proxy!.host))];
+      const nodes = nodeIds.map((id) => pool.get(id)).filter((node): node is NonNullable<typeof node> => !!node);
+      if (nodes.length) {
+        await runPoolChecks(store, nodes, {
+          ...(launcher.kernels ? { kernels: launcher.kernels } : {}),
+          ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
+          ...(options.shutdownSignal ? { signal: options.shutdownSignal } : {}),
+        }).catch(() => {});
+      }
+      const queue = [...targets];
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+        for (let profile = queue.shift(); profile; profile = queue.shift()) {
+          const now = Date.now();
+          if (!profile.proxy) { cache.set(profile.id, { status: "ok", checkedAt: now, via: "direct" }); continue; }
+          if (profile.proxy.type === "pool") {
+            const check = pool.get(profile.proxy.host)?.check;
+            cache.set(profile.id, check
+              ? { status: check.status === "working" || check.status === "unstable" ? "ok" : "failed", ...(check.status === "unstable" ? { unstable: true } : {}), ip: check.ip, country: check.country, city: check.city, timezone: check.timezone, rotating: check.rotating, reason: check.reason, checkedAt: check.checkedAt, via: "pool" }
+              : { status: "failed", reason: "not checked", checkedAt: now, via: "pool" });
+            continue;
+          }
+          try {
+            const result = await (options.proxyCheck ?? runProxyCheck)(profile.proxy);
+            cache.set(profile.id, { status: result.status === "working" || result.status === "unstable" ? "ok" : "failed", ...(result.status === "unstable" ? { unstable: true } : {}), ip: result.ip, country: result.country, city: result.city, timezone: result.timezone, rotating: result.rotating, reason: result.reason, checkedAt: now, via: "proxy" });
+          } catch { cache.set(profile.id, { status: "failed", reason: "check failed", checkedAt: now, via: "proxy" }); }
+        }
+      }));
+    } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    cache.forget(new Set(profiles.map((profile) => profile.id)));
+    const shared = sharedExits(cache.all());
+    const reports = profiles.map((profile) => ({
+      ...assessProfile(profile, cache.get(profile.id), { sharedExit: shared.get(profile.id) }),
+      name: profile.name, group: profile.group ?? "", tags: profile.tags ?? [],
+    })).sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+    return noStoreJson({ ok: true, reports, associations: associations(profiles, cache.all()) });
+  }
+
+  // Snapshots: list, take one by hand, roll back, delete; and the backups as a whole.
+  const snapshotRoute = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/snapshots(?:\/([^/]+)(\/restore)?)?$/);
+  if (snapshotRoute || pathname === "/ui/api/snapshots" || pathname === "/ui/api/snapshots/backup") {
+    if (remote || !options.snapshots) return noStoreJson({ ok: false, error: "Snapshots are unavailable" }, 503);
+    const snapshots = options.snapshots;
+    try {
+      if (pathname === "/ui/api/snapshots" && req.method === "GET") {
+        return noStoreJson({ ok: true, usage: snapshots.usage(), enabled: options.appConfig?.read().sessionBackups !== false, directory: snapshots.dir });
+      }
+      if (pathname === "/ui/api/snapshots" && req.method === "POST") {
+        const body = await req.json().catch(() => ({}));
+        if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 503);
+        const { sessionBackups: _old, ...rest } = options.appConfig.read();
+        options.appConfig.write(body?.enabled === false ? { ...rest, sessionBackups: false } : rest);
+        return noStoreJson({ ok: true, usage: snapshots.usage(), enabled: body?.enabled !== false, directory: snapshots.dir });
+      }
+      if (pathname === "/ui/api/snapshots/backup" && req.method === "POST") {
+        const { backupSessions } = await import("./snapshots.ts");
+        return noStoreJson({ ok: true, saved: backupSessions(store, snapshots), usage: snapshots.usage() });
+      }
+      const profileId = decodeURIComponent(snapshotRoute![1]!);
+      const snapshotId = snapshotRoute![2] ? decodeURIComponent(snapshotRoute![2]) : undefined;
+      if (!store.getProfile(profileId)) return noStoreJson({ ok: false, error: "Profile not found" }, 404);
+      if (!snapshotId && req.method === "GET") return noStoreJson({ ok: true, snapshots: snapshots.list(profileId) });
+      if (!snapshotId && req.method === "POST") {
+        const profile = store.getProfile(profileId)!;
+        return noStoreJson({ ok: true, snapshot: snapshots.save(profile, store.getSessionBundle(profileId), "manual") });
+      }
+      if (snapshotId && snapshotRoute![3] && req.method === "POST") {
+        const { restoreSnapshot } = await import("./snapshots.ts");
+        return noStoreJson({ ok: true, ...restoreSnapshot(store, snapshots, profileId, snapshotId) });
+      }
+      if (snapshotId && !snapshotRoute![3] && req.method === "DELETE") {
+        snapshots.remove(profileId, snapshotId);
+        return noStoreJson({ ok: true });
+      }
+      return noStoreJson({ ok: false, error: "Unknown snapshot operation" }, 404);
+    } catch (error) {
+      return noStoreJson({ ok: false, error: msg(error) }, 400);
+    }
+  }
+
+  // Which groups each AI may use.
+  if (pathname === "/ui/api/ai-access") {
+    if (!options.appConfig) return noStoreJson({ ok: false, error: "Settings are unavailable" }, 503);
+    const { normalizeAiAccess, AI_ACCESS_DEFAULT, agentKey } = await import("./ai-access.ts");
+    if (req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      const access = normalizeAiAccess(body?.access);
+      if (!access) return noStoreJson({ ok: false, error: "Invalid access settings" }, 400);
+      const config = options.appConfig.read();
+      options.appConfig.write({ ...config, aiAccess: access });
+    } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    const access = options.appConfig.read().aiAccess ?? AI_ACCESS_DEFAULT;
+    const known = new Set<string>([
+      ...(options.connectedAgents?.() ?? []).map(agentKey),
+      ...(options.audit?.actors().filter((actor) => actor.kind === "ai" && actor.name !== "unknown").map((actor) => agentKey(actor.name)) ?? []),
+      ...Object.keys(access.agents),
+    ]);
+    return noStoreJson({ ok: true, access, agents: [...known].sort(), connected: (options.connectedAgents?.() ?? []).map(agentKey), groups: store.listGroups() });
+  }
+
   if (pathname === "/ui/api/proxy-pool" || pathname.startsWith("/ui/api/proxy-pool/")) {
     if (remote) return noStoreJson({ ok: false, error: "The proxy pool is unavailable in legacy remote mode" }, 400);
     if (req.method !== "GET") {
@@ -1009,6 +1188,19 @@ export async function handleUiRequest(
       return Response.json({ ok: true, id: profile.id });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e), uncertain }, { status: 400 });
+    }
+  }
+
+  if (pathname === "/ui/api/profiles/tags" && req.method === "POST") {
+    if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
+    try {
+      const body = (await req.json()) as { ids?: unknown; add?: unknown; remove?: unknown };
+      const list = (value: unknown) => Array.isArray(value) ? value.map(String) : [];
+      const ids = list(body.ids);
+      if (ids.length === 0) return Response.json({ ok: false, error: "no profiles selected" }, { status: 400 });
+      return Response.json({ ok: true, changed: store.updateTags(ids, list(body.add), list(body.remove)) });
+    } catch (e) {
+      return Response.json({ ok: false, error: msg(e) }, { status: 500 });
     }
   }
 

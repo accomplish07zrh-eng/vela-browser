@@ -6,6 +6,7 @@ import { useTranslation } from "./i18n.tsx";
 import { deleteTask, fetchProfiles, fetchScripts, fetchTasks, runTask, saveTask, type TaskDefinition, type TaskRunRecord, type TaskSchedule } from "./api.ts";
 import type { ScriptSummary } from "../contracts/cloud-v1.ts";
 import "./tasks.css";
+import { parseTags, TagInput } from "./tags.tsx";
 
 type Draft = {
   id?: string; name: string; enabled: boolean; groups: string[]; tags: string;
@@ -39,6 +40,7 @@ export function TasksPanel() {
   const [runningId, setRunningId] = useState<string | null>(null);
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [groups, setGroups] = useState<string[]>([]);
+  const [knownTags, setKnownTags] = useState<string[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -52,7 +54,7 @@ export function TasksPanel() {
   useEffect(() => {
     void load();
     void fetchScripts().then(setScripts, () => {});
-    void fetchProfiles().then((roster) => setGroups(roster.groups), () => {});
+    void fetchProfiles().then((roster) => { setGroups(roster.groups); setKnownTags([...new Set(roster.profiles.flatMap((profile) => profile.tags ?? []))].sort((a, b) => a.localeCompare(b))); }, () => {});
   }, [load]);
   useEffect(() => {
     if (!runningId) return;
@@ -74,7 +76,7 @@ export function TasksPanel() {
         try { inputs = JSON.parse(step.inputs || "{}"); } catch { throw new Error(t("Step {n}: inputs must be valid JSON.", { n: index + 1 })); }
         return { scriptId: step.scriptId, inputs: inputs as Record<string, unknown> };
       });
-      const tags = draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean);
+      const tags = parseTags(draft.tags);
       const schedule: TaskSchedule = draft.schedule === "manual" ? { kind: "manual" }
         : draft.schedule === "interval" ? { kind: "interval", minutes: Number(draft.minutes) }
         : { kind: "daily", time: draft.time.trim(), ...(draft.days.length ? { days: draft.days } : {}) };
@@ -124,7 +126,7 @@ export function TasksPanel() {
             {groups.map((group) => <button key={group} type="button" className={`tasks-chip${draft.groups.includes(group) ? " on" : ""}`} aria-pressed={draft.groups.includes(group)}
               onClick={() => set({ groups: draft.groups.includes(group) ? draft.groups.filter((item) => item !== group) : [...draft.groups, group] })}>{group}</button>)}
           </div></div>
-          <label className="fld"><span>{t("Tags")} <span className="muted">{t("(comma-separated)")}</span></span><input className="input" value={draft.tags} placeholder="warmup, us" onChange={(event) => set({ tags: event.target.value })} /></label>
+          <div className="fld"><span>{t("Tags")}</span><TagInput value={parseTags(draft.tags)} suggestions={knownTags} onChange={(next) => set({ tags: next.join(", ") })} /></div>
           <div className="fld"><span>{t("Steps")}</span><ol className="tasks-steps">
             {draft.steps.map((step, index) => <li key={index}>
               <Select className="select" aria-label={t("Script")} value={step.scriptId} onChange={(event) => set({ steps: draft.steps.map((item, i) => i === index ? { ...item, scriptId: event.target.value } : item) })}>

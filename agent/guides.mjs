@@ -25,6 +25,9 @@ Vela Browser keeps many browser profiles, each with its own fingerprint, proxy, 
 - Input is human-like by default: curved pointer paths, key-by-key typing. \`vela_humanize\` changes the pace; turn it off only for pages that do not watch behaviour.
 - For the same work in many profiles, write a script (\`vela_guide\` topic \`scripts\`) and run it with \`vela_script_run\` instead of repeating tool calls profile by profile.
 - For a capability you need again and again, write a plugin (topic \`plugins\`): it becomes a tool of its own.
+- Wait for the network, not a fixed time: \`browser_devtools_wait\` returns when a request containing a URL part finishes, or when the page has gone quiet.
+- Save proxy traffic on long runs: \`browser_devtools_block\` with resourceTypes ["image", "media", "font"]; clear it when done.
+- When a page is slow or stuck, \`browser_devtools_performance\` says why (slow server, large downloads, long tasks), and \`browser_devtools_network\` with failedOnly shows what failed.
 
 ## What needs a person
 
@@ -167,6 +170,9 @@ Vela Browser 里有很多浏览器环境，每个都有自己的指纹、代理�
 - 默认是拟人输入：指针走曲线，逐键打字。\`vela_humanize\` 可以调快慢；只有在不检测操作行为的页面上才考虑关掉。
 - 同一件事要在很多环境里做：写成脚本（\`vela_guide\` 的 \`scripts\` 主题），用 \`vela_script_run\` 一次跑完，不要一个环境一个环境地重复调用工具。
 - 需要反复用到的能力：写成插件（\`plugins\` 主题），它会变成一个独立的工具。
+- 等网络而不是干等：\`browser_devtools_wait\` 会在某个网址的请求完成、或页面网络安静下来时返回。
+- 长时间跑任务想省代理流量：用 \`browser_devtools_block\` 屏蔽 ["image", "media", "font"]，结束后清除。
+- 页面慢或卡住：\`browser_devtools_performance\` 会说明原因（服务器慢、下载太大、长任务），\`browser_devtools_network\` 加 failedOnly 能看到哪些请求失败了。
 
 ## 需要人来批准的
 

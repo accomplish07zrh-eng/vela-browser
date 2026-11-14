@@ -663,13 +663,28 @@ export async function createVelaBrowserMcp(options = {}) {
     return { contents: [{ uri: request.params.uri, mimeType: "text/markdown", text: guideText(match[2], match[1]) }] };
   });
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...ALIAS_TOOLS, ...toolsFor(sessions.get(selectedProfileId)).map(withTarget).map(guideTool)],
-  }));
+  // Vela Browser applies its per-AI group permissions and keeps its record under this client's name.
+  let identified;
+  // An older Vela Browser, or a runtime that refuses the call, simply keeps the connection unnamed.
+  const identify = () => identified ??= (async () => { try { await runtime.call("session.identify", { name: agent() }); } catch { /* unnamed */ } })();
+  /** Page actions in Chromium reach the browser directly, so they are reported for the record. */
+  const reportAction = (profileId, tool, args, result, error) => {
+    const detail = tool === "browser_navigate" && typeof args?.url === "string" ? args.url
+      : tool === "browser_batch" && Array.isArray(args?.steps) ? args.steps.map((step) => step?.tool).filter(Boolean).join(", ") : undefined;
+    const failed = !!error || !!result?.isError;
+    const reason = error ? safeError(error) : failed ? (result?.content ?? []).map((part) => part?.text).filter(Boolean).join(" ").slice(0, 300) : undefined;
+    void (async () => { try { await runtime.call("session.audit", { profileId, tool, ok: !failed, ...(detail ? { detail } : {}), ...(reason ? { error: reason } : {}) }); } catch { /* the record is best effort */ } })();
+  };
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    await identify();
+    return { tools: [...ALIAS_TOOLS, ...toolsFor(sessions.get(selectedProfileId)).map(withTarget).map(guideTool)] };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = canonicalToolName(request.params.name);
     const args = request.params.arguments ?? {};
+    await identify();
     try {
       if (name === "vela_profiles_list") {
         return toolResult(await runtime.call("profiles.list"));
@@ -854,7 +869,15 @@ export async function createVelaBrowserMcp(options = {}) {
       }
       const run = session.lane.then(act);
       session.lane = run.then(() => undefined, () => undefined);
-      return await run;
+      if (session.engine !== "chromium") return await run;
+      try {
+        const result = await run;
+        reportAction(target, name, toolArgs, result);
+        return result;
+      } catch (error) {
+        reportAction(target, name, toolArgs, undefined, error);
+        throw error;
+      }
     } catch (error) {
       return errorResult(error);
     } finally {

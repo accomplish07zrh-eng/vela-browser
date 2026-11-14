@@ -28,6 +28,9 @@ import {
 import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { TaskRunner, TaskStore } from "./tasks.ts";
+import { AuditLog } from "./audit.ts";
+import { backupSessions, SnapshotStore } from "./snapshots.ts";
+import { setTunBypass } from "./egress-binding.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
@@ -274,6 +277,30 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const aiProxyPolicy = (): AiProxyPolicy => {
     try { return opts.appConfig?.read().aiProxyChanges ?? "ask"; } catch { return "ask"; }
   };
+  // What AIs, scripts and tasks did, kept for six months next to the profiles.
+  const audit = opts.paths && !opts.remote ? new AuditLog(join(opts.paths.root, "audit")) : undefined;
+  // Snapshots before fingerprint and proxy changes, and a daily backup of sign-ins that changed.
+  const snapshots = opts.paths && !opts.remote ? new SnapshotStore(join(opts.paths.root, "snapshots"), () => store.secretBox()) : undefined;
+  if (snapshots) store.attachSnapshots(snapshots);
+  // Connections to profiles' proxies go around a TUN proxy client on this computer when turned on.
+  try { setTunBypass(!opts.remote && opts.appConfig?.read().tunBypass === true); } catch { setTunBypass(false); }
+  // Sensitive fields are sealed with this data folder's key when the user turned that on; values
+  // written before are sealed now. Values this computer cannot read are left as they are.
+  try {
+    if (!opts.remote && opts.appConfig?.read().encryptData === true) {
+      store.setFieldEncryption(true);
+      const { unreadable } = store.reencryptFields();
+      if (unreadable) log(`${unreadable} encrypted value(s) cannot be read with this computer's key`);
+    }
+  } catch (error) { log(`data encryption could not start: ${error instanceof Error ? error.message : error}`); }
+  const runBackups = () => {
+    if (!snapshots) return;
+    try { if (opts.appConfig?.read().sessionBackups === false) return; } catch { /* defaults on */ }
+    try { const count = backupSessions(store, snapshots); if (count) log(`backed up the sign-ins of ${count} profile(s)`); } catch { /* next round */ }
+  };
+  const backupTimer = snapshots ? setInterval(runBackups, 6 * 3600_000) : undefined;
+  const firstBackup = snapshots ? setTimeout(runBackups, 3 * 60_000) : undefined;
+  (backupTimer as any)?.unref?.(); (firstBackup as any)?.unref?.();
   const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, false) : undefined;
   // The desktop app downloads Python for Python scripts; a source checkout uses python3.
   const python = library && resolvePlaywrightRuntime().kind === "packaged"
@@ -284,6 +311,12 @@ export function serveDashboard(opts: DashboardServerOptions) {
     runner: new ScriptSupervisor({
       root: opts.paths!.root, library, launcher, store, admission, python,
       remote: opts.remote,   log,
+      report: (entry) => audit?.record({
+        actor: { kind: "script", name: entry.scriptName }, action: "script.run", ok: entry.ok,
+        profileId: entry.profileId, profileName: entry.profileName,
+        detail: entry.startedBy ? `${entry.status}, started by ${entry.startedBy.kind === "ai" ? "AI " : entry.startedBy.kind === "task" ? "task " : ""}${entry.startedBy.name}` : entry.status,
+        ...(entry.error ? { error: entry.error } : {}),
+      }),
     }),
   } : undefined;
   // Saved scripts in order over chosen profiles, by hand or on a schedule; one run at a time.
@@ -319,6 +352,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
         ...(opts.paths && !opts.remote ? { pluginsRoot: pluginsDirectory(opts.paths.root) } : {}),
         codeApprovals,
         aiCodePolicy,
+        aiAccess: () => opts.appConfig?.read().aiAccess,
+        ...(audit ? { audit } : {}),
         log,
       })
     : undefined;
@@ -453,6 +488,9 @@ export function serveDashboard(opts: DashboardServerOptions) {
           runtimeMode,
           proxyApprovals,
           codeApprovals,
+          ...(audit ? { audit } : {}),
+          ...(snapshots ? { snapshots } : {}),
+          connectedAgents: () => agentHub?.connectedAgents() ?? [],
           shutdownSignal: shutdownController.signal,
         });
         if (ui) return ui;
@@ -469,6 +507,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   return Object.assign(server, {
     async stop(closeActiveConnections?: boolean) {
       cooling?.stop();
+      clearInterval(backupTimer); clearTimeout(firstBackup);
       taskbarMode?.stop();
       shutdownController.abort();
       await Promise.allSettled([

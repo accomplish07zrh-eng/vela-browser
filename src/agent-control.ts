@@ -23,6 +23,8 @@ import type { AiCodePolicy, CodeApprovalQueue, CodeApprovalRequest } from "./cod
 import { preparePlugin, scanPlugins, writePlugin } from "./plugins.ts";
 import type { ScriptLibrary, ScriptSupervisor } from "./scripts.ts";
 import { existsSync as pathExists } from "node:fs";
+import { allowsGroup, ruleFor, type AiAccessSettings } from "./ai-access.ts";
+import type { AuditLog } from "./audit.ts";
 import { join as joinPath } from "node:path";
 
 export const AGENT_CONTROL_PROTOCOL = "aliasmode-agent-v1";
@@ -79,8 +81,16 @@ export interface AgentControlDeps {
   /** The user's choice for code an AI saves. Defaults to asking each time. */
   aiCodePolicy?: () => AiCodePolicy;
 
+  /** Which groups each AI may use. */
+  aiAccess?: () => AiAccessSettings | undefined;
+  /** Where what AIs did is recorded. */
+  audit?: AuditLog;
+
   log?: (message: string) => void;
 }
+
+/** Calls that only read: kept out of the record so it stays readable. */
+const UNAUDITED = new Set(["profiles.list", "browser.status", "plugins.list", "scripts.list", "scripts.get", "scripts.status", "scripts.log", "proxyPool.list", "workbench.pointer", "firefox.tools.list", "webkit.tools.list", "session.identify", "session.audit"]);
 
 function humanizeParam(value: unknown): { enabled: boolean; speed: number; pasteOver: number | null; agent?: string } {
   const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
@@ -251,8 +261,55 @@ export class AgentControlSession {
   private readonly inFlight = new Set<Promise<unknown>>();
   private readonly sessionAbort = new AbortController();
   private cleanup?: Promise<void>;
+  /** The AI on the other end, as its MCP client names itself. */
+  private client = "unknown";
 
   constructor(private readonly deps: AgentControlDeps, private readonly openSignal?: AbortSignal) {}
+
+  get agentName(): string { return this.client; }
+
+  private profileGroup(profileId: string): { group: string; name?: string } | undefined {
+    const profile = this.deps.store.getProfile(profileId);
+    return profile ? { group: profile.group ?? "", name: profile.name } : undefined;
+  }
+
+  private accessRule() {
+    let settings: AiAccessSettings | undefined;
+    try { settings = this.deps.aiAccess?.(); } catch { settings = undefined; }
+    return ruleFor(settings, this.client);
+  }
+
+  private mayUseGroup(group: string): boolean {
+    const rule = this.accessRule();
+    return rule === "all" || allowsGroup(rule, group, this.deps.store.listFolders());
+  }
+
+  /** Refuses a profile outside the groups this AI was given. */
+  private guard(profileId: string): void {
+    if (this.accessRule() === "all") return;
+    const found = this.profileGroup(profileId);
+    if (!found || !this.mayUseGroup(found.group)) {
+      throw agentError("not_permitted", `${this.client} may not use this profile: its group is not one this AI was given in Vela Browser settings`);
+    }
+  }
+
+  private audit(method: string, params: Record<string, unknown>, ok: boolean, error?: unknown): void {
+    const audit = this.deps.audit;
+    // Reads are left out, except when one was refused: a refusal is worth seeing.
+    if (!audit || (UNAUDITED.has(method) && !(error instanceof AgentControlError && error.code === "not_permitted"))) return;
+    const profileId = typeof params.profileId === "string" ? params.profileId : undefined;
+    const action = method === "firefox.tools.call" || method === "webkit.tools.call" ? `page.${typeof params.name === "string" ? params.name : "tool"}` : method;
+    const args = params.arguments && typeof params.arguments === "object" ? params.arguments as Record<string, unknown> : {};
+    const detail = method === "scripts.run" ? `script ${String(params.scriptId ?? "")} on ${Array.isArray(params.profileIds) ? params.profileIds.length : 0} profiles`
+      : method === "profiles.setProxy" ? "proxy change"
+      : typeof args.url === "string" ? args.url : undefined;
+    audit.record({
+      actor: { kind: "ai", name: this.client }, action, ok,
+      ...(profileId ? { profileId, profileName: this.profileGroup(profileId)?.name } : {}),
+      ...(detail ? { detail } : {}),
+      ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
+    });
+  }
 
   private track<T>(promise: Promise<T>): Promise<T> {
     this.inFlight.add(promise);
@@ -283,7 +340,9 @@ export class AgentControlSession {
           protocol: AGENT_CONTROL_PROTOCOL,
           id: request.id,
           ok: true,
-          result: await this.dispatch(request.method, request.params ?? {}),
+          result: await this.dispatch(request.method, request.params ?? {}).then(
+            (result) => { this.audit(request.method, request.params ?? {}, true); return result; },
+            (error) => { this.audit(request.method, request.params ?? {}, false, error); throw error; }),
         } satisfies AgentControlResponse;
       } catch (error) {
         return errorResponse(request.id, error);
@@ -333,8 +392,28 @@ export class AgentControlSession {
   get isClosed(): boolean { return this.closed; }
 
   private async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
-    if (typeof params.profileId === "string" && params.profileId) this.deps.activity?.touch(params.profileId.trim());
+    if (typeof params.profileId === "string" && params.profileId) {
+      this.guard(params.profileId.trim());
+      this.deps.activity?.touch(params.profileId.trim());
+    }
     switch (method) {
+      case "session.identify": {
+        // Named once, by the MCP client's own name; later calls cannot rename the connection.
+        if (this.client === "unknown" && typeof params.name === "string" && params.name.trim()) this.client = params.name.trim().slice(0, 64);
+        return { agent: this.client };
+      }
+      case "session.audit": {
+        // Page actions in Chromium go straight to the browser; the MCP host reports them here.
+        const profileId = typeof params.profileId === "string" ? params.profileId : undefined;
+        this.deps.audit?.record({
+          actor: { kind: "ai", name: this.client }, action: `page.${typeof params.tool === "string" ? params.tool.slice(0, 60) : "tool"}`,
+          ok: params.ok !== false,
+          ...(profileId ? { profileId, profileName: this.profileGroup(profileId)?.name } : {}),
+          ...(typeof params.detail === "string" ? { detail: params.detail } : {}),
+          ...(typeof params.error === "string" ? { error: params.error } : {}),
+        });
+        return {};
+      }
       case "profiles.list":
         return { profiles: await this.listProfiles() };
       case "profiles.replaceProxies":
@@ -587,6 +666,7 @@ export class AgentControlSession {
     if (!Array.isArray(profileIds) || !profileIds.length || profileIds.length > 500 || !profileIds.every((id) => typeof id === "string" && id)) {
       throw agentError("invalid_request", "profileIds must list 1 to 500 profiles");
     }
+    for (const id of profileIds as string[]) this.guard(id);
     for (const id of profileIds as string[]) if (!this.deps.store.getProfile(id)) throw agentError("no_such_profile", `no such profile: ${id}`);
     const inputs = params.inputs === undefined ? {} : object(params.inputs);
     if (params.concurrency !== undefined && (typeof params.concurrency !== "number" || !Number.isInteger(params.concurrency) || params.concurrency < 1 || params.concurrency > 50)) {
@@ -594,7 +674,7 @@ export class AgentControlSession {
     }
     const concurrency = params.concurrency as number | undefined;
     // Saved sign-ins never go to a script an AI starts.
-    return runner.start({ scriptId, profileIds: profileIds as string[], inputs, useCredentials: false, ...(concurrency ? { concurrency } : {}) });
+    return runner.start({ scriptId, profileIds: profileIds as string[], inputs, useCredentials: false, ...(concurrency ? { concurrency } : {}), startedBy: { kind: "ai", name: this.client } });
   }
 
   private scriptLog(params: Record<string, unknown>) {
@@ -747,7 +827,7 @@ export class AgentControlSession {
       const details = await this.deps.remote.getProfiles(roster.profiles.map(({ id }) => id)).catch(() => []);
       const proxies = new Map(details.map(({ id, proxy }) => [id, proxy]));
       const nodes = details.some(({ proxy }) => proxy?.type === "pool") ? this.aiPoolNodes() : undefined;
-      return roster.profiles.map((profile) => {
+      return roster.profiles.filter((profile) => this.mayUseGroup(profile.group ?? "")).map((profile) => {
         const launch = this.deps.store.getLaunch(profile.id);
         return {
           id: profile.id,
@@ -761,7 +841,7 @@ export class AgentControlSession {
         };
       });
     }
-    const profiles = this.deps.store.listProfiles();
+    const profiles = this.deps.store.listProfiles().filter((profile) => this.mayUseGroup(profile.group ?? ""));
     const nodes = profiles.some(({ proxy }) => proxy?.type === "pool") ? this.aiPoolNodes() : undefined;
     return profiles.map((profile) => {
       const launch = this.deps.store.getLaunch(profile.id);
@@ -781,6 +861,9 @@ export class AgentControlSession {
   private async createProfile(params: Record<string, unknown>): Promise<{ id: string; temporary: boolean }> {
     const input = object(params.input ?? {});
     const temporary = params.temporary === true;
+    if (!this.mayUseGroup(typeof input.group === "string" ? input.group : "")) {
+      throw agentError("not_permitted", `${this.client} may not create profiles in this group`);
+    }
     let id: string;
     if (this.deps.remote && input.chromiumRuntime) throw new Error("Vela Chromium is unavailable in legacy Remote mode");
     if (this.deps.remote) {
@@ -979,6 +1062,16 @@ export class AgentControlHub {
     const session = new AgentControlSession(this.deps);
     this.sessions.add(session);
     return session;
+  }
+
+  /** The AIs connected right now, by the name their MCP client gives. */
+  connectedAgents(): string[] {
+    const names = new Set<string>();
+    for (const session of [...this.sessions]) {
+      if (session.isClosed) this.sessions.delete(session);
+      else if (session.agentName !== "unknown") names.add(session.agentName);
+    }
+    return [...names];
   }
 
   /** True while any live AI connection holds this browser. */
