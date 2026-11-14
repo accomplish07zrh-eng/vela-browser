@@ -26,6 +26,8 @@ test("every socket the relay opens goes to the upstream proxy", () => {
   const source = code("proxy-relay.ts");
   const calls = [...source.matchAll(/\b(?:net|tls)\.(?:connect|createConnection)\s*\(/g)];
   const toUpstream = [...source.matchAll(/\b(?:net|tls)\.(?:connect|createConnection)\s*\(\s*\{\s*host:\s*up\.host,\s*port:\s*up\.port\b/g)];
+  // The only extra options are the TUN bypass's, which name the same upstream's address.
+  for (const match of source.matchAll(/\b(?:net|tls)\.connect\s*\(\{([^)]*)\}\)/g)) expect(match[1]).not.toMatch(/\bhost:\s*(?!up\.host)/);
   expect(calls.length).toBeGreaterThan(0);
   expect(toUpstream.length).toBe(calls.length);
   // No other way to open a socket.
@@ -41,7 +43,7 @@ test("the SOCKS client connects only to the proxy and asks it to resolve the nam
   expect(body).not.toMatch(RESOLVER);
   const connects = [...body.matchAll(/\bnetConnect\s*\(/g)];
   expect(connects.length).toBe(1);
-  expect(body).toMatch(/netConnect\(\{\s*host:\s*proxy\.host,\s*port:\s*Number\(proxy\.port\)\s*\}\)/);
+  expect(body).toMatch(/netConnect\(\{\s*host:\s*proxy\.host,\s*port:\s*Number\(proxy\.port\),\s*\.\.\.upstreamDial\(proxy\.host\)\s*\}\)/);
   expect(body).toMatch(/Buffer\.from\(\[5,\s*1,\s*0,\s*3,\s*domain\.length\]\)/);
   expect(body).not.toMatch(/Buffer\.from\(\[5,\s*1,\s*0,\s*[14],/);
 });

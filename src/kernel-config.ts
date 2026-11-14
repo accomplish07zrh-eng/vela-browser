@@ -93,7 +93,7 @@ function normalizeResolvers(opts: {
 /** Build a config: each inbound routes to its own outbound, and nowhere else. */
 export function kernelConfig(
   inbounds: KernelInbound[],
-  opts: { resolver?: KernelDnsServer; resolvers?: readonly KernelDnsServer[] } = {},
+  opts: { resolver?: KernelDnsServer; resolvers?: readonly KernelDnsServer[]; defaultInterface?: string } = {},
 ): Record<string, unknown> {
   if (!inbounds.length) throw new Error("a kernel needs at least one inbound");
   const resolvers = normalizeResolvers(opts);
@@ -132,6 +132,8 @@ export function kernelConfig(
       // Every connection comes from an inbound above; this only names a node, never a direct route.
       final: `out-${inbounds[0]!.tag}`,
       ...(needsResolver ? { default_domain_resolver: RESOLVER_TAG } : {}),
+      // Going around this computer's TUN client: every dial (nodes and DoH) leaves through this adapter.
+      ...(opts.defaultInterface ? { default_interface: opts.defaultInterface } : {}),
     },
   };
   assertKernelConfig(config);
@@ -187,7 +189,8 @@ export function assertKernelConfig(config: unknown): void {
     tags.add(outbound.tag);
   }
   const route = c.route ?? fail("no route");
-  for (const key of Object.keys(route)) if (!["rules", "final", "default_domain_resolver"].includes(key)) fail(`route option ${key}`);
+  for (const key of Object.keys(route)) if (!["rules", "final", "default_domain_resolver", "default_interface"].includes(key)) fail(`route option ${key}`);
+  if (route.default_interface !== undefined && (typeof route.default_interface !== "string" || !route.default_interface.trim() || route.default_interface.length > 128)) fail("default interface must be an adapter name");
   if (!tags.has(route.final)) fail("final is not a node");
   for (const rule of route.rules ?? []) {
     if (rule.action !== "route" || !tags.has(rule.outbound)) fail("a rule leads somewhere other than a node");

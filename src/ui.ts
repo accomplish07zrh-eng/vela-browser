@@ -946,6 +946,21 @@ export async function handleUiRequest(
     return noStoreJson({ ok: true, entries, actors: options.audit.actors() });
   }
 
+  // Going around this computer's TUN proxy client, and the test that proves it works.
+  if (pathname === "/ui/api/tun-bypass" || pathname === "/ui/api/tun-bypass/test") {
+    if (remote || !options.appConfig) return noStoreJson({ ok: false, error: "Unavailable" }, 400);
+    const egress = await import("./egress-binding.ts");
+    if (pathname.endsWith("/test") && req.method === "POST") return noStoreJson({ ok: true, test: await egress.testTunBypass() });
+    if (req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as { enabled?: unknown };
+      if (typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "enabled must be true or false" }, 400);
+      const { tunBypass: _old, ...rest } = options.appConfig.read();
+      options.appConfig.write(body.enabled ? { ...rest, tunBypass: true } : rest);
+      egress.setTunBypass(body.enabled);
+    } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    return noStoreJson({ ok: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? egress.currentInterface() : egress.detectPhysicalInterface() });
+  }
+
   // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.
   if (pathname === "/ui/api/data-encryption") {
     if (remote || !options.appConfig) return noStoreJson({ ok: false, error: "Data encryption is unavailable" }, 400);

@@ -30,6 +30,7 @@ import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts
 import { TaskRunner, TaskStore } from "./tasks.ts";
 import { AuditLog } from "./audit.ts";
 import { backupSessions, SnapshotStore } from "./snapshots.ts";
+import { setTunBypass } from "./egress-binding.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
@@ -281,6 +282,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
   // Snapshots before fingerprint and proxy changes, and a daily backup of sign-ins that changed.
   const snapshots = opts.paths && !opts.remote ? new SnapshotStore(join(opts.paths.root, "snapshots"), () => store.secretBox()) : undefined;
   if (snapshots) store.attachSnapshots(snapshots);
+  // Connections to profiles' proxies go around a TUN proxy client on this computer when turned on.
+  try { setTunBypass(!opts.remote && opts.appConfig?.read().tunBypass === true); } catch { setTunBypass(false); }
   // Sensitive fields are sealed with this data folder's key when the user turned that on; values
   // written before are sealed now. Values this computer cannot read are left as they are.
   try {

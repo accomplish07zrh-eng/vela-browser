@@ -18,6 +18,7 @@ import { downloadResumable } from "./runtime-download.ts";
 import type { Outbound } from "./subscription.ts";
 import type { ProxySpec } from "./types.ts";
 import { extractZipTo } from "./unzip.ts";
+import { kernelInterface } from "./egress-binding.ts";
 
 export const SINGBOX_VERSION = "1.14.4";
 
@@ -330,7 +331,8 @@ export async function startKernel(
   const resolvers = needDns && deps.resolveDns ? await deps.resolveDns() : undefined;
   if (signal?.aborted) throw new Error("the proxy kernel start was aborted");
   const primaryDnsServer = resolvers?.[0]?.server;
-  const config = kernelConfig(inbounds, resolvers?.length ? { resolvers } : {});
+  const defaultInterface = kernelInterface();
+  const config = kernelConfig(inbounds, { ...(resolvers?.length ? { resolvers } : {}), ...(defaultInterface ? { defaultInterface } : {}) });
   assertKernelConfig(config);
   const workDir = resolve(deps.workDir);
   const recordsDir = join(workDir, KERNEL_RECORDS);

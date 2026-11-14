@@ -32,6 +32,8 @@ export interface AppConfig {
   sessionBackups?: boolean;
   /** Account passwords, 2FA secrets, cookies and saved sign-ins are stored encrypted. */
   encryptData?: boolean;
+  /** Connections to profiles' proxies go around this computer's TUN proxy client. */
+  tunBypass?: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -71,6 +73,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     ...(normalizeAiAccess(raw.aiAccess) ? { aiAccess: normalizeAiAccess(raw.aiAccess)! } : {}),
     ...(raw.sessionBackups === false ? { sessionBackups: false } : {}),
     ...(raw.encryptData === true ? { encryptData: true } : {}),
+    ...(raw.tunBypass === true ? { tunBypass: true } : {}),
   };
 }
 

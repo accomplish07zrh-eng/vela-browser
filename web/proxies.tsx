@@ -1,3 +1,4 @@
+import { TunBypassControl } from "./tun-bypass.tsx";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Select } from "./select.tsx";
 import { NumberInput } from "./controls.tsx";
@@ -206,6 +207,7 @@ function TunNotice() {
     <p>{t("Every profile's connection also passes through it, so traffic goes through two proxies and that client's rules decide the real exit. Switch the client to system-proxy mode, or add this rule at the top of its rules so Vela Browser connects directly:")}</p>
     <div className="tun-rule"><code>{rule}</code><button type="button" className="btn sm" onClick={() => { void navigator.clipboard?.writeText(rule).then(() => setCopied(true), () => {}); }}>{copied ? t("Copied") : t("Copy")}</button></div>
     <p className="tun-foot">{t("Afterwards, check a profile on this page: its exit should be the node's address.")}</p>
+    <TunBypassControl compact />
   </section>;
 }
 

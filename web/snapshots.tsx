@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { confirmDialog } from "./dialog.tsx";
 import { useTranslation } from "./i18n.tsx";
 import "./snapshots.css";
+import { TunBypassControl } from "./tun-bypass.tsx";
 
 interface SnapshotMeta { id: string; at: number; reason: "before-change" | "backup" | "manual" | "before-rollback"; changed?: string[]; hasSession: boolean; bytes: number }
 
@@ -113,6 +114,18 @@ export function DataEncryptionCard({ flash }: { flash(message: string): void }) 
           <span>{state.enabled ? t("On") : t("Off")}</span></label>
       </div>
       <p className="cardnote">{state.protection === "dpapi" ? t("Key protected by Windows for your account (DPAPI).") : t("Key stored in the data folder, readable only by your account.")}</p>
+    </div>
+  </section>;
+}
+
+/** Settings: the network path to profiles' proxies when a TUN proxy client runs on this computer. */
+export function TunBypassCard() {
+  const { t } = useTranslation();
+  return <section className="settings-card tun-card">
+    <header><svg className="icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h5l2-5 2 10 2-5h5" /></svg><h2>{t("Around this computer's proxy client")}</h2></header>
+    <div className="card-body">
+      <p>{t("When Clash, mihomo or sing-box runs in TUN mode here, every profile's traffic goes through it before reaching the profile's own proxy: two proxies deep, and its rules decide the path. Turned on, Vela Browser reaches profiles' proxies directly.")}</p>
+      <TunBypassControl />
     </div>
   </section>;
 }
