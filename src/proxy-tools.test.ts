@@ -186,3 +186,43 @@ test("pool mode refuses a node that left the pool after the preview, and a bad s
   const bad = await request("preview", { scope: { all: true }, mode: "pool", input: '{"country":"USA"}' });
   expect(bad.status).toBe(400);
 });
+
+test("bulk pool mode pre-fills closed profile timezone from checked kernel node", async () => {
+  const { store, request } = setup(["p1", "p2"]);
+  const { parseSubscription } = await import("./subscription.ts");
+  const parsed = parseSubscription("anytls://P@sg.node.example:443?sni=sg.node.example#SG");
+  const sub = store.proxyPool.addSubscription({ url: "https://sub.example/sg" });
+  store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+  const kernelNode = store.proxyPool.list().find((n) => n.protocol === "anytls")!;
+  store.proxyPool.recordCheck(kernelNode.id, { status: "working", country: "SG", timezone: "Asia/Singapore", checkedAt: 1 });
+  store.upsertProfile({ ...store.getProfile("p2")!, timezone: "Europe/Berlin", timezoneManual: true });
+
+  const previewed = await (await request("preview", {
+    scope: { all: true },
+    mode: "pool",
+    input: JSON.stringify({ nodeIds: [kernelNode.id] }),
+  })).json() as ProxyPreview;
+  await events(await request("apply", { previewId: previewed.previewId }));
+
+  expect(store.getProfile("p1")!.timezone).toBe("Asia/Singapore");
+  expect(store.getProfile("p2")!.timezone).toBe("Europe/Berlin");
+});
+
+test("distinctExitIp blocks second node sharing an exit IP when occupied after preview", async () => {
+  const { store, request } = setup(["p1", "p2"]);
+  const [n1, n2] = store.proxyPool.importText("10.2.0.1:8080#Exit1\n10.2.0.2:8080#Exit2").added;
+  store.proxyPool.recordCheck(n1!.id, { status: "working", ip: "198.51.100.77", country: "US", checkedAt: 1 });
+  store.proxyPool.recordCheck(n2!.id, { status: "working", ip: "198.51.100.77", country: "US", checkedAt: 1 });
+  // Only give p1 a single candidate so p2 would need n2 (same IP) — already filtered at preview OR raced before apply:
+  const previewed = await (await request("preview", {
+    scope: { all: true, ids: ["p1"] },
+    mode: "pool",
+    input: JSON.stringify({ nodeIds: [n1!.id], distinctExitIp: true }),
+  })).json() as ProxyPreview;
+  expect(previewed.rows[0]!.status).toBe("ready");
+
+  // Meanwhile p2 takes n2, occupying exit IP 198.51.100.77 before apply runs.
+  store.upsertProfile({ ...store.getProfile("p2")!, proxy: n2!.proxy });
+  const output = await events(await request("apply", { previewId: previewed.previewId }));
+  expect(output.find((e) => e.type === "replacement")!.row.code).toBe("pool_exhausted");
+});

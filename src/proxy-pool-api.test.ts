@@ -202,3 +202,134 @@ test("switching goes through one route; each stop reason has its own status, and
   }
   expect(await (await call("/history?profileId=p1")).json()).toEqual({ ok: true, history: [{ profileId: "p1", at: 5, by: "dashboard", from: "a", to: "b", outcome: "reopened" }] });
 });
+
+test("runPoolChecks bisects kernel batch failures to isolate broken nodes while checking healthy siblings", async () => {
+  const { store } = setup();
+  const { parseSubscription } = await import("./subscription.ts");
+  const { runPoolChecks } = await import("./proxy-pool-api.ts");
+  const { KernelBinaryError } = await import("./kernel.ts");
+  const parsed = parseSubscription([
+    "anytls://A@n1.example:443#N1",
+    "anytls://B@bad1.example:443#BAD1",
+    "anytls://C@n2.example:443#N2",
+    "anytls://D@bad2.example:443#BAD2",
+    "anytls://E@n3.example:443#N3",
+  ].join("\n"));
+  const sub = store.proxyPool.addSubscription({ url: "https://sub.example/bisect" });
+  store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+  const all = store.proxyPool.list();
+  const badIds = new Set(all.filter((n) => n.name.startsWith("BAD")).map((n) => n.id));
+
+  let startCalls = 0;
+  let binaryBroken = false;
+  const kernels = {
+    startTemporary: async (entries: Array<{ tag: string }>) => {
+      startCalls++;
+      if (binaryBroken) throw new KernelBinaryError("binary missing");
+      if (entries.some((entry) => badIds.has(entry.tag))) {
+        throw new Error("invalid reality public key");
+      }
+      return {
+        process: { pid: 1, spec: {} as any, exited: new Promise<number>(() => {}), stop: () => {} },
+        specs: new Map(entries.map((entry, i) => [entry.tag, { type: "socks5" as const, host: "127.0.0.1", port: String(41000 + i), user: entry.tag, pass: "k" }])),
+      };
+    },
+  };
+
+  const events: string[] = [];
+  await runPoolChecks(store, all, {
+    kernels,
+    direct: async () => null,
+    check: async (proxy) => ({
+      status: "working",
+      attempts: 3,
+      successes: 3,
+      ip: `203.0.113.${proxy.port.slice(-1)}`,
+      timezone: "Asia/Tokyo",
+    }),
+    onResult: (node) => events.push(node.name),
+  });
+
+  expect(startCalls).toBeGreaterThan(1);
+  expect(events.sort()).toEqual(["BAD1", "BAD2", "N1", "N2", "N3"]);
+  for (const node of store.proxyPool.list()) {
+    if (badIds.has(node.id)) {
+      expect(node.check).toMatchObject({ status: "failed", reason: "connection_failed" });
+    } else {
+      expect(node.check).toMatchObject({ status: "working", timezone: "Asia/Tokyo" });
+    }
+  }
+
+  // KernelBinaryError short-circuits without bisecting (1 startTemporary call only).
+  startCalls = 0;
+  binaryBroken = true;
+  await runPoolChecks(store, all, { kernels, direct: async () => null });
+  expect(startCalls).toBe(1);
+  for (const node of store.proxyPool.list()) {
+    expect(node.check).toMatchObject({ status: "unavailable", reason: "check_unavailable" });
+  }
+});
+
+test("subscription routes accept and update refreshHours", async () => {
+  const { store } = setup();
+  const { parseSubscription } = await import("./subscription.ts");
+  const { handleProxyPoolRequest } = await import("./proxy-pool-api.ts");
+  const fetchSubscription = (async () => ({
+    parsed: parseSubscription("vless://11111111-2222-3333-4444-555555555555@jp.example:443?security=tls#JP"),
+    usage: undefined,
+  })) as any;
+  const call = (path: string, body?: unknown) => handleProxyPoolRequest(new Request(`http://localhost/ui/api/proxy-pool${path}`, body === undefined
+    ? { method: "GET" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  store, {}, { assign: async () => null, fetchSubscription });
+
+  const added = await (await call("/subscriptions/add", { url: "https://sub.example/s1", name: "Sub 1", refreshHours: 12 })).json();
+  expect(added.subscription.refreshHours).toBe(12);
+
+  const updated = await (await call("/subscriptions/update", { id: added.subscription.id, refreshHours: 24, name: "Sub One" })).json();
+  expect(updated).toMatchObject({ ok: true, subscription: { name: "Sub One", refreshHours: 24 } });
+
+  const disabled = await (await call("/subscriptions/update", { id: added.subscription.id, refreshHours: null })).json();
+  expect(disabled.subscription.refreshHours).toBeNull();
+
+  expect((await call("/subscriptions/update", { id: added.subscription.id, refreshHours: 999 })).status).toBe(400);
+});
+
+test("aborted pool check stops cleanly without emitting done and drainPoolTasks awaits active checks", async () => {
+  const { store } = setup();
+  const { drainPoolTasks, handleProxyPoolRequest } = await import("./proxy-pool-api.ts");
+  const { added } = store.proxyPool.importText("10.1.0.1:8080#N1\n10.1.0.2:8080#N2");
+  const releases: Array<() => void> = [];
+  let firstStarted!: () => void;
+  const started = new Promise<void>((r) => { firstStarted = r; });
+  const shutdown = new AbortController();
+
+  const response = await handleProxyPoolRequest(
+    new Request("http://localhost/ui/api/proxy-pool/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: added.map((n) => n.id) }),
+    }),
+    store,
+    {
+      shutdownSignal: shutdown.signal,
+      proxyCheck: async () => {
+        firstStarted();
+        await new Promise<void>((r) => { releases.push(r); });
+        return { status: "working", attempts: 1, successes: 1 };
+      },
+    },
+    { assign: async () => null },
+  );
+
+  await started;
+  shutdown.abort();
+  let drained = false;
+  const drain = drainPoolTasks(store).then(() => { drained = true; });
+  await Promise.resolve();
+  expect(drained).toBe(false);
+  while (releases.length) releases.shift()!();
+  await drain;
+  expect(drained).toBe(true);
+  const body = await response.text();
+  expect(body).not.toContain('"type":"done"');
+});

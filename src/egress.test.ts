@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { fetchDirectEgress, parseEgressResponse, resolveEgressEndpoints } from "./egress.ts";
 
 test("parseEgressResponse accepts JSON and plain IPv4/IPv6 responses", () => {
-  expect(parseEgressResponse('{"ip":"203.0.113.4","country":"US"}')).toEqual({ ip: "203.0.113.4", country: "US" });
+  expect(parseEgressResponse('{"ip":"203.0.113.4","country":"US","timezone":"America/New_York"}')).toEqual({
+    ip: "203.0.113.4",
+    country: "US",
+    timezone: "America/New_York",
+  });
+  expect(parseEgressResponse('{"ip":"203.0.113.4","timezone":"Invalid/Zone"}')).toEqual({ ip: "203.0.113.4" });
   expect(parseEgressResponse('{"query":"2001:db8::1"}')).toEqual({ ip: "2001:db8::1" });
   expect(parseEgressResponse("198.51.100.9\n")).toEqual({ ip: "198.51.100.9" });
 });

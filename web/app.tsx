@@ -1,5 +1,5 @@
 import { Channel } from "@tauri-apps/api/core";
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
@@ -40,8 +40,10 @@ import {
   type Extension,
   type GroupExtensionDefaults,
   type AppModeConfig,
+  type KernelDnsEnvironment,
   fetchAppMode,
   saveTaskbarHidden,
+  saveKernelDns,
   saveCooling,
   type CoolingSettings,
   fetchPlugins,
@@ -668,13 +670,36 @@ async function copyPlainText(value: string): Promise<void> {
   if (!copied) throw new Error("copy failed");
 }
 
+function moveSegmentedChoice<T extends string | boolean>(
+  event: ReactKeyboardEvent<HTMLDivElement>,
+  values: readonly T[],
+  current: T,
+  onSelect: (next: T) => void,
+  itemSelector = '[role="radio"]',
+) {
+  const index = values.indexOf(current);
+  let nextIndex = -1;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % values.length;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + values.length) % values.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = values.length - 1;
+  if (nextIndex < 0) return;
+  event.preventDefault();
+  onSelect(values[nextIndex]!);
+  event.currentTarget.querySelectorAll<HTMLButtonElement>(itemSelector)[nextIndex]?.focus();
+}
+
 function CopyField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => () => { if (timerRef.current !== null) window.clearTimeout(timerRef.current); }, []);
   const copy = async () => {
     try {
       await copyPlainText(value);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setCopied(false), 1200);
     } catch {
       setCopied(false);
     }
@@ -685,12 +710,12 @@ function CopyField({ label, value, onChange }: { label: string; value: string; o
       {/* Copy sits inside the field rather than beside it: a separate bordered
           button per credential turned the dialog into a grid of grey boxes. */}
       <div className="inputwrap">
-        <input value={value} onChange={(event) => onChange(event.target.value)} />
+        <input aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} />
         <button
           type="button"
           className={`inline-action tip${copied ? " ok" : ""}`}
-          data-tip={copied ? "Copied" : `Copy ${label.toLowerCase()}`}
-          aria-label={`Copy ${label}`}
+          data-tip={copied ? t("Copied") : t("Copy {field}", { field: label.toLowerCase() })}
+          aria-label={t("Copy {field}", { field: label })}
           onClick={copy}
         >
           <Icon name={copied ? "check" : "copy"} className="sm" />
@@ -1195,6 +1220,10 @@ function App() {
   const [editHardware, setEditHardware] = useState<{ gpu?: string; cores?: number } | undefined>();
   const [timezoneBusy, setTimezoneBusy] = useState(false);
   const editFetchId = useRef<string | null>(null);
+  const taskbarSeq = useRef(0);
+  const coolingSeq = useRef(0);
+  const kernelDnsSeq = useRef(0);
+  const escapeHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
   const [editMobile, setEditMobile] = useState<NonNullable<EditProfile["desktopConversion"]> | null>(null);
   const [editTotp, setEditTotp] = useState<{ code: string; secs: number } | null>(null);
   const [twoFaFlash, setTwoFaFlash] = useState<{ id: string; code: string } | null>(null);
@@ -1272,27 +1301,28 @@ function App() {
 
   // Escape closes whatever dialog is open, topmost first — standard desktop
   // behavior the mouse-only close buttons don't cover.
+  escapeHandlerRef.current = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return;
+    if (document.querySelector("dialog[open]")) return;
+
+    if (movingFolder) { if (!folderMoveBusy) setMovingFolder(null); return; }
+
+    if (logView || logErr) { setLogView(null); setLogErr(null); return; }
+    if (showUpdate) { setShowUpdate(false); return; }
+    if (showBulk) { closeBulk(); return; }
+    if (pendingView) { if (!pendingView.busy) setPendingView(null); return; }
+    if (cookieTargets) { if (!cookieSaving) closeCookie(); return; }
+    if (editId) { closeEdit(); return; }
+    if (showCreate) { closeCreate(); return; }
+    // Nothing left to close: Escape puts the sheet away and returns to the wall.
+    if (view !== "workbench" && !event.defaultPrevented && !document.querySelector('.popover, [role="dialog"], [aria-modal="true"]')
+      && !(event.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) setView("workbench");
+  };
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (document.querySelector("dialog[open]")) return;
-
-      if (movingFolder) { if (!folderMoveBusy) setMovingFolder(null); return; }
-
-      if (logView || logErr) { setLogView(null); setLogErr(null); return; }
-      if (showUpdate) { setShowUpdate(false); return; }
-      if (showBulk) { closeBulk(); return; }
-      if (pendingView) { if (!pendingView.busy) setPendingView(null); return; }
-      if (cookieTargets) { if (!cookieSaving) closeCookie(); return; }
-      if (editId) { closeEdit(); return; }
-      if (showCreate) { closeCreate(); return; }
-      // Nothing left to close: Escape puts the sheet away and returns to the wall.
-      if (view !== "workbench" && !event.defaultPrevented && !document.querySelector('.popover, [role="dialog"], [aria-modal="true"]')
-        && !(event.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) setView("workbench");
-    };
+    const onKey = (event: KeyboardEvent) => escapeHandlerRef.current(event);
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  });
+  }, []);
 
   const reloadGroupExtensionDefaults = async () => {
     try {
@@ -2133,7 +2163,7 @@ function App() {
       const { timezone, locale } = await refreshProfileTimezone(id);
       if (editFetchId.current !== id || generation !== editProxyCheckGeneration.current) return;
       setEditForm((form) => ({ ...form, timezone, locale }));
-      setEditInitialFingerprint((initial) => ({ ...initial, timezone }));
+      setEditInitialFingerprint((initial) => ({ ...initial, timezone, locale }));
       await load();
     } catch (error) {
       if (editFetchId.current === id && generation === editProxyCheckGeneration.current) setEditErr(error instanceof Error ? error.message : String(error));
@@ -3149,7 +3179,7 @@ function App() {
                         {p.has2fa && (
                           <button
                             className={`iconbtn twofa tip${twoFaFlash?.id === p.id ? " flash" : ""}`}
-                            data-tip={twoFaFlash?.id === p.id ? `Copied ${twoFaFlash.code}` : "Copy current 2FA code"}
+                            data-tip={twoFaFlash?.id === p.id ? t("Copied {code}", { code: twoFaFlash.code }) : t("Copy current 2FA code")}
                             aria-label={t("Copy current 2FA code")}
                             onClick={() => copy2fa(p.id)}
                           >
@@ -3364,7 +3394,7 @@ function App() {
                   )}
                   <p className="formnote">
                     {t("Applying replaces assignments on {count} current profile(s). New and moved profiles inherit it.", { count: groupDefaultProfileCount })}
-                    {t("Individual profiles can differ later. Reopen browsers to apply changes.")}
+                    {" "}{t("Individual profiles can differ later. Reopen browsers to apply changes.")}
                   </p>
                   <button
                     type="button"
@@ -3445,13 +3475,19 @@ function App() {
             <header><Icon name="sun" className="sm" /><h2>{t("Appearance")}</h2></header>
             <div className="card-body">
               <p>{t("Choose how Vela Browser looks. System follows your operating system setting.")}</p>
-              <div className="segmented" role="radiogroup" aria-label={t("Theme")}>
+              <div
+                className="segmented"
+                role="radiogroup"
+                aria-label={t("Theme")}
+                onKeyDown={(event) => moveSegmentedChoice(event, THEMES.map((option) => option.key), theme, chooseTheme)}
+              >
                 {THEMES.map((option) => (
                   <button
                     key={option.key}
                     type="button"
                     role="radio"
                     aria-checked={theme === option.key}
+                    tabIndex={theme === option.key ? 0 : -1}
                     className={theme === option.key ? "active" : ""}
                     onClick={() => chooseTheme(option.key)}
                   >
@@ -3468,29 +3504,43 @@ function App() {
               </label>
             </div>
           </section>
-          {appMode?.taskbarModeSupported && (
+          {appMode?.taskbarModeSupported && (() => {
+            const setTaskbarHidden = (hidden: boolean) => {
+              const previous = appMode.hideFromTaskbar === true;
+              const seq = ++taskbarSeq.current;
+              setAppMode((current) => current && { ...current, hideFromTaskbar: hidden });
+              saveTaskbarHidden(hidden)
+                .then((saved) => {
+                  if (taskbarSeq.current === seq) setAppMode((current) => current && { ...current, hideFromTaskbar: saved });
+                })
+                .catch((error) => {
+                  if (taskbarSeq.current === seq) {
+                    setAppMode((current) => current && { ...current, hideFromTaskbar: previous });
+                    flash(error instanceof Error ? error.message : String(error));
+                  }
+                });
+            };
+            const currentHidden = appMode.hideFromTaskbar === true;
+            return (
             <section className="settings-card">
               <header><Icon name="wall" className="sm" /><h2>{t("Environment windows")}</h2></header>
               <div className="card-body">
                 <p>{t("Hide only removes each environment's taskbar button. The window, its position and everything a page can see stay exactly the same.")}</p>
-                <div className="segmented" role="radiogroup" aria-label={t("Taskbar")}>
+                <div
+                  className="segmented"
+                  role="radiogroup"
+                  aria-label={t("Taskbar")}
+                  onKeyDown={(event) => moveSegmentedChoice(event, [false, true] as const, currentHidden, setTaskbarHidden)}
+                >
                   {([[false, "Show in taskbar"], [true, "Hide from taskbar"]] as const).map(([hidden, label]) => (
                     <button
                       key={label}
                       type="button"
                       role="radio"
-                      aria-checked={(appMode.hideFromTaskbar === true) === hidden}
-                      className={(appMode.hideFromTaskbar === true) === hidden ? "active" : ""}
-                      onClick={() => {
-                        const previous = appMode.hideFromTaskbar === true;
-                        setAppMode({ ...appMode, hideFromTaskbar: hidden });
-                        saveTaskbarHidden(hidden)
-                          .then((saved) => setAppMode((current) => current && { ...current, hideFromTaskbar: saved }))
-                          .catch((error) => {
-                            setAppMode((current) => current && { ...current, hideFromTaskbar: previous });
-                            flash(error instanceof Error ? error.message : String(error));
-                          });
-                      }}
+                      aria-checked={currentHidden === hidden}
+                      tabIndex={currentHidden === hidden ? 0 : -1}
+                      className={currentHidden === hidden ? "active" : ""}
+                      onClick={() => setTaskbarHidden(hidden)}
                     >
                       {t(label)}
                     </button>
@@ -3498,17 +3548,23 @@ function App() {
                 </div>
               </div>
             </section>
-          )}
+            );
+          })()}
           {appMode?.coolingSupported && appMode.cooling && (() => {
             const cooling = appMode.cooling;
             const save = (change: Partial<CoolingSettings>) => {
               const previous = cooling;
-              setAppMode({ ...appMode, cooling: { ...cooling, ...change } });
+              const seq = ++coolingSeq.current;
+              setAppMode((current) => current?.cooling ? { ...current, cooling: { ...current.cooling, ...change } } : current);
               saveCooling(change)
-                .then((saved) => setAppMode((current) => current && { ...current, cooling: saved }))
+                .then((saved) => {
+                  if (coolingSeq.current === seq) setAppMode((current) => current && { ...current, cooling: saved });
+                })
                 .catch((error) => {
-                  setAppMode((current) => current && { ...current, cooling: previous });
-                  flash(error instanceof Error ? error.message : String(error));
+                  if (coolingSeq.current === seq) {
+                    setAppMode((current) => current && { ...current, cooling: previous });
+                    flash(error instanceof Error ? error.message : String(error));
+                  }
                 });
             };
             return (
@@ -3516,9 +3572,15 @@ function App() {
                 <header><Icon name="snow" className="sm" /><h2>{t("Cooling")}</h2></header>
                 <div className="card-body">
                   <p>{t("When memory runs short, the browser you have left alone the longest closes safely. It keeps its place on the workbench and wakes signed in, with its tabs. Browsers you are using, or that a script or AI is driving, are never cooled.")}</p>
-                  <div className="segmented" role="radiogroup" aria-label={t("Cooling")}>
+                  <div
+                    className="segmented"
+                    role="radiogroup"
+                    aria-label={t("Cooling")}
+                    onKeyDown={(event) => moveSegmentedChoice(event, [true, false] as const, cooling.enabled, (enabled) => save({ enabled }))}
+                  >
                     {([[true, "On"], [false, "Off"]] as const).map(([enabled, label]) => (
                       <button key={label} type="button" role="radio" aria-checked={cooling.enabled === enabled}
+                        tabIndex={cooling.enabled === enabled ? 0 : -1}
                         className={cooling.enabled === enabled ? "active" : ""} onClick={() => save({ enabled })}>{t(label)}</button>
                     ))}
                   </div>
@@ -3537,6 +3599,53 @@ function App() {
                     </div>
                   )}
                   {typeof appMode.memoryUse === "number" && <p className="formnote">{t("Memory in use now: {value}%", { value: Math.round(appMode.memoryUse) })}</p>}
+                </div>
+              </section>
+            );
+          })()}
+          {appMode?.kernelDnsSupported && (() => {
+            const currentDns: KernelDnsEnvironment = appMode.kernelDns ?? "auto";
+            const selectKernelDns = (env: KernelDnsEnvironment) => {
+              const previous = currentDns;
+              const seq = ++kernelDnsSeq.current;
+              setAppMode((current) => current && { ...current, kernelDns: env });
+              saveKernelDns(env)
+                .then((saved) => {
+                  if (kernelDnsSeq.current === seq) setAppMode((current) => current && { ...current, kernelDns: saved });
+                })
+                .catch((error) => {
+                  if (kernelDnsSeq.current === seq) {
+                    setAppMode((current) => current && { ...current, kernelDns: previous });
+                    flash(error instanceof Error ? error.message : String(error));
+                  }
+                });
+            };
+            return (
+              <section className="settings-card">
+                <header><Icon name="globe" className="sm" /><h2>{t("Proxy kernel DNS")}</h2></header>
+                <div className="card-body">
+                  <p>{t("Choose which encrypted DNS-over-HTTPS servers resolve subscription node addresses before traffic enters the tunnel. Only direct numeric IP addresses over HTTPS are allowed.")}</p>
+                  <div
+                    className="segmented"
+                    role="radiogroup"
+                    aria-label={t("Proxy kernel DNS")}
+                    onKeyDown={(event) => moveSegmentedChoice(event, ["auto", "cn", "global"] as const, currentDns, selectKernelDns)}
+                  >
+                    {([["auto", "Auto"], ["cn", "China mainland"], ["global", "Global"]] as const).map(([env, label]) => (
+                      <button
+                        key={env}
+                        type="button"
+                        role="radio"
+                        aria-checked={currentDns === env}
+                        tabIndex={currentDns === env ? 0 : -1}
+                        className={currentDns === env ? "active" : ""}
+                        onClick={() => selectKernelDns(env)}
+                      >
+                        {t(label)}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="formnote">{t("Auto probes 223.5.5.5, 223.6.6.6, 1.12.12.12, 1.1.1.1, and 8.8.8.8 and uses the fastest reachable server with failover. Choose China mainland when 1.1.1.1 is unreachable, or Global outside China.")}</p>
                 </div>
               </section>
             );
@@ -4041,17 +4150,18 @@ function App() {
                       onClick={checkEditedProxy}
                     >
                       <Icon name="activity" className="sm" />
-                      {editProxyCheck.checking ? "Checking…" : t("Check proxy")}
+                      {editProxyCheck.checking ? t("Checking…") : t("Check proxy")}
                     </button>}
                     {editId && <PoolProxyPicker profileId={editId} running={!!profiles.find((p) => p.id === editId)?.running} onAssigned={() => {
                       // The server saved the pool proxy and its exit's timezone; show what it saved,
                       // and treat it as the form's starting point so a later save does not undo it.
                       const id = editId;
+                      resetEditProxyCheck();
                       void fetchProfileEdit(id).then((p) => {
                         if (editFetchId.current !== id) return;
-                        setEditForm((form) => ({ ...form, proxyType: p.proxyType || "http", proxy: p.proxy, proxyError: p.proxyError ?? "", timezone: p.timezone }));
+                        setEditForm((form) => ({ ...form, proxyType: p.proxyType || "http", proxy: p.proxy, proxyError: p.proxyError ?? "", timezone: p.timezone, locale: p.locale ?? "" }));
                         setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
-                        setEditInitialFingerprint((initial) => ({ ...initial, timezone: p.timezone ?? "" }));
+                        setEditInitialFingerprint((initial) => ({ ...initial, timezone: p.timezone ?? "", locale: p.locale ?? "" }));
                       }).catch(() => {});
                       void load();
                     }} />}
@@ -4140,9 +4250,9 @@ function App() {
         /* Form dialog: a stray backdrop click must not discard typed input —
            close via Cancel, the X, or Escape (the backdrop has no onClick). */
         <div className="modal-backdrop">
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="bulk-import-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <Icon name="fileImport" />{t("Import profiles")}
+              <Icon name="fileImport" /><span id="bulk-import-title">{t("Import profiles")}</span>
               <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeBulk}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
@@ -4154,11 +4264,21 @@ function App() {
               </ol>
               <p className="hint">{t("Encrypted or proprietary profile archives cannot be imported. Use a readable export instead.")}</p>
 
-              <div className="segmented" role="tablist" aria-label={t("Import source")}>
+              <div
+                className="segmented"
+                role="tablist"
+                aria-label={t("Import source")}
+                onKeyDown={(event) => moveSegmentedChoice(event, ["file", "paste"] as const, bulkSource, (next) => {
+                  setBulkSource(next);
+                  if (next === "file") setBulkText("");
+                  else setBulkFiles([]);
+                }, '[role="tab"]')}
+              >
                 <button
                   type="button"
                   role="tab"
                   aria-selected={bulkSource === "file"}
+                  tabIndex={bulkSource === "file" ? 0 : -1}
                   className={bulkSource === "file" ? "active" : ""}
                   onClick={() => { setBulkSource("file"); setBulkText(""); }}
                 >
@@ -4168,6 +4288,7 @@ function App() {
                   type="button"
                   role="tab"
                   aria-selected={bulkSource === "paste"}
+                  tabIndex={bulkSource === "paste" ? 0 : -1}
                   className={bulkSource === "paste" ? "active" : ""}
                   onClick={() => { setBulkSource("paste"); setBulkFiles([]); }}
                 >
@@ -4185,7 +4306,7 @@ function App() {
                     onDrop={(e) => { e.preventDefault(); setBulkOver(false); if (e.dataTransfer.files?.length) setBulkFiles(Array.from(e.dataTransfer.files)); }}
                   >
                     <Icon name="fileImport" />
-                    <b>{t("Drag &amp; drop files, or click to choose")}</b>
+                    <b>{t("Drag & drop files, or click to choose")}</b>
                     <div className="sub">{t("Readable TXT, CSV, JSON, or XLSX exports from AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut, and similar browsers")}</div>
                   </div>
                   {bulkFiles.length > 0 && (
@@ -4247,7 +4368,7 @@ function App() {
                 {t("Anything chosen above overrides that field on every imported record, including provider exports that already carry a group.")}
               </p>
               <p className="formnote">
-                {t("An Vela Browser export also carries")} <code>seed</code>{t("(seed)")}、<code>timezone</code>{t("(timezone)")}{t(" and ")}{" "}
+                {t("A Vela Browser export also carries")} <code>seed</code>{t("(seed)")}、<code>timezone</code>{t("(timezone)")}{t(" and ")}{" "}
                 <code>platform_os</code>{t("(operating system)")}{t(", which recreate the exact browser fingerprint. Its")}{" "}
                 <code>fp_*</code> {t("columns are a")} <b>{t("record")}</b>{" "}
                 {t("of the fingerprint that was measured, not settings — they are checked after the browser opens, never applied to it.")}
@@ -4274,16 +4395,16 @@ function App() {
         /* Form dialog: a stray backdrop click must not discard typed input —
            close via Cancel, the X, or Escape (the backdrop has no onClick). */
         <div className="modal-backdrop">
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">{t("Update profiles from file")}<button type="button" className="modal-close" aria-label={t("Close")} onClick={() => setShowUpdate(false)}><Icon name="close" className="sm" /></button></div>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="bulk-update-title" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head"><span id="bulk-update-title">{t("Update profiles from file")}</span><button type="button" className="modal-close" aria-label={t("Close")} onClick={() => setShowUpdate(false)}><Icon name="close" className="sm" /></button></div>
             <div className="modal-body">
               {updateErr && <div className="modal-err"><Icon name="alert" className="sm" />{updateErr}</div>}
               {updateResult && <div className="modal-ok"><Icon name="check" className="sm" />{updateResult}</div>}
               <ol className="steps">
-                <li><b>{t("Export")}</b> {t("the profiles you want to change — that gives you a file with each profile's")} — that gives you a file with each profile's <code>id</code> {t("(how rows are matched).")}</li>
+                <li><b>{t("Export")}</b> {t("the profiles you want to change — that gives you a file with each profile's")} <code>id</code> {t("(how rows are matched).")}</li>
                 <li><b>{t("Edit")}</b> {t("the columns you want (name, username, password, 2FA, proxy…). Keep the")} <code>id</code> {t("column; delete any column you don't want to touch.")}</li>
                 {<li>{t("Add a")} <code>custom_no</code> {t("column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.")}</li>}
-                <li><b>{t("Re-upload")}</b> {t("the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies &amp; fingerprints are preserved — editing a")} <code>cookie</code> or <code>ua</code> {t("column has no effect.")}</li>
+                <li><b>{t("Re-upload")}</b> {t("the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies & fingerprints are preserved — editing a")} <code>cookie</code> or <code>ua</code> {t("column has no effect.")}</li>
 
               </ol>
               <div className="updexport">
@@ -4310,7 +4431,7 @@ function App() {
                 onDrop={(e) => { e.preventDefault(); setUpdateOver(false); if (e.dataTransfer.files?.[0]) setUpdateFile(e.dataTransfer.files[0]); }}
               >
                 <Icon name="export" />
-                <b>{t("Drag &amp; drop the edited file, or click to choose")}</b>
+                <b>{t("Drag & drop the edited file, or click to choose")}</b>
                 <div className="sub">CSV, <code>.txt</code> or Excel <code>.xlsx</code> with an <code>id</code> column</div>
               </div>
               <input
@@ -4323,7 +4444,7 @@ function App() {
               {updateFile && <div className="bulkfiles"><Icon name="file" className="sm" />{t("Selected:")} <b>{updateFile.name}</b></div>}
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={() => setShowUpdate(false)}>Close</button>
+              <button className="btn ghost" onClick={() => setShowUpdate(false)}>{t("Close")}</button>
               <button className="btn primary" disabled={updateBusy || !updateFile} onClick={submitUpdate}>{updateBusy ? t("Updating…") : t("Update profiles")}</button>
             </div>
           </div>

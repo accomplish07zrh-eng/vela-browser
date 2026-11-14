@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, posix, win32 } from "node:path";
@@ -6,10 +7,18 @@ import process from "node:process";
 import { promisify } from "node:util";
 import NodeWebSocket from "ws";
 
+function packageVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    if (typeof pkg?.version === "string" && pkg.version.trim()) return pkg.version.trim();
+  } catch {}
+  return "0.1.7";
+}
+
 export const RUNTIME_PROTOCOL = "aliasmode-runtime-v1";
 export const AGENT_PROTOCOL = "aliasmode-agent-v1";
 export const AGENT_PATH = "/api/agent/v1/connect";
-const VERSION = process.env.ALIASMODE_APP_VERSION || "0.1.0-beta.32";
+const VERSION = process.env.ALIASMODE_APP_VERSION || packageVersion();
 const STARTUP_WAIT_MS = 180_000;
 // Replies can be much larger than requests, e.g. a large local profile list.
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;

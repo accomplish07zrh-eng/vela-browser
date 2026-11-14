@@ -105,6 +105,8 @@ export interface DiagnoseReport {
 
 export interface HealthResult { ok: boolean; version: string; root: string; logDir?: string; }
 
+export type KernelDnsEnvironment = "auto" | "cn" | "global";
+
 export interface AppModeConfig {
   version: 1;
   mode: "local";
@@ -128,6 +130,9 @@ export interface AppModeConfig {
   cooling?: CoolingSettings;
   /** Memory use in percent when the settings were read. */
   memoryUse?: number;
+  /** Proxy kernel encrypted DNS network preset. */
+  kernelDnsSupported?: boolean;
+  kernelDns?: KernelDnsEnvironment;
 }
 
 export interface CoolingSettings { enabled: boolean; threshold: number; idleMinutes: number }
@@ -178,6 +183,17 @@ export async function saveTaskbarHidden(hidden: boolean): Promise<boolean> {
   const body = await response.json().catch(() => ({})) as { ok?: boolean; hidden?: boolean; error?: string };
   if (!response.ok || !body.ok) throw new Error(body.error || "The setting could not be saved");
   return body.hidden === true;
+}
+
+export async function saveKernelDns(environment: KernelDnsEnvironment): Promise<KernelDnsEnvironment> {
+  const response = await fetch("/ui/api/proxy-kernel/dns", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kernelDns: environment }),
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; kernelDns?: KernelDnsEnvironment; error?: string };
+  if (!response.ok || !body.ok || !body.kernelDns) throw new Error(body.error || "The setting could not be saved");
+  return body.kernelDns;
 }
 
 export async function fetchAppMode(): Promise<AppModeConfig> {
@@ -491,6 +507,7 @@ export interface ProxyCheckResult {
   country?: string;
   region?: string;
   city?: string;
+  timezone?: string;
   rotating?: boolean;
 }
 
@@ -515,7 +532,7 @@ function proxyCheckResult(body: any): ProxyCheckResult {
     || body.successes < 0
     || body.successes > body.attempts
     || (body.reason !== undefined && !PROXY_CHECK_REASONS.has(body.reason))
-    || ["ip", "country", "region", "city"].some((field) => body[field] !== undefined && typeof body[field] !== "string")
+    || ["ip", "country", "region", "city", "timezone"].some((field) => body[field] !== undefined && typeof body[field] !== "string")
     || (body.rotating !== undefined && typeof body.rotating !== "boolean")
   ) {
     throw new Error("Proxy check returned invalid data");
@@ -529,6 +546,7 @@ function proxyCheckResult(body: any): ProxyCheckResult {
     ...(body.country ? { country: body.country } : {}),
     ...(body.region ? { region: body.region } : {}),
     ...(body.city ? { city: body.city } : {}),
+    ...(body.timezone ? { timezone: body.timezone } : {}),
     ...(body.rotating !== undefined ? { rotating: body.rotating } : {}),
   };
 }

@@ -12,11 +12,20 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { canonicalIp } from "./ip.ts";
 import { parseProxySpec, normalizeProxySpec, proxyHostPort, proxyIdentityKey } from "./proxy.ts";
 import { SecretBox, SecretUnavailableError } from "./secret-box.ts";
 import type { ProxyCheckResult } from "./proxy-check.ts";
-import type { NodeProtocol, Outbound, ParsedNode, SubscriptionUsage } from "./subscription.ts";
+import { isNonPublicHostName, type NodeProtocol, type Outbound, type ParsedNode, type SubscriptionUsage } from "./subscription.ts";
 import type { ProxySpec, ProxyType } from "./types.ts";
+
+/** Keep at most this many switch-history entries per profile so the log never grows unbounded. */
+export const PROXY_SWITCH_HISTORY_LIMIT = 100;
+/** Allowed auto-refresh bounds (in hours) for subscriptions when scheduled updates are enabled. */
+export const MIN_SUBSCRIPTION_REFRESH_HOURS = 1;
+export const MAX_SUBSCRIPTION_REFRESH_HOURS = 720;
+const SUBSCRIPTION_FAILURE_BACKOFF_BASE_MS = 5 * 60_000;
+const SUBSCRIPTION_FAILURE_BACKOFF_MAX_EXPONENT = 6;
 
 /** "manual": added by hand (static residential, dedicated IP). "provider": from a subscription. */
 export type PoolNodeKind = "manual" | "provider";
@@ -28,6 +37,7 @@ export interface PoolCheck {
   country?: string;
   region?: string;
   city?: string;
+  timezone?: string;
   rotating?: boolean;
   /** Wall time of the whole check (three attempts in parallel), in milliseconds. */
   durationMs?: number;
@@ -233,13 +243,61 @@ export class ProxyPool {
     ]) {
       try { db.exec(`ALTER TABLE proxy_pool_nodes ADD COLUMN ${column}`); } catch { /* already there */ }
     }
+    for (const column of [
+      "refresh_hours INTEGER",
+      "retry_after INTEGER",
+      "failure_count INTEGER NOT NULL DEFAULT 0",
+    ]) {
+      try { db.exec(`ALTER TABLE proxy_subscriptions ADD COLUMN ${column}`); } catch { /* already there */ }
+    }
     this.sealOlderRows();
+    this.pruneSwitchHistory();
+  }
+
+  private txDepth = 0;
+
+  /** Explicit transaction wrapper (avoids bun:sqlite db.transaction() statement retention on Windows). */
+  private transaction<A extends unknown[], T>(fn: (...args: A) => T): (...args: A) => T {
+    return (...args) => {
+      const nested = this.db.inTransaction;
+      const savepoint = `pool_tx_${++this.txDepth}`;
+      this.db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN");
+      try {
+        const result = fn(...args);
+        this.db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
+        return result;
+      } catch (error) {
+        if (this.db.inTransaction) this.db.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK");
+        throw error;
+      }
+    };
+  }
+
+  /** Trim any legacy profiles that exceeded the per-profile switch-history limit before capping was enforced. */
+  private pruneSwitchHistory(): void {
+    const overLimit = this.db.query<{ profile_id: string }, [number]>(
+      `SELECT profile_id FROM proxy_switch_history GROUP BY profile_id HAVING COUNT(*) > ?`,
+    ).all(PROXY_SWITCH_HISTORY_LIMIT);
+    if (!overLimit.length) return;
+    this.transaction(() => {
+      const prune = this.db.query(`
+        DELETE FROM proxy_switch_history
+        WHERE profile_id = ?
+          AND rowid NOT IN (
+            SELECT rowid FROM proxy_switch_history
+            WHERE profile_id = ?
+            ORDER BY at DESC, rowid DESC
+            LIMIT ?
+          )
+      `);
+      for (const row of overLimit) prune.run(row.profile_id, row.profile_id, PROXY_SWITCH_HISTORY_LIMIT);
+    })();
   }
 
   /** Rows written before encryption: seal them in place, once. */
   private sealOlderRows(): void {
     if (!this.box.available) return;
-    this.db.transaction(() => {
+    this.transaction(() => {
       for (const row of this.db.query<{ id: string; proxy_json: string; outbound_json: string; identity_key: string }, []>(
         `SELECT id, proxy_json, outbound_json, identity_key FROM proxy_pool_nodes`).all()) {
         const proxy = SecretBox.isSealed(row.proxy_json) ? row.proxy_json : this.box.seal(row.proxy_json);
@@ -279,10 +337,22 @@ export class ProxyPool {
     }
   }
 
-  /** Remember a proxy change: when, by whom (the dashboard or an MCP connection), from and to what. */
+  /** Remember a proxy change, retaining only the newest entries per profile. */
   recordSwitch(entry: import("./proxy-switch.ts").SwitchHistoryEntry): void {
-    this.db.query(`INSERT INTO proxy_switch_history (profile_id, at, by_whom, from_label, to_label, outcome, code, exit_country) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(entry.profileId, entry.at, entry.by.slice(0, 120), entry.from.slice(0, 300), entry.to.slice(0, 300), entry.outcome, entry.code ?? "", entry.exitCountry ?? "");
+    this.transaction(() => {
+      this.db.query(`INSERT INTO proxy_switch_history (profile_id, at, by_whom, from_label, to_label, outcome, code, exit_country) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(entry.profileId, entry.at, entry.by.slice(0, 120), entry.from.slice(0, 300), entry.to.slice(0, 300), entry.outcome, entry.code ?? "", entry.exitCountry ?? "");
+      this.db.query(`
+        DELETE FROM proxy_switch_history
+        WHERE profile_id = ?
+          AND rowid NOT IN (
+            SELECT rowid FROM proxy_switch_history
+            WHERE profile_id = ?
+            ORDER BY at DESC, rowid DESC
+            LIMIT ?
+          )
+      `).run(entry.profileId, entry.profileId, PROXY_SWITCH_HISTORY_LIMIT);
+    })();
   }
 
   /** A profile's proxy changes, newest first. */
@@ -299,23 +369,42 @@ export class ProxyPool {
     return this.db.query<any, []>(`SELECT * FROM proxy_subscriptions ORDER BY created_at`).all().map((row) => this.readSubscription(row));
   }
 
+  listDueSubscriptions(now = this.now()): PoolSubscription[] {
+    return this.listSubscriptions().filter((sub) => {
+      if (sub.unreadable || sub.refreshHours === null) return false;
+      const intervalMs = sub.refreshHours * 3_600_000;
+      if (sub.lastFetchedAt !== undefined && now < sub.lastFetchedAt) return true;
+      if (sub.retryAfter !== undefined) {
+        const maxBackoff = Math.min(intervalMs, SUBSCRIPTION_FAILURE_BACKOFF_BASE_MS * (2 ** SUBSCRIPTION_FAILURE_BACKOFF_MAX_EXPONENT));
+        if (sub.retryAfter - now > maxBackoff + 60_000) return true;
+        return now >= sub.retryAfter;
+      }
+      return sub.lastFetchedAt === undefined || now - sub.lastFetchedAt >= intervalMs;
+    });
+  }
+
   getSubscription(id: string): PoolSubscription | null {
     const row = this.db.query<any, [string]>(`SELECT * FROM proxy_subscriptions WHERE id = ?`).get(id);
     return row ? this.readSubscription(row) : null;
   }
 
-  addSubscription(input: { url: string; name?: string; userAgent?: string }): PoolSubscription {
+  addSubscription(input: { url: string; name?: string; userAgent?: string; refreshHours?: unknown; allowPrivate?: boolean }): PoolSubscription {
     let url: URL;
     try { url = new URL(input.url.trim()); } catch { throw new ProxyPoolError("The subscription link is not a valid URL"); }
     if (url.protocol !== "https:") throw new ProxyPoolError("The subscription link must use https");
+    if (!input.allowPrivate && isNonPublicHostName(url.hostname)) {
+      throw new ProxyPoolError("The subscription link must use a public host");
+    }
     if (this.listSubscriptions().some((sub) => sub.url === url.href)) throw new ProxyPoolError("This subscription is already added");
+    const refreshHours = input.refreshHours === undefined ? null : parseRefreshHours(input.refreshHours);
     const sub: PoolSubscription = {
       id: crypto.randomUUID(), name: (input.name?.trim() || url.hostname).slice(0, 200), url: url.href,
       ...(input.userAgent?.trim() ? { userAgent: input.userAgent.trim().slice(0, 200) } : {}),
+      refreshHours,
       createdAt: this.now(),
     };
-    this.db.query(`INSERT INTO proxy_subscriptions (id, name, url, user_agent, created_at) VALUES (?, ?, ?, ?, ?)`)
-      .run(sub.id, sub.name, this.box.seal(sub.url), sub.userAgent ?? "", sub.createdAt);
+    this.db.query(`INSERT INTO proxy_subscriptions (id, name, url, user_agent, refresh_hours, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(sub.id, sub.name, this.box.seal(sub.url), sub.userAgent ?? "", sub.refreshHours, sub.createdAt);
     return sub;
   }
 
@@ -324,8 +413,39 @@ export class ProxyPool {
     this.db.query(`UPDATE proxy_subscriptions SET name = ? WHERE id = ?`).run(name.trim().slice(0, 200), id);
   }
 
+  updateSubscription(id: string, patch: { name?: unknown; refreshHours?: unknown }): PoolSubscription {
+    const existing = this.getSubscription(id);
+    if (!existing) throw new ProxyPoolError("This subscription is no longer here", 404);
+    let nextName = existing.name;
+    let nextRefreshHours = existing.refreshHours;
+    if (patch.name !== undefined) {
+      if (typeof patch.name !== "string" || !patch.name.trim()) throw new ProxyPoolError("The name cannot be empty");
+      nextName = patch.name.trim().slice(0, 200);
+    }
+    if (patch.refreshHours !== undefined) {
+      nextRefreshHours = parseRefreshHours(patch.refreshHours);
+    }
+    this.db.query(`
+      UPDATE proxy_subscriptions
+      SET name = ?, refresh_hours = ?,
+          retry_after = CASE WHEN ? THEN NULL ELSE retry_after END,
+          failure_count = CASE WHEN ? THEN 0 ELSE failure_count END
+      WHERE id = ?
+    `).run(nextName, nextRefreshHours, patch.refreshHours !== undefined ? 1 : 0, patch.refreshHours !== undefined ? 1 : 0, id);
+    return this.getSubscription(id)!;
+  }
+
   recordSubscriptionFailure(id: string, error: string): void {
-    this.db.query(`UPDATE proxy_subscriptions SET last_error = ?, last_fetched_at = ? WHERE id = ?`).run(error.slice(0, 300), this.now(), id);
+    const existing = this.db.query<{ refresh_hours: number | null; failure_count: number | null }, [string]>(
+      `SELECT refresh_hours, failure_count FROM proxy_subscriptions WHERE id = ?`,
+    ).get(id);
+    if (!existing) return;
+    const failures = Math.max(0, Number(existing.failure_count ?? 0)) + 1;
+    const exp = Math.min(failures - 1, SUBSCRIPTION_FAILURE_BACKOFF_MAX_EXPONENT);
+    const maxInterval = existing.refresh_hours ? Number(existing.refresh_hours) * 3_600_000 : 24 * 3_600_000;
+    const retryAfter = this.now() + Math.min(maxInterval, SUBSCRIPTION_FAILURE_BACKOFF_BASE_MS * (2 ** exp));
+    this.db.query(`UPDATE proxy_subscriptions SET last_error = ?, retry_after = ?, failure_count = ? WHERE id = ?`)
+      .run(error.slice(0, 300), retryAfter, failures, id);
   }
 
   /**
@@ -338,7 +458,7 @@ export class ProxyPool {
     if (!sub) throw new ProxyPoolError("This subscription is no longer here", 404);
     const result: SubscriptionSyncResult = { added: 0, kept: 0, removed: 0 };
     const listed = new Set<string>();
-    this.db.transaction(() => {
+    this.transaction(() => {
       for (const parsed of nodes) {
         const plain = parsed.protocol === "http" || parsed.protocol === "https" || parsed.protocol === "socks5";
         const plainProxy = plain ? normalizeProxySpec({
@@ -372,7 +492,7 @@ export class ProxyPool {
         this.db.query(`UPDATE proxy_pool_nodes SET removed_from_source = 1 WHERE id = ?`).run(row.id);
         result.removed++;
       }
-      this.db.query(`UPDATE proxy_subscriptions SET last_fetched_at = ?, last_error = '', usage_json = ?, last_import_json = ? WHERE id = ?`).run(
+      this.db.query(`UPDATE proxy_subscriptions SET last_fetched_at = ?, last_error = '', retry_after = NULL, failure_count = 0, usage_json = ?, last_import_json = ? WHERE id = ?`).run(
         this.now(), report.usage ? JSON.stringify(report.usage) : "",
         JSON.stringify({ nodes: nodes.length, nonNodes: report.nonNodes, infoEntries: report.infoEntries.length, unsupported: report.unsupported.slice(0, 200), ...result }),
         id,
@@ -387,7 +507,7 @@ export class ProxyPool {
    */
   removeSubscription(id: string, inUse: (node: PoolNode) => boolean): { removedNodes: number; keptNodes: number } {
     let removedNodes = 0, keptNodes = 0;
-    this.db.transaction(() => {
+    this.transaction(() => {
       for (const node of this.list().filter((n) => n.subscriptionId === id)) {
         if (inUse(node)) {
           this.db.query(`UPDATE proxy_pool_nodes SET subscription_id = '', removed_from_source = 1 WHERE id = ?`).run(node.id);
@@ -428,7 +548,7 @@ export class ProxyPool {
       VALUES ($id, $name, $kind, $proxy, $key, $tags, $max, 0, $hint, '', $at, $protocol)
     `);
     const lines = text.split(/\r?\n/);
-    this.db.transaction(() => {
+    this.transaction(() => {
       lines.forEach((raw, index) => {
         const line = raw.trim();
         if (!line || line.startsWith("//")) return;
@@ -511,11 +631,21 @@ export class ProxyPool {
   remove(ids: string[]): number {
     let removed = 0;
     const del = this.db.query(`DELETE FROM proxy_pool_nodes WHERE id = ?`);
-    this.db.transaction(() => { for (const id of ids) removed += del.run(id).changes; })();
+    this.transaction(() => { for (const id of ids) removed += del.run(id).changes; })();
     return removed;
   }
 
   recordCheck(id: string, check: PoolCheck): void {
+    const existing = this.db.query<{ check_json: string }, [string]>(`SELECT check_json FROM proxy_pool_nodes WHERE id = ?`).get(id);
+    if (!existing) return;
+    if (existing.check_json) {
+      try {
+        const parsed = JSON.parse(existing.check_json) as { checkedAt?: unknown };
+        if (typeof parsed.checkedAt === "number" && Number.isFinite(parsed.checkedAt) && parsed.checkedAt > check.checkedAt) {
+          return;
+        }
+      } catch { /* replace corrupted JSON */ }
+    }
     this.db.query(`UPDATE proxy_pool_nodes SET check_json = ? WHERE id = ?`).run(JSON.stringify(check), id);
   }
 }
@@ -554,11 +684,17 @@ export function poolUsage(nodes: PoolNode[], profiles: PoolProfileRef[]): Map<st
   return new Map(nodes.map((node) => [node.id, byKey.get(proxyIdentityKey(node.proxy)) ?? []]));
 }
 
+function normalizedExitIp(node: PoolNode): string | null {
+  const raw = node.check?.ip;
+  if (!raw) return null;
+  return canonicalIp(raw) ?? (raw.trim() || null);
+}
+
 /** Nodes grouped by the exit IP their last check saw. Different nodes can leave through one IP. */
 export function sameExitGroups(nodes: PoolNode[]): Map<string, string[]> {
   const byIp = new Map<string, string[]>();
   for (const node of nodes) {
-    const ip = node.check?.ip;
+    const ip = normalizedExitIp(node);
     if (!ip) continue;
     byIp.set(ip, [...(byIp.get(ip) ?? []), node.id]);
   }
@@ -568,27 +704,30 @@ export function sameExitGroups(nodes: PoolNode[]): Map<string, string[]> {
 export function poolNodeViews(nodes: PoolNode[], profiles: PoolProfileRef[]): PoolNodeView[] {
   const usage = poolUsage(nodes, profiles);
   const exits = sameExitGroups(nodes);
-  return nodes.map((node) => ({
-    id: node.id,
-    name: node.name,
-    kind: node.kind,
-    protocol: node.protocol,
-    proxy: node.outbound
-      ? `${node.protocol}://${node.outbound.server.includes(":") ? `[${node.outbound.server}]` : node.outbound.server}:${node.outbound.server_port}`
-      : `${node.proxy.type}://${proxyHostPort(node.proxy)}`,
-    hasAuth: node.outbound ? true : !!node.proxy.user,
-    ...(node.subscriptionId ? { subscriptionId: node.subscriptionId } : {}),
-    ...(node.insecureTls ? { insecureTls: true } : {}),
-    ...(node.removedFromSource ? { removedFromSource: true } : {}),
-    tags: node.tags,
-    maxProfiles: node.maxProfiles,
-    disabled: node.disabled,
-    ...(node.regionHint ? { regionHint: node.regionHint } : {}),
-    ...(node.check ? { check: node.check } : {}),
-    profiles: (usage.get(node.id) ?? []).map(({ id, name, group }) => ({ id, name, group })),
-    sameExitAs: node.check?.ip ? (exits.get(node.check.ip) ?? []).filter((id) => id !== node.id) : [],
-    createdAt: node.createdAt,
-  }));
+  return nodes.map((node) => {
+    const exitIp = normalizedExitIp(node);
+    return {
+      id: node.id,
+      name: node.name,
+      kind: node.kind,
+      protocol: node.protocol,
+      proxy: node.outbound
+        ? `${node.protocol}://${node.outbound.server.includes(":") ? `[${node.outbound.server}]` : node.outbound.server}:${node.outbound.server_port}`
+        : `${node.proxy.type}://${proxyHostPort(node.proxy)}`,
+      hasAuth: node.outbound ? true : !!node.proxy.user,
+      ...(node.subscriptionId ? { subscriptionId: node.subscriptionId } : {}),
+      ...(node.insecureTls ? { insecureTls: true } : {}),
+      ...(node.removedFromSource ? { removedFromSource: true } : {}),
+      tags: node.tags,
+      maxProfiles: node.maxProfiles,
+      disabled: node.disabled,
+      ...(node.regionHint ? { regionHint: node.regionHint } : {}),
+      ...(node.check ? { check: node.check } : {}),
+      profiles: (usage.get(node.id) ?? []).map(({ id, name, group }) => ({ id, name, group })),
+      sameExitAs: exitIp ? (exits.get(exitIp) ?? []).filter((id) => id !== node.id) : [],
+      createdAt: node.createdAt,
+    };
+  });
 }
 
 export interface PoolSelection {
@@ -599,6 +738,8 @@ export interface PoolSelection {
   tag?: string;
   /** Only nodes whose last check worked. Default true. */
   onlyWorking?: boolean;
+  /** Avoid assigning profiles to an exit IP already occupied by another profile. Default false. */
+  distinctExitIp?: boolean;
 }
 
 export function parsePoolSelection(value: unknown): PoolSelection {
@@ -609,7 +750,7 @@ export function parsePoolSelection(value: unknown): PoolSelection {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ProxyPoolError("Invalid pool selection");
   const input = raw as Record<string, unknown>;
   for (const key of Object.keys(input)) {
-    if (!["nodeIds", "country", "tag", "onlyWorking"].includes(key)) throw new ProxyPoolError("Invalid pool selection");
+    if (!["nodeIds", "country", "tag", "onlyWorking", "distinctExitIp"].includes(key)) throw new ProxyPoolError("Invalid pool selection");
   }
   const selection: PoolSelection = {};
   if (input.nodeIds !== undefined) {
@@ -627,6 +768,10 @@ export function parsePoolSelection(value: unknown): PoolSelection {
   if (input.onlyWorking !== undefined) {
     if (typeof input.onlyWorking !== "boolean") throw new ProxyPoolError("Invalid pool selection");
     selection.onlyWorking = input.onlyWorking;
+  }
+  if (input.distinctExitIp !== undefined) {
+    if (typeof input.distinctExitIp !== "boolean") throw new ProxyPoolError("Invalid pool selection");
+    selection.distinctExitIp = input.distinctExitIp;
   }
   return selection;
 }
@@ -646,7 +791,9 @@ export interface PoolAssignment {
  * Give each profile a node. A profile that already uses a fitting node keeps it: a node is never
  * swapped for another one without a reason, since that moves the account to another exit. Others
  * get the least-used fitting node with room left under its limit (ties: the faster check, then
- * the name). Nothing here changes a profile; the caller applies the result.
+ * the name). When `distinctExitIp` is set, new assignments avoid nodes whose checked exit IP is
+ * already occupied by another profile (nodes without a known exit IP are treated as unknown and
+ * bounded only by `maxProfiles`). Nothing here changes a profile; the caller applies the result.
  */
 export function planPoolAssignment(
   profiles: PoolProfileRef[],
@@ -655,9 +802,11 @@ export function planPoolAssignment(
   selection: PoolSelection,
 ): PoolAssignment[] {
   const onlyWorking = selection.onlyWorking ?? true;
+  const distinctExitIp = selection.distinctExitIp ?? false;
   const ids = selection.nodeIds ? new Set(selection.nodeIds) : null;
   const candidates = nodes.filter((node) =>
     !node.disabled
+    && !node.removedFromSource
     && (!ids || ids.has(node.id))
     && (!selection.country || nodeCountry(node) === selection.country)
     && (!selection.tag || node.tags.includes(selection.tag))
@@ -666,22 +815,45 @@ export function planPoolAssignment(
   const usage = poolUsage(candidates, allProfiles);
   const used = new Map(candidates.map((node) => [node.id, (usage.get(node.id) ?? []).length]));
   const byKey = new Map(candidates.map((node) => [proxyIdentityKey(node.proxy), node]));
+  const usedExitIps = new Set<string>();
+  if (distinctExitIp) {
+    const selectedIds = new Set(profiles.map((profile) => profile.id));
+    const nodeByKey = new Map(nodes.map((node) => [proxyIdentityKey(node.proxy), node]));
+    for (const profile of allProfiles) {
+      if (selectedIds.has(profile.id) || !profile.proxy) continue;
+      const node = nodeByKey.get(proxyIdentityKey(profile.proxy));
+      const ip = node ? normalizedExitIp(node) : null;
+      if (ip) usedExitIps.add(ip);
+    }
+  }
   const room = (node: PoolNode) => node.maxProfiles === null ? Infinity : node.maxProfiles - used.get(node.id)!;
   const result: PoolAssignment[] = [];
   const rest: PoolProfileRef[] = [];
   for (const profile of profiles) {
     const current = profile.proxy ? byKey.get(proxyIdentityKey(profile.proxy)) : undefined;
-    if (current) result.push({ profileId: profile.id, node: current, code: "unchanged" });
-    else rest.push(profile);
+    if (current) {
+      const ip = normalizedExitIp(current);
+      if (distinctExitIp && ip) usedExitIps.add(ip);
+      result.push({ profileId: profile.id, node: current, code: "unchanged" });
+    } else {
+      rest.push(profile);
+    }
   }
   for (const profile of rest) {
     const choice = candidates
-      .filter((node) => room(node) > 0)
+      .filter((node) => {
+        if (room(node) <= 0) return false;
+        if (!distinctExitIp) return true;
+        const ip = normalizedExitIp(node);
+        return !ip || !usedExitIps.has(ip);
+      })
       .sort((a, b) => used.get(a.id)! - used.get(b.id)!
         || (a.check?.durationMs ?? Infinity) - (b.check?.durationMs ?? Infinity)
         || a.name.localeCompare(b.name))[0];
     if (!choice) { result.push({ profileId: profile.id, code: "pool_exhausted" }); continue; }
     used.set(choice.id, used.get(choice.id)! + 1);
+    const ip = normalizedExitIp(choice);
+    if (distinctExitIp && ip) usedExitIps.add(ip);
     result.push({ profileId: profile.id, node: choice });
   }
   const order = new Map(profiles.map((profile, index) => [profile.id, index]));
@@ -718,6 +890,7 @@ export async function checkPoolNodes(
           ...(result.country ? { country: result.country } : {}),
           ...(result.region ? { region: result.region } : {}),
           ...(result.city ? { city: result.city } : {}),
+          ...(result.timezone ? { timezone: result.timezone } : {}),
           ...(result.rotating !== undefined ? { rotating: result.rotating } : {}),
           durationMs: now() - started,
           checkedAt: now(),
@@ -725,11 +898,31 @@ export async function checkPoolNodes(
       } catch {
         check = { status: "unavailable", reason: "check_unavailable", checkedAt: now() };
       }
+      if (deps.cancelled?.()) break;
       pool.recordCheck(node.id, check);
       deps.onResult?.(node, check);
     }
   };
   await Promise.all(Array.from({ length: Math.min(deps.concurrency ?? 4, nodes.length) }, worker));
+}
+
+export function parseRefreshHours(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (!/^\d+$/.test(trimmed)) throw new ProxyPoolError("Auto-refresh interval must be between 1 and 720 hours, or off");
+    parsed = Number(trimmed);
+  } else {
+    throw new ProxyPoolError("Auto-refresh interval must be between 1 and 720 hours, or off");
+  }
+  if (!Number.isInteger(parsed) || parsed < MIN_SUBSCRIPTION_REFRESH_HOURS || parsed > MAX_SUBSCRIPTION_REFRESH_HOURS) {
+    throw new ProxyPoolError("Auto-refresh interval must be between 1 and 720 hours, or off");
+  }
+  return parsed;
 }
 
 export interface PoolSubscription {
@@ -740,6 +933,10 @@ export interface PoolSubscription {
   /** Sealed under a key this computer's account cannot read (the data came from elsewhere): add it again. */
   unreadable?: true;
   userAgent?: string;
+  /** Automatic refresh cadence in hours, or null when only updated manually. */
+  refreshHours: number | null;
+  /** Internal exponential backoff deadline after failed automatic refreshes. */
+  retryAfter?: number;
   lastFetchedAt?: number;
   lastError?: string;
   usage?: SubscriptionUsage;
@@ -754,14 +951,14 @@ export interface SubscriptionSyncResult {
 }
 
 /** What leaves the server about a subscription: its host, never the link. */
-export interface PoolSubscriptionView extends Omit<PoolSubscription, "url"> {
+export interface PoolSubscriptionView extends Omit<PoolSubscription, "url" | "retryAfter"> {
   host: string;
 }
 
 export const UNREADABLE_SUBSCRIPTION = "This subscription link cannot be read on this computer. Remove it and add it again";
 
 export function subscriptionView(sub: PoolSubscription): PoolSubscriptionView {
-  const { url, ...rest } = sub;
+  const { url, retryAfter: _retryAfter, ...rest } = sub;
   if (sub.unreadable) return { ...rest, host: "", lastError: UNREADABLE_SUBSCRIPTION };
   let host = "";
   try { host = new URL(url).hostname; } catch { /* shown without a host */ }
@@ -774,6 +971,8 @@ function rowToSubscription(row: any): PoolSubscription {
     name: row.name,
     url: row.url,
     ...(row.user_agent ? { userAgent: row.user_agent } : {}),
+    refreshHours: row.refresh_hours !== null && row.refresh_hours !== undefined ? Number(row.refresh_hours) : null,
+    ...(row.retry_after ? { retryAfter: Number(row.retry_after) } : {}),
     ...(row.last_fetched_at ? { lastFetchedAt: Number(row.last_fetched_at) } : {}),
     ...(row.last_error ? { lastError: row.last_error } : {}),
     ...(row.usage_json ? { usage: JSON.parse(row.usage_json) } : {}),

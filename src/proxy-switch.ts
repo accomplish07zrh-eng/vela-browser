@@ -19,24 +19,54 @@
 
 import type { EgressInfo } from "./egress.ts";
 import { fetchDirectEgress } from "./egress.ts";
+import { sameIp } from "./ip.ts";
 import type { KernelSupervisor } from "./kernel.ts";
 import type { LaunchStartOptions, LaunchStartResult } from "./launcher.ts";
 import type { ProxyCheckResult } from "./proxy-check.ts";
 import { checkProxy } from "./proxy-check.ts";
 import { poolUsage, type PoolNode } from "./proxy-pool.ts";
+import { localeForCountry, localeForTimezone } from "./profile-locale.ts";
 import { proxyHostPort, proxyIdentityKey } from "./proxy.ts";
+import { parseStrictTimezone } from "./parse.ts";
 import { lookupExitLocation, type FetchLike } from "./geoip.ts";
 import { syncFirefoxTimezone } from "./firefox-config.ts";
 import type { ProfileStore } from "./store.ts";
 import type { LaunchInfo, Profile, ProxySpec } from "./types.ts";
 
+/** Return the validated check timezone of a `pool` node, if checked, so closed profiles show it immediately. */
+export function poolNodeTimezone(store: ProfileStore, proxy: ProxySpec | null): string | undefined {
+  if (proxy?.type !== "pool") return undefined;
+  const raw = store.proxyPool.get(proxy.host)?.check?.timezone;
+  if (!raw) return undefined;
+  try {
+    return parseStrictTimezone(raw) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function validTimezone(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    return parseStrictTimezone(raw) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Save `proxy` as a profile's proxy, as the profile form saves one: the timezone follows the new
- * exit unless the user typed one (a pool node's exit is looked up at its launch, through its
- * kernel), and an open browser keeps the proxy it runs with until its next start. False when
- * there is no such profile.
+ * exit unless the user typed one (for a `pool` node, uses the node's recorded check timezone when
+ * known and refines at launch through the kernel), and an open browser keeps its running proxy
+ * until its next start. False when there is no such profile.
  */
-export async function saveProfileProxy(store: ProfileStore, id: string, proxy: ProxySpec, timezoneFetch?: FetchLike): Promise<boolean> {
+export async function saveProfileProxy(
+  store: ProfileStore,
+  id: string,
+  proxy: ProxySpec,
+  timezoneFetch?: FetchLike,
+  opts?: { poolTimezone?: string; poolCountry?: string },
+): Promise<boolean> {
   const apply = (profile: Profile) => {
     const changed = !!profile.proxyError || proxyIdentityKey(profile.proxy) !== proxyIdentityKey(proxy);
     profile.proxy = { ...proxy };
@@ -45,14 +75,32 @@ export async function saveProfileProxy(store: ProfileStore, id: string, proxy: P
   };
   let p = store.getProfile(id);
   if (!p) return false;
-  if (apply(p) && !p.timezoneManual) {
-    const location = await lookupExitLocation(proxy, timezoneFetch);
-    // Apply to the current copy, so changes saved during the lookup are kept.
-    p = store.getProfile(id);
-    if (!p) return false;
-    apply(p);
-    if (location) {
-      p.timezone = location.timezone;
+  const initialKey = proxyIdentityKey(p.proxy);
+  const expectedKey = proxyIdentityKey(proxy);
+  const hadManualTz = !!p.timezoneManual;
+  if (apply(p)) {
+    let resolvedTimezone: string | undefined;
+    let resolvedCountry: string | undefined;
+    if (proxy.type === "pool") {
+      const node = store.proxyPool.get(proxy.host);
+      resolvedTimezone = validTimezone(opts?.poolTimezone) ?? poolNodeTimezone(store, proxy);
+      resolvedCountry = opts?.poolCountry ?? node?.check?.country;
+    } else if (!hadManualTz) {
+      const location = await lookupExitLocation(proxy, timezoneFetch);
+      resolvedTimezone = location?.timezone;
+      resolvedCountry = location?.country;
+      // Re-read current copy so concurrent edits win; abort if someone already set a different proxy.
+      p = store.getProfile(id);
+      if (!p) return false;
+      const latestKey = proxyIdentityKey(p.proxy);
+      if (latestKey !== initialKey && latestKey !== expectedKey) return false;
+      apply(p);
+    }
+    if (resolvedTimezone && !p.timezoneManual) {
+      p.timezone = resolvedTimezone;
+      if (proxy.type === "pool") {
+        p.locale = localeForCountry(resolvedCountry) ?? localeForTimezone(resolvedTimezone);
+      }
       syncFirefoxTimezone(p);
     }
   }
@@ -101,7 +149,7 @@ export interface SwitchDeps {
   store: ProfileStore;
   launcher: SwitchLauncher;
   /** Saves `proxy` as the profile's proxy the way the profile form does. */
-  assign(profileId: string, proxy: ProxySpec): Promise<unknown>;
+  assign(profileId: string, proxy: ProxySpec, opts?: { poolTimezone?: string; poolCountry?: string }): Promise<unknown>;
   /** Checks an exit; defaults to the shared proxy check. */
   check?: (proxy: ProxySpec, direct: EgressInfo | null) => Promise<ProxyCheckResult>;
   direct?: () => Promise<EgressInfo | null>;
@@ -157,7 +205,6 @@ export async function switchProfileProxy(
         profiles: users.map(({ id, name, group }) => ({ id, name, group })),
       });
     }
-    const sharedWith = users.map(({ id, name, group }) => ({ id, name, group }));
 
     // 1. The new exit must work before anything changes.
     const direct = await (deps.direct ?? (() => fetchDirectEgress()))().catch(() => null);
@@ -167,12 +214,37 @@ export async function switchProfileProxy(
         status: checked.status, ...(checked.reason ? { reason: checked.reason } : {}),
       });
     }
+    // Re-check node availability and capacity right before committing to close TOCTOU window.
+    const latestNode = store.proxyPool.get(node.id);
+    if (!latestNode || latestNode.disabled) {
+      throw new ProxySwitchError("node_unavailable", "This proxy is not available in the pool");
+    }
+    const latestUsers = (poolUsage([latestNode], store.listProfiles()).get(latestNode.id) ?? []).filter((p) => p.id !== profile.id);
+    if (latestNode.maxProfiles !== null && latestUsers.length >= latestNode.maxProfiles) {
+      throw new ProxySwitchError("pool_exhausted", "This proxy is already used by as many profiles as its sharing limit allows", {
+        profiles: latestUsers.map(({ id, name, group }) => ({ id, name, group })),
+      });
+    }
+    const currentSharedWith = latestUsers.map(({ id, name, group }) => ({ id, name, group }));
+    const checkedTimezone = validTimezone(checked.timezone);
+    const assignOpts = {
+      ...(checkedTimezone ? { poolTimezone: checkedTimezone } : {}),
+      ...(checked.country ? { poolCountry: checked.country } : {}),
+    };
     const launch = store.getLaunch(profile.id);
     // 2. A closed profile just takes the new proxy; its next start uses it.
     if (!launch) {
-      await deps.assign(profile.id, node.proxy);
+      await deps.assign(profile.id, latestNode.proxy, assignOpts);
+      if (checkedTimezone) {
+        const current = store.getProfile(profile.id);
+        if (current && !current.timezoneManual && current.proxy && proxyIdentityKey(current.proxy) === proxyIdentityKey(latestNode.proxy)) {
+          current.timezone = checkedTimezone;
+          syncFirefoxTimezone(current);
+          store.upsertProfile(current);
+        }
+      }
       record({ outcome: "saved", ...(checked.country ? { exitCountry: checked.country } : {}) });
-      return { applied: "saved", previous, next, exit: { ip: checked.ip, country: checked.country }, sharedWith };
+      return { applied: "saved", previous, next, exit: { ip: checked.ip, country: checked.country }, sharedWith: currentSharedWith };
     }
     // 3. An open browser: save its session, close it for certain, then reopen on the new exit.
     await deps.launcher.captureLocalSession(profile.id).catch(() => {});
@@ -180,7 +252,7 @@ export async function switchProfileProxy(
     if (!stopped || store.getLaunch(profile.id)) {
       throw new ProxySwitchError("teardown_unconfirmed", "The browser could not be closed for certain; it keeps its proxy");
     }
-    await deps.assign(profile.id, node.proxy);
+    await deps.assign(profile.id, latestNode.proxy, assignOpts);
     try {
       await deps.launcher.start(profile.id, [], { ...(launch.headless !== undefined ? { headless: launch.headless } : {}) });
     } catch (error) {
@@ -196,14 +268,19 @@ export async function switchProfileProxy(
       exit = await (deps.check ?? ((proxy, d) => checkProxy(proxy, { direct: d })))(
         { type: "http", host: "127.0.0.1", port: String(relayPort), user: "", pass: "" }, direct,
       ).catch(() => null);
-      if (exit?.reason === "proxy_bypassed" || (direct && exit?.ip === direct.ip)) {
+      if (exit?.reason === "proxy_bypassed" || (direct?.ip && exit?.ip && sameIp(exit.ip, direct.ip))) {
         const current = store.getLaunch(profile.id);
-        await deps.launcher.stop(profile.id, current ?? undefined).catch(() => false);
+        const stoppedDirect = await deps.launcher.stop(profile.id, current ?? undefined).catch(() => false);
+        const stillRunning = !!store.getLaunch(profile.id);
+        if (!stoppedDirect || stillRunning) {
+          deps.log?.(`CRITICAL: failed to close ${profile.id} after direct-exit detection`);
+          throw new ProxySwitchError("exit_is_direct", "After reopening, the browser's traffic left from this computer's own address and could not be closed automatically; close it manually", { teardownFailed: true });
+        }
         throw new ProxySwitchError("exit_is_direct", "After reopening, the browser's traffic left from this computer's own address; it was closed");
       }
     }
     record({ outcome: "reopened", ...(exit?.country ?? checked.country ? { exitCountry: exit?.country ?? checked.country } : {}) });
-    return { applied: "reopened", previous, next, exit: { ip: exit?.ip ?? checked.ip, country: exit?.country ?? checked.country }, sharedWith };
+    return { applied: "reopened", previous, next, exit: { ip: exit?.ip ?? checked.ip, country: exit?.country ?? checked.country }, sharedWith: currentSharedWith };
   } catch (error) {
     if (error instanceof ProxySwitchError) {
       if (error.code !== "profile_busy" && error.code !== "rate_limited" && profile) record({ outcome: "failed", code: error.code });

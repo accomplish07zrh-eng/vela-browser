@@ -475,16 +475,26 @@ function poolHarness(policy: AiProxyPolicy) {
   const [node] = store.proxyPool.importText("203.0.113.40:8080:pool-user:pool-secret#🇺🇸 LA").added;
   store.proxyPool.recordCheck(node!.id, { status: "working", country: "US", checkedAt: 1 });
   const approvals = new ProxyApprovalQueue();
+  let launchSeq = 0;
   const launcher = {
     kernels: { startTemporary: async () => { throw new Error("no kernel nodes here"); } },
     reconcileOrphans: async () => {},
-    certifiedActive: async () => false,
-    start: async () => ({ ws: "ws://x", port: 1 }),
-    stop: async () => true,
+    certifiedActive: async (id: string) => !!store.getLaunch(id),
+    start: async (id: string, _args?: string[], opts?: { headless?: boolean }) => {
+      const n = ++launchSeq;
+      const ws = `ws://127.0.0.1:${9400 + n}/devtools/browser/${n}`;
+      const port = 9400 + n;
+      store.recordLaunch({
+        profileId: id, pid: 100 + n, debugPort: port, ws, startedAt: Date.now(), relayPort: 19400 + n,
+        ...(opts?.headless !== undefined ? { headless: opts.headless } : {}),
+      });
+      return { ws, port };
+    },
+    stop: async (id: string) => { store.clearLaunch(id); return true; },
     captureLocalSession: async () => {},
   };
   const session = new AgentControlSession({
-    launcher: launcher as any, store, admission: {} as any,
+    launcher: launcher as any, store, admission: { run: async (_req: unknown, fn: () => Promise<unknown>) => await fn() } as any,
     proxyApprovals: approvals, aiProxyPolicy: () => policy,
     proxySwitchCheck: async () => ({ status: "working", attempts: 3, successes: 3, ip: "203.0.113.41", country: "US" }),
     proxySwitchDirect: async () => null,
@@ -768,5 +778,24 @@ test("ordinary node names stay visible to an AI, even with numbers or slashes in
       const listed = await h.session.enqueue(wire("profiles.list"));
       expect(proxyFields((listed.result as { profiles: unknown[] }).profiles[0])).toMatchObject({ proxyNodeId: node.id, proxyNodeName: name });
     }
+  } finally { h.close(); }
+});
+
+test("setProfileProxy updates attached session state when switching reopens an open browser", async () => {
+  const h = poolHarness("allow_pool");
+  try {
+    // Open profile1 via the agent session first so openedEndpoints tracks it.
+    const opened = await h.session.enqueue(wire("browser.open", { profileId: "profile1" }));
+    expect(opened.ok).toBe(true);
+    const initialWs = (opened.result as { ws: string }).ws;
+    const switched = await h.session.enqueue(wire("profiles.setProxy", { profileId: "profile1", nodeId: h.node.id }));
+    expect(switched).toMatchObject({ ok: true, result: { applied: "reopened" } });
+    // Session endpoint updated to the reopened launch so status and close target the new launch.
+    const status = await h.session.enqueue(wire("browser.status", { profileId: "profile1" }));
+    expect(status).toMatchObject({ ok: true, result: { running: true, ownedByConnection: true } });
+    expect((status.result as { ws: string }).ws).not.toBe(initialWs);
+    const closed = await h.session.enqueue(wire("browser.close", { profileId: "profile1" }));
+    expect(closed).toMatchObject({ ok: true, result: { closed: true } });
+    expect(h.store.getLaunch("profile1")).toBeNull();
   } finally { h.close(); }
 });

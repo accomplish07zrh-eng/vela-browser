@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,7 +13,15 @@ import { PlaywrightToolProxy } from "./playwright-proxy.mjs";
 import { createHumanizer } from "./humanize.mjs";
 import { pluginTools } from "./plugins.mjs";
 
-const VERSION = process.env.ALIASMODE_APP_VERSION || "0.1.0-beta.32";
+function packageVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    if (typeof pkg?.version === "string" && pkg.version.trim()) return pkg.version.trim();
+  } catch {}
+  return "0.1.7";
+}
+
+const VERSION = process.env.ALIASMODE_APP_VERSION || packageVersion();
 const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
 const FIREFOX_FILTERED_TOOLS = new Set(["browser_close", "browser_install", "browser_pdf_save"]);
 
@@ -115,6 +124,8 @@ const ALIAS_TOOLS = [
           description: "Chromium profiles only. vela (Vela Chromium 155) is the default where this computer can run it. CloakBrowser profiles on one computer can be linked to each other.",
         },
         screen: { type: "string" },
+        platformOs: { type: "string", enum: ["windows", "macos", "linux", ""] },
+        customNo: { type: "string" },
         proxy: {
           anyOf: [
             { type: "null" },
@@ -530,19 +541,36 @@ export async function createVelaBrowserMcp(options = {}) {
       }
       if (name === "vela_browser_set_proxy") {
         const client = server.getClientVersion?.()?.name;
-        const result = await runtime.call("profiles.setProxy", {
-          profileId: args.profileId, nodeId: args.nodeId, ...(client ? { client: String(client) } : {}),
-        });
-        // A reopened browser is a new browser: drop the old connection and attach to the new one.
-        if (result?.applied === "reopened" && sessions.has(args.profileId)) {
+        const syncSessionAfterSwitch = async (reopened) => {
+          if (!reopened && !sessions.has(args.profileId) && !ownedProfileIds.has(args.profileId) && selectedProfileId !== args.profileId) {
+            return;
+          }
           const wasSelected = selectedProfileId === args.profileId;
           await detachSession(args.profileId).catch(() => {});
           const status = await runtime.call("browser.status", { profileId: args.profileId }).catch(() => undefined);
           if (status?.running) {
-            if (wasSelected) await selectBrowser(args.profileId, status).catch(() => {});
-            else await attachSession(args.profileId, status).catch(() => {});
+            if (sessions.has(args.profileId) || reopened || wasSelected) {
+              if (wasSelected) await selectBrowser(args.profileId, status).catch(() => {});
+              else await attachSession(args.profileId, status).catch(() => {});
+            }
+          } else {
+            ownedProfileIds.delete(args.profileId);
+            if (wasSelected) selectedProfileId = undefined;
           }
           await publishTools().catch(() => {});
+        };
+        let result;
+        try {
+          result = await runtime.call("profiles.setProxy", {
+            profileId: args.profileId, nodeId: args.nodeId, ...(client ? { client: String(client) } : {}),
+          });
+        } catch (error) {
+          await syncSessionAfterSwitch(false);
+          throw error;
+        }
+        // A reopened browser is a new browser: drop the old connection and attach to the new one.
+        if (result?.applied === "reopened" && (sessions.has(args.profileId) || selectedProfileId === args.profileId)) {
+          await syncSessionAfterSwitch(true);
         }
         return toolResult(result);
       }

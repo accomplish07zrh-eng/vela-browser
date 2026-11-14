@@ -21,7 +21,7 @@ import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxyS
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleProxyPoolRequest } from "./proxy-pool-api.ts";
-import { saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
+import { poolNodeTimezone, saveProfileProxy, switchProfileProxy } from "./proxy-switch.ts";
 import { handleTrashRequest } from "./trash.ts";
 import {
   importInbox,
@@ -30,7 +30,7 @@ import {
   type ImportOverrides,
 } from "./inbox.ts";
 import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
-import { buildNewProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
+import { createLocalProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
 import { webkitSupported } from "./webkit-config.ts";
 import { firefoxGraphicsRenderer } from "./firefox-config.ts";
 import { attachTimezones, lookupExitLocation, type FetchLike } from "./geoip.ts";
@@ -58,6 +58,7 @@ import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervis
 import type { PythonRuntime } from "./python-runtime.ts";
 import { runtimeDownloads } from "./runtime-download.ts";
 import { COOLING_DEFAULTS, normalizeCoolingSettings } from "./cooling.ts";
+import { parseKernelDnsEnvironment } from "./kernel-config.ts";
 import { PLUGIN_ID, pluginsDirectory, scanPlugins, writeExamplePlugin } from "./plugins.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
@@ -207,15 +208,47 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
  */
 export const LOW_DISK_SPACE_BYTES = 5 * 1024 ** 3;
 
-function rejectUntrustedJsonMutation(req: Request): Response | null {
-  if (!req.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-    return Response.json({ ok: false, error: "application/json is required" }, { status: 415 });
-  }
+const MULTIPART_UPLOAD_ROUTES = new Set([
+  "/ui/api/import/upload",
+  "/ui/api/profiles/update-file",
+  "/ui/api/extensions/upload",
+]);
+
+function rejectCrossOriginRequest(req: Request): Response | null {
   const origin = req.headers.get("origin");
   if (origin && origin !== new URL(req.url).origin) {
-    return Response.json({ ok: false, error: "cross-origin requests are forbidden" }, { status: 403 });
+    return noStoreJson({ ok: false, error: "cross-origin requests are forbidden" }, 403);
+  }
+  const fetchSite = req.headers.get("sec-fetch-site")?.toLowerCase();
+  if (fetchSite === "cross-site") {
+    return noStoreJson({ ok: false, error: "cross-origin requests are forbidden" }, 403);
   }
   return null;
+}
+
+function rejectCrossOriginMutation(req: Request, pathname: string): Response | null {
+  const ct = req.headers.get("content-type")?.toLowerCase() ?? "";
+  if (ct) {
+    if (MULTIPART_UPLOAD_ROUTES.has(pathname)) {
+      if (!ct.startsWith("multipart/form-data")) {
+        return noStoreJson({ ok: false, error: "multipart/form-data is required" }, 415);
+      }
+    } else if (
+      ct.startsWith("application/x-www-form-urlencoded")
+      || ct.startsWith("text/plain")
+      || ct.startsWith("multipart/form-data")
+    ) {
+      return noStoreJson({ ok: false, error: "application/json is required" }, 415);
+    }
+  }
+  return rejectCrossOriginRequest(req);
+}
+
+function rejectUntrustedJsonMutation(req: Request): Response | null {
+  if (!req.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+    return noStoreJson({ ok: false, error: "application/json is required" }, 415);
+  }
+  return rejectCrossOriginRequest(req);
 }
 
 function normalizeCookieDomain(value: unknown): string | null {
@@ -386,9 +419,10 @@ async function assignProfileProxy(
   id: string,
   proxy: ProxySpec,
   options: UiRuntimeOptions,
+  opts?: { poolTimezone?: string; poolCountry?: string },
 ): Promise<{ restartRequired?: true } | null> {
   if (!isSafeProfileId(id)) return null;
-  if (!await saveProfileProxy(store, id, proxy, options.timezoneFetch)) return null;
+  if (!await saveProfileProxy(store, id, proxy, options.timezoneFetch, opts)) return null;
   return restartRequired(store, id);
 }
 
@@ -500,6 +534,8 @@ export interface UiRuntimeOptions {
   extensionFetch?: ExtensionFetch;
   /** Sets cookies in an open browser. Defaults to Playwright's addCookies. */
   setCookies?: (ws: string, cookies: CookieRecord[]) => Promise<void>;
+  /** Aborted when the dashboard server is shutting down so streaming checks exit promptly. */
+  shutdownSignal?: AbortSignal;
   /** Mode whose runtimes were wired when this process started. */
   runtimeMode?: "local";
 }
@@ -618,6 +654,11 @@ export async function handleUiRequest(
     }
   }
 
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    const denied = rejectCrossOriginMutation(req, pathname);
+    if (denied) return denied;
+  }
+
   // Dependency-free readiness probe for the Windows updater. Unlike the
   // profile roster it does not touch CDP, the process scanner, SQLite rows, or
   // the remote hub, so an upstream outage cannot masquerade as a failed update.
@@ -658,11 +699,27 @@ export async function handleUiRequest(
       ...(!remote ? { defaultEngine: defaultProfileEngine(), webkitAvailable: webkitSupported() } : {}),
       ...(taskbarModeSupported() ? { taskbarModeSupported: true } : {}),
       ...(options.cooling ? { coolingSupported: true, cooling: config.cooling ?? COOLING_DEFAULTS, memoryUse: options.cooling.usage() } : {}),
+      ...(options.appConfig && !remote ? { kernelDnsSupported: true, kernelDns: config.kernelDns ?? "auto" } : {}),
     });
+  }
+
+  if (pathname === "/ui/api/proxy-kernel/dns" && req.method === "POST") {
+    if (!options.appConfig || remote) return noStoreJson({ ok: false, error: "Not available on this computer" }, 404);
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    const body = (await req.json().catch(() => null)) as { kernelDns?: unknown } | null;
+    const kernelDns = parseKernelDnsEnvironment(body?.kernelDns);
+    if (!kernelDns) return noStoreJson({ ok: false, error: "Invalid kernel DNS network mode" }, 400);
+    const current = options.appConfig.read();
+    const saved = options.appConfig.write({ ...current, kernelDns });
+    launcher.invalidateKernelDns?.();
+    return noStoreJson({ ok: true, kernelDns: saved.kernelDns ?? kernelDns });
   }
 
   if (pathname === "/ui/api/desktop/taskbar" && req.method === "POST") {
     if (!options.appConfig || !taskbarModeSupported()) return noStoreJson({ ok: false, error: "Not available on this computer" }, 404);
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
     const body = (await req.json().catch(() => ({}))) as { hidden?: unknown };
     if (typeof body.hidden !== "boolean") return noStoreJson({ ok: false, error: "hidden must be true or false" }, 400);
     const current = options.appConfig.read();
@@ -807,10 +864,10 @@ export async function handleUiRequest(
       }
     }
     return handleProxyPoolRequest(req, store, options, {
-      assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
+      assign: (id, proxy, opts) => assignProfileProxy(store, id, proxy, options, opts),
       kernels: launcher.kernels,
       switchProxy: (profileId, nodeId, by) => switchProfileProxy({
-        store, launcher, assign: (id, proxy) => assignProfileProxy(store, id, proxy, options),
+        store, launcher, assign: (id, proxy, opts) => assignProfileProxy(store, id, proxy, options, opts),
         ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
       }, { profileId, nodeId, by }),
     });
@@ -882,20 +939,12 @@ export async function handleUiRequest(
         const { id } = await remote.createProfile(input);
         return Response.json({ ok: true, id });
       }
-      const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
-      store.applyGroupExtensionDefaults(profile, null, false);
-      // Best-effort: match the browser clock to the proxy's exit location. A
-      // failed lookup keeps the host timezone.
-      if (profile.proxy) {
-        await attachTimezones([profile], options.timezoneFetch, true).catch(() => {});
-        syncFirefoxTimezone(profile);
-      }
-      uncertain = true;
-      const created = undefined;
-      if (!created) store.upsertProfile(profile);
-      // A download hint cannot turn a persisted creation into an apparent failure.
-      try { launcher.prefetchFirefoxFontPacks?.([profile]); } catch {}
-      return Response.json({ ok: true, ...(created ?? { id: profile.id }) });
+      const profile = await createLocalProfile(store, input, {
+        timezoneFetch: options.timezoneFetch,
+        onBeforeSave: () => { uncertain = true; },
+        ...(launcher.prefetchFirefoxFontPacks ? { prefetchFirefoxFontPacks: (profiles) => launcher.prefetchFirefoxFontPacks!(profiles) } : {}),
+      });
+      return Response.json({ ok: true, id: profile.id });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e), uncertain }, { status: 400 });
     }
@@ -1201,21 +1250,36 @@ export async function handleUiRequest(
         .filter((profile): profile is Profile => !!profile?.proxy && !profile.timezoneManual)
         .map((profile) => ({ ...profile, timezone: "" }));
       if (located.length > 0) {
+        const expectedBefore = new Map(located.map((item) => {
+          const stored = store.getProfile(item.id);
+          return [item.id, { key: proxyIdentityKey(stored?.proxy ?? null), error: !!stored?.proxyError, manualTz: !!stored?.timezoneManual }] as const;
+        }));
         await attachTimezones(located, options.timezoneFetch).catch(() => {});
-        // Apply the rows again to current copies, so changes saved during the lookups are kept.
+        for (const item of located) {
+          if (!item.timezone && item.proxy?.type === "pool") {
+            item.timezone = poolNodeTimezone(store, item.proxy) ?? "";
+          }
+        }
+        // Apply the rows again to current copies, rejecting concurrent proxy/timezone races.
         pending.clear();
         for (const { id, set } of applied) {
-          const p = pending.get(id) ?? store.getProfile(id);
+          const expected = expectedBefore.get(id);
+          const current = store.getProfile(id);
+          if (expected && (!current || !!current.proxyError !== expected.error || proxyIdentityKey(current.proxy) !== expected.key || !!current.timezoneManual !== expected.manualTz)) {
+            return Response.json({ ok: false, error: "Profile connection changed during update. Re-upload the file and try again." }, { status: 409 });
+          }
+          const p = pending.get(id) ?? current;
           if (!p) continue;
           const previousGroup = p.group;
           applyEdits(p, set);
           store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in set);
           pending.set(id, p);
         }
-        for (const { id, timezone } of located) {
+        for (const { id, timezone, locale } of located) {
           const p = pending.get(id);
-          if (p && timezone) {
+          if (p && timezone && !p.timezoneManual) {
             p.timezone = timezone;
+            if (locale && !p.locale) p.locale = locale;
             syncFirefoxTimezone(p);
           }
         }
@@ -1441,7 +1505,11 @@ export async function handleUiRequest(
       const profile = store.getProfile(id);
       if (!profile) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
       if (profile.proxyError) return Response.json({ ok: false, error: "Fix or remove the invalid proxy before setting the timezone." }, { status: 400 });
-      const location = await lookupExitLocation(profile.proxy, options.timezoneFetch);
+      const poolNode = profile.proxy?.type === "pool" ? store.proxyPool.get(profile.proxy.host) : null;
+      const poolTimezone = profile.proxy?.type === "pool" ? poolNodeTimezone(store, profile.proxy) : undefined;
+      const location = poolTimezone
+        ? { timezone: poolTimezone, country: poolNode?.check?.country }
+        : await lookupExitLocation(profile.proxy, options.timezoneFetch);
       if (!location) return Response.json({ ok: false, error: "Could not determine the connection timezone. The saved timezone is unchanged." }, { status: 502 });
       const current = store.getProfile(id);
       if (!current || current.proxyError || JSON.stringify(current.proxy) !== JSON.stringify(profile.proxy)) {
@@ -1660,27 +1728,47 @@ export async function handleUiRequest(
       // launched with; a changed proxy or fingerprint applies at its next start.
       let p = remote ? await remote.getProfile(id).catch(() => null) : store.getProfile(id);
       if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+      const preEditProxyKey = proxyIdentityKey(p.proxy);
+      const preEditProxyError = !!p.proxyError;
+      const preEditManualTz = !!p.timezoneManual;
       let previousGroup = p.group;
       const proxyChanged = applyEdits(p, set);
       // A new proxy gets its exit timezone, like a Cloud edit. A failed lookup keeps the saved one.
       if (!remote && proxyChanged && p.proxy && !("timezone" in set) && !p.timezoneManual) {
-        const location = await lookupExitLocation(p.proxy, options.timezoneFetch);
-        // Apply the edit to the current copy, so changes saved during the lookup are kept.
-        p = store.getProfile(id);
-        if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
-        previousGroup = p.group;
-        applyEdits(p, set);
-        if (location) {
-          p.timezone = location.timezone;
+        let nextTimezone: string | undefined;
+        let nextCountry: string | undefined;
+        if (p.proxy.type === "pool") {
+          nextTimezone = poolNodeTimezone(store, p.proxy);
+          nextCountry = store.proxyPool.get(p.proxy.host)?.check?.country;
+        } else {
+          const location = await lookupExitLocation(p.proxy, options.timezoneFetch);
+          nextTimezone = location?.timezone;
+          nextCountry = location?.country;
+          // Apply the edit to the current copy, guarding against concurrent proxy/timezone changes.
+          p = store.getProfile(id);
+          if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+          if (!!p.proxyError !== preEditProxyError || proxyIdentityKey(p.proxy) !== preEditProxyKey || !!p.timezoneManual !== preEditManualTz) {
+            return Response.json({ ok: false, error: "Profile connection changed while saving. Try again." }, { status: 409 });
+          }
+          previousGroup = p.group;
+          applyEdits(p, set);
+        }
+        if (nextTimezone && !p.timezoneManual) {
+          p.timezone = nextTimezone;
+          if (!("locale" in set) && p.proxy?.type === "pool") {
+            p.locale = localeForCountry(nextCountry) ?? localeForTimezone(nextTimezone);
+          }
           syncFirefoxTimezone(p);
         }
       }
       if (!remote) store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in set);
       if (remote) await remote.saveProfile(p);
       else {
-        store.upsertProfile(p);
-        if ("timezone" in set) store.setTimezone(id, p.timezone);
-        if ("cores" in set) store.setHardware(id, p.hardware);
+        store.runTransaction(() => {
+          store.upsertProfile(p);
+          if ("timezone" in set) store.setTimezone(id, p.timezone);
+          if ("cores" in set) store.setHardware(id, p.hardware);
+        });
       }
       return Response.json({ ok: true, ...(remote ? {} : restartRequired(store, id)) });
     } catch (e) {

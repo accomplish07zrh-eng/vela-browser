@@ -1,10 +1,8 @@
 import { webkitPublicFields } from "./browser-capabilities.ts";
-import { buildNewProfile, type NewProfileInput } from "./create.ts";
-import { syncFirefoxTimezone } from "./firefox-config.ts";
+import { createLocalProfile, type NewProfileInput } from "./create.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { callWebKitOwner, type WebKitOwner } from "./webkit-runtime.ts";
 import { pointerAgent, validWorkbenchPointer } from "./workbench.ts";
-import { attachTimezones } from "./geoip.ts";
 import {
   BrowserLaunchError,
   type BrowserOpenOptions,
@@ -475,11 +473,21 @@ export class AgentControlSession {
       const previous = this.aiProxyLabel(store.getProfile(profileId)?.proxy ?? null, nodes);
       const next = this.aiProxyLabel({ type: "pool", host: node.id, port: "0", user: "", pass: "" }, nodes);
       const result = await switchProfileProxy({
-        store, launcher, assign: (id, proxy) => saveProfileProxy(store, id, proxy, this.deps.proxyTimezoneFetch),
+        store, launcher, assign: (id, proxy, opts) => saveProfileProxy(store, id, proxy, this.deps.proxyTimezoneFetch, opts),
         ...(this.deps.proxySwitchCheck ? { check: this.deps.proxySwitchCheck } : {}),
         ...(this.deps.proxySwitchDirect ? { direct: this.deps.proxySwitchDirect } : {}),
         log: (msg) => this.deps.log?.(msg),
       }, { profileId, nodeId, by: `mcp:${client}` });
+      if (result.applied === "reopened") {
+        const newLaunch = store.getLaunch(profileId);
+        if (this.openedByConnection.has(profileId)) {
+          if (newLaunch?.ws) this.openedEndpoints.set(profileId, newLaunch.ws);
+          else {
+            this.openedByConnection.delete(profileId);
+            this.openedEndpoints.delete(profileId);
+          }
+        }
+      }
       return {
         profileId, applied: result.applied, previous, next,
         ...(result.exit ? { exit: { ...(result.exit.country ? { country: result.exit.country } : {}) } } : {}),
@@ -487,6 +495,11 @@ export class AgentControlSession {
       };
     } catch (error) {
       if (error instanceof ProxySwitchError) {
+        if ((error.code === "reopen_failed" || error.code === "exit_is_direct") && !store.getLaunch(profileId)) {
+          this.openedByConnection.delete(profileId);
+          this.openedEndpoints.delete(profileId);
+          this.attachedExisting.delete(profileId);
+        }
         throw agentError(error.code, error.message + ("retryAfterMs" in error.detail ? ` (retry after ${Math.ceil(Number(error.detail.retryAfterMs) / 1000)} s)` : ""));
       }
       throw error;
@@ -570,15 +583,11 @@ export class AgentControlSession {
     if (this.deps.remote) {
       id = (await this.deps.remote.createProfile(input as NewProfileInput)).id;
     } else {
-      const profile = buildNewProfile(input as NewProfileInput, (candidate) => !!this.deps.store.getProfile(candidate));
-      if (profile.proxy) {
-        await attachTimezones([profile], undefined, true).catch(() => {});
-        syncFirefoxTimezone(profile);
-      }
-      {
-        this.deps.store.upsertProfile(profile);
-        id = profile.id;
-      }
+      const profile = await createLocalProfile(this.deps.store, input as NewProfileInput, {
+        timezoneFetch: this.deps.proxyTimezoneFetch,
+        prefetchFirefoxFontPacks: (profiles) => this.deps.launcher.prefetchFirefoxFontPacks?.(profiles),
+      });
+      id = profile.id;
     }
     if (temporary) this.deps.store.markAgentTemporary(id);
     return { id, temporary };

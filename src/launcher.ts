@@ -46,6 +46,7 @@ import {
 export { isMobileUserAgent } from "./fingerprint.ts";
 import { startProxyRelay, type ProxyRelay, type UpstreamProxy } from "./proxy-relay.ts";
 import { clearKernelWorkDir, ensureKernel, KernelSupervisor, type InstalledKernel } from "./kernel.ts";
+import { KernelDnsSelector, type KernelDnsEnvironment } from "./kernel-config.ts";
 import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "./search-provider.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
@@ -586,6 +587,8 @@ export interface LauncherOptions {
   webkitRuntime?: LauncherOptions["firefoxRuntime"];
   /** Runs proxy-pool nodes (vless, hysteria2, anytls…). Defaults to sing-box under the runtimes root. */
   kernels?: KernelSupervisor;
+  /** Network environment for encrypted DoH node-server resolution. Defaults to "auto". */
+  dnsEnvironment?: () => KernelDnsEnvironment;
   /** Installs the pinned proxy kernel. Injectable for tests. */
   ensureKernel?: (root: string) => Promise<InstalledKernel>;
   /** Install root for the downloaded Chromium 155 beta. Defaults beside dataRoot. */
@@ -1047,6 +1050,8 @@ export class Launcher {
   private relays = new Map<string, ProxyRelay>(); // auth-injecting proxy relay per running authed-proxy profile
   /** One proxy kernel per running profile whose proxy is a pool node. */
   readonly kernels: KernelSupervisor;
+  private readonly kernelDnsSelector = new KernelDnsSelector();
+  private readonly dnsEnvironment: () => KernelDnsEnvironment;
   /** Post-stop cache deletes still running, so a relaunch never races its own cache dirs. */
   private cacheClears = new Map<string, Promise<void>>();
   /** Proxied browser websocket generations verified by this manager process. */
@@ -1102,11 +1107,14 @@ export class Launcher {
     }
     this.dataRoot = opts.dataRoot ?? DEFAULT_DATA_ROOT;
     this.chromiumRuntimeRoot = opts.chromiumRuntimeRoot ?? join(dirname(resolve(this.dataRoot)), "runtimes");
+    this.dnsEnvironment = opts.dnsEnvironment ?? (() => "auto");
     const kernelWorkDir = join(dirname(resolve(this.dataRoot)), "kernels");
     clearKernelWorkDir(kernelWorkDir);
     this.kernels = opts.kernels ?? new KernelSupervisor({
       binary: () => (opts.ensureKernel ?? ((root) => ensureKernel(root, { log: (msg) => this.log(msg) })))(this.chromiumRuntimeRoot),
       workDir: kernelWorkDir,
+      resolveDns: () => this.kernelDnsSelector.resolve(this.dnsEnvironment()),
+      onDnsFailure: (primaryServer) => this.kernelDnsSelector.markFailed(primaryServer),
       log: (msg) => this.log(msg),
     });
     // A kernel that died and came back listens on a new port: the profile's relay follows it, cutting
@@ -3734,6 +3742,10 @@ export class Launcher {
    * Concurrent stops coalesce, and start() will wait for this full transition
    * (including its final launch-row cleanup) before reusing the profile.
    */
+  invalidateKernelDns(env?: KernelDnsEnvironment): void {
+    this.kernelDnsSelector.invalidate(env);
+  }
+
   async stop(profileId: string, expected?: LaunchGeneration): Promise<boolean> {
     if (expected && !this.launchGenerationMatches(profileId, expected)) return false;
     const existingStop = this.stopsInFlight.get(profileId);

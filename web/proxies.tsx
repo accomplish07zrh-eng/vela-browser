@@ -320,10 +320,10 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
   const hasFailedChecks = !busy && checks.some((row) => row.status === "failed" || row.status === "unstable");
 
   const tools = <>
-    <div className="tools-tabs" aria-label={t("Proxy tools")}>
-      <button className={task === "check" ? "selected" : ""} aria-pressed={task === "check"} onClick={() => setTask("check")}>{t("Check proxies")} <small>{t("Find connection problems")}</small></button>
-      <button className={task === "replace" ? "selected" : ""} aria-pressed={task === "replace"} onClick={() => setTask("replace")}>{t("Replace proxies")} <small>{t("Assign new connections")}</small></button>
-      <button className={task === "pool" ? "selected" : ""} aria-pressed={task === "pool"} onClick={() => setTask("pool")}>{t("Proxy pool")} <small>{t("Import once, give to profiles")}</small></button>
+    <div className="tools-tabs" role="group" aria-label={t("Proxy tools")}>
+      <button type="button" className={task === "check" ? "selected" : ""} aria-pressed={task === "check"} onClick={() => setTask("check")}>{t("Check proxies")} <small>{t("Find connection problems")}</small></button>
+      <button type="button" className={task === "replace" ? "selected" : ""} aria-pressed={task === "replace"} onClick={() => setTask("replace")}>{t("Replace proxies")} <small>{t("Assign new connections")}</small></button>
+      <button type="button" className={task === "pool" ? "selected" : ""} aria-pressed={task === "pool"} onClick={() => setTask("pool")}>{t("Proxy pool")} <small>{t("Import once, give to profiles")}</small></button>
     </div>
     {task === "pool" ? <ProxyPoolPanel active={active && task === "pool"} onChanged={() => void onChanged()} /> : <>
     <section className="tools-panel proxy-scope">
@@ -378,7 +378,15 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
       <section className="tools-panel proxy-input-panel">
         <div className="tools-panel-head"><div><h3><span className="tools-step">2</span>{t("Add replacement proxies")}</h3><p>{t("Nothing changes until you review and apply the assignments.")}</p></div></div>
         <div className="tools-panel-body">
-          <label className="fld"><span>{t("Assignment method")}</span><Select value={mode} disabled={!!busy} onChange={(event) => { setMode(event.target.value as ProxyReplacementMode); invalidatePreview(); }}>
+          <label className="fld"><span>{t("Assignment method")}</span><Select value={mode} disabled={!!busy} onChange={(event) => {
+            const nextMode = event.target.value as ProxyReplacementMode;
+            setMode((previous) => {
+              if (nextMode === "pool" && previous !== "pool") setInput("{}");
+              else if (nextMode !== "pool" && previous === "pool") setInput("");
+              return nextMode;
+            });
+            invalidatePreview();
+          }}>
             <option value="list">{t("Paste a proxy list")}</option><option value="pool">{t("Give proxies from the pool")}</option><option value="profileId">{t("Match specific profile IDs — CSV")}</option><option value="oldProxy">{t("Replace matching old proxies — CSV")}</option>
           </Select></label>
           {mode === "pool" ? <PoolSelectionFields value={input} disabled={!!busy} onChange={(next) => { setInput(next); invalidatePreview(); }} /> : <>

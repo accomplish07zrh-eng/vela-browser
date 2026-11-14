@@ -285,3 +285,150 @@ test("a pool node id is a proxy no one can connect to directly", () => {
   const p = pool();
   expect(p.importText("pool://00000000-0000-0000-0000-000000000000:0").invalid.length).toBe(1);
 });
+
+test("switch history retains at most the newest 100 entries per profile", () => {
+  const p = pool();
+  for (let i = 1; i <= 105; i++) {
+    p.recordSwitch({ profileId: "p1", at: i, by: "dashboard", from: `old-${i}`, to: `new-${i}`, outcome: "saved" });
+  }
+  p.recordSwitch({ profileId: "p2", at: 1, by: "dashboard", from: "a", to: "b", outcome: "saved" });
+  const history1 = p.switchHistory("p1", 200);
+  expect(history1).toHaveLength(100);
+  expect(history1[0]!.to).toBe("new-105");
+  expect(history1.at(-1)!.to).toBe("new-6");
+  expect(p.switchHistory("p2", 10)).toHaveLength(1);
+});
+
+test("planPoolAssignment avoids already-occupied exit IPs when distinctExitIp is enabled and keeps unknown-IP nodes flexible", () => {
+  const p = pool();
+  const nodes = p.importText([
+    "http://10.0.0.1:8080#exit10-a",
+    "http://10.0.0.2:8080#exit10-b",
+    "http://10.0.0.3:8080#exit10-v6mapped",
+    "http://10.0.0.4:8080#exit11",
+    "http://10.0.0.5:8080#unchecked-1",
+    "http://10.0.0.6:8080#unchecked-2",
+  ].join("\n")).added;
+  for (const n of nodes) p.update(n.id, { maxProfiles: 2 });
+  p.recordCheck(nodes[0]!.id, { status: "working", ip: "198.51.100.10", timezone: "America/New_York", checkedAt: 1, durationMs: 10 });
+  p.recordCheck(nodes[1]!.id, { status: "working", ip: "198.51.100.10", checkedAt: 1, durationMs: 20 });
+  p.recordCheck(nodes[2]!.id, { status: "working", ip: "::ffff:198.51.100.10", checkedAt: 1, durationMs: 30 });
+  p.recordCheck(nodes[3]!.id, { status: "working", ip: "198.51.100.11", checkedAt: 1, durationMs: 40 });
+  p.update(nodes[3]!.id, { tags: ["vip"] });
+  // Outside profile already occupies 198.51.100.11 via an unrelated disabled node sharing the same exit IP.
+  const [outsideNode] = p.importText("http://10.0.0.7:8080#outside").added;
+  p.update(outsideNode!.id, { disabled: true });
+  p.recordCheck(outsideNode!.id, { status: "working", ip: "198.51.100.11", checkedAt: 1 });
+
+  const allNodes = p.list();
+  const out = profile("out", outsideNode!.proxy);
+  const p1 = profile("p1", null);
+  const p2 = profile("p2", null);
+
+  // Off by default: both p1 and p2 can get 198.51.100.10 nodes.
+  const defaultPlan = planPoolAssignment([p1, p2], allNodes, [out, p1, p2], {});
+  expect(defaultPlan.map((a) => a.node?.name)).toEqual(["exit10-a", "exit10-b"]);
+
+  // distinctExitIp: p1 takes exit10-a (198.51.100.10); exit10-b & exit10-v6mapped share that IP, and exit11 is occupied by `out`, so p2 is exhausted.
+  const distinctPlan = planPoolAssignment([p1, p2], allNodes, [out, p1, p2], { distinctExitIp: true });
+  expect(distinctPlan[0]!.node?.name).toBe("exit10-a");
+  expect(distinctPlan[1]!.code).toBe("pool_exhausted");
+
+  // With onlyWorking: false, unchecked nodes are treated as unknown and can fill remaining profiles up to maxProfiles.
+  const withUnknown = planPoolAssignment([p1, p2], allNodes, [out, p1, p2], { onlyWorking: false, distinctExitIp: true });
+  expect(withUnknown.map((a) => a.node?.name)).toEqual(["exit10-a", "unchecked-1"]);
+  expect(parsePoolSelection({ distinctExitIp: true })).toEqual({ distinctExitIp: true });
+  expect(() => parsePoolSelection({ distinctExitIp: "yes" })).toThrow("Invalid pool selection");
+});
+
+test("subscription refreshHours validates bounds and lists only due readable subscriptions", () => {
+  let clock = 10_000_000;
+  const p = new ProxyPool(new Database(":memory:"), () => clock);
+  expect(() => p.addSubscription({ url: "https://sub.example/bad", refreshHours: 0 })).toThrow("between 1 and 720");
+  expect(() => p.addSubscription({ url: "https://sub.example/bad2", refreshHours: 721 })).toThrow("between 1 and 720");
+  expect(() => p.addSubscription({ url: "https://sub.example/bad3", refreshHours: 1.5 })).toThrow("between 1 and 720");
+
+  const subAuto = p.addSubscription({ url: "https://sub.example/auto", refreshHours: 6 });
+  const subManual = p.addSubscription({ url: "https://sub.example/manual" });
+  expect(subAuto.refreshHours).toBe(6);
+  expect(subManual.refreshHours).toBeNull();
+  // Initially never fetched -> due.
+  expect(p.listDueSubscriptions(clock).map((s) => s.id)).toEqual([subAuto.id]);
+
+  // Sync sets lastFetchedAt to `clock`; not due until +6h.
+  const parsed = parseSubscription(SUB_V1);
+  p.syncSubscription(subAuto.id, parsed.nodes, parsed);
+  expect(p.listDueSubscriptions(clock + 5 * 3_600_000)).toEqual([]);
+  expect(p.listDueSubscriptions(clock + 6 * 3_600_000).map((s) => s.id)).toEqual([subAuto.id]);
+
+  // Turning off / changing refreshHours via updateSubscription.
+  expect(p.updateSubscription(subAuto.id, { refreshHours: 12 }).refreshHours).toBe(12);
+  expect(p.listDueSubscriptions(clock + 6 * 3_600_000)).toEqual([]);
+  expect(p.updateSubscription(subAuto.id, { refreshHours: null }).refreshHours).toBeNull();
+
+  // Private/loopback subscription URLs are rejected.
+  expect(() => p.addSubscription({ url: "https://127.0.0.1/private" })).toThrow();
+  expect(() => p.addSubscription({ url: "https://localhost/private" })).toThrow();
+});
+
+test("legacy schema migration, switch-history pruning, failure backoff, monotonic recordCheck, and removedFromSource planning", () => {
+  const db = new Database(":memory:");
+  // Simulate pre-0.1.8 schema without refresh_hours / retry_after / failure_count and > 100 switch history rows.
+  db.exec(`
+    CREATE TABLE proxy_subscriptions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      url TEXT NOT NULL,
+      user_agent TEXT NOT NULL DEFAULT '',
+      last_fetched_at INTEGER,
+      last_error TEXT NOT NULL DEFAULT '',
+      usage_json TEXT NOT NULL DEFAULT '',
+      last_import_json TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE proxy_switch_history (
+      profile_id TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      by_whom TEXT NOT NULL,
+      from_label TEXT NOT NULL,
+      to_label TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      code TEXT NOT NULL DEFAULT '',
+      exit_country TEXT NOT NULL DEFAULT ''
+    );
+  `);
+  for (let i = 1; i <= 115; i++) {
+    db.query(`INSERT INTO proxy_switch_history (profile_id, at, by_whom, from_label, to_label, outcome) VALUES ('p1', ?, 'dashboard', 'a', 'b', 'saved')`).run(i);
+  }
+  let clock = 5_000_000;
+  const p = new ProxyPool(db, () => clock);
+  // Startup pruning trims oversized history to 100 newest rows per profile.
+  expect(p.switchHistory("p1", 200)).toHaveLength(100);
+  expect(p.switchHistory("p1", 100)[99]!.at).toBe(16);
+
+  // Migrated subscription columns work, failure backoff defers retries without wiping lastFetchedAt.
+  const sub = p.addSubscription({ url: "https://sub.example/migrated", refreshHours: 6 });
+  const parsed = parseSubscription("vless://11111111-2222-3333-4444-555555555555@jp.example:443?security=tls#JP");
+  p.syncSubscription(sub.id, parsed.nodes, parsed);
+  const fetchedAt = clock;
+  clock += 6 * 3_600_000;
+  p.recordSubscriptionFailure(sub.id, "The subscription could not be downloaded");
+  const failedSub = p.getSubscription(sub.id)!;
+  expect(failedSub.lastFetchedAt).toBe(fetchedAt);
+  const storedFailureCount = db.query<{ failure_count: number }, [string]>(
+    `SELECT failure_count FROM proxy_subscriptions WHERE id = ?`,
+  ).get(sub.id)!.failure_count;
+  expect(storedFailureCount).toBe(1);
+  // First failure backs off for 5 minutes from `clock`.
+  expect(p.listDueSubscriptions(clock + 60_000)).toEqual([]);
+  expect(p.listDueSubscriptions(clock + 5 * 60_000).map((s) => s.id)).toEqual([sub.id]);
+
+  // recordCheck ignores older timestamps, and removedFromSource nodes are skipped in planning.
+  const [node] = p.importText("10.0.0.9:8080#Test").added;
+  p.recordCheck(node!.id, { status: "working", ip: "198.51.100.9", country: "US", checkedAt: 200 });
+  p.recordCheck(node!.id, { status: "failed", reason: "timeout", checkedAt: 100 });
+  expect(p.get(node!.id)!.check).toMatchObject({ status: "working", checkedAt: 200 });
+
+  const removedNode: PoolNode = { ...node!, removedFromSource: true };
+  expect(planPoolAssignment([profile("p1", null)], [removedNode], [profile("p1", null)], { onlyWorking: true })[0]!.node).toBeUndefined();
+});

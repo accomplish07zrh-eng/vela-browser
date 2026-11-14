@@ -12,7 +12,9 @@
  */
 
 import { createHash } from "node:crypto";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { isNonPublicIp } from "./ip.ts";
 import { regionHintFromName } from "./proxy-pool.ts";
 
 export type KernelProtocol = "shadowsocks" | "vmess" | "vless" | "trojan" | "hysteria2" | "tuic" | "anytls";
@@ -60,8 +62,16 @@ export const INFO_KEYWORDS = [
   "traffic", "expire", "website", "reset", "renew", "subscription",
 ];
 
+export function isNonPublicHostName(host: string): boolean {
+  const cleaned = host.trim().replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  if (!cleaned) return true;
+  if (cleaned === "localhost" || cleaned.endsWith(".localhost") || cleaned.endsWith(".local") || cleaned.endsWith(".internal")) return true;
+  if (isIP(cleaned) !== 0) return isNonPublicIp(cleaned);
+  return false;
+}
+
 export function isInfoEntry(name: string, server: string, port: number): boolean {
-  if (["127.0.0.1", "0.0.0.0", "::", "::1", "localhost"].includes(server.toLowerCase()) || port === 0 || port === 1) return true;
+  if (isNonPublicHostName(server) || port === 0 || port === 1) return true;
   const lower = name.toLowerCase();
   return INFO_KEYWORDS.some((word) => lower.includes(word));
 }
@@ -527,6 +537,17 @@ const SINGBOX_FIELDS: Record<string, string[]> = {
 const SINGBOX_DROPPED = new Set(["tag", "multiplex", "domain_resolver", "domain_strategy", "network", "udp_over_tcp", "tcp_fast_open", "tcp_multi_path"]);
 const SINGBOX_NON_EXIT = new Set(["direct", "block", "dns", "selector", "urltest"]);
 
+function validateSingBoxNestedObject(value: unknown, what: string, allowedKeys?: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) unsupported(`invalid ${what}`);
+  const obj = value as Record<string, unknown>;
+  for (const [key, nested] of Object.entries(obj)) {
+    if (key.endsWith("_path")) unsupported(`${what} ${key}`);
+    if (allowedKeys && !allowedKeys.includes(key)) unsupported(`unknown ${what} field ${key}`);
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) validateSingBoxNestedObject(nested, `${what}.${key}`);
+  }
+  return obj;
+}
+
 export function parseSingBoxOutbound(raw: Record<string, unknown>): ParsedNode | null {
   const type = String(raw.type ?? "");
   if (SINGBOX_NON_EXIT.has(type)) return null;
@@ -536,10 +557,35 @@ export function parseSingBoxOutbound(raw: Record<string, unknown>): ParsedNode |
   for (const [key, value] of Object.entries(raw)) {
     if (key === "type" || key === "server" || key === "server_port" || SINGBOX_DROPPED.has(key)) continue;
     if (!fields.includes(key)) unsupported(`unknown field ${key}`);
+    if (key === "tls" && value !== undefined) {
+      const tls = validateSingBoxNestedObject(value, "tls", [
+        "enabled", "disable_sni", "server_name", "alpn", "min_version", "max_version",
+        "cipher_suites", "curve_preferences", "certificate", "insecure", "utls", "reality", "ech",
+        "fragment", "record_fragment",
+      ]);
+      if (tls.ech !== undefined) {
+        const ech = validateSingBoxNestedObject(tls.ech, "tls.ech", [
+          "enabled", "pq_signature_schemes_enabled", "dynamic_record_sizing_disabled", "query_server_name", "config",
+        ]);
+        if (ech.config !== undefined && ech.config !== "" && (!Array.isArray(ech.config) || ech.config.length > 0)) {
+          unsupported("ech config");
+        }
+      }
+      if (tls.utls !== undefined) validateSingBoxNestedObject(tls.utls, "tls.utls", ["enabled", "fingerprint"]);
+      if (tls.reality !== undefined) validateSingBoxNestedObject(tls.reality, "tls.reality", ["enabled", "public_key", "short_id"]);
+    } else if (key === "transport" && value !== undefined) {
+      validateSingBoxNestedObject(value, "transport");
+    } else if (key === "obfs" && value !== undefined) {
+      validateSingBoxNestedObject(value, "obfs", ["type", "password"]);
+    } else if (key === "plugin" && value !== undefined) {
+      if (value !== "obfs-local" && value !== "v2ray-plugin") unsupported(`ss plugin ${String(value)}`);
+    }
     outbound[key] = value;
   }
   if (type === "socks" && raw.version !== undefined && String(raw.version) !== "5") unsupported("socks version");
-  const protocol: NodeProtocol = type === "socks" ? "socks5" : type === "http" ? ((raw.tls as { enabled?: boolean } | undefined)?.enabled ? "https" : "http") : type as KernelProtocol;
+  const rawTls = raw.tls as { enabled?: boolean; insecure?: boolean } | undefined;
+  const protocol: NodeProtocol = type === "socks" ? "socks5" : type === "http" ? (rawTls?.enabled ? "https" : "http") : type as KernelProtocol;
+  if (protocol === "https" && rawTls?.insecure) unsupported("insecure https proxy");
   if (protocol === "socks5") { delete outbound.version; outbound.type = "socks5"; }
   if (protocol === "https") { delete outbound.tls; outbound.type = "https"; }
   if (type === "http" && (raw.path !== undefined || raw.headers !== undefined)) unsupported("custom HTTP proxy path or headers");
@@ -627,36 +673,72 @@ export interface FetchedSubscription {
 export const SUBSCRIPTION_USER_AGENTS = ["clash.meta", "v2rayN/7.0"];
 const MAX_BYTES = 5 * 1024 * 1024;
 
+async function assertPublicSubscriptionTarget(
+  target: URL,
+  opts: { allowPrivate?: boolean; lookupHost?: (host: string) => Promise<string[]> },
+): Promise<void> {
+  if (opts.allowPrivate) return;
+  if (isNonPublicHostName(target.hostname)) {
+    throw new SubscriptionError("The subscription link cannot target a local or private address");
+  }
+  const host = target.hostname.replace(/^\[|\]$/g, "");
+  if (isIP(host) !== 0 || !opts.lookupHost) return;
+  let addresses: string[];
+  try {
+    addresses = await opts.lookupHost(host);
+  } catch {
+    return;
+  }
+  if (addresses.some((ip) => isNonPublicIp(ip))) {
+    throw new SubscriptionError("The subscription link cannot resolve to a local or private address");
+  }
+}
+
 /**
  * Fetch a subscription. With no `userAgent`, Clash's first; a body that does not parse falls back
  * to the next. Only https, unless `allowHttp`. Redirects are followed at most three times.
  */
 export async function fetchSubscription(
   url: string,
-  opts: { userAgent?: string; allowHttp?: boolean; fetchFn?: typeof fetch; timeoutMs?: number } = {},
+  opts: {
+    userAgent?: string;
+    allowHttp?: boolean;
+    allowPrivate?: boolean;
+    fetchFn?: typeof fetch;
+    lookupHost?: (host: string) => Promise<string[]>;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<FetchedSubscription & { parsed: ParsedSubscription }> {
   let target: URL;
   try { target = new URL(url); } catch { throw new SubscriptionError("The subscription link is not a valid URL"); }
   if (target.protocol !== "https:" && !(opts.allowHttp && target.protocol === "http:")) {
     throw new SubscriptionError("The subscription link must use https");
   }
+  const resolveHost = opts.lookupHost
+    ?? (!opts.fetchFn ? async (host: string) => (await dnsLookup(host, { all: true })).map((entry) => entry.address) : undefined);
+  await assertPublicSubscriptionTarget(target, { allowPrivate: opts.allowPrivate, lookupHost: resolveHost });
   const agents = opts.userAgent ? [opts.userAgent] : SUBSCRIPTION_USER_AGENTS;
   let lastError: Error = new SubscriptionError("The subscription could not be read");
   for (const agent of agents) {
+    if (opts.signal?.aborted) throw new SubscriptionError("Subscription refresh was cancelled");
     let response: Response;
     let current = target;
     let redirects = 0;
     try {
       while (true) {
+        const timeoutSignal = AbortSignal.timeout(opts.timeoutMs ?? 20_000);
+        const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
         response = await (opts.fetchFn ?? fetch)(current, {
           headers: { "User-Agent": agent, Accept: "*/*" },
           redirect: "manual",
-          signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
+          signal,
         });
         if (response.status >= 300 && response.status < 400 && response.headers.get("location")) {
           if (++redirects > 3) throw new SubscriptionError("The subscription link redirects too many times");
           const next = new URL(response.headers.get("location")!, current);
           if (next.protocol !== "https:" && !(opts.allowHttp && next.protocol === "http:")) throw new SubscriptionError("The subscription link redirects to an insecure address");
+          await assertPublicSubscriptionTarget(next, { allowPrivate: opts.allowPrivate, lookupHost: resolveHost });
           current = next;
           continue;
         }

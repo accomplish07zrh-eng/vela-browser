@@ -192,7 +192,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, :is(select, .vselect
 .settings-card > header { padding: 12px 0; }
 .settings-card > header h2 { font-size: 16px; line-height: 24px; letter-spacing: 0; }
 .settings-card > header .icon { width: 32px; height: 32px; border-radius: 8px; }
-.settings-card .card-body { gap: 16px; padding: 16px 0 24px; }
+.settings-card .card-body { gap: 16px; padding: 16px 4px 24px; }
 .settings-row > span { font-size: 13px; line-height: 20px; }
 .settings-row .select, .settings-card .fld input, .settings-card .fld :is(select, .vselect) { height: 40px; border-radius: 8px; }
 .pagefoot { padding: 16px 0 0; border: 0; }
@@ -207,7 +207,7 @@ tbody tr:hover { background: var(--field-bg); }
 .emptystate b { font: 500 24px/32px var(--font-title); }
 .btn:not(.primary):not(.solid-danger):not(.ghost):not(.danger):not(.accent) { border-color: transparent; background: var(--field-bg); }
 .btn:not(.primary):not(.solid-danger):not(.ghost):not(.danger):not(.accent):hover { background: var(--field-bg-focus); }
-.settings-card, .tools-panel { border: 0; box-shadow: none; background: transparent; }
+.settings-card, .tools-panel { border: 0; box-shadow: none; background: transparent; overflow: visible; }
 .settings-card > header, .tools-panel-head { border-bottom-color: var(--line-soft); }
 .tools-tabs { border: 0; background: transparent; padding: 0; border-radius: 0; }
 .tools-tabs button { padding: 12px 16px; border: 0; border-radius: 8px; font-weight: 500; }

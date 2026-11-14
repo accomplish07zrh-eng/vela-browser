@@ -2,6 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { normalizeCoolingSettings, type CoolingSettings } from "./cooling.ts";
+import { parseKernelDnsEnvironment, type KernelDnsEnvironment } from "./kernel-config.ts";
 
 export type AppMode = "unconfigured" | "local" | "cloud";
 
@@ -16,6 +17,8 @@ export interface AppConfig {
   hideFromTaskbar?: boolean;
   /** Cooling of idle browsers when memory runs short. Absent means the defaults. */
   cooling?: CoolingSettings;
+  /** Network environment for sing-box encrypted DoH node-server resolution. Absent means auto. */
+  kernelDns?: KernelDnsEnvironment;
   /** Plugins in the plugins folder that the user switched off. Every other plugin there is on. */
   disabledPlugins?: string[];
   /** Whether an AI may change a profile's proxy: ask each time (absent), allow pool nodes, or never. */
@@ -51,6 +54,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     ...(raw.servicesHidden === true ? { servicesHidden: true } : {}),
     ...(raw.hideFromTaskbar === true ? { hideFromTaskbar: true } : {}),
     ...(raw.cooling !== undefined ? { cooling: normalizeCoolingSettings(raw.cooling) } : {}),
+    ...(parseKernelDnsEnvironment(raw.kernelDns) ? { kernelDns: parseKernelDnsEnvironment(raw.kernelDns)! } : {}),
     ...(Array.isArray(raw.disabledPlugins) && raw.disabledPlugins.some(id => typeof id === "string")
       ? { disabledPlugins: [...new Set(raw.disabledPlugins.filter((id): id is string => typeof id === "string" && id.length <= 64))].sort() } : {}),
     ...(raw.aiProxyChanges === "allow_pool" || raw.aiProxyChanges === "deny" ? { aiProxyChanges: raw.aiProxyChanges } : {}),

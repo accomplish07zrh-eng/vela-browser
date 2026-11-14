@@ -1,6 +1,7 @@
 /** Pre-save proxy connectivity checks through the same relay used by launched browsers. */
 
 import { fetchDirectEgress, type EgressInfo, type EgressLookupOptions } from "./egress.ts";
+import { sameIp } from "./ip.ts";
 import { normalizeProxySpec, type ProxyInput } from "./proxy.ts";
 import { startProxyRelay, type ProxyRelay, type RelayOptions, type UpstreamProxy } from "./proxy-relay.ts";
 import type { ProxySpec } from "./types.ts";
@@ -37,6 +38,7 @@ export interface ProxyCheckResult {
   country?: string;
   region?: string;
   city?: string;
+  timezone?: string;
   rotating?: boolean;
 }
 
@@ -59,12 +61,23 @@ function safeFailureReason(logs: readonly string[]): ProxyConnectionFailureReaso
   return "connection_failed";
 }
 
-function egressFields(info: EgressInfo): Pick<ProxyCheckResult, "ip" | "country" | "region" | "city"> {
+function egressFields(
+  successful: readonly EgressInfo[],
+): Pick<ProxyCheckResult, "ip" | "country" | "region" | "city" | "timezone"> {
+  const info = successful.find((item) => item.timezone && item.country)
+    ?? successful.find((item) => item.timezone || item.country)
+    ?? successful[0]!;
+  const sameExit = successful.filter((item) => sameIp(item.ip, info.ip));
+  const country = info.country ?? sameExit.find((item) => item.country)?.country;
+  const region = info.region ?? sameExit.find((item) => item.region)?.region;
+  const city = info.city ?? sameExit.find((item) => item.city)?.city;
+  const timezone = info.timezone ?? sameExit.find((item) => item.timezone)?.timezone;
   return {
     ip: info.ip,
-    ...(info.country ? { country: info.country } : {}),
-    ...(info.region ? { region: info.region } : {}),
-    ...(info.city ? { city: info.city } : {}),
+    ...(country ? { country } : {}),
+    ...(region ? { region } : {}),
+    ...(city ? { city } : {}),
+    ...(timezone ? { timezone } : {}),
   };
 }
 
@@ -84,14 +97,14 @@ export function classifyProxyAttempts(
   const failed = attempts.filter((attempt) => !attempt.info);
   const base = { attempts: attempts.length, successes: successful.length };
 
-  if (direct && successful.some((info) => info.ip === direct.ip)) {
+  if (direct && successful.some((info) => sameIp(info.ip, direct.ip))) {
     return { ...base, status: "failed", reason: "proxy_bypassed" };
   }
   if (successful.length > 0 && failed.every((attempt) => attempt.reason === "check_unavailable")) {
     return {
       ...base,
       status: "working",
-      ...egressFields(successful[0]!),
+      ...egressFields(successful),
       rotating: new Set(successful.map((info) => info.ip)).size > 1,
     };
   }
@@ -100,7 +113,7 @@ export function classifyProxyAttempts(
       ...base,
       status: "unstable",
       reason: "intermittent",
-      ...egressFields(successful[0]!),
+      ...egressFields(successful),
       rotating: new Set(successful.map((info) => info.ip)).size > 1,
     };
   }

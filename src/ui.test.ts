@@ -2488,3 +2488,93 @@ test("fingerprint check route opens only the Vela Browser test page in a running
   expect(opened).toHaveLength(2);
   s.close();
 });
+
+test("app-mode exposes kernelDns and /ui/api/proxy-kernel/dns persists preset and invalidates selector cache", async () => {
+  const s = store();
+  const root = mkdtempSync(join(tmpdir(), "vela-ui-kernel-dns-"));
+  const appConfig = new AppConfigStore(join(root, "config.json"));
+  const invalidated: string[] = [];
+  const launcher = {
+    invalidateKernelDns: (env?: string) => { invalidated.push(env ?? "all"); },
+  } as any;
+  const call = (path: string, body?: unknown, origin?: string) => handleUiRequest(
+    new Request(`http://127.0.0.1:50400${path}`, body === undefined ? { method: "GET" } : {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
+      body: JSON.stringify(body),
+    }),
+    launcher,
+    s,
+    null,
+    { appConfig },
+  );
+
+  const mode0 = await (await call("/ui/api/app-mode"))!.json();
+  expect(mode0).toMatchObject({ kernelDnsSupported: true, kernelDns: "auto" });
+
+  // Untrusted origin blocked.
+  expect((await call("/ui/api/proxy-kernel/dns", { kernelDns: "cn" }, "https://evil.example"))!.status).toBe(403);
+  // Invalid value rejected.
+  expect((await call("/ui/api/proxy-kernel/dns", { kernelDns: "1.1.1.1" }))!.status).toBe(400);
+
+  const saved = await call("/ui/api/proxy-kernel/dns", { kernelDns: "cn" });
+  expect(saved!.status).toBe(200);
+  expect(await saved!.json()).toEqual({ ok: true, kernelDns: "cn" });
+  expect(appConfig.read().kernelDns).toBe("cn");
+  expect(invalidated).toEqual(["all"]);
+
+  const mode1 = await (await call("/ui/api/app-mode"))!.json();
+  expect(mode1.kernelDns).toBe("cn");
+  s.close();
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("mutations enforce cross-origin/content-type guards, concurrent edit conflict, and pool edit round-trip", async () => {
+  const s = store();
+  const launcher = { start: async () => ({ ws: "ws://127.0.0.1:1/x", port: 1 }) } as any;
+  const sub = s.proxyPool.addSubscription({ url: "https://sub.example/ui-pool" });
+  const { parseSubscription } = await import("./subscription.ts");
+  const parsed = parseSubscription("vless://11111111-2222-3333-4444-555555555555@jp.example:443?security=tls#JP");
+  s.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+  const node = s.proxyPool.list().find((n) => n.subscriptionId === sub.id)!;
+
+  // Cross-origin Sec-Fetch-Site / Origin blocked across mutating routes.
+  const crossOpen = await handleUiRequest(new Request("http://127.0.0.1:50400/ui/api/profiles/k1d0cd11/open", {
+    method: "POST",
+    headers: { "Sec-Fetch-Site": "cross-site" },
+    body: "{}",
+  }), launcher, s);
+  expect(crossOpen!.status).toBe(403);
+
+  const formTaskbar = await handleUiRequest(new Request("http://127.0.0.1:50400/ui/api/desktop/taskbar", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: "{}",
+  }), launcher, s, null, { appConfig: new AppConfigStore(join(mkdtempSync(join(tmpdir(), "vela-tb-")), "c.json")) });
+  expect(formTaskbar!.status).toBe(415);
+
+  // Pool proxy edits round-trip cleanly via /ui/api/profiles/:id/update.
+  const roundTrip = await handleUiRequest(new Request("http://127.0.0.1:50400/ui/api/profiles/k1d0cd11/update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ set: { name: "sophia-2", proxyType: "pool", proxy: node.id } }),
+  }), launcher, s);
+  expect(roundTrip!.status).toBe(200);
+  expect(s.getProfile("k1d0cd11")!.name).toBe("sophia-2");
+  expect(s.getProfile("k1d0cd11")!.proxy).toEqual(node.proxy);
+
+  // Concurrent proxy modification during non-pool exit timezone lookup returns 409 conflict.
+  const conflict = await handleUiRequest(new Request("http://127.0.0.1:50400/ui/api/profiles/k1d0cd11/update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ set: { proxyType: "http", proxy: "proxy.example:8080" } }),
+  }), launcher, s, null, {
+    timezoneFetch: (async () => {
+      s.upsertProfile({ ...s.getProfile("k1d0cd11")!, proxy: null });
+      return new Response(JSON.stringify({ status: "success", timezone: "Asia/Tokyo", countryCode: "JP" }));
+    }) as any,
+  });
+  expect(conflict!.status).toBe(409);
+  expect(s.getProfile("k1d0cd11")!.proxy).toBeNull();
+  s.close();
+});

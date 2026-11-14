@@ -2,7 +2,7 @@
  * The proxy pool in the dashboard: import proxies once, check them, and give them to profiles.
  * Nothing here ever holds a node's credentials; the server keeps them.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "./select.tsx";
 import { NumberInput } from "./controls.tsx";
 import { useTranslation } from "./i18n.tsx";
@@ -30,6 +30,9 @@ const SERVER_MESSAGES = new Set([
   "The subscription is not valid JSON", "The subscription has no proxies", "The subscription has no outbounds",
   "The subscription link redirects too many times", "The subscription link redirects to an insecure address",
   "This subscription link cannot be read on this computer. Remove it and add it again", "Encrypted storage is unavailable right now",
+  "Auto-refresh interval must be between 1 and 720 hours, or off",
+  "The check could not start", "The check was interrupted", "ids must be a list", "Choose a profile",
+  "The proxy pool is unavailable in legacy remote mode",
 ]);
 
 /** A failure's message for the page: a known server message, translated, or `fallback`. */
@@ -58,9 +61,21 @@ async function poolCall<T>(path: string, body?: unknown, signal?: AbortSignal): 
 export const fetchPool = (signal?: AbortSignal) => poolCall<{ nodes: PoolNodeView[] }>("", undefined, signal).then((r) => r.nodes);
 export const fetchPoolAll = (signal?: AbortSignal) => poolCall<{ nodes: PoolNodeView[]; subscriptions: PoolSubscriptionView[] }>("", undefined, signal);
 interface SubscriptionResult { added: number; kept: number; removed: number; infoEntries: number; nonNodes: number; unsupported: Array<{ name: string; reason: string }> }
-export const addSubscription = (url: string, name: string) => poolCall<SubscriptionResult>("/subscriptions/add", { url, ...(name.trim() ? { name } : {}) });
+export const addSubscription = (url: string, name: string, refreshHours: number | null) =>
+  poolCall<SubscriptionResult>("/subscriptions/add", { url, ...(name.trim() ? { name } : {}), ...(refreshHours !== null ? { refreshHours } : {}) });
 export const refreshSubscription = (id: string) => poolCall<SubscriptionResult>("/subscriptions/refresh", { id });
+export const updateSubscription = (id: string, patch: { name?: string; refreshHours?: number | null }) =>
+  poolCall<{ subscription: PoolSubscriptionView }>("/subscriptions/update", { id, ...patch });
 export const deleteSubscription = (id: string) => poolCall<{ removedNodes: number; keptNodes: number }>("/subscriptions/delete", { id });
+
+const REFRESH_HOUR_PRESETS = [6, 12, 24, 72, 168];
+
+function refreshIntervalLabel(t: (key: string, vars?: Record<string, string | number>) => string, hours: number): string {
+  if (hours === 1) return t("Every {hours} hour", { hours });
+  if (hours === 72) return t("Every 3 days");
+  if (hours === 168) return t("Weekly");
+  return t("Every {hours} hours", { hours });
+}
 
 function bytes(value: number | undefined): string {
   if (value === undefined) return "—";
@@ -149,27 +164,32 @@ function NodeEditor({ node, onSaved, onCancel }: { node: PoolNodeView; onSaved: 
   const [tags, setTags] = useState(node.tags.join(", "));
   const [unlimited, setUnlimited] = useState(node.maxProfiles === null);
   const [limit, setLimit] = useState(node.maxProfiles ?? 1);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
     try {
       const { node: saved } = await updatePoolNode(node.id, {
         name, tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean), maxProfiles: unlimited ? null : limit,
       });
       onSaved(saved);
     } catch (failure) { setError(failureText(t, failure, "Could not save")); }
+    finally { setSaving(false); }
   };
   return <div className="pool-editor">
-    <label className="fld"><span>{t("Name")}</span><input value={name} onChange={(e) => setName(e.target.value)} /></label>
-    <label className="fld"><span>{t("Tags")} <span className="muted">{t("(comma-separated)")}</span></span><input value={tags} onChange={(e) => setTags(e.target.value)} /></label>
+    <label className="fld"><span>{t("Name")}</span><input value={name} disabled={saving} onChange={(e) => setName(e.target.value)} /></label>
+    <label className="fld"><span>{t("Tags")} <span className="muted">{t("(comma-separated)")}</span></span><input value={tags} disabled={saving} onChange={(e) => setTags(e.target.value)} /></label>
     <div className="fld"><span>{t("Profiles that may share it")}</span>
       <div className="proxy-actions">
-        <label className="proxy-choice"><input type="checkbox" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} />{t("No limit")}</label>
-        {!unlimited && <NumberInput aria-label={t("Profiles that may share it")} min={1} step={1} value={limit} onChange={(e) => setLimit(Math.max(1, Math.floor(Number(e.target.value)) || 1))} />}
+        <label className="proxy-choice"><input type="checkbox" checked={unlimited} disabled={saving} onChange={(e) => setUnlimited(e.target.checked)} />{t("No limit")}</label>
+        {!unlimited && <NumberInput aria-label={t("Profiles that may share it")} min={1} step={1} value={limit} disabled={saving} onChange={(e) => setLimit(Math.max(1, Math.floor(Number(e.target.value)) || 1))} />}
       </div>
     </div>
     <p className="tools-hint">{t("The proxy itself cannot change here: a different proxy is a new node, so no profile moves to another exit without you choosing it.")}</p>
     {error && <div className="tools-alert" role="alert">{error}</div>}
-    <div className="proxy-actions"><button type="button" className="btn primary" onClick={() => void save()}>{t("Save")}</button><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
+    <div className="proxy-actions"><button type="button" className="btn primary" disabled={saving} onClick={() => void save()}>{saving ? t("Saving…") : t("Save")}</button><button type="button" className="btn" disabled={saving} onClick={onCancel}>{t("Cancel")}</button></div>
   </div>;
 }
 
@@ -191,6 +211,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
   const [subs, setSubs] = useState<PoolSubscriptionView[]>([]);
   const [subUrl, setSubUrl] = useState("");
   const [subName, setSubName] = useState("");
+  const [subRefreshHours, setSubRefreshHours] = useState<string>("");
   const [subBusy, setSubBusy] = useState<string | null>(null);
   const load = useCallback(async () => {
     try { const all = await fetchPoolAll(); setNodes(all.nodes); setSubs(all.subscriptions); setError(null); } catch { setError(t("The proxy pool could not load.")); }
@@ -252,40 +273,61 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
         <div className="fld-row">
           <label className="fld grow"><span>{t("Subscription link")}</span><input type="password" autoComplete="off" spellCheck={false} value={subUrl} disabled={!!subBusy} placeholder="https://…" onChange={(e) => setSubUrl(e.target.value)} /></label>
           <label className="fld"><span>{t("Name")}</span><input value={subName} disabled={!!subBusy} onChange={(e) => setSubName(e.target.value)} /></label>
+          <label className="fld pool-sub-cadence"><span>{t("Auto-refresh")}</span>
+            <Select value={subRefreshHours} disabled={!!subBusy} onChange={(e) => setSubRefreshHours(e.target.value)}>
+              <option value="">{t("Manual only")}</option>
+              {REFRESH_HOUR_PRESETS.map((hours) => <option key={hours} value={String(hours)}>{refreshIntervalLabel(t, hours)}</option>)}
+            </Select>
+          </label>
         </div>
         <p className="tools-hint">{t("Subscription nodes such as VLESS, Trojan or Hysteria2 run in sing-box, a separate open-source program (GPL-3.0-or-later, by nekohasekai) that Vela Browser is not associated with. On first use Vela downloads its official release, checks it and runs it unmodified. Source: github.com/SagerNet/sing-box")}</p>
         <div className="tools-result-bar"><span />
           <button type="button" className="btn primary" disabled={!!subBusy || !subUrl.trim()} onClick={() => void (async () => {
             setSubBusy("add"); setError(null); setNotice(null);
             try {
-              const result = await addSubscription(subUrl.trim(), subName);
-              setSubUrl(""); setSubName("");
+              const interval = subRefreshHours ? Number(subRefreshHours) : null;
+              const result = await addSubscription(subUrl.trim(), subName, interval);
+              setSubUrl(""); setSubName(""); setSubRefreshHours("");
               setNotice(subscriptionNotice(t, result));
               await load();
             } catch (failure) { setError(failureText(t, failure, "The subscription could not be read")); await load(); }
             finally { setSubBusy(null); }
           })()}>{subBusy === "add" ? t("Adding…") : t("Add subscription")}</button></div>
-        {subs.length > 0 && <div className="proxy-table-wrap"><table className="profile-table proxy-table pool-table"><thead><tr>
-          <th>{t("Name")}</th><th>{t("Traffic left")}</th><th>{t("Expires")}</th><th>{t("Nodes")}</th><th>{t("Updated")}</th><th></th>
+        {subs.length > 0 && <div className="proxy-table-wrap"><table className="profile-table proxy-table pool-table pool-sub-table"><thead><tr>
+          <th>{t("Name")}</th><th>{t("Traffic left")}</th><th>{t("Expires")}</th><th>{t("Nodes")}</th><th>{t("Updated")}</th><th>{t("Auto-refresh")}</th><th><span className="sr-only">{t("Actions")}</span></th>
         </tr></thead><tbody>{subs.map((sub) => {
           const usage = subscriptionUsage(sub);
           const nodeCount = (nodes ?? []).filter((node) => node.subscriptionId === sub.id && !node.removedFromSource).length;
+          const scheduleChoices = [...new Set([...REFRESH_HOUR_PRESETS, ...(sub.refreshHours ? [sub.refreshHours] : [])])].sort((a, b) => a - b);
           return <tr key={sub.id}>
             <td><strong>{sub.name}</strong><small className="tools-mono">{sub.host}</small></td>
             <td className={usage.warn ? "pool-warn" : ""}>{usage.left !== undefined ? `${bytes(usage.left)} / ${bytes(usage.total)}` : "—"}</td>
             <td className={usage.warn ? "pool-warn" : ""}>{usage.expireAt ? new Date(usage.expireAt).toLocaleDateString() : "—"}</td>
             <td>{nodeCount}{sub.lastImport && (sub.lastImport.unsupported.length > 0 || sub.lastImport.infoEntries > 0) && <small>{t("{unsupported} unsupported · {info} notices", { unsupported: sub.lastImport.unsupported.length, info: sub.lastImport.infoEntries })}</small>}</td>
             <td>{sub.lastFetchedAt ? new Date(sub.lastFetchedAt).toLocaleString() : "—"}{sub.lastError && <small className="pool-warn">{failureText(t, new Error(sub.lastError), "The subscription could not be read")}</small>}</td>
+            <td><Select className="pool-sub-select" aria-label={t("Auto-refresh")} value={sub.refreshHours === null ? "" : String(sub.refreshHours)} disabled={!!subBusy}
+              onChange={(e) => void (async () => {
+                const nextHours = e.target.value ? Number(e.target.value) : null;
+                setSubBusy(`schedule:${sub.id}`); setError(null);
+                try {
+                  const res = await updateSubscription(sub.id, { refreshHours: nextHours });
+                  setSubs((rows) => rows.map((row) => row.id === sub.id ? res.subscription : row));
+                } catch (failure) { setError(failureText(t, failure, "Could not save")); await load(); }
+                finally { setSubBusy(null); }
+              })()}>
+              <option value="">{t("Manual only")}</option>
+              {scheduleChoices.map((hours) => <option key={hours} value={String(hours)}>{refreshIntervalLabel(t, hours)}</option>)}
+            </Select></td>
             <td><div className="proxy-actions">
               <button type="button" className="btn sm" disabled={!!subBusy} onClick={() => void (async () => {
-                setSubBusy(sub.id); setError(null); setNotice(null);
+                setSubBusy(`refresh:${sub.id}`); setError(null); setNotice(null);
                 try { setNotice(subscriptionNotice(t, await refreshSubscription(sub.id))); }
                 catch (failure) { setError(failureText(t, failure, "The subscription could not be read")); }
                 finally { setSubBusy(null); await load(); }
-              })()}>{subBusy === sub.id ? t("Updating…") : t("Update")}</button>
+              })()}>{subBusy === `refresh:${sub.id}` ? t("Updating…") : t("Update")}</button>
               <button type="button" className="btn sm" disabled={!!subBusy} onClick={() => void (async () => {
                 if (!window.confirm(t("Remove this subscription? Its nodes that profiles use stay in the pool; the others are removed."))) return;
-                setSubBusy(sub.id);
+                setSubBusy(`delete:${sub.id}`);
                 try { await deleteSubscription(sub.id); } catch { setError(t("Could not save")); }
                 finally { setSubBusy(null); await load(); }
               })()}>{t("Remove")}</button>
@@ -337,9 +379,11 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
           </div>
         </div>
         <div className="proxy-table-wrap"><table className="profile-table proxy-table pool-table"><thead><tr>
-          <th><input type="checkbox" aria-label={t("Select all")} checked={shown.length > 0 && shown.every((node) => selected.has(node.id))}
+          <th><input type="checkbox" aria-label={t("Select all")}
+            ref={(el) => { if (el) el.indeterminate = shown.some((node) => selected.has(node.id)) && !shown.every((node) => selected.has(node.id)); }}
+            checked={shown.length > 0 && shown.every((node) => selected.has(node.id))}
             onChange={(e) => setSelected(e.target.checked ? new Set(shown.map((node) => node.id)) : new Set())} /></th>
-          <th>{t("Name")}</th><th>{t("Proxy address")}</th><th>{t("Country")}</th><th>{t("Connection")}</th><th>{t("Exit IP")}</th><th>{t("Used by")}</th><th></th>
+          <th>{t("Name")}</th><th>{t("Proxy address")}</th><th>{t("Country")}</th><th>{t("Connection")}</th><th>{t("Exit IP")}</th><th>{t("Used by")}</th><th><span className="sr-only">{t("Actions")}</span></th>
         </tr></thead><tbody>{shown.map((node) => {
           const where = nodeCountry(node);
           const mismatch = node.regionHint && node.check?.country && node.regionHint !== node.check.country.toUpperCase();
@@ -360,7 +404,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
               {reasonLabel(t, node.check?.reason) && <small>{reasonLabel(t, node.check?.reason)}</small>}
               {node.check?.durationMs !== undefined && <small>{(node.check.durationMs / 1000).toFixed(1)} s</small>}
               {node.check?.rotating && <small className="pool-warn">{t("IP changes between requests")}</small>}</td>
-            <td className="tools-mono">{node.check?.ip ?? "—"}{node.check?.city && <small>{node.check.city}</small>}
+            <td className="tools-mono">{node.check?.ip ?? "—"}{(node.check?.city || node.check?.timezone) && <small>{[node.check?.city, node.check?.timezone].filter(Boolean).join(" · ")}</small>}
               {node.sameExitAs.length > 0 && <small className="pool-warn">{t("same exit as {names}", { names: node.sameExitAs.map((id) => byId.get(id)?.name ?? id).join(", ") })}</small>}</td>
             <td>{node.profiles.length}{node.maxProfiles === null ? ` / ${t("no limit")}` : ` / ${node.maxProfiles}`}
               {node.profiles.length > 0 && <small>{node.profiles.slice(0, 3).map((profile) => profile.name || profile.id).join(", ")}{node.profiles.length > 3 ? "…" : ""}</small>}
@@ -381,8 +425,12 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
 export function PoolSelectionFields({ value, onChange, disabled }: { value: string; onChange: (input: string) => void; disabled?: boolean }) {
   const { t } = useTranslation();
   const [nodes, setNodes] = useState<PoolNodeView[]>([]);
-  useEffect(() => { void fetchPool().then(setNodes, () => setNodes([])); }, []);
-  let parsed: { country?: string; tag?: string; onlyWorking?: boolean } = {};
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPool().then((loaded) => { if (!cancelled) setNodes(loaded); }, () => { if (!cancelled) setNodes([]); });
+    return () => { cancelled = true; };
+  }, []);
+  let parsed: { country?: string; tag?: string; onlyWorking?: boolean; distinctExitIp?: boolean } = {};
   try { parsed = JSON.parse(value || "{}"); } catch { parsed = {}; }
   const set = (patch: Record<string, unknown>) => {
     const next = { ...parsed, ...patch };
@@ -393,11 +441,32 @@ export function PoolSelectionFields({ value, onChange, disabled }: { value: stri
   const countries = [...new Set(nodes.map((node) => nodeCountry(node).code).filter(Boolean) as string[])].sort();
   const tags = [...new Set(nodes.flatMap((node) => node.tags))].sort();
   const onlyWorking = parsed.onlyWorking ?? true;
-  const fitting = nodes.filter((node) => !node.disabled
+  const distinctExitIp = parsed.distinctExitIp ?? false;
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const occupiedExitIp = (node: PoolNodeView) => {
+    if (!node.check?.ip) return false;
+    if (node.profiles.length > 0) return true;
+    return node.sameExitAs.some((peerId) => (byId.get(peerId)?.profiles.length ?? 0) > 0);
+  };
+  const candidates = nodes.filter((node) => !node.disabled && !node.removedFromSource
     && (!parsed.country || nodeCountry(node).code === parsed.country)
     && (!parsed.tag || node.tags.includes(parsed.tag))
     && (!onlyWorking || node.check?.status === "working"));
-  const room = fitting.reduce((sum, node) => sum + nodeRoom(node), 0);
+  const fitting = distinctExitIp ? candidates.filter((node) => !occupiedExitIp(node)) : candidates;
+  const seenExits = new Set<string>();
+  let room = 0;
+  for (const node of fitting) {
+    const nodeCap = nodeRoom(node);
+    if (nodeCap <= 0) continue;
+    if (distinctExitIp && node.check?.ip) {
+      const groupKey = [node.id, ...node.sameExitAs].sort().join(",");
+      if (seenExits.has(groupKey)) continue;
+      seenExits.add(groupKey);
+      room += 1;
+    } else {
+      room += nodeCap;
+    }
+  }
   return <>
     <div className="fld-row">
       <label className="fld"><span>{t("Country")}</span><Select value={parsed.country ?? ""} disabled={disabled} onChange={(e) => set({ country: e.target.value })}>
@@ -407,7 +476,11 @@ export function PoolSelectionFields({ value, onChange, disabled }: { value: stri
         <option value="">{t("Any tag")}</option>{tags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
       </Select></label>
     </div>
-    <label className="proxy-choice"><input type="checkbox" checked={onlyWorking} disabled={disabled} onChange={(e) => set({ onlyWorking: e.target.checked })} />{t("Only proxies whose last check worked")}</label>
+    <div className="pool-selection-checks">
+      <label className="proxy-choice"><input type="checkbox" checked={onlyWorking} disabled={disabled} onChange={(e) => set({ onlyWorking: e.target.checked })} />{t("Only proxies whose last check worked")}</label>
+      <label className="proxy-choice"><input type="checkbox" checked={distinctExitIp} disabled={disabled} onChange={(e) => set({ distinctExitIp: e.target.checked || undefined })} />{t("Avoid assigning the same exit IP to multiple profiles")}</label>
+    </div>
+    {distinctExitIp && <p className="tools-hint">{t("Checked nodes that exit from an IP already used by another profile are skipped. Unchecked nodes are treated as unknown and can still be assigned.")}</p>}
     <p className="tools-hint">{t("{nodes} fitting proxies · room for {room} more profiles. A profile already on a fitting proxy keeps it; the others get the least-used one.", {
       nodes: fitting.length, room: room === Infinity ? t("any number of") : room,
     })}</p>
@@ -448,7 +521,7 @@ export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId:
     outcome: last.outcome === "failed" ? t("not changed") : last.outcome === "reopened" ? t("reopened") : t("saved"),
   })}</small>;
   if (!open) return <>
-    <button type="button" className="btn proxy-check-btn" onClick={() => { setOpen(true); setMessage(null); }}>{t("From the pool…")}</button>
+    <button type="button" className="btn proxy-check-btn" onClick={() => { setOpen(true); setChoice(""); setMessage(null); }}>{t("From the pool…")}</button>
     {message && <small className="pool-picker-message">{message}</small>}
     {lastLine}
   </>;
@@ -463,13 +536,14 @@ export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId:
         ? t("Changed. The browser reopened on the new exit ({country}).", { country: result.exit?.country ?? "—" })
         : t("Saved. The profile uses the new exit from its next start.")) + shared);
       onAssigned(result);
+      setChoice("");
       setOpen(false);
     } catch (failure) {
       setMessage(switchFailure(t, failure));
     } finally { setBusy(false); }
   };
   return <div className="pool-picker">
-    <Select value={choice} aria-label={t("Proxy from the pool")} onChange={(e) => setChoice(e.target.value)}>
+    <Select value={choice} disabled={busy} aria-label={t("Proxy from the pool")} onChange={(e) => setChoice(e.target.value)}>
       <option value="">{nodes ? t("Choose a proxy…") : t("Loading…")}</option>
       {usable.map((node) => {
         const where = nodeCountry(node).code ?? "—";
@@ -481,7 +555,7 @@ export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId:
       })}
     </Select>
     <button type="button" className="btn primary" disabled={!choice || busy} onClick={() => void assign()}>{busy ? t("Checking the new exit…") : running ? t("Change and reopen") : t("Use this proxy")}</button>
-    <button type="button" className="btn" onClick={() => setOpen(false)}>{t("Cancel")}</button>
+    <button type="button" className="btn" disabled={busy} onClick={() => { setChoice(""); setOpen(false); }}>{t("Cancel")}</button>
     {message && <small>{message}</small>}
   </div>;
 }
@@ -489,15 +563,24 @@ export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId:
 /** A profile's proxy that is a pool node: shown by name, never edited as text. */
 export function PoolNodeField({ nodeId, onManual }: { nodeId: string; onManual: () => void }) {
   const { t } = useTranslation();
-  const [node, setNode] = useState<PoolNodeView | null | undefined>(undefined);
-  useEffect(() => { void fetchPool().then((nodes) => setNode(nodes.find((n) => n.id === nodeId) ?? null), () => setNode(null)); }, [nodeId]);
-  return <div className="fld-row">
+  const [node, setNode] = useState<PoolNodeView | null | undefined | "error">(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setNode(undefined);
+    void fetchPool().then(
+      (nodes) => { if (!cancelled) setNode(nodes.find((n) => n.id === nodeId) ?? null); },
+      () => { if (!cancelled) setNode("error"); },
+    );
+    return () => { cancelled = true; };
+  }, [nodeId]);
+  return <div className="fld-row pool-node-row">
     <div className="fld grow">
       <span>{t("Proxy from the pool")}</span>
       <div className="pool-node-field">
         {node === undefined ? t("Loading…")
+          : node === "error" ? <span className="pool-warn">{t("The proxy pool could not load.")}</span>
           : node === null ? <span className="pool-warn">{t("This node is no longer in the pool. The profile will not open until you choose another proxy.")}</span>
-          : <><strong>{node.name}</strong><small>{node.protocol} · {nodeCountry(node).code ?? "—"} · {statusLabel(t, node.check)}{node.removedFromSource ? ` · ${t("no longer in its subscription")}` : ""}</small></>}
+          : <><strong>{node.name}</strong><small>{node.protocol} · {nodeCountry(node).code ?? "—"} · {statusLabel(t, node.check)}{node.check?.timezone ? ` · ${node.check.timezone}` : ""}{node.removedFromSource ? ` · ${t("no longer in its subscription")}` : ""}</small></>}
       </div>
       <small>{t("Runs through this profile's own proxy kernel.")}</small>
     </div>
@@ -532,16 +615,29 @@ const fetchApprovals = () => approvalsCall<{ pending: PendingApproval[]; policy:
 export function AiProxyPolicyField() {
   const { t } = useTranslation();
   const [policy, setPolicy] = useState<AiProxyPolicy | null>(null);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { void fetchApprovals().then((r) => setPolicy(r.policy), () => setPolicy("ask")); }, []);
+  const seqRef = useRef(0);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchApprovals().then((r) => { if (!cancelled) setPolicy(r.policy); }, () => { if (!cancelled) setPolicy("ask"); });
+    return () => { cancelled = true; };
+  }, []);
   return <section className="tools-panel proxy-input-panel">
     <div className="tools-panel-head"><div><h3>{t("AI proxy changes")}</h3><p>{t("An AI connected through MCP can give a profile a pool proxy. Changing a profile's exit shows its sites an IP change.")}</p></div></div>
     <div className="tools-panel-body">
       <label className="fld"><span>{t("When an AI asks to change a proxy")}</span>
-        <Select value={policy ?? "ask"} disabled={!policy} onChange={(e) => {
+        <Select value={policy ?? "ask"} disabled={!policy || saving} onChange={(e) => {
           const next = e.target.value as AiProxyPolicy;
+          const seq = ++seqRef.current;
+          const previous = policy;
+          setPolicy(next);
+          setSaving(true);
           setError(null);
-          void approvalsCall<{ policy: AiProxyPolicy }>("/policy", { policy: next }).then((r) => setPolicy(r.policy), () => setError(t("Could not save")));
+          void approvalsCall<{ policy: AiProxyPolicy }>("/policy", { policy: next }).then(
+            (r) => { if (seqRef.current === seq) setPolicy(r.policy); },
+            () => { if (seqRef.current === seq) { setPolicy(previous); setError(t("Could not save")); } },
+          ).finally(() => { if (seqRef.current === seq) setSaving(false); });
         }}>
           <option value="ask">{t("Ask me each time")}</option>
           <option value="allow_pool">{t("Allow pool proxies without asking")}</option>

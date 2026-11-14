@@ -8,11 +8,12 @@
  * loopback port, and nothing listens there until the kernel is back.
  */
 
+import { spawn as nodeSpawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { assertKernelConfig, kernelConfig } from "./kernel-config.ts";
+import { assertKernelConfig, kernelConfig, needsKernelResolver, type KernelDnsServer } from "./kernel-config.ts";
 import { downloadResumable } from "./runtime-download.ts";
 import type { Outbound } from "./subscription.ts";
 import type { ProxySpec } from "./types.ts";
@@ -136,17 +137,40 @@ export async function freeLoopbackPort(): Promise<number> {
   });
 }
 
-function waitForPort(port: number, exited: Promise<number>, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+function waitForPort(port: number, exited: Promise<number>, deadline: number, signal?: AbortSignal): Promise<void> {
   let gone = false;
   void exited.then(() => { gone = true; });
   return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new Error("the proxy kernel start was aborted"));
+    };
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (err) reject(err);
+      else resolve();
+    };
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener("abort", onAbort, { once: true });
     const attempt = () => {
-      if (gone) { reject(new Error("the proxy kernel exited while starting")); return; }
-      if (Date.now() > deadline) { reject(new Error("the proxy kernel did not start in time")); return; }
+      if (settled) return;
+      if (signal?.aborted) { onAbort(); return; }
+      if (gone) { finish(new Error("the proxy kernel exited while starting")); return; }
+      if (Date.now() > deadline) { finish(new Error("the proxy kernel did not start in time")); return; }
       const socket = net.connect({ host: "127.0.0.1", port });
-      socket.once("connect", () => { socket.destroy(); resolve(); });
-      socket.once("error", () => { socket.destroy(); setTimeout(attempt, 50); });
+      socket.once("connect", () => { socket.destroy(); finish(); });
+      socket.once("error", () => {
+        socket.destroy();
+        if (!settled) timer = setTimeout(attempt, 50);
+      });
     };
     attempt();
   });
@@ -160,11 +184,18 @@ export interface KernelProcess {
   stop(): void;
 }
 
+/** Failure to locate, verify, or spawn the kernel executable itself (not a node configuration error). */
+export class KernelBinaryError extends Error {}
+
 export interface KernelDeps {
   /** The verified kernel to run; checked again before each start. */
   binary: () => Promise<InstalledKernel>;
   /** Folder for the short-lived config files. */
   workDir: string;
+  /** Encrypted DoH servers used when any inbound requires domain resolution or ECH. */
+  resolveDns?: () => Promise<readonly KernelDnsServer[]> | readonly KernelDnsServer[];
+  /** Called if a kernel needing DNS fails to start or hits DoH errors, so cached DoH probes can refresh. */
+  onDnsFailure?: (primaryServer?: string) => void;
   log?: (msg: string) => void;
   spawn?: (cmd: string[]) => { pid: number; exited: Promise<number>; kill(): void; stderr?: ReadableStream<Uint8Array> };
   startTimeoutMs?: number;
@@ -228,25 +259,78 @@ function matchesKernelCommand(commandLine: string, record: KernelRecord): boolea
   return line.startsWith(prefix) && (!line[prefix.length] || /\s/.test(line[prefix.length]!)) && line.includes(record.marker);
 }
 
+function spawnKernelProcess(cmd: string[], cwd: string): { pid: number; exited: Promise<number>; kill(): void; stderr?: ReadableStream<Uint8Array> } {
+  // node:child_process uses windowsHide to avoid flashing console windows on desktop launches.
+  const child = nodeSpawn(cmd[0]!, cmd.slice(1), { stdio: ["ignore", "ignore", "pipe"], cwd, windowsHide: true });
+  const exited = new Promise<number>((resolve) => {
+    child.once("exit", (code) => resolve(code ?? 1));
+    child.once("error", () => resolve(1));
+  });
+  const stderr = child.stderr ? new ReadableStream<Uint8Array>({
+    start(controller) {
+      child.stderr!.on("data", (chunk: Buffer) => {
+        try { controller.enqueue(new Uint8Array(chunk)); } catch {}
+      });
+      child.stderr!.once("end", () => { try { controller.close(); } catch {} });
+      child.stderr!.once("error", () => { try { controller.close(); } catch {} });
+    },
+    cancel() {
+      child.stderr?.destroy();
+    },
+  }) : undefined;
+  return {
+    pid: child.pid ?? 0,
+    exited,
+    kill: () => {
+      try { child.kill(); } catch {}
+      try { child.stderr?.destroy(); } catch {}
+    },
+    stderr,
+  };
+}
+
 /**
  * Start a kernel with one inbound per entry. The config holds node credentials, so it is deleted
  * as soon as the kernel has read it.
  */
-export async function startKernel(entries: Array<{ tag: string; outbound: Outbound }>, deps: KernelDeps): Promise<{ process: KernelProcess; specs: Map<string, ProxySpec> }> {
-  const binary = await deps.binary();
+export async function startKernel(
+  entries: Array<{ tag: string; outbound: Outbound }>,
+  deps: KernelDeps,
+  opts: { signal?: AbortSignal } = {},
+): Promise<{ process: KernelProcess; specs: Map<string, ProxySpec> }> {
+  const signal = opts.signal;
+  if (signal?.aborted) throw new Error("the proxy kernel start was aborted");
+  let binary: InstalledKernel;
+  try {
+    binary = await deps.binary();
+  } catch (error) {
+    throw error instanceof KernelBinaryError ? error : new KernelBinaryError(error instanceof Error ? error.message : String(error));
+  }
+  if (signal?.aborted) throw new Error("the proxy kernel start was aborted");
   const executable = resolve(binary.path);
-  if (sha256File(executable) !== binary.sha256) throw new Error("the proxy kernel executable changed since it was verified");
+  if (sha256File(executable) !== binary.sha256) throw new KernelBinaryError("the proxy kernel executable changed since it was verified");
+  const pickedPorts = new Set<number>();
   const inbounds = [];
   for (const entry of entries) {
+    if (signal?.aborted) throw new Error("the proxy kernel start was aborted");
+    let port = await freeLoopbackPort();
+    for (let attempt = 0; attempt < 8 && pickedPorts.has(port); attempt++) {
+      port = await freeLoopbackPort();
+    }
+    pickedPorts.add(port);
     inbounds.push({
       tag: entry.tag,
-      port: await freeLoopbackPort(),
+      port,
       username: randomBytes(12).toString("hex"),
       password: randomBytes(24).toString("hex"),
       outbound: entry.outbound,
     });
   }
-  const config = kernelConfig(inbounds);
+  const needDns = needsKernelResolver(inbounds);
+  const resolvers = needDns && deps.resolveDns ? await deps.resolveDns() : undefined;
+  if (signal?.aborted) throw new Error("the proxy kernel start was aborted");
+  const primaryDnsServer = resolvers?.[0]?.server;
+  const config = kernelConfig(inbounds, resolvers?.length ? { resolvers } : {});
   assertKernelConfig(config);
   const workDir = resolve(deps.workDir);
   const recordsDir = join(workDir, KERNEL_RECORDS);
@@ -258,9 +342,14 @@ export async function startKernel(entries: Array<{ tag: string; outbound: Outbou
   try {
     writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
     const startedAt = Date.now();
-    const child = deps.spawn ? deps.spawn(cmd) : Bun.spawn(cmd, { stdout: "ignore", stderr: "pipe", cwd: dirname(executable) });
+    let child: { pid: number; exited: Promise<number>; kill(): void; stderr?: ReadableStream<Uint8Array> };
     try {
-      if (!Number.isSafeInteger(child.pid) || child.pid <= 0) throw new Error("the proxy kernel has no valid process id");
+      child = deps.spawn ? deps.spawn(cmd) : spawnKernelProcess(cmd, dirname(executable));
+    } catch (error) {
+      throw error instanceof KernelBinaryError ? error : new KernelBinaryError(error instanceof Error ? error.message : String(error));
+    }
+    try {
+      if (!Number.isSafeInteger(child.pid) || child.pid <= 0) throw new KernelBinaryError("the proxy kernel has no valid process id");
       const record: KernelRecord = { pid: child.pid, executable, marker, startedAt, ownerPid: process.pid };
       writeFileSync(recordPath, JSON.stringify(record), { mode: 0o600, flag: "wx" });
     } catch (error) {
@@ -274,6 +363,13 @@ export async function startKernel(entries: Array<{ tag: string; outbound: Outbou
     }, () => {});
     const stderr = "stderr" in child && child.stderr instanceof ReadableStream ? child.stderr : undefined;
     let tail = "";
+    let dnsFailureReported = false;
+    const reportDnsFailure = () => {
+      if (needDns && !dnsFailureReported) {
+        dnsFailureReported = true;
+        deps.onDnsFailure?.(primaryDnsServer);
+      }
+    };
     if (stderr) {
       void (async () => {
         const decoder = new TextDecoder();
@@ -281,15 +377,23 @@ export async function startKernel(entries: Array<{ tag: string; outbound: Outbou
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          tail = (tail + decoder.decode(value)).slice(-2000);
+          const chunk = decoder.decode(value);
+          tail = (tail + chunk).slice(-2000);
+          if (needDns && !dnsFailureReported && (
+            (primaryDnsServer && chunk.includes(primaryDnsServer))
+            || /\bdns\b.*(?:fail|error|timeout|refused)|(?:lookup|resolve)\b.*(?:timeout|failed|refused|no such host)/i.test(chunk)
+          )) {
+            reportDnsFailure();
+          }
         }
       })().catch(() => {});
     }
     try {
-      await waitForPort(inbounds[0]!.port, child.exited, deps.startTimeoutMs ?? 8_000);
-      for (const inbound of inbounds.slice(1)) await waitForPort(inbound.port, child.exited, deps.startTimeoutMs ?? 8_000);
+      const deadline = Date.now() + (deps.startTimeoutMs ?? 8_000);
+      await Promise.all(inbounds.map((inbound) => waitForPort(inbound.port, child.exited, deadline, signal)));
     } catch (error) {
       try { child.kill(); } catch {}
+      if (!signal?.aborted) reportDnsFailure();
       deps.log?.(`proxy kernel failed to start: ${(error as Error).message}${tail ? ` (${tail.trim().split("\n").at(-1)})` : ""}`);
       throw error;
     }
@@ -315,6 +419,8 @@ interface Lease {
   process?: KernelProcess;
   released: boolean;
   restarts: number[];
+  restartTimer?: ReturnType<typeof setTimeout>;
+  controller?: AbortController;
   starting?: Promise<ProxySpec>;
 }
 
@@ -326,6 +432,7 @@ interface Lease {
  */
 export class KernelSupervisor {
   private leases = new Map<string, Lease>();
+  private temporary = new Set<KernelProcess>();
   onRestart?: (key: string, spec: ProxySpec) => void;
   onGiveUp?: (key: string) => void;
 
@@ -395,25 +502,51 @@ export class KernelSupervisor {
     const lease = this.leases.get(key);
     if (!lease) return;
     lease.released = true;
+    if (lease.restartTimer) {
+      clearTimeout(lease.restartTimer);
+      lease.restartTimer = undefined;
+    }
+    lease.controller?.abort();
     this.leases.delete(key);
     lease.process?.stop();
   }
 
   /** A kernel outside any lease, for checks: one inbound per entry. The caller stops it. */
-  startTemporary(entries: Array<{ tag: string; outbound: Outbound }>): Promise<{ process: KernelProcess; specs: Map<string, ProxySpec> }> {
-    return startKernel(entries, this.deps);
+  async startTemporary(
+    entries: Array<{ tag: string; outbound: Outbound }>,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<{ process: KernelProcess; specs: Map<string, ProxySpec> }> {
+    const started = await startKernel(entries, this.deps, opts);
+    this.temporary.add(started.process);
+    void started.process.exited.finally(() => { this.temporary.delete(started.process); });
+    const origStop = started.process.stop.bind(started.process);
+    started.process.stop = () => {
+      this.temporary.delete(started.process);
+      origStop();
+    };
+    return started;
   }
 
   releaseAll(): void {
     for (const key of [...this.leases.keys()]) this.release(key);
+    for (const proc of [...this.temporary]) proc.stop();
   }
 
   private async start(key: string, lease: Lease): Promise<ProxySpec> {
-    const { process } = await startKernel([{ tag: "node", outbound: lease.outbound }], this.deps);
-    if (lease.released) { process.stop(); throw new Error("the proxy kernel was released while starting"); }
-    lease.process = process;
-    void process.exited.then(() => this.exited(key, lease, process));
-    return process.spec;
+    const controller = new AbortController();
+    lease.controller = controller;
+    try {
+      const { process } = await startKernel([{ tag: "node", outbound: lease.outbound }], this.deps, { signal: controller.signal });
+      if (lease.released || controller.signal.aborted) {
+        process.stop();
+        throw new Error("the proxy kernel was released while starting");
+      }
+      lease.process = process;
+      void process.exited.then(() => this.exited(key, lease, process));
+      return process.spec;
+    } finally {
+      if (lease.controller === controller) lease.controller = undefined;
+    }
   }
 
   private exited(key: string, lease: Lease, process: KernelProcess): void {
@@ -433,7 +566,8 @@ export class KernelSupervisor {
     }
     this.deps.log?.(`proxy kernel for ${key} exited; restarting`);
     const delay = 250 * 2 ** (lease.restarts.length - 1);
-    setTimeout(() => {
+    lease.restartTimer = setTimeout(() => {
+      lease.restartTimer = undefined;
       if (lease.released || this.leases.get(key) !== lease) return;
       this.start(key, lease).then((spec) => this.onRestart?.(key, spec), (error) => {
         this.deps.log?.(`proxy kernel for ${key} could not restart: ${(error as Error).message}`);

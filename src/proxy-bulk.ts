@@ -109,10 +109,22 @@ export function buildProxyPreview(
       unusedProxies = Math.max(0, proxies.length - Math.ceil(selected.length / perProxy));
     } else if (input.mode === "pool") {
       if (!pool) throw new Error("pool");
-      const refs = selected.map(({ id, name, group, proxy }) => ({ id, name, group, proxy }));
-      for (const planned of planPoolAssignment(refs, pool.nodes, pool.allProfiles, parsePoolSelection(input.input))) {
-        const profile = byId.get(planned.profileId);
-        if (!planned.node) { add(profile, undefined, "pool_exhausted"); continue; }
+      const selection = parsePoolSelection(input.input);
+      const assignable: PoolProfileRef[] = [];
+      const blocked = new Map<string, string>();
+      for (const profile of selected) {
+        if (profile.permission !== "edit") blocked.set(profile.id, "no_editable_match");
+        else if (profile.running) blocked.set(profile.id, "profile_open");
+        else assignable.push({ id: profile.id, name: profile.name, group: profile.group, proxy: profile.proxy });
+      }
+      const plannedById = new Map(
+        planPoolAssignment(assignable, pool.nodes, pool.allProfiles, selection).map((planned) => [planned.profileId, planned]),
+      );
+      for (const profile of selected) {
+        const blockCode = blocked.get(profile.id);
+        if (blockCode) { add(profile, undefined, blockCode); continue; }
+        const planned = plannedById.get(profile.id);
+        if (!planned?.node) { add(profile, undefined, "pool_exhausted"); continue; }
         add(profile, planned.node.proxy);
         rows[rows.length - 1]!.poolNodeId = planned.node.id;
       }

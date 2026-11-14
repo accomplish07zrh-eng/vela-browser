@@ -343,6 +343,7 @@ function makeLauncher(
   ensureSearchProvider = ensureDuckDuckGoDefault,
   // Local and browser environments share one downloaded Chromium 155 runtime.
   chromiumRuntimeRoot?: string,
+  dnsEnvironment?: () => import("./kernel-config.ts").KernelDnsEnvironment,
 ): Launcher {
   const unsafeCanary = has(rest, "unsafe-disable-identity-gates");
   const autofill = new AutofillBridge(store);
@@ -352,6 +353,7 @@ function makeLauncher(
     autofill,
     dataRoot: defaultDataRoot,
     ...(chromiumRuntimeRoot ? { chromiumRuntimeRoot } : {}),
+    ...(dnsEnvironment ? { dnsEnvironment } : {}),
     headless: has(rest, "headless"),
     // Explicit canary-only escape hatch for constrained test hosts where a
     // full browser identity probe cannot complete. Never enable in production.
@@ -1628,7 +1630,15 @@ async function main() {
       // stale crash row rejects startup before it can be proven dead.
       console.log(`${configuredMode.mode} mode: preparing browser recovery`);
       console.log("startup: initializing autofill bridge");
-      const launcher = makeLauncher(store, rest, false, profileDataRoot, undefined, join(paths.root, "runtimes"));
+      const launcher = makeLauncher(
+        store,
+        rest,
+        false,
+        profileDataRoot,
+        undefined,
+        join(paths.root, "runtimes"),
+        () => { try { return appConfig.read().kernelDns ?? "auto"; } catch { return "auto"; } },
+      );
       console.log(`startup: checking ${store.listLaunches().length} saved browser process(es)`);
       await launcher.kernels.reconcileOrphans();
       await launcher.reconcileOrphans();
@@ -1680,7 +1690,15 @@ async function main() {
     }
     case "serve": {
       const store = new ProfileStore(dbPath);
-      const launcher = makeLauncher(store, rest, false, profileDataRoot, undefined, join(paths.root, "runtimes"));
+      const launcher = makeLauncher(
+        store,
+        rest,
+        false,
+        profileDataRoot,
+        undefined,
+        join(paths.root, "runtimes"),
+        () => { try { return appConfig.read().kernelDns ?? "auto"; } catch { return "auto"; } },
+      );
       await launcher.kernels.reconcileOrphans();
       await launcher.reconcileOrphans();
       await launcher.certifySurvivors();

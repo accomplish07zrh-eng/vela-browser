@@ -135,6 +135,10 @@ export function parseProxySpec(type: unknown, value: unknown): ProxySpec | null 
   const raw = String(value ?? "").trim();
   if (!raw) return null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return parseProxyUrl(raw);
+  if (normalizeProxyType(type) === "pool") {
+    if (!POOL_NODE_ID.test(raw)) throw new Error("invalid proxy pool node");
+    return { type: "pool", host: raw, port: "0", user: "", pass: "" };
+  }
 
   // Bracketed IPv6 legacy form: [2001:db8::1]:1080:user:password.
   const ipv6 = raw.match(/^\[([^\]]+)]:(\d+)(?::([^:]*)(?::(.*))?)?$/);

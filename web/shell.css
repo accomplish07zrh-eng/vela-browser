@@ -393,7 +393,7 @@
   .app .main .settings-card { display: grid; grid-template-columns: minmax(200px, 300px) minmax(0, 760px); column-gap: 64px; align-items: start; border-top: 1px solid var(--line-soft); }
   .app .main .settingspage > .settings-card:first-child, .app .main .settingspage > :not(.settings-card) + .settings-card { border-top: 0; }
   .app .main .settings-card > header { position: sticky; top: 0; padding: 28px 0; border-bottom: 0; }
-  .app .main .settings-card .card-body { padding: 28px 0 32px; }
+  .app .main .settings-card .card-body { padding: 28px 4px 32px; }
 }
 .app .main .name-cell .sub { font-family: var(--font); letter-spacing: 0; }
 
@@ -412,7 +412,8 @@
   .app .wall .workbench-toolbar { top: 60px; left: 12px; right: 12px; }
   .app .wall .workbench-stage { top: 104px; }
   .app .main .pagehead { padding-left: 16px; padding-right: 16px; }
-  .app .main .workspace.proxy-page { padding-left: 16px; padding-right: 16px; }
+  .app:is([data-view="settings"], [data-view="extensions"], [data-view="scripts"], [data-view="proxies"], [data-view="trash"]) .main { --page-pad: 12px; }
+  .app .main .workspace.proxy-page { padding-left: 12px; padding-right: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .app .main { animation: none; }

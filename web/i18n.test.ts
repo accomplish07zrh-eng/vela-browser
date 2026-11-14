@@ -1,24 +1,28 @@
 import { test, expect } from "bun:test";
 import { availableLanguages, detectLanguage, languageNativeName, translate } from "./i18n.tsx";
 import enUS from "./locales/en-US.json";
+import ruRU from "./locales/ru-RU.json";
 import zhCN from "./locales/zh-CN.json";
 
 const tables = {
   "en-US": enUS as Record<string, string>,
+  "ru-RU": ruRU as Record<string, string>,
   "zh-CN": zhCN as Record<string, string>,
 };
 
 // Keys are the English source strings, so en-US only carries the keys whose
 // value differs from the key. Every translated key must still exist in the UI
 // source, or the translation is dead.
-test("every zh-CN key is an English string used in the web source", async () => {
+test("every bundled locale key is an English string used in the web source", async () => {
   const sources = await Promise.all(
     ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "titlebar.tsx", "select.tsx", "dialog.tsx", "proxy-pool.tsx", "../src/workbench.ts"]
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
   const source = sources.join("\n").replaceAll("\r\n", "\n");
-  const stale = Object.keys(tables["zh-CN"]).filter((key) => !key.startsWith("language.") && !source.includes(key));
-  expect(stale).toEqual([]);
+  for (const [locale, table] of Object.entries(tables)) {
+    const stale = Object.keys(table).filter((key) => !key.startsWith("language.") && !source.includes(key));
+    expect({ locale, stale }).toEqual({ locale, stale: [] });
+  }
 });
 
 test("t() returns the translation for the active language", () => {

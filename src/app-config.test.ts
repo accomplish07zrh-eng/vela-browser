@@ -58,6 +58,22 @@ describe("Vela Browser app config", () => {
     }, env)).toBeUndefined();
   });
 
+  test("kernelDns preserves valid presets and ignores unknown values", () => {
+    for (const kernelDns of ["auto", "cn", "global"] as const) {
+      expect(parseAppConfig({ version: 1, mode: "local", localAnalytics: false, kernelDns })).toEqual({
+        version: 1,
+        mode: "local",
+        localAnalytics: false,
+        kernelDns,
+      });
+    }
+    expect(parseAppConfig({ version: 1, mode: "local", localAnalytics: false, kernelDns: "bogus" })).toEqual({
+      version: 1,
+      mode: "local",
+      localAnalytics: false,
+    });
+  });
+
   test("unsupported configuration data is rejected without overwriting it", () => {
     const root = mkdtempSync(join(tmpdir(), "vela-config-invalid-"));
     const path = join(root, "config.json");

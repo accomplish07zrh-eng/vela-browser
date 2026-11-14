@@ -249,3 +249,29 @@ test("real provider shapes: harmless generator fields pass, ECH by name and doub
     "hy2-pinned": "unknown field fingerprint",
   });
 });
+
+test("fetchSubscription blocks private/loopback targets and parseSubscription strips unsafe sing-box fields", async () => {
+  await expect(fetchSubscription("https://127.0.0.1/sub", {
+    fetchFn: (async () => { throw new Error("should not fetch"); }) as unknown as typeof fetch,
+  })).rejects.toThrow(SubscriptionError);
+  await expect(fetchSubscription("https://[::1]/sub", {
+    fetchFn: (async () => { throw new Error("should not fetch"); }) as unknown as typeof fetch,
+  })).rejects.toThrow(SubscriptionError);
+  await expect(fetchSubscription("https://localhost/sub", {
+    fetchFn: (async () => { throw new Error("should not fetch"); }) as unknown as typeof fetch,
+  })).rejects.toThrow(SubscriptionError);
+
+  const dangerousSingBox = JSON.stringify({
+    outbounds: [{
+      type: "vless",
+      tag: "bad-nested",
+      server: "node.example",
+      server_port: 443,
+      uuid: "11111111-2222-3333-4444-555555555555",
+      tls: { enabled: true, certificate_path: "/tmp/cert.pem" },
+    }],
+  });
+  const parsed = parseSubscription(dangerousSingBox);
+  expect(parsed.nodes).toEqual([]);
+  expect(parsed.unsupported).toEqual([{ name: "bad-nested", reason: "tls certificate_path" }]);
+});

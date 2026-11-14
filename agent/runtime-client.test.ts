@@ -13,10 +13,12 @@ import {
   windowsProcessIdentityCommand,
 } from "./runtime-client.mjs";
 
+const CURRENT_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+
 function descriptor() {
   return {
     protocol: RUNTIME_PROTOCOL,
-    appVersion: "0.1.0-beta.32",
+    appVersion: CURRENT_VERSION,
     generation: "a".repeat(64),
     nonce: "b".repeat(64),
     port: 50400,

@@ -327,6 +327,11 @@ export class ProfileStore {
     };
   }
 
+  /** Execute `fn` inside a single savepoint-aware SQLite transaction. */
+  runTransaction<T>(fn: () => T): T {
+    return this.transaction(fn)();
+  }
+
   /** Insert or replace a profile's identity. Preserves the existing seeded flag. */
   upsertProfile(p: Profile): void {
     // Defense in depth for direct hub/API/remote callers that bypass the import

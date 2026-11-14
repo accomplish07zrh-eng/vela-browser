@@ -9,6 +9,8 @@
 import { join } from "node:path";
 import { TaskbarMode, taskbarModeSupported } from "./taskbar.ts";
 import { ActivityLog, COOLING_DEFAULTS, CoolingMonitor } from "./cooling.ts";
+import { drainPoolTasks } from "./proxy-pool-api.ts";
+import { SubscriptionScheduler } from "./subscription-scheduler.ts";
 import index from "../web/index.html";
 import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
@@ -175,6 +177,31 @@ async function handleAutomationRequest(
   return handleRequest(req, launcher, store, lifecycle);
 }
 
+function isAllowedLoopbackHostHeader(hostHeader: string | null): boolean {
+  if (!hostHeader) return true;
+  const raw = hostHeader.trim().toLowerCase();
+  let host = raw;
+  if (raw.startsWith("[")) {
+    const end = raw.indexOf("]");
+    if (end === -1) return false;
+    const after = raw.slice(end + 1);
+    if (after && !/^:\d+$/.test(after)) return false;
+    host = raw.slice(1, end);
+  } else {
+    const colon = raw.lastIndexOf(":");
+    if (colon !== -1 && raw.indexOf(":") === colon && /^\d+$/.test(raw.slice(colon + 1))) {
+      host = raw.slice(0, colon);
+    }
+  }
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+function loopbackHostGuard(req: Request, boundHostname: string): Response | null {
+  if (boundHostname !== "localhost" && !isLoopbackAddress(boundHostname)) return null;
+  if (isAllowedLoopbackHostHeader(req.headers.get("host"))) return null;
+  return Response.json({ ok: false, error: "Forbidden host header" }, { status: 403 });
+}
+
 export function serveAutomationApi(opts: Omit<DashboardServerOptions, "hostname">) {
   const { port = 50400 } = opts;
   const hostname = "127.0.0.1";
@@ -187,6 +214,8 @@ export function serveAutomationApi(opts: Omit<DashboardServerOptions, "hostname"
       hostname,
       idleTimeout: 240,
       fetch: async (req, server) => {
+        const deniedHost = loopbackHostGuard(req, hostname);
+        if (deniedHost) return deniedHost;
         const health = automationHealthResponse(req, server.requestIP(req)?.address, opts.remote);
         if (health) return health;
         return dispatchWithLifecycleAdmission(req, admission, async () => {
@@ -290,6 +319,11 @@ export function serveDashboard(opts: DashboardServerOptions) {
     log,
   }) : undefined;
   cooling?.start();
+  const subscriptionScheduler = !opts.remote && store && typeof (store as Partial<ProfileStore>).proxyPool === "object"
+    ? new SubscriptionScheduler({ store, log })
+    : undefined;
+  subscriptionScheduler?.start();
+  const shutdownController = new AbortController();
   if (library && python) {
     python.prune();
     // A user who already has a Python script gets the runtime before the first run.
@@ -332,6 +366,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
       },
     },
     fetch: async (req, server) => {
+      const deniedHost = loopbackHostGuard(req, hostname);
+      if (deniedHost) return deniedHost;
       const reqUrl = new URL(req.url);
       if (reqUrl.pathname === WORKBENCH_PATH) {
         if (!isLoopbackAddress(server.requestIP(req)?.address) || !agentNonce || !validWorkbenchAuthorization(req, agentNonce)) {
@@ -394,6 +430,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
           scripts,
           runtimeMode,
           proxyApprovals,
+          shutdownSignal: shutdownController.signal,
         });
         if (ui) return ui;
         // Per-profile identity "card" (AdsPower-style landing page). Opened as a tab and
@@ -405,5 +442,18 @@ export function serveDashboard(opts: DashboardServerOptions) {
   });
   void agentHub?.cleanupTemporaryProfiles();
   log(`dashboard + API on http://${hostname}:${server.port}  (UI at /, Vela Local API under /api; AdsPower-compatible)`);
-  return Object.assign(server, { stopScripts: () => scripts?.runner.shutdown() ?? Promise.resolve() });
+  const stopServer = server.stop.bind(server);
+  return Object.assign(server, {
+    async stop(closeActiveConnections?: boolean) {
+      cooling?.stop();
+      taskbarMode?.stop();
+      shutdownController.abort();
+      await Promise.allSettled([
+        subscriptionScheduler?.stop() ?? Promise.resolve(),
+        drainPoolTasks(store),
+      ]);
+      return await stopServer(closeActiveConnections);
+    },
+    stopScripts: () => scripts?.runner.shutdown() ?? Promise.resolve(),
+  });
 }

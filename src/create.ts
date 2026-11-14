@@ -13,10 +13,13 @@
 import { createWebKitProfileConfig, WEBKIT_DEFAULT_UA, webkitSupported } from "./webkit-config.ts";
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
 import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime, syncFirefoxTimezone } from "./firefox-config.ts";
+import { attachTimezones, type FetchLike } from "./geoip.ts";
 import { chromiumDeviceScale, defaultChromiumRuntime, hostDisplayScale, hostDisplaySize } from "./aliasmode-chromium.ts";
 import { deterministicSeed, generateProfileHardware, hostPlatformOs } from "./fingerprint.ts";
+import { localeForCountry, localeForTimezone } from "./profile-locale.ts";
 import { normalizeProxySpec } from "./proxy.ts";
-import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./parse.ts";
+import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs, parseStrictTimezone } from "./parse.ts";
+import type { ProfileStore } from "./store.ts";
 
 export interface NewProfileInput {
   /** Browser identity engine. Omitted means this computer's default engine. */
@@ -191,4 +194,38 @@ export function withDefaultBrowser(profile: Profile): Profile {
   };
   syncFirefoxTimezone(imported);
   return completeProfileFingerprint(imported);
+}
+
+/**
+ * Create and persist one local profile (shared between the dashboard API and MCP agent control):
+ * applies folder extension defaults, derives exit timezone/locale without failing creation on
+ * network timeouts, saves to SQLite, and kicks off Firefox font-pack prefetch.
+ */
+export async function createLocalProfile(
+  store: ProfileStore,
+  input: NewProfileInput,
+  deps: { timezoneFetch?: FetchLike; prefetchFirefoxFontPacks?: (profiles: Profile[]) => void; onBeforeSave?: () => void } = {},
+): Promise<Profile> {
+  const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
+  (store as Partial<ProfileStore>).applyGroupExtensionDefaults?.(profile, null, false);
+  if (profile.proxy && !profile.timezoneManual) {
+    if (profile.proxy.type === "pool") {
+      const check = store.proxyPool.get(profile.proxy.host)?.check;
+      let tz = "";
+      if (check?.timezone) {
+        try { tz = parseStrictTimezone(check.timezone); } catch { tz = ""; }
+      }
+      if (tz) {
+        profile.timezone = tz;
+        profile.locale = localeForCountry(check?.country) ?? localeForTimezone(tz);
+      }
+    } else {
+      await attachTimezones([profile], deps.timezoneFetch, true).catch(() => {});
+    }
+    syncFirefoxTimezone(profile);
+  }
+  deps.onBeforeSave?.();
+  store.upsertProfile(profile);
+  try { deps.prefetchFirefoxFontPacks?.([profile]); } catch {}
+  return profile;
 }

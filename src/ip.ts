@@ -35,3 +35,28 @@ export function sameIp(left: string, right: string): boolean {
   const b = canonicalIp(right);
   return a !== null && b !== null && a === b;
 }
+
+/** True when `raw` is a literal loopback, unspecified, private, link-local, carrier-grade NAT, or multicast address. */
+export function isNonPublicIp(raw: string): boolean {
+  const ip = canonicalIp(raw);
+  if (!ip) return false;
+  const version = isIP(ip);
+  if (version === 4) {
+    const [a, b] = ip.split(".").map(Number) as [number, number];
+    return a === 0 // 0.0.0.0/8 ("this host")
+      || a === 10 // 10.0.0.0/8 (RFC 1918)
+      || (a === 100 && b >= 64 && b <= 127) // 100.64.0.0/10 (CGNAT)
+      || a === 127 // 127.0.0.0/8 (loopback)
+      || (a === 169 && b === 254) // 169.254.0.0/16 (link-local / cloud metadata)
+      || (a === 172 && b >= 16 && b <= 31) // 172.16.0.0/12 (RFC 1918)
+      || (a === 192 && b === 168) // 192.168.0.0/16 (RFC 1918)
+      || (a === 198 && (b === 18 || b === 19)) // 198.18.0.0/15 (benchmark)
+      || a >= 224; // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved
+  }
+  const lower = ip.toLowerCase();
+  if (lower === "::" || lower === "::1") return true;
+  if (/^f[cd][0-9a-f]{2}(:|$)/.test(lower)) return true; // fc00::/7 unique local
+  if (/^fe[89ab][0-9a-f](:|$)/.test(lower)) return true; // fe80::/10 link-local
+  if (/^ff[0-9a-f]{2}(:|$)/.test(lower)) return true; // ff00::/8 multicast
+  return false;
+}

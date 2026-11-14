@@ -44,6 +44,7 @@ interface ManagedStore {
 
 interface ManagedLauncher {
   stop(profileId: string): Promise<boolean>;
+  kernels?: { releaseAll(): void | Promise<void> };
 }
 
 export interface ManagedDesktopRuntimeOptions {
@@ -284,6 +285,11 @@ export class ManagedDesktopRuntime {
     } catch (error) {
       failure ??= error;
     } finally {
+      try {
+        await launcher.kernels?.releaseAll();
+      } catch (error) {
+        failure ??= error;
+      }
       try {
         store.close();
       } catch (error) {

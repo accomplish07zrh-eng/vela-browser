@@ -1,7 +1,10 @@
 import { CloudApiError } from "./cloud-client.ts";
 import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { attachTimezones } from "./geoip.ts";
+import { canonicalIp } from "./ip.ts";
 import { buildProxyPreview, checkProfileProxies, replacementState, selectProxyProfiles, ProxyToolsError, type PlannedProxyReplacement, type ProxyInventoryProfile } from "./proxy-bulk.ts";
+import { parsePoolSelection } from "./proxy-pool.ts";
+import { poolNodeTimezone } from "./proxy-switch.ts";
 import {
   proxyHostPort,
   proxyIdentityKey,
@@ -12,7 +15,7 @@ import type { ProxySpec } from "./types.ts";
 import type { UiRuntimeOptions } from "./ui.ts";
 import type { ProxyPreview, ProxyPreviewInput, ProxyProgressEvent, ProxyScope } from "./proxy-tools-types.ts";
 
-type Preview = { id: string; owner: string; scope: ProxyScope; rows: PlannedProxyReplacement[]; unusedProxies: number };
+type Preview = { id: string; owner: string; scope: ProxyScope; rows: PlannedProxyReplacement[]; unusedProxies: number; distinctExitIp?: boolean };
 const states = new WeakMap<ProfileStore, { preview?: Preview; applying: boolean }>();
 
 function response(body: unknown, status = 200): Response {
@@ -24,13 +27,32 @@ function previewView(preview: Preview): ProxyPreview {
 }
 
 /** Why a pool node can no longer take this profile, or null when it can. */
-function poolNodeUnavailable(store: ProfileStore, nodeId: string, profileId: string, proxy: ProxySpec): string | null {
+function poolNodeUnavailable(
+  store: ProfileStore,
+  nodeId: string,
+  profileId: string,
+  proxy: ProxySpec,
+  distinctExitIp = false,
+): string | null {
   const node = store.proxyPool.get(nodeId);
-  if (!node || node.disabled || proxyIdentityKey(node.proxy) !== proxyIdentityKey(proxy)) return "pool_node_unavailable";
-  if (node.maxProfiles === null) return null;
-  const key = proxyIdentityKey(node.proxy);
-  const users = store.listProfiles().filter((p) => p.id !== profileId && p.proxy && proxyIdentityKey(p.proxy) === key).length;
-  return users >= node.maxProfiles ? "pool_exhausted" : null;
+  if (!node || node.disabled || node.removedFromSource || proxyIdentityKey(node.proxy) !== proxyIdentityKey(proxy)) return "pool_node_unavailable";
+  const profiles = store.listProfiles();
+  if (node.maxProfiles !== null) {
+    const key = proxyIdentityKey(node.proxy);
+    const users = profiles.filter((p) => p.id !== profileId && p.proxy && proxyIdentityKey(p.proxy) === key).length;
+    if (users >= node.maxProfiles) return "pool_exhausted";
+  }
+  if (distinctExitIp && node.check?.ip) {
+    const exitIp = canonicalIp(node.check.ip) || node.check.ip.trim();
+    const nodesByKey = new Map(store.proxyPool.list().map((n) => [proxyIdentityKey(n.proxy), n]));
+    for (const other of profiles) {
+      if (other.id === profileId || !other.proxy) continue;
+      const otherNode = nodesByKey.get(proxyIdentityKey(other.proxy));
+      const usedIp = otherNode?.check?.ip ? (canonicalIp(otherNode.check.ip) || otherNode.check.ip.trim()) : "";
+      if (usedIp && usedIp === exitIp) return "pool_exhausted";
+    }
+  }
+  return null;
 }
 
 function safeError(error: unknown): string {
@@ -72,11 +94,14 @@ export async function handleProxyToolsRequest(
     if (state.applying && action !== "check") throw new ProxyToolsError("Replacement is still running", 409);
     if (action === "preview") {
       const profiles = await inventory();
-      const built = buildProxyPreview(profiles, body as ProxyPreviewInput, (body as ProxyPreviewInput).mode === "pool"
+      if (state.applying) throw new ProxyToolsError("Replacement is still running", 409);
+      const previewInput = body as ProxyPreviewInput;
+      const built = buildProxyPreview(profiles, previewInput, previewInput.mode === "pool"
         ? { nodes: store.proxyPool.list(), allProfiles: profiles.map(({ id, name, group, proxy }) => ({ id, name, group, proxy })) }
         : undefined);
+      const distinctExitIp = previewInput.mode === "pool" ? parsePoolSelection(previewInput.input).distinctExitIp : undefined;
       assertCurrent();
-      state.preview = { id: crypto.randomUUID(), owner, scope: structuredClone(body.scope), ...built };
+      state.preview = { id: crypto.randomUUID(), owner, scope: structuredClone(body.scope), ...built, ...(distinctExitIp ? { distinctExitIp: true } : {}) };
       return response(previewView(state.preview));
     }
     if (action === "retry-preview") {
@@ -84,13 +109,19 @@ export async function handleProxyToolsRequest(
       if (!Array.isArray(body.ids) || body.ids.some((id: unknown) => typeof id !== "string")) throw new ProxyToolsError("Select failed profiles to retry");
       const ids = new Set<string>(body.ids);
       const fresh = new Map(selectProxyProfiles(await inventory(), previous.scope).map((p) => [p.id, p]));
+      if (state.applying) throw new ProxyToolsError("Replacement is still running", 409);
       const rows = previous.rows.filter((row) => row.view.profileId && ids.has(row.view.profileId) && ["skipped", "failed"].includes(row.view.status)).map((row) => {
         const profile = fresh.get(row.view.profileId!);
         if (!row.next || row.view.code === "duplicate_target") return { ...row, view: { ...row.view } };
+        let nextState = replacementState(profile, row.next);
+        if (nextState.status === "ready" && row.poolNodeId && profile) {
+          const poolCode = poolNodeUnavailable(store, row.poolNodeId, profile.id, row.next, previous.distinctExitIp);
+          if (poolCode) nextState = { status: "skipped", code: poolCode };
+        }
         return { ...row, originalKey: proxyIdentityKey(profile?.proxy ?? null), expectedVersion: profile?.version,
           view: { ...row.view, name: profile?.name ?? row.view.name, group: profile?.group ?? row.view.group,
             previousProxy: profile?.proxy ? `${profile.proxy.type}://${proxyHostPort(profile.proxy)}` : null,
-            code: undefined, ...replacementState(profile, row.next) } };
+            code: undefined, ...nextState } };
       });
       assertCurrent();
       state.preview = { ...previous, id: crypto.randomUUID(), rows };
@@ -149,27 +180,46 @@ export async function handleProxyToolsRequest(
                     if (!profile || proxyIdentityKey(profile.proxy) !== row.originalKey || profile.group !== row.view.group) {
                       Object.assign(row.view, { status: "skipped", code: "version_conflict" }); continue;
                     }
+                    const initialTimezone = profile.timezone;
+                    const initialTimezoneManual = !!profile.timezoneManual;
                     await launcher.cacheCleanupSettled(id);
+                    if (cancelled()) break;
                     if (launcher.profileDeletionBlocked(id)) { Object.assign(row.view, { status: "skipped", code: "profile_open" }); continue; }
                     const changed = { ...profile, proxy: row.next!, timezone: "" };
                     await attachTimezones([changed], options.timezoneFetch).catch(() => {});
+                    if (cancelled()) break;
+                    if (!changed.timezone && row.next!.type === "pool" && !profile.timezoneManual) {
+                      changed.timezone = poolNodeTimezone(store, row.next!) ?? "";
+                    }
                     assertCurrent();
                     profile = store.getProfile(id);
-                    if (!profile || proxyIdentityKey(profile.proxy) !== row.originalKey || profile.group !== row.view.group) {
+                    if (
+                      !profile
+                      || proxyIdentityKey(profile.proxy) !== row.originalKey
+                      || profile.group !== row.view.group
+                      || profile.timezone !== initialTimezone
+                      || !!profile.timezoneManual !== initialTimezoneManual
+                    ) {
                       Object.assign(row.view, { status: "skipped", code: "version_conflict" }); continue;
                     }
                     if (launcher.profileDeletionBlocked(id)) { Object.assign(row.view, { status: "skipped", code: "profile_open" }); continue; }
-                    // A pool node may have filled up, or left the pool, since the preview.
+                    // A pool node may have filled up, changed exit IP, or left the pool since the preview.
                     if (row.poolNodeId) {
-                      const code = poolNodeUnavailable(store, row.poolNodeId, id, row.next!);
+                      const code = poolNodeUnavailable(store, row.poolNodeId, id, row.next!, preview.distinctExitIp);
                       if (code) { Object.assign(row.view, { status: "skipped", code }); continue; }
                     }
                     profile.proxy = row.next!; delete profile.proxyError;
-                    // A failed lookup keeps the saved timezone.
-                    if (changed.timezone) { profile.timezone = changed.timezone; syncFirefoxTimezone(profile); }
+                    // A failed lookup keeps the saved timezone; never overwrite a user-set timezone.
+                    if (changed.timezone && !profile.timezoneManual) {
+                      profile.timezone = changed.timezone;
+                      syncFirefoxTimezone(profile);
+                    }
                     store.upsertProfile(profile);
                     Object.assign(row.view, { status: "updated", code: undefined });
-                  } catch { Object.assign(row.view, { status: "failed", code: "update_failed" }); }
+                  } catch {
+                    if (cancelled()) break;
+                    Object.assign(row.view, { status: "failed", code: "update_failed" });
+                  }
                 }
               }
               for (const row of batch) {

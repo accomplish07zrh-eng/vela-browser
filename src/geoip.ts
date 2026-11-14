@@ -5,6 +5,7 @@ import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
 import type { ProxySpec } from "./types.ts";
 import { localeForCountry, localeForTimezone } from "./profile-locale.ts";
 import { canonicalIp } from "./ip.ts";
+import { parseStrictTimezone } from "./parse.ts";
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<{ json(): Promise<any> }>;
 
@@ -156,16 +157,25 @@ export async function lookupExitLocation(
     // source, names another zone for some addresses. GeoJS answers from MaxMind's free GeoLite2
     // City data, keyless over HTTPS, so both are asked at once and GeoJS's zone wins when it has
     // one. Its shorter timeout leaves a launch's 5 s wait for ip-api.com's answer if GeoJS hangs.
-    const maxMind = ask("https://get.geojs.io/v1/ip/geo.json", AbortSignal.timeout(4_000), (row) =>
-      typeof row?.timezone === "string" && row.timezone ? withIp({ timezone: row.timezone, country: row.country_code }, row.ip) : null);
-    const ipApi = ask("http://ip-api.com/json/?fields=status,timezone,countryCode,query", init.signal!, (row) =>
-      row?.status === "success" && row.timezone ? withIp({ timezone: row.timezone, country: row.countryCode }, row.query) : null);
+    const validTz = (value: unknown): string | null => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      try { return parseStrictTimezone(value) ?? null; } catch { return null; }
+    };
+    const maxMind = ask("https://get.geojs.io/v1/ip/geo.json", AbortSignal.timeout(4_000), (row) => {
+      const timezone = validTz(row?.timezone);
+      return timezone ? withIp({ timezone, country: row.country_code }, row.ip) : null;
+    });
+    const ipApi = ask("http://ip-api.com/json/?fields=status,timezone,countryCode,query", init.signal!, (row) => {
+      const timezone = row?.status === "success" ? validTz(row?.timezone) : null;
+      return timezone ? withIp({ timezone, country: row.countryCode }, row.query) : null;
+    });
     const found = await maxMind ?? await ipApi;
     if (found) return found;
     // ip-api.com is IPv4-only; an IPv6-only exit falls through to v6.ipinfo.io.
     const res = await fetchFn("https://v6.ipinfo.io/json", { ...init, signal: AbortSignal.timeout(10_000) });
     const row = (await res.json()) as { timezone?: string; country?: string; ip?: string } | null;
-    return typeof row?.timezone === "string" && row.timezone ? withIp({ timezone: row.timezone, country: row.country }, row.ip) : null;
+    const timezone = validTz(row?.timezone);
+    return timezone ? withIp({ timezone, country: row?.country }, row?.ip) : null;
   } catch {
     return null;
   } finally {

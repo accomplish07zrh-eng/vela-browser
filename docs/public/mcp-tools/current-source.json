@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.7",
+  "aliasModeVersion": "0.1.8",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -71,6 +71,18 @@
             "description": "Chromium profiles only. vela (Vela Chromium 155) is the default where this computer can run it. CloakBrowser profiles on one computer can be linked to each other."
           },
           "screen": {
+            "type": "string"
+          },
+          "platformOs": {
+            "type": "string",
+            "enum": [
+              "windows",
+              "macos",
+              "linux",
+              ""
+            ]
+          },
+          "customNo": {
             "type": "string"
           },
           "proxy": {
@@ -377,6 +389,50 @@
             "description": "Text longer than this many characters goes in at once, like a paste, instead of key by key. 0 always types; null restores each profile's own threshold (28 to 51 characters). The system clipboard is never used."
           }
         },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_batch",
+      "description": "Run several browser actions in one call, in order, each exactly as if called on its own (human-like input included). For example: type into two fields, then click the button. Stops at the first step that fails and says which one. Returns the last step's result, with its page snapshot, after a one-line summary of the steps before it. Prefer this to calling actions one at a time.",
+      "annotations": {
+        "title": "Several browser actions in one call",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 25,
+            "description": "Each step names a browser tool listed by this server and its arguments, as you would call it alone.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string"
+                },
+                "arguments": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "steps"
+        ],
         "additionalProperties": false
       }
     },
@@ -914,50 +970,6 @@
     }
   ],
   "playwrightTools": [
-    {
-      "name": "browser_batch",
-      "description": "Run several browser actions in one call, in order, each exactly as if called on its own (human-like input included). For example: type into two fields, then click the button. Stops at the first step that fails and says which one. Returns the last step's result, with its page snapshot, after a one-line summary of the steps before it. Prefer this to calling actions one at a time.",
-      "annotations": {
-        "title": "Several browser actions in one call",
-        "readOnlyHint": false,
-        "destructiveHint": true,
-        "openWorldHint": true
-      },
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "profileId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "steps": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 25,
-            "description": "Each step names a browser tool listed by this server and its arguments, as you would call it alone.",
-            "items": {
-              "type": "object",
-              "properties": {
-                "tool": {
-                  "type": "string"
-                },
-                "arguments": {
-                  "type": "object"
-                }
-              },
-              "required": [
-                "tool"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "steps"
-        ],
-        "additionalProperties": false
-      }
-    },
     {
       "name": "browser_resize",
       "description": "Resize the browser window",

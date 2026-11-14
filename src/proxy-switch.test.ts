@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { buildNewProfile } from "./create.ts";
 import { ProfileStore } from "./store.ts";
 import { parseSubscription } from "./subscription.ts";
-import { ProxySwitchError, switchProfileProxy, type SwitchDeps } from "./proxy-switch.ts";
+import { ProxySwitchError, saveProfileProxy, switchProfileProxy, type SwitchDeps } from "./proxy-switch.ts";
 import type { LaunchInfo, ProxySpec } from "./types.ts";
 import type { ProxyCheckResult } from "./proxy-check.ts";
 
@@ -158,4 +158,40 @@ test("a kernel node is checked through a temporary kernel that stops afterwards"
   const result = await switchProfileProxy(deps, { profileId: "p1", nodeId: kernelNode.id, by: "dashboard" });
   expect(result.next).toBe("anytls · SG");
   expect(events).toEqual(["temporary kernel anytls", "temporary kernel stopped", `assign p1 pool:${kernelNode.id}`]);
+});
+
+test("assigning or switching a pool node pre-fills closed profile timezone while respecting timezoneManual", async () => {
+  const { store } = setup();
+  const parsed = parseSubscription("anytls://P@jp.node.example:443?sni=jp.node.example#JP");
+  const sub = store.proxyPool.addSubscription({ url: "https://sub.example/tz" });
+  store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+  const kernelNode = store.proxyPool.list().find((n) => n.protocol === "anytls")!;
+  store.proxyPool.recordCheck(kernelNode.id, { status: "working", ip: "203.0.113.7", country: "JP", timezone: "Asia/Tokyo", checkedAt: 1 });
+
+  await saveProfileProxy(store, "p1", kernelNode.proxy);
+  expect(store.getProfile("p1")!.timezone).toBe("Asia/Tokyo");
+
+  // Manual timezone is preserved even when assigning a checked pool node.
+  store.upsertProfile({ ...store.getProfile("p2")!, timezone: "America/Chicago", timezoneManual: true });
+  await saveProfileProxy(store, "p2", kernelNode.proxy);
+  expect(store.getProfile("p2")!.timezone).toBe("America/Chicago");
+});
+
+test("switchProfileProxy re-validates node availability after pre-check completes", async () => {
+  const { store, deps } = setup();
+  const parsed = parseSubscription("vless://11111111-2222-3333-4444-555555555555@jp.example:443?security=tls#JP");
+  const sub = store.proxyPool.addSubscription({ url: "https://sub.example/toctou" });
+  store.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
+  const node = store.proxyPool.list().find((n) => n.subscriptionId === sub.id)!;
+
+  const raceDeps: SwitchDeps = {
+    ...deps,
+    check: async () => {
+      // Simulate the node getting disabled while the slow proxy check was running.
+      store.proxyPool.update(node.id, { disabled: true });
+      return { status: "working", attempts: 3, successes: 3, ip: "203.0.113.55", country: "JP" };
+    },
+  };
+  await expect(switchProfileProxy(raceDeps, { profileId: "p1", nodeId: node.id, by: "dashboard" })).rejects.toMatchObject({ code: "node_unavailable" });
+  expect(store.getProfile("p1")!.proxy).toEqual(OLD);
 });

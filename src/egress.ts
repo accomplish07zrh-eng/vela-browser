@@ -1,6 +1,7 @@
 /** Shared direct/browser diagnostic egress lookup and validation. */
 
 import { canonicalIp } from "./ip.ts";
+import { parseStrictTimezone } from "./parse.ts";
 
 export const DEFAULT_EGRESS_ENDPOINTS = [
   "https://ipinfo.io/json",
@@ -13,6 +14,7 @@ export interface EgressInfo {
   country?: string;
   region?: string;
   city?: string;
+  timezone?: string;
   org?: string;
 }
 
@@ -58,7 +60,14 @@ export function parseEgressResponse(body: string): EgressInfo | null {
       if (typeof candidate === "string") {
         const info: EgressInfo = { ip: canonicalIp(candidate)! };
         for (const key of ["country", "region", "city", "org"] as const) {
-          if (typeof parsed[key] === "string") info[key] = parsed[key];
+          const val = typeof parsed[key] === "string" ? parsed[key].trim() : "";
+          if (val) info[key] = val;
+        }
+        if (typeof parsed.timezone === "string" && parsed.timezone.trim()) {
+          try {
+            const timezone = parseStrictTimezone(parsed.timezone);
+            if (timezone) info.timezone = timezone;
+          } catch {}
         }
         return info;
       }
