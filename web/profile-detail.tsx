@@ -3,6 +3,7 @@ import { fetchProfileEdit, type EditProfile, type UiProfile } from "./api.ts";
 import { useTranslation } from "./i18n.tsx";
 import { profileNeedsAttention } from "./profile-management.ts";
 import { trapDialogTab } from "./dialog-focus.ts";
+import { TagChip } from "./tags.tsx";
 
 type StoredSummary = Pick<EditProfile, "platformOs" | "resolution" | "timezone" | "locale" | "cores" | "hardware" | "extensions">;
 
@@ -70,7 +71,7 @@ export function ProfileDetailDrawer({ profile, number, browser, canEdit, busy, o
         <div><dt>{t("Platform")}</dt><dd>{profile.platform || "—"}</dd></div>
         <div><dt>{t("Cookies in saved profile")}</dt><dd>{profile.cookieCount}</dd></div>
         {!!profile.pendingCookieCount && <div><dt>{t("Cookies at next start")}</dt><dd><button className="detail-text-action" type="button" onClick={onCookies}>{profile.pendingCookieCount} · {t("View")}</button></dd></div>}
-      </dl>{profile.tags.length > 0 && <div className="detail-tags">{profile.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}</section>
+      </dl>{profile.tags.length > 0 && <div className="detail-tags">{profile.tags.map((tag) => <TagChip key={tag} tag={tag} />)}</div>}</section>
       <section><h3>{t("Launch activity")}</h3><dl>
         <div><dt>{t("Created at")}</dt><dd>{time(profile.createdAt)}</dd></div>
         <div><dt>{t("Last opened")}</dt><dd>{time(profile.lastOpenAt)}</dd></div>

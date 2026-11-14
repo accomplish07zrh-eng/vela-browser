@@ -656,3 +656,16 @@ test("a launch row keeps the identity the browser was launched with", () => {
   store.recordLaunch({ profileId: "k1d0cd11", pid: 1, debugPort: 9412, ws: "ws://x", startedAt: 1 });
   expect(store.getLaunch("k1d0cd11")!.persona).toBeUndefined();
 });
+
+test("tags are added and removed on many profiles at once, ignoring case and duplicates", () => {
+  const store = memStore();
+  const base = parseExport(SAMPLE).profiles[0]!;
+  store.upsertProfile({ ...base, id: "t1", tags: ["US", "warmup"] });
+  store.upsertProfile({ ...base, id: "t2", tags: [] });
+  expect(store.updateTags(["t1", "t2", "missing"], ["us", " priority ", "priority"], ["WARMUP"])).toBe(2);
+  expect(store.getProfile("t1")!.tags).toEqual(["US", "priority"]);
+  expect(store.getProfile("t2")!.tags).toEqual(["us", "priority"]);
+  // Nothing to change is not a change.
+  expect(store.updateTags(["t1"], ["priority"], [])).toBe(0);
+  expect(store.updateTags(["t1"], [], [])).toBe(0);
+});

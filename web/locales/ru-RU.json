@@ -1134,5 +1134,17 @@
   "by hand": "вручную",
   "{ok} succeeded · {failed} failed · {attempts} tries": "успешно {ok} · ошибок {failed} · попыток {attempts}",
   "Another script was running": "Выполнялся другой скрипт",
-  "No profiles match the task's target": "Нет окружений, подходящих под задачу"
+  "No profiles match the task's target": "Нет окружений, подходящих под задачу",
+  "Move or delete its subfolders first": "Сначала переместите или удалите вложенные папки",
+  "Remove tag {tag}": "Убрать тег {tag}",
+  "Type a tag, then Enter": "Введите тег и нажмите Enter",
+  "No tags": "Без тегов",
+  "Showing profiles tagged “{tag}”": "Показаны окружения с тегом «{tag}»",
+  "Tags say what a profile is, such as its platform or stage; a profile can have several. Groups are where it lives.": "Теги описывают, что это за окружение — платформа, этап; их может быть несколько. Группа — это где окружение лежит.",
+  "Add or remove tags on the selected profiles": "Добавить или убрать теги у выбранных окружений",
+  "Tags for {count} profiles": "Теги для окружений: {count}",
+  "Tags to add": "Добавляемые теги",
+  "{count} of the selected profiles have this tag": "Этот тег есть у выбранных окружений: {count}",
+  "Click a tag to take it off every selected profile.": "Нажмите на тег, чтобы убрать его у всех выбранных окружений.",
+  "Could not change the tags": "Не удалось изменить теги"
 }

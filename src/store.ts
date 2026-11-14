@@ -659,6 +659,29 @@ export class ProfileStore {
    * Reassign profiles to a group and materialize that group's extension defaults.
    * Unknown ids and profiles already in the destination are ignored.
    */
+  /** Adds and removes tags on several profiles at once; matching ignores case. Returns how many changed. */
+  updateTags(ids: string[], add: string[], remove: string[]): number {
+    const clean = (list: string[]) => [...new Set(list.map((tag) => String(tag).trim().slice(0, 40)).filter(Boolean))];
+    const adding = clean(add), removing = new Set(clean(remove).map((tag) => tag.toLowerCase()));
+    if (!ids.length || (!adding.length && !removing.size)) return 0;
+    const run = this.transaction((profileIds: string[]) => {
+      let changed = 0;
+      for (const id of profileIds) {
+        const profile = this.getProfile(id);
+        if (!profile) continue;
+        const before = profile.tags ?? [];
+        const next = before.filter((tag) => !removing.has(tag.toLowerCase()));
+        for (const tag of adding) if (!next.some((item) => item.toLowerCase() === tag.toLowerCase())) next.push(tag);
+        if (next.length === before.length && next.every((tag, index) => tag === before[index])) continue;
+        profile.tags = next.slice(0, 50);
+        this.upsertProfile(profile);
+        changed++;
+      }
+      return changed;
+    });
+    return run(ids);
+  }
+
   setGroup(ids: string[], group: string): number {
     if (ids.length === 0) return 0;
     const destination = group.trim();

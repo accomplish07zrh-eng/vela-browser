@@ -175,7 +175,7 @@
 }
 
 /* ---- Floating layers lifted into the top layer (top-layer.ts): undo the browser's popover defaults ---- */
-.vselect-panel[popover], .vtip[popover] { inset: auto; right: auto; bottom: auto; margin: 0; width: auto; height: auto; }
+.vselect-panel[popover], .vtip[popover], .folder-menu[popover] { inset: auto; right: auto; bottom: auto; margin: 0; width: auto; height: auto; }
 .vselect-panel[popover] { width: max-content; }
 .vtip[popover] { overflow: visible; }
 .vdialog-backdrop[popover] { inset: 0; width: auto; height: auto; margin: 0; border: 0; color: inherit; overflow: hidden; }

@@ -1012,6 +1012,19 @@ export async function handleUiRequest(
     }
   }
 
+  if (pathname === "/ui/api/profiles/tags" && req.method === "POST") {
+    if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
+    try {
+      const body = (await req.json()) as { ids?: unknown; add?: unknown; remove?: unknown };
+      const list = (value: unknown) => Array.isArray(value) ? value.map(String) : [];
+      const ids = list(body.ids);
+      if (ids.length === 0) return Response.json({ ok: false, error: "no profiles selected" }, { status: 400 });
+      return Response.json({ ok: true, changed: store.updateTags(ids, list(body.add), list(body.remove)) });
+    } catch (e) {
+      return Response.json({ ok: false, error: msg(e) }, { status: 500 });
+    }
+  }
+
   if (pathname === "/ui/api/profiles/move" && req.method === "POST") {
     try {
       const body = (await req.json()) as { ids?: unknown; group?: unknown };

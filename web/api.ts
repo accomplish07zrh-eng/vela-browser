@@ -461,6 +461,11 @@ export async function uploadExports(
   return apiJson(r, path);
 }
 
+export async function updateProfileTags(ids: string[], add: string[], remove: string[]): Promise<{ ok: boolean; changed?: number; error?: string }> {
+  const r = await fetch("/ui/api/profiles/tags", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, add, remove }) });
+  return apiJson(r, "/ui/api/profiles/tags");
+}
+
 export async function moveProfiles(ids: string[], group: string): Promise<any> {
   const r = await fetch("/ui/api/profiles/move", {
     method: "POST",

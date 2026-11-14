@@ -1132,5 +1132,17 @@
   "by hand": "手动",
   "{ok} succeeded · {failed} failed · {attempts} tries": "成功 {ok} · 失败 {failed} · 共 {attempts} 次",
   "Another script was running": "当时有别的脚本在运行",
-  "No profiles match the task's target": "没有符合任务目标的环境"
+  "No profiles match the task's target": "没有符合任务目标的环境",
+  "Move or delete its subfolders first": "先移走或删除它的子分组",
+  "Remove tag {tag}": "移除标签 {tag}",
+  "Type a tag, then Enter": "输入标签后按回车",
+  "No tags": "没有标签",
+  "Showing profiles tagged “{tag}”": "正在显示带“{tag}”标签的环境",
+  "Tags say what a profile is, such as its platform or stage; a profile can have several. Groups are where it lives.": "标签描述环境是什么，比如平台或阶段，一个环境可以有多个；分组是它放在哪里。",
+  "Add or remove tags on the selected profiles": "给选中的环境加或删标签",
+  "Tags for {count} profiles": "{count} 个环境的标签",
+  "Tags to add": "要添加的标签",
+  "{count} of the selected profiles have this tag": "选中的环境里有 {count} 个带这个标签",
+  "Click a tag to take it off every selected profile.": "点一下标签，就会从所有选中的环境上移除它。",
+  "Could not change the tags": "没能修改标签"
 }
