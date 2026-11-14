@@ -2538,13 +2538,19 @@ test("mutations enforce cross-origin/content-type guards, concurrent edit confli
   s.proxyPool.syncSubscription(sub.id, parsed.nodes, parsed);
   const node = s.proxyPool.list().find((n) => n.subscriptionId === sub.id)!;
 
-  // Cross-origin Sec-Fetch-Site / Origin blocked across mutating routes.
+  // Cross-origin Sec-Fetch-Site / Origin blocked across mutating routes, while local PowerShell bodyless POSTs succeed.
   const crossOpen = await handleUiRequest(new Request("http://127.0.0.1:50400/ui/api/profiles/k1d0cd11/open", {
     method: "POST",
     headers: { "Sec-Fetch-Site": "cross-site" },
     body: "{}",
   }), launcher, s);
   expect(crossOpen!.status).toBe(403);
+
+  const pwshOpen = await handleUiRequest(new Request("http://127.0.0.1:50400/ui/api/profiles/k1d0cd11/open", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  }), launcher, s);
+  expect(pwshOpen!.status).toBe(200);
 
   const formTaskbar = await handleUiRequest(new Request("http://127.0.0.1:50400/ui/api/desktop/taskbar", {
     method: "POST",

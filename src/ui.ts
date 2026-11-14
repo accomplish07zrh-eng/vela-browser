@@ -214,6 +214,8 @@ const MULTIPART_UPLOAD_ROUTES = new Set([
   "/ui/api/extensions/upload",
 ]);
 
+const BODYLESS_ACTION_ROUTE = /^\/ui\/api\/profiles\/[^/]+\/(open|close|clear-cache|raise|convert-mobile|timezone)$/;
+
 function rejectCrossOriginRequest(req: Request): Response | null {
   const origin = req.headers.get("origin");
   if (origin && origin !== new URL(req.url).origin) {
@@ -228,7 +230,7 @@ function rejectCrossOriginRequest(req: Request): Response | null {
 
 function rejectCrossOriginMutation(req: Request, pathname: string): Response | null {
   const ct = req.headers.get("content-type")?.toLowerCase() ?? "";
-  if (ct) {
+  if (ct && !BODYLESS_ACTION_ROUTE.test(pathname)) {
     if (MULTIPART_UPLOAD_ROUTES.has(pathname)) {
       if (!ct.startsWith("multipart/form-data")) {
         return noStoreJson({ ok: false, error: "multipart/form-data is required" }, 415);
