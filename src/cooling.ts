@@ -50,6 +50,16 @@ export function readMemory(platform = process.platform): MemorySample {
   return { total, available: freemem() };
 }
 
+/**
+ * How many browsers to start at once: as many as the free memory holds (about 450 MB each, with
+ * 1.5 GB left for the system), no more than the processor count, between 1 and 8. Starting more
+ * at once than memory holds makes every one of them slower and can stall the computer.
+ */
+export function launchBatchSize(sample: MemorySample, cpus: number): number {
+  const freeMb = sample.available / 1048576;
+  return Math.max(1, Math.min(8, Math.max(1, cpus), Math.floor((freeMb - 1536) / 450)));
+}
+
 export interface CoolingDeps {
   settings(): CoolingSettings;
   /** Profiles with a browser running now. */

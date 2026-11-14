@@ -961,6 +961,14 @@ export async function handleUiRequest(
     return noStoreJson({ ok: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? (egress.currentInterface() ?? await egress.refreshInterface()) : await egress.detectPhysicalInterface() });
   }
 
+  // How many browsers to start at once, from the memory free right now.
+  if (pathname === "/ui/api/launch-batch" && req.method === "GET") {
+    const { launchBatchSize, readMemory } = await import("./cooling.ts");
+    const { cpus } = await import("node:os");
+    const sample = readMemory();
+    return noStoreJson({ ok: true, size: launchBatchSize(sample, cpus().length), availableMb: Math.round(sample.available / 1048576), totalMb: Math.round(sample.total / 1048576) });
+  }
+
   // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.
   if (pathname === "/ui/api/data-encryption") {
     if (remote || !options.appConfig) return noStoreJson({ ok: false, error: "Data encryption is unavailable" }, 400);
@@ -1104,7 +1112,8 @@ export async function handleUiRequest(
         return rejected;
       }
     }
-    return handleProxyPoolRequest(req, store, options, {
+    // Nodes added to the pool may need the proxy kernel: it starts downloading in the background.
+    const poolResponse = handleProxyPoolRequest(req, store, options, {
       assign: (id, proxy, opts) => assignProfileProxy(store, id, proxy, options, opts),
       kernels: launcher.kernels,
       switchProxy: (profileId, nodeId, by) => switchProfileProxy({
@@ -1112,6 +1121,8 @@ export async function handleUiRequest(
         ...(options.proxyCheck ? { check: (proxy) => options.proxyCheck!(proxy), direct: async () => null } : {}),
       }, { profileId, nodeId, by }),
     });
+    if (req.method !== "GET") void poolResponse.then(() => { try { launcher.prefetchProxyKernel?.(); } catch { /* next time */ } });
+    return poolResponse;
   }
 
   if (pathname.startsWith("/ui/api/proxies/")) {

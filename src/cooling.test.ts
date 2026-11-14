@@ -132,3 +132,12 @@ test("settings are clamped to safe ranges", () => {
   expect(normalizeCoolingSettings({})).toEqual({ enabled: true, threshold: 85, idleMinutes: 10 });
   expect(normalizeCoolingSettings({ threshold: "90" })).toMatchObject({ threshold: 85 });
 });
+
+test("browsers start in batches that the free memory and processors can hold", async () => {
+  const { launchBatchSize } = await import("./cooling.ts");
+  const gb = 1024 ** 3;
+  expect(launchBatchSize({ total: 16 * gb, available: 1 * gb }, 8)).toBe(1);
+  expect(launchBatchSize({ total: 16 * gb, available: 4 * gb }, 8)).toBe(5);
+  expect(launchBatchSize({ total: 64 * gb, available: 40 * gb }, 16)).toBe(8);
+  expect(launchBatchSize({ total: 64 * gb, available: 40 * gb }, 2)).toBe(2);
+});

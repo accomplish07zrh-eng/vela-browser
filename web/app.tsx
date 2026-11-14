@@ -2403,13 +2403,13 @@ function App() {
   };
 
   // ---- Bulk open / close (bounded concurrency) ----
-  const bulkRun = async (op: (id: string) => Promise<any>, pick: (p: UiProfile) => boolean) => {
+  const bulkRun = async (op: (id: string) => Promise<any>, pick: (p: UiProfile) => boolean, batch = 4) => {
     const ids = [...selected].filter((id) => { const p = profiles.find((x) => x.id === id); return p && pick(p); });
     if (!ids.length) return;
     setActionErr(null);
     setBusy((b) => { const n = { ...b }; ids.forEach((id) => (n[id] = true)); return n; });
     const issues: string[] = [];
-    await runPool(ids, 4, async (id) => {
+    await runPool(ids, batch, async (id) => {
       try {
         const r = await op(id);
         if (r?.ok === false) issues.push(`${id}: ${r.error || "action failed"}`);
@@ -2422,7 +2422,12 @@ function App() {
     setBusy((b) => { const n = { ...b }; ids.forEach((id) => delete n[id]); return n; });
     if (issues.length > 0) setActionErr(issues.join("; "));
   };
-  const openSelected = () => bulkRun(openProfile, (p) => !p.running && !p.mobilePersona);
+  // Browsers start in batches as large as the free memory holds, so a big selection does not stall the computer.
+  const openSelected = async () => {
+    let batch = 4;
+    try { const response = await fetch("/ui/api/launch-batch"); if (response.ok) batch = Math.max(1, Number((await response.json()).size) || 4); } catch { /* the usual four */ }
+    await bulkRun(openProfile, (p) => !p.running && !p.mobilePersona, batch);
+  };
   const closeSelected = () => bulkRun(closeProfile, (p) => p.running);
   const convertSelectedMobile = async () => {
     const ids = [...selected].filter((id) => profiles.find((p) => p.id === id)?.mobilePersona);
