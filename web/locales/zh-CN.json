@@ -1265,5 +1265,18 @@
   "The browser reported system {observed}, not {stored}": "浏览器实测系统是 {observed}，不是 {stored}",
   "The browser's user agent and platform disagree ({ua} / {platform})": "浏览器的 UA 和平台对不上（{ua} / {platform}）",
   "The browser reported screen {observed}, not {stored}": "浏览器实测屏幕是 {observed}，不是 {stored}",
-  "The browser reported language {observed}, not {stored}": "浏览器实测语言是 {observed}，不是 {stored}"
+  "The browser reported language {observed}, not {stored}": "浏览器实测语言是 {observed}，不是 {stored}",
+  "Encrypt account passwords, 2FA secrets, cookies and saved sign-ins?": "加密账号密码、2FA 密钥、Cookie 和保存的登录状态？",
+  "They will open only for this Windows account on this computer. If you reinstall Windows or move the data folder to another computer, export your profiles first.": "加密后只有这台电脑上的这个 Windows 账户能打开。重装系统或把数据文件夹搬到别的电脑前，请先导出环境。",
+  "The key is a file in the data folder that only your account can read. A full copy of the folder can still be opened elsewhere.": "密钥是数据文件夹里一个只有你的账户能读的文件。把整个文件夹完整复制走，在别处仍然能打开。",
+  "Encrypt": "加密",
+  "Done. {count} values could not be read with this computer's key and were left as they were.": "完成。有 {count} 项用这台电脑的密钥读不出来，保持原样。",
+  "Sensitive data is now encrypted.": "敏感数据已加密。",
+  "Sensitive data is stored unencrypted again.": "敏感数据已恢复为不加密存储。",
+  "Encrypt sensitive data": "加密敏感数据",
+  "Account passwords, email passwords, 2FA secrets, imported cookies and saved sign-ins are kept in the profile database. Encrypted, a copy of that file is useless without this computer's key. Proxy pool secrets are always encrypted.": "账号密码、邮箱密码、2FA 密钥、导入的 Cookie 和保存的登录状态都存在环境数据库里。加密后，没有这台电脑的密钥，拿到这个文件也没用。代理池的密钥信息始终是加密的。",
+  "Key protected by Windows for your account (DPAPI).": "密钥由 Windows 按你的账户保护（DPAPI）。",
+  "Key stored in the data folder, readable only by your account.": "密钥存在数据文件夹里，只有你的账户能读。",
+  "This computer's key cannot be read right now, so nothing was encrypted. Try again in a moment.": "这台电脑的密钥暂时读不出来，什么都没加密。请稍后再试。",
+  "This profile's encrypted details cannot be read on this computer right now, so it was not changed": "这个环境的加密信息在这台电脑上暂时读不出来，所以没有修改它"
 }

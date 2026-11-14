@@ -281,6 +281,15 @@ export function serveDashboard(opts: DashboardServerOptions) {
   // Snapshots before fingerprint and proxy changes, and a daily backup of sign-ins that changed.
   const snapshots = opts.paths && !opts.remote ? new SnapshotStore(join(opts.paths.root, "snapshots"), () => store.secretBox()) : undefined;
   if (snapshots) store.attachSnapshots(snapshots);
+  // Sensitive fields are sealed with this data folder's key when the user turned that on; values
+  // written before are sealed now. Values this computer cannot read are left as they are.
+  try {
+    if (!opts.remote && opts.appConfig?.read().encryptData === true) {
+      store.setFieldEncryption(true);
+      const { unreadable } = store.reencryptFields();
+      if (unreadable) log(`${unreadable} encrypted value(s) cannot be read with this computer's key`);
+    }
+  } catch (error) { log(`data encryption could not start: ${error instanceof Error ? error.message : error}`); }
   const runBackups = () => {
     if (!snapshots) return;
     try { if (opts.appConfig?.read().sessionBackups === false) return; } catch { /* defaults on */ }

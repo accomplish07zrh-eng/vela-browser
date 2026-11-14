@@ -28,7 +28,7 @@ import { ProxyPool } from "./proxy-pool.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { assertValidProfile } from "./profile-validation.ts";
 import { mergeCookies } from "./parse.ts";
-import { secretBoxForDatabase, type SecretBox } from "./secret-box.ts";
+import { SecretBox, secretBoxForDatabase } from "./secret-box.ts";
 import { identityChanges, type SnapshotStore } from "./snapshots.ts";
 
 export class ProfileStore {
@@ -285,7 +285,7 @@ export class ProfileStore {
       for (const row of rows) {
         // Corrupt identities must still fail when read, not prevent the whole store from opening.
         let profile: Profile;
-        try { profile = completeProfileFingerprint(rowToProfile(row)); } catch { continue; }
+        try { profile = completeProfileFingerprint(rowToProfile(row, this.openField)); } catch { continue; }
         const firefox = profile.firefox ? JSON.stringify(profile.firefox) : "";
         // A Firefox engine update also changes the version in the user agent.
         if (profile.locale !== row.locale || firefox !== row.firefox_config_json || profile.ua !== row.ua) {
@@ -301,6 +301,50 @@ export class ProfileStore {
   secretBox(): SecretBox {
     return this.box ??= secretBoxForDatabase(this.path, { log: (message) => console.warn(message) });
   }
+  private encryptFields = false;
+  /** Whether account passwords, 2FA secrets, cookies and saved sign-ins are written encrypted. */
+  get fieldEncryption(): boolean { return this.encryptFields; }
+  setFieldEncryption(on: boolean): void { this.encryptFields = on; }
+
+  /** Seals one sensitive value when encryption is on. Refuses to write over a value it could not read. */
+  private sealField(value: string): string {
+    if (value === UNREADABLE) throw new Error(UNREADABLE_WRITE);
+    if (!this.encryptFields || !value) return value;
+    return this.secretBox().seal(value);
+  }
+  /** Opens a sealed value; one this computer cannot open now reads as UNREADABLE. */
+  private openField = (value: string | null | undefined): string => {
+    if (!value || !SecretBox.isSealed(value)) return value ?? "";
+    try { return this.secretBox().open(value); } catch { return UNREADABLE; }
+  };
+  private sealCookies(cookies: CookieRecord[]): string {
+    if (cookies === UNREADABLE_COOKIES) throw new Error(UNREADABLE_WRITE);
+    return this.sealField(JSON.stringify(cookies));
+  }
+
+  /**
+   * Seals (or opens) every stored sensitive value to match the setting. Values this computer cannot
+   * read are left exactly as they are. Returns how many values changed and how many are unreadable.
+   */
+  reencryptFields(): { changed: number; unreadable: number } {
+    let changed = 0, unreadable = 0;
+    const columns = ["password", "email_password", "twofa", "cookies_json", "session_json", "pending_cookies_json"] as const;
+    this.transaction(() => {
+      const rows = this.db.query<Record<string, string>, []>(`SELECT id, ${columns.join(", ")} FROM profiles`).all();
+      for (const row of rows) {
+        for (const column of columns) {
+          const raw = row[column] ?? "";
+          if (!raw) continue;
+          const plain = this.openField(raw);
+          if (plain === UNREADABLE) { unreadable++; continue; }
+          const next = this.encryptFields ? (SecretBox.isSealed(raw) ? raw : this.secretBox().seal(plain)) : plain;
+          if (next !== raw) { this.db.query(`UPDATE profiles SET ${column} = ? WHERE id = ?`).run(next, row.id!); changed++; }
+        }
+      }
+    })();
+    return { changed, unreadable };
+  }
+
   /** The proxy pool, kept in this same database file. */
   get proxyPool(): ProxyPool {
     return this.pool ??= new ProxyPool(this.db, Date.now, this.secretBox());
@@ -312,7 +356,7 @@ export class ProfileStore {
 
   /** Arms the saved sign-ins of a snapshot to be put back at the browser's next start. */
   armSessionRestore(id: string, bundle: string): void {
-    this.db.query(`UPDATE profiles SET session_json = ?, session_restore_pending = 1 WHERE id = ?`).run(bundle, id);
+    this.db.query(`UPDATE profiles SET session_json = ?, session_restore_pending = 1 WHERE id = ?`).run(this.sealField(bundle), id);
   }
 
   close(): void {
@@ -450,10 +494,10 @@ export class ProfileStore {
         $group: p.group,
         $platform: p.platform ?? "",
         $user: p.username,
-        $pass: p.password,
+        $pass: this.sealField(p.password ?? ""),
         $email: p.email ?? "",
-        $emailPass: p.emailPassword ?? "",
-        $twofa: p.twofa,
+        $emailPass: this.sealField(p.emailPassword ?? ""),
+        $twofa: this.sealField(p.twofa ?? ""),
         $proxy: proxy ? JSON.stringify(proxy) : null,
         $proxyError: proxyError || null,
         $ext: JSON.stringify(p.extensions ?? []),
@@ -469,7 +513,7 @@ export class ProfileStore {
         $platformOs: p.platformOs ?? "",
         $fpObserved: p.fpObserved ? JSON.stringify(p.fpObserved) : "",
         $fpExpected: p.fpExpected ? JSON.stringify(p.fpExpected) : "",
-        $cookies: JSON.stringify(p.cookies),
+        $cookies: this.sealCookies(p.cookies),
         $seeded: seeded,
         // Set on INSERT; preserved on re-import (the ON CONFLICT clause never
         // updates created_at). New profiles get a real timestamp; rows imported
@@ -514,35 +558,41 @@ export class ProfileStore {
   }
 
   getSessionBundle(id: string): string | null {
-    return this.db.query<{ session_json: string }, [string]>(
+    const value = this.openField(this.db.query<{ session_json: string }, [string]>(
       `SELECT session_json FROM profiles WHERE id = ?`,
-    ).get(id)?.session_json || null;
+    ).get(id)?.session_json);
+    return value && value !== UNREADABLE ? value : null;
   }
 
   getPendingSessionBundle(id: string): string | null {
-    return this.db.query<{ session_json: string }, [string]>(
+    const value = this.openField(this.db.query<{ session_json: string }, [string]>(
       `SELECT session_json FROM profiles WHERE id = ? AND session_restore_pending = 1`,
-    ).get(id)?.session_json || null;
+    ).get(id)?.session_json);
+    return value && value !== UNREADABLE ? value : null;
   }
 
   /** Capturing live state must never arm an import restore. */
   saveSessionBundle(id: string, bundle: string): void {
-    this.db.query(`UPDATE profiles SET session_json = ? WHERE id = ?`).run(bundle, id);
+    this.db.query(`UPDATE profiles SET session_json = ? WHERE id = ?`).run(this.sealField(bundle), id);
   }
 
   markSessionRestored(id: string, bundle: string): void {
-    this.db.query(`UPDATE profiles SET session_restore_pending = 0 WHERE id = ? AND session_json = ?`).run(id, bundle);
+    // Sealed values differ each time they are written, so the bundle is compared once opened.
+    const row = this.db.query<{ session_json: string }, [string]>(`SELECT session_json FROM profiles WHERE id = ?`).get(id);
+    if (row && this.openField(row.session_json) === bundle) {
+      this.db.query(`UPDATE profiles SET session_restore_pending = 0 WHERE id = ? AND session_json = ?`).run(id, row.session_json);
+    }
   }
 
   getProfile(id: string): Profile | null {
     const row = this.db
       .query<any, [string]>(`SELECT * FROM profiles WHERE id = ? AND trashed_at = 0`)
       .get(id);
-    return row ? rowToProfile(row) : null;
+    return row ? rowToProfile(row, this.openField) : null;
   }
 
   listProfiles(): Profile[] {
-    return this.db.query<any, []>(`SELECT * FROM profiles WHERE trashed_at = 0 ORDER BY id`).all().map(rowToProfile);
+    return this.db.query<any, []>(`SELECT * FROM profiles WHERE trashed_at = 0 ORDER BY id`).all().map((row) => rowToProfile(row, this.openField));
   }
 
   /** What a Cloud roster row shows from the local copy, read in one query without parsing whole profiles. */
@@ -603,8 +653,10 @@ export class ProfileStore {
         `SELECT pending_cookies_json FROM profiles WHERE id = ? AND trashed_at = 0`,
       ).get(id);
       if (!row) throw new Error(`Unknown profile: ${id}`);
-      const merged = mergeCookies(safeParse<CookieRecord[]>(row.pending_cookies_json, []), cookies);
-      this.db.query(`UPDATE profiles SET pending_cookies_json = ? WHERE id = ?`).run(JSON.stringify(merged), id);
+      const current = this.openField(row.pending_cookies_json);
+      if (current === UNREADABLE) throw new Error(UNREADABLE_WRITE);
+      const merged = mergeCookies(safeParse<CookieRecord[]>(current, []), cookies);
+      this.db.query(`UPDATE profiles SET pending_cookies_json = ? WHERE id = ?`).run(this.sealField(JSON.stringify(merged)), id);
       return merged.length;
     })();
   }
@@ -613,23 +665,32 @@ export class ProfileStore {
     const row = this.db.query<{ pending_cookies_json: string }, [string]>(
       `SELECT pending_cookies_json FROM profiles WHERE id = ?`,
     ).get(id);
-    return row ? safeParse<CookieRecord[]>(row.pending_cookies_json, []) : [];
+    const value = row ? this.openField(row.pending_cookies_json) : "";
+    return value && value !== UNREADABLE ? safeParse<CookieRecord[]>(value, []) : [];
   }
 
   /** Remove the pending cookies a launch set. Cookies added during that launch stay pending. */
   clearPendingCookies(id: string, applied: CookieRecord[]): void {
     this.transaction(() => {
       const done = new Set(applied.map((cookie) => JSON.stringify(cookie)));
+      const row = this.db.query<{ pending_cookies_json: string }, [string]>(`SELECT pending_cookies_json FROM profiles WHERE id = ?`).get(id);
+      if (row && this.openField(row.pending_cookies_json) === UNREADABLE) return;
       const left = this.getPendingCookies(id).filter((cookie) => !done.has(JSON.stringify(cookie)));
-      this.db.query(`UPDATE profiles SET pending_cookies_json = ? WHERE id = ?`).run(JSON.stringify(left), id);
+      this.db.query(`UPDATE profiles SET pending_cookies_json = ? WHERE id = ?`).run(this.sealField(JSON.stringify(left)), id);
     })();
   }
 
   /** Pending cookie count per profile with any. */
   pendingCookieCounts(): Map<string, number> {
-    return new Map(this.db.query<{ id: string; n: number }, []>(
-      `SELECT id, json_array_length(pending_cookies_json) AS n FROM profiles WHERE pending_cookies_json <> '[]'`,
-    ).all().map((row) => [row.id, row.n] as const));
+    const counts = new Map<string, number>();
+    for (const row of this.db.query<{ id: string; value: string }, []>(
+      `SELECT id, pending_cookies_json AS value FROM profiles WHERE pending_cookies_json <> '[]' AND pending_cookies_json <> ''`,
+    ).all()) {
+      const value = this.openField(row.value);
+      const count = value && value !== UNREADABLE ? safeParse<unknown[]>(value, []).length : 0;
+      if (count) counts.set(row.id, count);
+    }
+    return counts;
   }
 
   markSeeded(id: string): void {
@@ -1157,7 +1218,14 @@ function optionalJson<T>(key: string, raw: unknown): Record<string, T> {
   }
 }
 
-function rowToProfile(row: any): Profile {
+/** A sensitive value this computer cannot open right now (encrypted under another account's key, or the key is unavailable). */
+export const UNREADABLE = "\u0000vela:unreadable";
+/** Cookies that could not be opened: the same array everywhere, so a write can recognise and refuse it. */
+export const UNREADABLE_COOKIES: CookieRecord[] = Object.freeze([]) as unknown as CookieRecord[];
+const UNREADABLE_WRITE = "This profile's encrypted details cannot be read on this computer right now, so it was not changed";
+
+function rowToProfile(row: any, open: (value: string | null | undefined) => string = (value) => value ?? ""): Profile {
+  const cookies = open(row.cookies_json);
   const browser = normalizeProfileEngine(row.engine, readStoredFirefoxConfig(row.firefox_config_json), row.webkit_config_json ? JSON.parse(row.webkit_config_json) : undefined);
   const stored = readStoredProxy(row.proxy_json, row.proxy_error);
   return {
@@ -1172,10 +1240,10 @@ function rowToProfile(row: any): Profile {
     group: row.group ?? "",
     platform: row.platform ?? "",
     username: row.username ?? "",
-    password: row.password ?? "",
+    password: open(row.password),
     email: row.email ?? "",
-    emailPassword: row.email_password ?? "",
-    twofa: row.twofa ?? "",
+    emailPassword: open(row.email_password),
+    twofa: open(row.twofa),
     proxy: stored.proxy,
     ...(stored.error ? { proxyError: stored.error } : {}),
     extensions: safeParse<string[]>(row.extensions_json, []),
@@ -1193,7 +1261,7 @@ function rowToProfile(row: any): Profile {
     ...optionalJson<ObservedFingerprint>("fpObserved", row.fp_observed_json),
     ...optionalJson<ObservedFingerprint>("fpExpected", row.fp_expected_json),
     ...optionalJson<FingerprintVerdict>("fpVerdict", row.fp_verdict_json),
-    cookies: safeParse<CookieRecord[]>(row.cookies_json, []),
+    cookies: cookies === UNREADABLE ? UNREADABLE_COOKIES : safeParse<CookieRecord[]>(cookies, []),
     seeded: Boolean(row.seeded),
   };
 }

@@ -84,3 +84,35 @@ export function BackupsCard({ flash }: { flash(message: string): void }) {
     </div>
   </section>;
 }
+
+/** Settings: encrypting account passwords, 2FA secrets, cookies and saved sign-ins at rest. */
+export function DataEncryptionCard({ flash }: { flash(message: string): void }) {
+  const { t } = useTranslation();
+  const [state, setState] = useState<{ enabled: boolean; protection: string; available?: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { call<any>("/ui/api/data-encryption").then(setState, () => setState(null)); }, []);
+  if (!state) return null;
+  const toggle = async (enabled: boolean) => {
+    if (enabled && !await confirmDialog(t("Encrypt account passwords, 2FA secrets, cookies and saved sign-ins?") + "\n\n" + (state.protection === "dpapi"
+      ? t("They will open only for this Windows account on this computer. If you reinstall Windows or move the data folder to another computer, export your profiles first.")
+      : t("The key is a file in the data folder that only your account can read. A full copy of the folder can still be opened elsewhere.")), { confirmLabel: t("Encrypt") })) return;
+    setBusy(true);
+    try {
+      const result = await call<any>("/ui/api/data-encryption", "POST", { enabled });
+      setState((current) => current ? { ...current, enabled: result.enabled } : current);
+      flash(result.unreadable ? t("Done. {count} values could not be read with this computer's key and were left as they were.", { count: result.unreadable }) : enabled ? t("Sensitive data is now encrypted.") : t("Sensitive data is stored unencrypted again."));
+    } catch (error) { flash(t(error instanceof Error ? error.message : String(error))); }
+    finally { setBusy(false); }
+  };
+  return <section className="settings-card encryption-card">
+    <header><svg className="icon sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2" /><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" /></svg><h2>{t("Encrypt sensitive data")}</h2></header>
+    <div className="card-body">
+      <p>{t("Account passwords, email passwords, 2FA secrets, imported cookies and saved sign-ins are kept in the profile database. Encrypted, a copy of that file is useless without this computer's key. Proxy pool secrets are always encrypted.")}</p>
+      <div className="settings-row"><span>{t("Encrypt")}</span>
+        <label className="plugin-switch"><input type="checkbox" role="switch" checked={state.enabled} disabled={busy} onChange={(event) => void toggle(event.target.checked)} />
+          <span>{state.enabled ? t("On") : t("Off")}</span></label>
+      </div>
+      <p className="cardnote">{state.protection === "dpapi" ? t("Key protected by Windows for your account (DPAPI).") : t("Key stored in the data folder, readable only by your account.")}</p>
+    </div>
+  </section>;
+}

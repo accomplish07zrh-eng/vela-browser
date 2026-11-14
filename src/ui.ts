@@ -946,6 +946,29 @@ export async function handleUiRequest(
     return noStoreJson({ ok: true, entries, actors: options.audit.actors() });
   }
 
+  // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.
+  if (pathname === "/ui/api/data-encryption") {
+    if (remote || !options.appConfig) return noStoreJson({ ok: false, error: "Data encryption is unavailable" }, 400);
+    try {
+      if (req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as { enabled?: unknown };
+        if (typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "enabled must be true or false" }, 400);
+        const box = store.secretBox();
+        if (body.enabled && !box.available) return noStoreJson({ ok: false, error: "This computer's key cannot be read right now, so nothing was encrypted. Try again in a moment." }, 409);
+        store.setFieldEncryption(body.enabled);
+        const result = store.reencryptFields();
+        const { encryptData: _old, ...rest } = options.appConfig.read();
+        options.appConfig.write(body.enabled ? { ...rest, encryptData: true } : rest);
+        return noStoreJson({ ok: true, enabled: body.enabled, protection: box.protection, ...result });
+      }
+      if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+      const box = store.secretBox();
+      return noStoreJson({ ok: true, enabled: store.fieldEncryption, protection: box.protection, available: box.available });
+    } catch (error) {
+      return noStoreJson({ ok: false, error: msg(error) }, 500);
+    }
+  }
+
   // Self-check: each profile's health, and checking the exits it depends on.
   if (pathname === "/ui/api/health" || pathname === "/ui/api/health/check") {
     if (remote) return noStoreJson({ ok: false, error: "The self-check is unavailable in legacy remote mode" }, 400);

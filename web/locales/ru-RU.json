@@ -1267,5 +1267,18 @@
   "The browser reported system {observed}, not {stored}": "Браузер сообщил систему {observed}, а не {stored}",
   "The browser's user agent and platform disagree ({ua} / {platform})": "User agent и платформа браузера расходятся ({ua} / {platform})",
   "The browser reported screen {observed}, not {stored}": "Браузер сообщил экран {observed}, а не {stored}",
-  "The browser reported language {observed}, not {stored}": "Браузер сообщил язык {observed}, а не {stored}"
+  "The browser reported language {observed}, not {stored}": "Браузер сообщил язык {observed}, а не {stored}",
+  "Encrypt account passwords, 2FA secrets, cookies and saved sign-ins?": "Зашифровать пароли аккаунтов, секреты 2FA, cookie и сохранённые входы?",
+  "They will open only for this Windows account on this computer. If you reinstall Windows or move the data folder to another computer, export your profiles first.": "Открыть их сможет только эта учётная запись Windows на этом компьютере. Перед переустановкой Windows или переносом папки на другой компьютер экспортируйте окружения.",
+  "The key is a file in the data folder that only your account can read. A full copy of the folder can still be opened elsewhere.": "Ключ — файл в папке данных, доступный только вашей учётной записи. Полную копию папки всё ещё можно открыть в другом месте.",
+  "Encrypt": "Шифровать",
+  "Done. {count} values could not be read with this computer's key and were left as they were.": "Готово. {count} значений не удалось прочитать ключом этого компьютера, они оставлены как есть.",
+  "Sensitive data is now encrypted.": "Чувствительные данные зашифрованы.",
+  "Sensitive data is stored unencrypted again.": "Чувствительные данные снова хранятся без шифрования.",
+  "Encrypt sensitive data": "Шифрование чувствительных данных",
+  "Account passwords, email passwords, 2FA secrets, imported cookies and saved sign-ins are kept in the profile database. Encrypted, a copy of that file is useless without this computer's key. Proxy pool secrets are always encrypted.": "Пароли аккаунтов и почты, секреты 2FA, импортированные cookie и сохранённые входы хранятся в базе окружений. Зашифрованная копия файла бесполезна без ключа этого компьютера. Секреты пула прокси шифруются всегда.",
+  "Key protected by Windows for your account (DPAPI).": "Ключ защищён Windows для вашей учётной записи (DPAPI).",
+  "Key stored in the data folder, readable only by your account.": "Ключ хранится в папке данных и доступен только вашей учётной записи.",
+  "This computer's key cannot be read right now, so nothing was encrypted. Try again in a moment.": "Ключ этого компьютера сейчас не читается, поэтому ничего не зашифровано. Повторите чуть позже.",
+  "This profile's encrypted details cannot be read on this computer right now, so it was not changed": "Зашифрованные данные этого окружения сейчас не читаются на этом компьютере, поэтому оно не изменено"
 }

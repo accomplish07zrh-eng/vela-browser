@@ -30,6 +30,8 @@ export interface AppConfig {
   aiAccess?: AiAccessSettings;
   /** Set to false when the user turned off the daily backup of sign-ins. */
   sessionBackups?: boolean;
+  /** Account passwords, 2FA secrets, cookies and saved sign-ins are stored encrypted. */
+  encryptData?: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -68,6 +70,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     ...(raw.aiCodeChanges === "allow" || raw.aiCodeChanges === "deny" ? { aiCodeChanges: raw.aiCodeChanges } : {}),
     ...(normalizeAiAccess(raw.aiAccess) ? { aiAccess: normalizeAiAccess(raw.aiAccess)! } : {}),
     ...(raw.sessionBackups === false ? { sessionBackups: false } : {}),
+    ...(raw.encryptData === true ? { encryptData: true } : {}),
   };
 }
 
