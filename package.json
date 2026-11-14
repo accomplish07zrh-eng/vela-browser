@@ -15,6 +15,8 @@
     "typecheck": "tsc --noEmit",
     "docs:public": "bun scripts/generate-public-docs.mjs",
     "docs:public:check": "bun scripts/generate-public-docs.mjs --check",
+    "ui:check": "bun scripts/ui-regression.ts",
+    "ui:accept": "bun scripts/ui-regression.ts --update",
     "desktop:prepare": "bun scripts/prepare-windows-bundle.ts",
     "desktop:build:nsis": "bun run desktop:prepare && tauri build --bundles nsis --no-sign",
     "desktop:prepare:macos": "bun scripts/prepare-macos-bundle.ts",
