@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "./select.tsx";
 import { NumberInput } from "./controls.tsx";
+import { confirmDialog } from "./dialog.tsx";
 import { useTranslation } from "./i18n.tsx";
 import type { PoolCheck, PoolNodeView, PoolSubscriptionView } from "../src/proxy-pool.ts";
 
@@ -254,7 +255,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
     const message = used
       ? t("Remove {count} proxies from the pool? {used} profiles use them and keep their proxy; it is just no longer in the pool.", { count: ids.length, used })
       : t("Remove {count} proxies from the pool?", { count: ids.length });
-    if (!window.confirm(message)) return;
+    if (!await confirmDialog(message, { danger: true, confirmLabel: t("Remove") })) return;
     setBusy("delete");
     try { await deletePoolNodes(ids); setSelected(new Set()); await load(); }
     catch { setError(t("Could not remove the selected proxies.")); }
@@ -300,12 +301,12 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
           const nodeCount = (nodes ?? []).filter((node) => node.subscriptionId === sub.id && !node.removedFromSource).length;
           const scheduleChoices = [...new Set([...REFRESH_HOUR_PRESETS, ...(sub.refreshHours ? [sub.refreshHours] : [])])].sort((a, b) => a - b);
           return <tr key={sub.id}>
-            <td><strong>{sub.name}</strong><small className="tools-mono">{sub.host}</small></td>
+            <td><strong>{sub.name}</strong>{sub.name !== sub.host && <small className="tools-mono">{sub.host}</small>}</td>
             <td className={usage.warn ? "pool-warn" : ""}>{usage.left !== undefined ? `${bytes(usage.left)} / ${bytes(usage.total)}` : "—"}</td>
             <td className={usage.warn ? "pool-warn" : ""}>{usage.expireAt ? new Date(usage.expireAt).toLocaleDateString() : "—"}</td>
             <td>{nodeCount}{sub.lastImport && (sub.lastImport.unsupported.length > 0 || sub.lastImport.infoEntries > 0) && <small>{t("{unsupported} unsupported · {info} notices", { unsupported: sub.lastImport.unsupported.length, info: sub.lastImport.infoEntries })}</small>}</td>
             <td>{sub.lastFetchedAt ? new Date(sub.lastFetchedAt).toLocaleString() : "—"}{sub.lastError && <small className="pool-warn">{failureText(t, new Error(sub.lastError), "The subscription could not be read")}</small>}</td>
-            <td><Select className="pool-sub-select" aria-label={t("Auto-refresh")} value={sub.refreshHours === null ? "" : String(sub.refreshHours)} disabled={!!subBusy}
+            <td><Select className="select pool-sub-select" aria-label={t("Auto-refresh")} value={sub.refreshHours === null ? "" : String(sub.refreshHours)} disabled={!!subBusy}
               onChange={(e) => void (async () => {
                 const nextHours = e.target.value ? Number(e.target.value) : null;
                 setSubBusy(`schedule:${sub.id}`); setError(null);
@@ -326,7 +327,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
                 finally { setSubBusy(null); await load(); }
               })()}>{subBusy === `refresh:${sub.id}` ? t("Updating…") : t("Update")}</button>
               <button type="button" className="btn sm" disabled={!!subBusy} onClick={() => void (async () => {
-                if (!window.confirm(t("Remove this subscription? Its nodes that profiles use stay in the pool; the others are removed."))) return;
+                if (!await confirmDialog(t("Remove this subscription? Its nodes that profiles use stay in the pool; the others are removed."), { danger: true, confirmLabel: t("Remove") })) return;
                 setSubBusy(`delete:${sub.id}`);
                 try { await deleteSubscription(sub.id); } catch { setError(t("Could not save")); }
                 finally { setSubBusy(null); await load(); }
@@ -527,7 +528,7 @@ export function PoolProxyPicker({ profileId, running, onAssigned }: { profileId:
   </>;
   const usable = (nodes ?? []).filter((node) => !node.disabled);
   const assign = async () => {
-    if (running && !window.confirm(t("Change this open browser's exit? Its session is saved, it closes, and it reopens on the new exit with its tabs. Timezone and WebRTC follow the new exit."))) return;
+    if (running && !await confirmDialog(t("Change this open browser's exit? Its session is saved, it closes, and it reopens on the new exit with its tabs. Timezone and WebRTC follow the new exit."), { confirmLabel: t("Change exit") })) return;
     setBusy(true); setMessage(null);
     try {
       const result = await switchPoolNode(profileId, choice);

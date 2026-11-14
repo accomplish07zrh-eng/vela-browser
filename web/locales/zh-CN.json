@@ -1053,5 +1053,6 @@
   "Actions": "操作",
   "ids must be a list": "ids 必须是列表",
   "Choose a profile": "请选择一个环境",
-  "The proxy pool is unavailable in legacy remote mode": "旧版远程模式下不可用代理池"
+  "The proxy pool is unavailable in legacy remote mode": "旧版远程模式下不可用代理池",
+  "Change exit": "更换出口"
 }
