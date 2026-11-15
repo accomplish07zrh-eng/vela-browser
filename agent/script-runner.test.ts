@@ -115,6 +115,7 @@ const input = {
   credentials: { username: "user" },
 };
 
+// Starts a real Node process, which a busy machine can take seconds to do.
 test("Node script runner passes the CDP objects and user data without a completion message", async () => {
   const root = workspace();
   try {
@@ -136,7 +137,7 @@ test("Node script runner passes the CDP objects and user data without a completi
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 test("Node scripts can read the developer record; one that cannot start fails only when read", async () => {
   const root = workspace();
@@ -160,6 +161,7 @@ test("Node scripts can read the developer record; one that cannot start fails on
   }
 });
 
+// Starts a real Node process, which a busy machine can take seconds to do.
 test("Node script runner connects Firefox through a private Playwright endpoint", async () => {
   const root = workspace();
   try {
@@ -176,8 +178,9 @@ test("Node script runner connects Firefox through a private Playwright endpoint"
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
+// Starts a real Node process, which a busy machine can take seconds to do.
 test("Node script runner redacts Firefox endpoint errors", async () => {
   const root = workspace();
   try {
@@ -192,8 +195,9 @@ test("Node script runner redacts Firefox endpoint errors", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
+// Starts a real Node process, which a busy machine can take seconds to do.
 test("Node script runner rejects opaque Firefox locators", async () => {
   const root = workspace();
   try {
@@ -209,8 +213,9 @@ test("Node script runner rejects opaque Firefox locators", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
+// Starts a real Node process, which a busy machine can take seconds to do.
 test("Node script runner exits when its parent closes stdin", async () => {
   const root = workspace();
   try {
@@ -226,7 +231,7 @@ test("Node script runner exits when its parent closes stdin", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 // A first Python start on a cold Windows runner can take longer than the 5 s default while
 // antivirus scans the interpreter and the test's fresh files.

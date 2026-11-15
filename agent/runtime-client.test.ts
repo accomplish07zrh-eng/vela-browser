@@ -91,6 +91,8 @@ test("runtime descriptor path uses the Tauri application data directory", () => 
   } as any)).toBe("C:\\fixture\\runtime.json");
 });
 
+// On Windows this reads the desktop process's start time twice through PowerShell (about 1.3s each on an idle
+// machine, and runtime-client allows each up to 5s), so the 5s default fails it whenever the machine is busy.
 test("the Bun helper authenticates and negotiates the local agent protocol over a real socket", async () => {
   const directory = mkdtempSync(join(tmpdir(), "vela-local-agent-"));
   let client: AgentRuntimeClient | undefined;
@@ -136,4 +138,4 @@ test("the Bun helper authenticates and negotiates the local agent protocol over 
     await server.stop(true);
     rmSync(directory, { recursive: true, force: true });
   }
-});
+}, 20_000);
