@@ -25,6 +25,7 @@ function control(overrides: Partial<MobileControl> = {}): MobileControl & { open
     profiles: () => [{ id: "p1", name: "Shop 1", group: "Shops", running: true, engine: "chromium", tags: [] }, { id: "p2", name: "Shop 2", group: "Shops", running: false, engine: "chromium", tags: [] }],
     open: async (id) => { opened.push(id); }, close: async () => {},
     visit: async (id, url) => { opened.push(`visit:${id}:${url}`); },
+    viewMode: async (id, mode) => { opened.push(`mode:${id}:${mode}`); },
     scripts: async () => [{ id: "s1", name: "Check in", description: "", language: "javascript" }],
     runScript: (scriptId, ids) => ({ id: "run1", scriptId, ids }), stopScript: async () => null, scriptStatus: () => null,
     tasks: () => ({ tasks: [], history: [], runningTaskId: null }), runTask: () => {},
@@ -117,6 +118,15 @@ describe("phone app link", () => {
       const frame = await link.next((item) => !!item.frame);
       expect(frame.frame!.header).toMatchObject({ t: "frame", targetId: "t1", width: 8, height: 4 });
       expect(frame.frame!.jpeg.toString()).toBe("JPEGDATA");
+
+      // Phone mode narrows the shown browser's window; leaving the browser gives the size back.
+      expect((await link.call("view.mode", { mode: "phone" })).data.mode).toBe("phone");
+      expect((await link.call("view.mode", { mode: "phone" })).ok).toBe(true);
+      expect((await link.call("unwatch")).ok).toBe(true);
+      expect(ctl.opened.filter((entry) => entry.startsWith("mode:"))).toEqual(["mode:p1:phone", "mode:p1:pc"]);
+      expect((await link.call("view.mode", { mode: "phone" })).ok).toBe(false);
+      expect((await link.call("watch", { id: "p1", mode: "phone" })).ok).toBe(true);
+      expect(ctl.opened.at(-1)).toBe("mode:p1:phone");
 
       // A replayed message ends the connection.
       const sealed = link.channel().seal(encodeMessage({ t: "call", id: 99, m: "state" }));

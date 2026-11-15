@@ -103,9 +103,9 @@ fun BrowserDock(
                 Icon(Icons.Rounded.GridView, tr("控制中心", "Control centre"), tint = colors.onSurface, modifier = Modifier.size(24.dp))
             }
             if (approvals > 0) Box(
-                Modifier.align(Alignment.TopEnd).offset(2.dp, (-2).dp).size(20.dp).clip(CircleShape).background(Color(0xFFFF8A1F)),
+                Modifier.align(Alignment.TopEnd).offset(2.dp, (-2).dp).size(20.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface),
                 contentAlignment = Alignment.Center,
-            ) { Text(approvals.coerceAtMost(9).toString(), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+            ) { Text(approvals.coerceAtMost(9).toString(), color = MaterialTheme.colorScheme.background, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
         }
         BrowserStrip(running, currentId, hazeState, onSelect, onCurrent, Modifier.weight(1f))
         Box(Modifier.size(DockHeight).glassSurface(hazeState, CircleShape).springClickable(pressedScale = 0.88f, onClick = onKeyboard), contentAlignment = Alignment.Center) {

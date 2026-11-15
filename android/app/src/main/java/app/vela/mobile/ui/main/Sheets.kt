@@ -1,5 +1,8 @@
 package app.vela.mobile.ui.main
 
+import app.vela.mobile.ui.theme.filledField
+import app.vela.mobile.ui.theme.TitleSerif
+import app.vela.mobile.ui.theme.LocalStatus
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -91,7 +94,7 @@ fun VelaSheet(onDismiss: () -> Unit, content: @Composable () -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         containerColor = if (dark) Color(0xFF121216) else Color(0xFFF6F6F8),
         dragHandle = { Box(Modifier.padding(top = 10.dp, bottom = 6.dp).size(38.dp, 5.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))) },
     ) {
@@ -109,13 +112,13 @@ private fun SheetTitle(title: String, onBack: (() -> Unit)? = null) {
                 modifier = Modifier.size(36.dp).clip(CircleShape).springClickable(onClick = onBack).padding(6.dp))
             Spacer(Modifier.width(6.dp))
         }
-        Text(title, fontSize = 26.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground)
+        Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold, fontFamily = TitleSerif, letterSpacing = 0.5.sp, color = MaterialTheme.colorScheme.onBackground)
     }
 }
 
 @Composable
 private fun Group(content: @Composable () -> Unit) {
-    Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().floatingCard(RoundedCornerShape(22.dp))) { content() }
+    Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().floatingCard(RoundedCornerShape(20.dp))) { content() }
 }
 
 @Composable
@@ -126,7 +129,7 @@ private fun Pill(text: String, dark: Boolean = true, enabled: Boolean = true, on
     val colors = MaterialTheme.colorScheme
     Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
         color = if (dark) colors.background else colors.onSurface,
-        modifier = Modifier.clip(RoundedCornerShape(18.dp))
+        modifier = Modifier.clip(CircleShape)
             .background(if (dark) colors.onSurface.copy(alpha = if (enabled) 1f else 0.35f) else colors.surfaceVariant)
             .springClickable(enabled = enabled, pressedScale = 0.94f, onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp))
 }
@@ -196,14 +199,14 @@ private fun Home(state: DeskState?, go: (Page) -> Unit) {
 @Composable
 private fun Tile(icon: ImageVector, label: String, badge: Int, sub: String, modifier: Modifier, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    Column(modifier.floatingCard(RoundedCornerShape(22.dp)).springClickable(pressedScale = 0.95f, onClick = onClick).padding(16.dp)) {
+    Column(modifier.floatingCard(RoundedCornerShape(20.dp)).springClickable(pressedScale = 0.95f, onClick = onClick).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(38.dp).clip(CircleShape).background(colors.surfaceVariant), contentAlignment = Alignment.Center) {
                 Icon(icon, null, tint = colors.onSurface, modifier = Modifier.size(21.dp))
             }
             Spacer(Modifier.weight(1f))
-            if (badge > 0) Box(Modifier.size(22.dp).clip(CircleShape).background(Color(0xFFFF8A1F)), contentAlignment = Alignment.Center) {
-                Text(badge.coerceAtMost(99).toString(), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            if (badge > 0) Box(Modifier.size(22.dp).clip(CircleShape).background(colors.onSurface), contentAlignment = Alignment.Center) {
+                Text(badge.coerceAtMost(99).toString(), color = colors.background, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
         Spacer(Modifier.height(18.dp))
@@ -311,7 +314,7 @@ private fun Tasks(desk: Desk, onBack: () -> Unit) {
                             !task.optBoolean("enabled") -> tr("已暂停", "Paused")
                             next > 0 -> tr("下次 ", "Next ") + java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(next))
                             else -> tr("手动运行", "Run by hand")
-                        }, fontSize = 12.5.sp, color = if (id == runningId) Color(0xFF2E9E4F) else colors.onSurfaceVariant,
+                        }, fontSize = 12.5.sp, color = if (id == runningId) LocalStatus.current.runningInk else colors.onSurfaceVariant,
                     )
                 }
                 if (id == runningId) CircularProgressIndicator(Modifier.size(20.dp), color = colors.onSurface, strokeWidth = 2.dp)
@@ -329,7 +332,7 @@ private fun Tasks(desk: Desk, onBack: () -> Unit) {
                 if (i > 0) Divider()
                 val outcome = run.optString("outcome")
                 Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(when (outcome) { "succeeded" -> Color(0xFF34C759); "partial" -> Color(0xFFFF9F0A); "running" -> colors.onSurfaceVariant; else -> Color(0xFFFF453A) }))
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(when (outcome) { "succeeded" -> LocalStatus.current.running; "partial" -> LocalStatus.current.warning; "running" -> colors.onSurfaceVariant; else -> LocalStatus.current.error }))
                     Spacer(Modifier.width(12.dp))
                     Text(run.optString("taskName"), fontSize = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(run.optLong("startedAt"))), fontSize = 12.sp, color = colors.onSurfaceVariant)
@@ -426,7 +429,7 @@ private fun SettingsPage(desk: Desk, state: DeskState?, onBack: () -> Unit, onCl
                 Text(state?.name ?: computer?.name ?: "", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.onSurface)
                 Text(computer?.hosts?.firstOrNull()?.let { "$it:${computer?.port}" } ?: "", fontSize = 12.5.sp, fontFamily = FontFamily.Monospace, color = colors.onSurfaceVariant)
             }
-            Text(if (state != null) tr("已连接", "Connected") else tr("连接中", "Connecting"), fontSize = 13.sp, color = if (state != null) Color(0xFF2E9E4F) else colors.onSurfaceVariant)
+            Text(if (state != null) tr("已连接", "Connected") else tr("连接中", "Connecting"), fontSize = 13.sp, color = if (state != null) LocalStatus.current.runningInk else colors.onSurfaceVariant)
         }
     }
     Text(tr("外观", "Look"), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 20.dp, top = 20.dp, bottom = 8.dp))
@@ -435,7 +438,19 @@ private fun SettingsPage(desk: Desk, state: DeskState?, onBack: () -> Unit, onCl
             Pill(label, dark = theme == value) { theme = value; settings.theme = value; context.app.themeChanged() }
         }
     }
-    Spacer(Modifier.height(20.dp))
+    val mode by desk.mode.collectAsState()
+    Text(tr("观看模式", "View"), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 20.dp, top = 20.dp, bottom = 8.dp))
+    Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf("phone" to tr("手机模式", "Phone"), "pc" to tr("PC 模式", "PC")).forEach { (value, label) ->
+            Pill(label, dark = mode == value) { desk.setViewMode(value) }
+        }
+    }
+    Text(
+        if (mode == "phone") tr("把电脑上这个浏览器的窗口收窄到手机宽度，网页按手机排版，看起来就是手机网页。不改视口和 UA，离开时窗口恢复原来的大小。", "Narrows the browser's window on the computer to a phone's width, so pages lay out for a phone. The viewport and user agent stay the same, and the window gets its size back afterwards.")
+        else tr("保持电脑上的排版，整页缩放到手机屏幕，双指可以放大。", "Keeps the desktop layout, scaled to the phone's screen; pinch to zoom."),
+        fontSize = 12.sp, lineHeight = 17.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+    )
+    Spacer(Modifier.height(12.dp))
     Group {
         Row(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -480,7 +495,7 @@ fun BrowserSheet(desk: Desk, viewer: Viewer, name: String, onDismiss: () -> Unit
             val ime = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
             val go = { if (address.isNotBlank()) { ime?.hide(); desk.visit(address); onDismiss() } }
             Row(
-                Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(52.dp).floatingCard(RoundedCornerShape(26.dp)).padding(start = 18.dp, end = 6.dp),
+                Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(52.dp).filledField(CircleShape).padding(start = 18.dp, end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {

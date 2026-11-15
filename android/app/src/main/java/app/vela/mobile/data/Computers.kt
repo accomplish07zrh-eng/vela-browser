@@ -85,6 +85,11 @@ class ComputerStore(context: Context) {
 
     fun forget() { prefs.edit().remove("computer").remove("lastProfile").apply() }
 
+    /** "phone": pages laid out at a phone's width; "pc": the desktop layout, scaled to fit. */
+    var viewMode: String
+        get() = prefs.getString("viewMode", "pc") ?: "pc"
+        set(value) { prefs.edit().putString("viewMode", value).apply() }
+
     /** The browser shown last, shown again when the app opens. */
     var lastProfile: String?
         get() = prefs.getString("lastProfile", null)

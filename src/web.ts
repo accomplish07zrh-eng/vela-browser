@@ -33,6 +33,7 @@ import { backupSessions, SnapshotStore } from "./snapshots.ts";
 import { setTunBypass } from "./egress-binding.ts";
 import { MobileView } from "./mobile-view.ts";
 import { ALIASMODE_VERSION } from "./version.ts";
+import { PhoneWindows } from "./phone-window.ts";
 import { IpScoreCache } from "./ip-score.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
@@ -335,6 +336,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
     log,
   }) : undefined;
   tasks?.start();
+  // Phone mode of the phone app: browser windows narrowed to a phone's width, and their old sizes.
+  const phoneWindows = new PhoneWindows();
   // Watching from a phone: its own read-only listener, started only when turned on in Settings.
   const mobileView = workbenchHub && !opts.remote ? new MobileView({
     profiles: () => {
@@ -379,6 +382,14 @@ export function serveDashboard(opts: DashboardServerOptions) {
       approvals: () => ({ proxy: proxyApprovals.list(), code: codeApprovals.list() }),
       answer: (kind, id, allow) => kind === "code" ? codeApprovals.answer(id, allow) : proxyApprovals.answer(id, allow),
       connect: (id) => workbenchHub.connect(id),
+      viewMode: async (id, mode) => {
+        const launch = store.getLaunch(id);
+        if (mode === "pc") { await phoneWindows.leave(id, launch?.ws); return; }
+        if (!launch || launch.firefoxOwner || launch.webkitOwner || !launch.ws) throw new Error("Phone mode needs a running Chromium browser");
+        const area = launcher.claimedArea(id);
+        if (!area) throw new Error("Profile not found");
+        await phoneWindows.enter(id, launch.ws, area);
+      },
       visit: async (id, url) => {
         activity.touch(id);
         const launch = store.getLaunch(id);

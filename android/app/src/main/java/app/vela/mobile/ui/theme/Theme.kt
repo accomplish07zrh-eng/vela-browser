@@ -42,7 +42,7 @@ private val DarkColors = darkColorScheme(
     surfaceContainerHighest = Color(0xFF2A2A31),
     outline = Color(0xFF5A5C66),
     outlineVariant = Color(0xFF2E2F36),
-    error = Color(0xFFFF6B63),
+    error = Color(0xFFE2827D),
 )
 
 private val LightColors = lightColorScheme(
@@ -65,8 +65,17 @@ private val LightColors = lightColorScheme(
     surfaceContainerHighest = Color(0xFFEBEBEF),
     outline = Color(0xFFB9BAC2),
     outlineVariant = Color(0xFFE3E3E8),
-    error = Color(0xFFD93A35),
+    error = Color(0xFFB34441),
 )
+
+/**
+ * Status colours, the same as the desktop dashboard's (web/styles.css): muted green for running,
+ * amber for waiting, brick red for errors. Everything else stays ink on white or obsidian.
+ */
+data class StatusColors(val running: Color, val runningInk: Color, val warning: Color, val error: Color)
+private val LightStatus = StatusColors(Color(0xFF3D8860), Color(0xFF326F50), Color(0xFFBA7B2A), Color(0xFFC24C49))
+private val DarkStatus = StatusColors(Color(0xFF6AB58A), Color(0xFF8BC7A5), Color(0xFFD5A35D), Color(0xFFE2827D))
+val LocalStatus = staticCompositionLocalOf { LightStatus }
 
 /** 当前是否深色：玻璃组件按它选磨砂底色与描边 */
 val LocalDarkTheme = staticCompositionLocalOf { false }
@@ -113,7 +122,7 @@ fun VelaTheme(themeMode: String = "system", content: @Composable () -> Unit) {
         }
     }
 
-    CompositionLocalProvider(LocalDarkTheme provides dark) {
+    CompositionLocalProvider(LocalDarkTheme provides dark, LocalStatus provides if (dark) DarkStatus else LightStatus) {
         MaterialTheme(
             colorScheme = colors,
             typography = AppTypography,

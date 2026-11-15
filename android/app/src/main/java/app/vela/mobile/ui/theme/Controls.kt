@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import kotlin.math.roundToInt
 
 private val TrackW = 51.dp
@@ -91,6 +92,16 @@ fun VelaSwitch(
                 .background(thumbColor)
         )
     }
+}
+
+/**
+ * A borderless filled field, as the desktop's inputs: a faint ink wash that deepens while focused.
+ */
+@Composable
+fun Modifier.filledField(shape: Shape = RoundedCornerShape(14.dp), focused: Boolean = false): Modifier {
+    val dark = LocalDarkTheme.current
+    val ink = if (dark) Color(0xFFF2F2F5) else Color(0xFF111114)
+    return this.clip(shape).background(ink.copy(alpha = if (focused) (if (dark) 0.09f else 0.078f) else (if (dark) 0.055f else 0.048f)))
 }
 
 /**

@@ -36,6 +36,8 @@ export interface MobileControl {
   connect(id: string): Promise<MobileWorkbench>;
   /** Opens an address in a new tab of a profile's browser (starting it when closed). */
   visit?(id: string, url: string): Promise<void>;
+  /** Phone mode narrows the browser's real window to a phone's width; PC mode gives its size back. */
+  viewMode?(id: string, mode: "phone" | "pc"): Promise<void>;
   /** What the phone did, for the activity log. */
   record?(entry: { device: string; action: string; ok: boolean; profileId?: string; profileName?: string; detail?: string; error?: string }): void;
 }
@@ -110,7 +112,7 @@ interface Session {
   serverNonce: Buffer;
   device?: PairedDevice;
   channel?: SealedChannel;
-  watch?: { profileId: string; workbench: MobileWorkbench };
+  watch?: { profileId: string; workbench: MobileWorkbench; mode: "phone" | "pc" };
   authTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -253,7 +255,8 @@ export class MobileLink {
     const session: Session = { socket, serverNonce: randomBytes(32) };
     this.sessions.add(session);
     socket.send(JSON.stringify({ t: "challenge", n: b64(session.serverNonce), name: this.computerName }));
-    session.authTimer = setTimeout(() => { if (!session.channel) socket.close(4401, "no answer"); }, 10_000);
+    // A slow or sleeping phone is not an unpaired one: 4401 is kept for unknown phones and failed proofs.
+    session.authTimer = setTimeout(() => { if (!session.channel) socket.close(4408, "no answer"); }, 20_000);
     this.ensureWatcher();
     return session;
   }
@@ -380,11 +383,19 @@ export class MobileLink {
       }
       case "watch": {
         const id = profileId();
+        const mode = params.mode === "phone" ? "phone" : "pc";
         await this.unwatch(session);
         const workbench = await control.connect(id);
-        session.watch = { profileId: id, workbench };
+        session.watch = { profileId: id, workbench, mode: "pc" };
         await workbench.start((value) => this.forward(session, workbench, value as Record<string, any>));
-        return { ok: true, generation: workbench.generation };
+        const applied = mode === "phone" ? await this.applyMode(session, "phone") : null;
+        return { ok: true, generation: workbench.generation, ...(applied ? { modeError: applied } : {}) };
+      }
+      case "view.mode": {
+        if (!session.watch) throw new Error("No browser is shown");
+        const error = await this.applyMode(session, params.mode === "phone" ? "phone" : "pc");
+        if (error) throw new Error(error);
+        return { ok: true, mode: session.watch.mode };
       }
       case "unwatch": await this.unwatch(session); return { ok: true };
       default: throw new Error("Unknown request");
@@ -403,9 +414,24 @@ export class MobileLink {
     this.send(session, { t: "wb", ...value });
   }
 
+  /** Switches the shown browser between phone and PC mode; returns why it could not, or null. */
+  private async applyMode(session: Session, mode: "phone" | "pc"): Promise<string | null> {
+    const watch = session.watch;
+    if (!watch || !this.control?.viewMode) return mode === "phone" ? "Phone mode is unavailable here" : null;
+    if (watch.mode === mode) return null;
+    try {
+      await this.control.viewMode(watch.profileId, mode);
+      watch.mode = mode;
+      this.record(session, `view.${mode}`, true, { profileId: watch.profileId });
+      return null;
+    } catch (error) { return error instanceof Error ? error.message : String(error); }
+  }
+
   private async unwatch(session: Session): Promise<void> {
     const watch = session.watch;
     session.watch = undefined;
+    // A window narrowed for the phone gets its size back once nobody watches it in phone mode.
+    if (watch?.mode === "phone") { try { await this.control?.viewMode?.(watch.profileId, "pc"); } catch { /* the browser may be gone */ } }
     try { await watch?.workbench.dispose(); } catch { /* already gone */ }
   }
 

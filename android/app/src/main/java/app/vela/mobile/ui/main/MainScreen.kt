@@ -1,5 +1,9 @@
 package app.vela.mobile.ui.main
 
+import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.Smartphone
+import app.vela.mobile.ui.theme.TitleSerif
+import app.vela.mobile.ui.theme.LocalStatus
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -93,6 +97,7 @@ fun MainScreen() {
     val viewer by desk.viewer.collectAsState()
     val frame by (link?.frames ?: remember { kotlinx.coroutines.flow.MutableStateFlow(null) }).collectAsState()
     val notices by desk.notices.collectAsState()
+    val mode by desk.mode.collectAsState()
     val hazeState = remember { HazeState() }
     var keyboard by remember { mutableStateOf(false) }
     var control by remember { mutableStateOf<Page?>(null) }
@@ -157,6 +162,10 @@ fun MainScreen() {
             ConnectionDot(status, hazeState)
             if (current != null) {
                 Spacer(Modifier.width(8.dp))
+                ModeSwitch(mode, hazeState) { desk.setViewMode(it) }
+            }
+            if (current != null && mode == "pc") {
+                Spacer(Modifier.width(8.dp))
                 Box(
                     Modifier.size(48.dp).glassSurface(hazeState, CircleShape).springClickable(pressedScale = 0.88f) {
                         activity?.requestedOrientation = if (landscape) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -199,6 +208,25 @@ fun MainScreen() {
     if (browserSheet && current != null) BrowserSheet(desk, current, profile?.name ?: "", onDismiss = { browserSheet = false })
 }
 
+/**
+ * Phone or PC: a small glass capsule, the active side filled ink. Phone mode lays pages out at a
+ * phone's width by narrowing the real browser window; PC mode keeps the desktop page, scaled.
+ */
+@Composable
+private fun ModeSwitch(mode: String, hazeState: HazeState, onChange: (String) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Row(Modifier.height(48.dp).glassSurface(hazeState, CircleShape).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+        listOf("phone" to (Icons.Rounded.Smartphone to tr("手机模式", "Phone mode")), "pc" to (Icons.Rounded.DesktopWindows to tr("PC 模式", "PC mode"))).forEach { (value, look) ->
+            val on = mode == value
+            val fill by androidx.compose.animation.animateColorAsState(if (on) colors.onSurface else Color.Transparent, label = "mode")
+            val tint by androidx.compose.animation.animateColorAsState(if (on) colors.background else colors.onSurfaceVariant, label = "modeTint")
+            Box(Modifier.size(40.dp).clip(CircleShape).background(fill).springClickable(pressedScale = 0.88f) { onChange(value) }, contentAlignment = Alignment.Center) {
+                Icon(look.first, look.second, tint = tint, modifier = Modifier.size(20.dp))
+            }
+        }
+    }
+}
+
 private fun statusLine(status: LinkStatus): String = when (status) {
     is LinkStatus.Ready -> tr("已连接", "Connected")
     is LinkStatus.Lost -> tr("连接断了，正在重连…", "Reconnecting…")
@@ -211,7 +239,7 @@ private fun ConnectionDot(status: LinkStatus, hazeState: HazeState) {
     if (status is LinkStatus.Ready) return
     val pulse = rememberInfiniteTransition(label = "conn").animateFloat(0.35f, 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "a")
     Row(Modifier.height(48.dp).glassSurface(hazeState, RoundedCornerShape(24.dp)).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(8.dp).graphicsLayer { alpha = pulse.value }.clip(CircleShape).background(Color(0xFFFF9F0A)))
+        Box(Modifier.size(8.dp).graphicsLayer { alpha = pulse.value }.clip(CircleShape).background(LocalStatus.current.warning))
         Spacer(Modifier.width(8.dp))
         Text(tr("重连中", "Reconnecting"), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
     }
@@ -230,7 +258,7 @@ private fun Placeholder(status: ViewStatus?, error: String?, name: String?, noth
             status == ViewStatus.Failed -> {
                 Icon(Icons.Rounded.ErrorOutline, null, tint = colors.error, modifier = Modifier.size(36.dp))
                 Spacer(Modifier.height(14.dp))
-                Text(tr("打不开这个浏览器", "Could not show this browser"), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = colors.onBackground)
+                Text(tr("打不开这个浏览器", "Could not show this browser"), fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = TitleSerif, color = colors.onBackground)
                 Spacer(Modifier.height(6.dp))
                 Text(error ?: "", fontSize = 13.sp, color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
             }
@@ -243,7 +271,7 @@ private fun Placeholder(status: ViewStatus?, error: String?, name: String?, noth
             nothingRunning -> {
                 Text("Vela", fontFamily = WordmarkFont, fontSize = 56.sp, color = colors.onBackground.copy(alpha = 0.9f))
                 Spacer(Modifier.height(16.dp))
-                Text(tr("还没有打开的浏览器", "No browser is open"), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = colors.onBackground)
+                Text(tr("还没有打开的浏览器", "No browser is open"), fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = TitleSerif, color = colors.onBackground)
                 Spacer(Modifier.height(8.dp))
                 Text(tr("从屏幕右边缘往左拉，转动轮盘，点一个环境就会打开它。", "Pull from the right edge, turn the dial, and tap a profile to open it."), fontSize = 14.sp, lineHeight = 21.sp, color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
             }
@@ -268,7 +296,7 @@ private fun NoticeCard(notice: Notice, hazeState: HazeState, onOpen: () -> Unit)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     when (notice.kind) { "approval" -> Icons.Rounded.Shield; "error" -> Icons.Rounded.ErrorOutline; else -> Icons.Rounded.CheckCircle },
-                    null, tint = when (notice.kind) { "approval" -> Color(0xFFFF8A1F); "error" -> colors.error; else -> Color(0xFF34C759) }, modifier = Modifier.size(22.dp),
+                    null, tint = when (notice.kind) { "approval" -> LocalStatus.current.warning; "error" -> colors.error; else -> LocalStatus.current.running }, modifier = Modifier.size(22.dp),
                 )
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {

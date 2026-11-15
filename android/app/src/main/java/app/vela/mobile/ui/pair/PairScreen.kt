@@ -76,6 +76,8 @@ import app.vela.mobile.net.PairingError
 import app.vela.mobile.tr
 import app.vela.mobile.ui.theme.GlassCircleButton
 import app.vela.mobile.ui.theme.LocalDarkTheme
+import app.vela.mobile.ui.theme.TitleSerif
+import app.vela.mobile.ui.theme.filledField
 import app.vela.mobile.ui.theme.WordmarkFont
 import app.vela.mobile.ui.theme.enterRise
 import app.vela.mobile.ui.theme.floatingCard
@@ -171,7 +173,7 @@ private fun PairHome(error: String?, onScan: () -> Unit, onPick: (FoundComputer)
     ) {
         Spacer(Modifier.height(64.dp))
         Text("Vela", fontFamily = WordmarkFont, fontSize = 72.sp, color = colors.onBackground, modifier = Modifier.enterRise(0, true))
-        Text(tr("在手机上用你的指纹浏览器", "Your fingerprint browsers, in your hand"), fontSize = 17.sp, color = colors.onSurfaceVariant, modifier = Modifier.enterRise(1, true))
+        Text(tr("在手机上用你的指纹浏览器", "Your fingerprint browsers, in your hand"), fontSize = 17.sp, fontFamily = TitleSerif, color = colors.onSurfaceVariant, modifier = Modifier.enterRise(1, true))
         Spacer(Modifier.height(44.dp))
 
         // The main way in: a dark, raised pill.
@@ -196,7 +198,7 @@ private fun PairHome(error: String?, onScan: () -> Unit, onPick: (FoundComputer)
             if (searching) SearchingDots() else Icon(Icons.Rounded.Refresh, tr("重新搜索", "Search again"), tint = colors.onSurfaceVariant, modifier = Modifier.size(20.dp).springClickable { search() })
         }
         Spacer(Modifier.height(10.dp))
-        Column(Modifier.enterRise(4, true).fillMaxWidth().floatingCard(RoundedCornerShape(22.dp))) {
+        Column(Modifier.enterRise(4, true).fillMaxWidth().floatingCard(RoundedCornerShape(20.dp))) {
             if (found.isEmpty()) {
                 Text(
                     if (searching) tr("正在找…", "Looking…") else tr("没找到。在电脑上打开 Vela Browser → 设置 → 手机端，打开「允许手机连接」。", "None found. On the computer, open Vela Browser → Settings → Phone app and turn on Let phones connect."),
@@ -224,12 +226,16 @@ private fun PairHome(error: String?, onScan: () -> Unit, onPick: (FoundComputer)
                 modifier = Modifier.enterRise(5, true).springClickable { typing = true }.padding(vertical = 6.dp))
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    address, { address = it.trim() }, singleLine = true, modifier = Modifier.weight(1f),
-                    placeholder = { Text("192.168.1.5:50480") }, shape = RoundedCornerShape(18.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = colors.onBackground),
-                )
+                // A borderless filled field, like the desktop's inputs.
+                Box(Modifier.weight(1f).height(52.dp).filledField(RoundedCornerShape(14.dp)).padding(horizontal = 16.dp), contentAlignment = Alignment.CenterStart) {
+                    if (address.isEmpty()) Text("192.168.1.5:50480", fontSize = 16.sp, color = colors.onSurfaceVariant, fontFamily = FontFamily.Monospace)
+                    androidx.compose.foundation.text.BasicTextField(
+                        address, { address = it.trim() }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, color = colors.onSurface, fontFamily = FontFamily.Monospace),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.onSurface),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    )
+                }
                 Spacer(Modifier.width(10.dp))
                 GlassCircleButton(Icons.AutoMirrored.Rounded.ArrowBack, tr("连接", "Connect"), {
                     scope.launch {
@@ -272,7 +278,7 @@ private fun PinEntry(computer: FoundComputer, error: String?, onBack: () -> Unit
         Spacer(Modifier.height(12.dp))
         GlassCircleButton(Icons.AutoMirrored.Rounded.ArrowBack, tr("返回", "Back"), onBack, size = 42.dp, iconSize = 20.dp)
         Spacer(Modifier.height(28.dp))
-        Text(tr("输入 PIN", "Enter the PIN"), fontSize = 30.sp, fontWeight = FontWeight.Black, color = colors.onBackground)
+        Text(tr("输入 PIN", "Enter the PIN"), fontSize = 30.sp, fontWeight = FontWeight.Bold, fontFamily = TitleSerif, color = colors.onBackground)
         Spacer(Modifier.height(6.dp))
         Text(tr("${computer.name} 上「设置 → 手机端」显示的六位数字", "The six digits in Settings → Phone app on ${computer.name}"), fontSize = 14.sp, color = colors.onSurfaceVariant)
         Spacer(Modifier.height(30.dp))
@@ -281,9 +287,8 @@ private fun PinEntry(computer: FoundComputer, error: String?, onBack: () -> Unit
                 val filled = i < pin.length
                 val active = i == pin.length
                 Box(
-                    Modifier.weight(1f).aspectRatio(0.82f).clip(RoundedCornerShape(16.dp))
-                        .background(if (dark) colors.surface else Color(0xFFF5F5F7))
-                        .border(BorderStroke(if (active) 2.dp else 1.dp, if (active) colors.onBackground else colors.outlineVariant), RoundedCornerShape(16.dp)),
+                    Modifier.weight(1f).aspectRatio(0.82f).filledField(RoundedCornerShape(14.dp), focused = active)
+                        .then(if (active) Modifier.border(BorderStroke(1.5.dp, colors.onBackground.copy(alpha = 0.55f)), RoundedCornerShape(14.dp)) else Modifier),
                     contentAlignment = Alignment.Center,
                 ) {
                     if (filled) Text(pin[i].toString(), fontSize = 28.sp, fontWeight = FontWeight.Bold, color = colors.onBackground)
@@ -299,7 +304,7 @@ private fun PinEntry(computer: FoundComputer, error: String?, onBack: () -> Unit
                     Box(Modifier.weight(1f).height(62.dp), contentAlignment = Alignment.Center) {
                         if (key.isNotEmpty()) Box(
                             Modifier.fillMaxSize().clip(RoundedCornerShape(22.dp))
-                                .background(if (key == "<") Color.Transparent else if (dark) colors.surface else Color(0xFFF5F5F7))
+                                .then(if (key == "<") Modifier else Modifier.filledField(RoundedCornerShape(20.dp)))
                                 .springClickable(pressedScale = 0.92f) {
                                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     if (key == "<") pin = pin.dropLast(1)
@@ -331,7 +336,7 @@ private fun WaitingForYes(code: String, name: String) {
             Icon(Icons.Rounded.Computer, null, tint = colors.onBackground, modifier = Modifier.size(38.dp))
         }
         Spacer(Modifier.height(30.dp))
-        Text(tr("在电脑上核对", "Check on the computer"), fontSize = 26.sp, fontWeight = FontWeight.Black, color = colors.onBackground)
+        Text(tr("在电脑上核对", "Check on the computer"), fontSize = 26.sp, fontWeight = FontWeight.Bold, fontFamily = TitleSerif, color = colors.onBackground)
         Spacer(Modifier.height(10.dp))
         Text(tr("$name 会显示这六位数字。一致时点「配对」。", "$name shows six digits. If they match these, click Pair."), fontSize = 15.sp, lineHeight = 22.sp, color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
         Spacer(Modifier.height(30.dp))

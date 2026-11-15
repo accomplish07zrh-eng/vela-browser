@@ -54,6 +54,9 @@ class Desk(private val scope: CoroutineScope, private val store: ComputerStore) 
     val state: StateFlow<DeskState?> = _state
     private val _viewer = MutableStateFlow<Viewer?>(null)
     val viewer: StateFlow<Viewer?> = _viewer
+    /** How pages are shown: "phone" narrows the real browser window to a phone's width, "pc" keeps the desktop layout. */
+    private val _mode = MutableStateFlow(store.viewMode)
+    val mode: StateFlow<String> = _mode
     private val _notices = MutableStateFlow<List<Notice>>(emptyList())
     val notices: StateFlow<List<Notice>> = _notices
     /** Notices that arrived while the app was in the background, for the system notification. */
@@ -172,8 +175,9 @@ class Desk(private val scope: CoroutineScope, private val store: ComputerStore) 
         val link = _link.value ?: return
         scope.launch {
             try {
-                val data = link.call("watch", JSONObject().put("id", profileId)) as? JSONObject
+                val data = link.call("watch", JSONObject().put("id", profileId).put("mode", _mode.value)) as? JSONObject
                 val generation = data?.optString("generation") ?: ""
+                data?.optString("modeError")?.takeIf { it.isNotBlank() }?.let { notify("error", tr("没能切到手机模式", "Could not switch to phone mode"), it) }
                 _viewer.update { if (it?.profileId == profileId) it.copy(generation = generation, status = if (it.status == ViewStatus.Live) it.status else ViewStatus.Loading) else it }
                 visibility()
             } catch (error: Exception) {
@@ -187,6 +191,18 @@ class Desk(private val scope: CoroutineScope, private val store: ComputerStore) 
 
     private fun visibility() {
         _link.value?.workbench(JSONObject().put("action", "visibility").put("visible", true).put("focused", true).put("tier", "interactive").put("width", frameWidth))
+    }
+
+    /** Remembers the mode and applies it to the browser shown, at once. */
+    fun setViewMode(mode: String) {
+        if (mode == _mode.value) return
+        _mode.value = mode
+        store.viewMode = mode
+        if (_viewer.value == null) return
+        scope.launch {
+            runCatching { call("view.mode", JSONObject().put("mode", mode)) }
+                .onFailure { notify("error", if (mode == "phone") tr("没能切到手机模式", "Could not switch to phone mode") else tr("没能恢复窗口", "Could not restore the window"), it.message ?: "") }
+        }
     }
 
     fun closeBrowser(profileId: String) {

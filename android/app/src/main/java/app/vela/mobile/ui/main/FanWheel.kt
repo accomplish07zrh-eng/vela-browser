@@ -1,5 +1,7 @@
 package app.vela.mobile.ui.main
 
+import app.vela.mobile.ui.theme.TitleSerif
+import app.vela.mobile.ui.theme.LocalStatus
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
@@ -182,7 +184,7 @@ fun FanWheel(
                     ) {
                         Avatar(profile, 48.dp, ring = profile.id == currentId)
                         if (profile.running) Box(
-                            Modifier.align(Alignment.BottomEnd).size(13.dp).clip(CircleShape).background(colors.surface).padding(2.dp).clip(CircleShape).background(Color(0xFF34C759)),
+                            Modifier.align(Alignment.BottomEnd).size(13.dp).clip(CircleShape).background(colors.surface).padding(2.dp).clip(CircleShape).background(LocalStatus.current.running),
                         )
                     }
                 }
@@ -193,7 +195,7 @@ fun FanWheel(
                             .offset { IntOffset((radius - itemRadius + base * 0.95f).roundToInt(), (radius - with(density) { 46.dp.toPx() }).roundToInt()) }
                             .width(with(density) { (w - (center.x - itemRadius + base * 0.95f) - 22.dp.toPx()).coerceAtLeast(60f).toDp() }),
                     ) {
-                        Text(focused.name, color = colors.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Black, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 26.sp)
+                        Text(focused.name, color = colors.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold, fontFamily = TitleSerif, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 26.sp)
                         Spacer(Modifier.height(4.dp))
                         Text(focused.group.ifBlank { tr("未分组", "No group") }, color = colors.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(10.dp))
@@ -203,7 +205,7 @@ fun FanWheel(
                                 focused.running -> tr("运行中 · 点按切换", "Running · tap to switch")
                                 else -> tr("已关闭 · 点按打开", "Closed · tap to open")
                             },
-                            color = if (focused.running) Color(0xFF2E9E4F) else colors.onSurfaceVariant, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                            color = if (focused.running) LocalStatus.current.runningInk else colors.onSurfaceVariant, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                         )
                     }
                 }
