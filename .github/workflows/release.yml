@@ -1,0 +1,118 @@
+name: Release
+
+# One click releases the version in package.json from current main. It runs the existing steps in
+# order and stops at the first that fails, so each keeps its own checks:
+#   1. Client CI, dispatched on main, which builds the Windows candidate;
+#   2. Windows update candidate, given that run, which signs and publishes v<version>;
+#   3. Linux, macOS and Android release assets, given the tag, side by side.
+# Runs dispatched with GITHUB_TOKEN are still workflow_dispatch runs from main, which is what the
+# Windows update candidate requires of the Client CI run it is given.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release ${{ github.sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    if: github.ref == 'refs/heads/main'
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version and check it is new
+        id: version
+        run: |
+          version="$(jq -r .version package.json)"
+          tag="v${version}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::$tag is already released; bump the version in package.json first"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from ${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the dispatch helper
+        run: |
+          cat > "$RUNNER_TEMP/dispatch.sh" <<'EOF'
+          # dispatch <workflow file> [gh workflow run args...]: starts the workflow on main, prints its run ID.
+          dispatch() {
+            local workflow="$1"; shift
+            local since; since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh workflow run "$workflow" --ref main "$@" >&2
+            for _ in $(seq 1 40); do
+              local id
+              id="$(gh run list --workflow "$workflow" --branch main --event workflow_dispatch --limit 10 \
+                --json databaseId,createdAt,headSha \
+                --jq "[.[] | select(.createdAt >= \"$since\" and .headSha == \"$GITHUB_SHA\")] | last | .databaseId // empty")"
+              if [ -n "$id" ]; then echo "$id"; return 0; fi
+              sleep 6
+            done
+            echo "::error::$workflow did not start" >&2
+            return 1
+          }
+          # watch <run ID> <label>: waits for the run and fails when it does.
+          watch() {
+            echo "$2: https://github.com/$GH_REPO/actions/runs/$1" >> "$GITHUB_STEP_SUMMARY"
+            gh run watch "$1" --exit-status --interval 30 >/dev/null || { echo "::error::$2 failed: https://github.com/$GH_REPO/actions/runs/$1"; return 1; }
+          }
+          EOF
+
+      - name: Client CI
+        id: ci
+        run: |
+          . "$RUNNER_TEMP/dispatch.sh"
+          id="$(dispatch ci.yml)"
+          watch "$id" "Client CI"
+          gh api "repos/$GH_REPO/actions/runs/$id/artifacts" --jq '.artifacts[].name' | grep -qx aliasmode-windows-candidate \
+            || { echo "::error::Client CI run $id has no aliasmode-windows-candidate"; exit 1; }
+          echo "run_id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Windows update candidate and release
+        env:
+          CI_RUN_ID: ${{ steps.ci.outputs.run_id }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          . "$RUNNER_TEMP/dispatch.sh"
+          id="$(dispatch release-candidate.yml -f run_id="$CI_RUN_ID")"
+          watch "$id" "Windows update candidate"
+          gh release view "$TAG" --json isDraft --jq 'if .isDraft then error("draft") else empty end' \
+            || { echo "::error::$TAG was not published"; exit 1; }
+
+      - name: Linux, macOS and Android assets
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          . "$RUNNER_TEMP/dispatch.sh"
+          declare -A runs
+          for workflow in linux-release.yml macos-release.yml android-release.yml; do
+            runs[$workflow]="$(dispatch "$workflow" -f tag="$TAG")"
+          done
+          failed=0
+          for workflow in linux-release.yml macos-release.yml android-release.yml; do
+            watch "${runs[$workflow]}" "${workflow%.yml}" || failed=1
+          done
+          exit $failed
+
+      - name: Check the release has every platform
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          missing=0
+          for pattern in '_x64-setup\.exe$' '_x64-offline-setup\.exe$' '_aarch64\.dmg$' '_x64\.dmg$' '_x86_64-linux\.tar\.gz$' '^Vela-Browser-Android-.*\.apk$'; do
+            grep -Eq "$pattern" <<<"$assets" || { echo "::error::$TAG has no asset matching $pattern"; missing=1; }
+          done
+          [ "$missing" = 0 ] && echo "$TAG is out with Windows, macOS, Linux and Android assets" >> "$GITHUB_STEP_SUMMARY"
+          exit $missing
