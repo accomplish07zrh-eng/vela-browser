@@ -1647,7 +1647,7 @@ test("reconcileOrphans keeps a launch when CDP misses but its recorded process i
 
   expect(cleared).toBe(0);
   expect(store.getLaunch("k1d0cd11")).not.toBeNull();
-  expect(logs.some((m) => m.includes("quarantined unverified launch"))).toBe(true);
+  expect(logs.some((m) => m.includes("running without CDP proof") && m.includes("nothing was stopped"))).toBe(true);
   store.close();
 });
 
