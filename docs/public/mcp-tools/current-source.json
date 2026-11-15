@@ -1633,7 +1633,7 @@
   "playwrightTools": [
     {
       "name": "browser_resize",
-      "description": "Resize the browser window",
+      "description": "Resize the browser window itself so the page area is about width x height CSS pixels. The page is never given a fixed viewport, so it still fills a real window; the window is kept within the profile's screen. Returns the page area it got.",
       "annotations": {
         "title": "Resize browser window",
         "readOnlyHint": false,
