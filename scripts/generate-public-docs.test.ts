@@ -163,7 +163,7 @@ test("MCP catalogs list the expected tools", () => {
   expect(released.aliasModeTools.map((tool: any) => tool.name)).toEqual(BETA42_ALIASMODE_TOOLS);
   expect(current.status).toBe("source");
   expect(current.playwrightToolAvailability).toBe("listed-before-selection");
-  const proxyPoolTools = ["vela_proxy_pool_list", "vela_proxy_pool_check", "vela_browser_set_proxy"];
+  const proxyPoolTools = ["vela_proxy_pool_list", "vela_proxy_pool_check", "vela_ip_score", "vela_browser_set_proxy"];
   const scriptPluginTools = [
     "vela_guide", "vela_profile_update", "vela_scripts_list", "vela_script_read",
     "vela_script_save", "vela_script_run", "vela_script_run_status", "vela_script_stop",

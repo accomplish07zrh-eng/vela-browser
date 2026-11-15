@@ -85,6 +85,10 @@ export interface AgentControlDeps {
   aiAccess?: () => AiAccessSettings | undefined;
   /** Where what AIs did is recorded. */
   audit?: AuditLog;
+  /** IP scores from many IP-intelligence services, shared with the dashboard. */
+  ipScores?: import("./ip-score.ts").IpScoreCache;
+  /** Injectable proxy check (tests); the real one sends a few lookups through the proxy. */
+  checkProxy?: (proxy: ProxySpec) => Promise<import("./proxy-check.ts").ProxyCheckResult>;
 
   log?: (message: string) => void;
 }
@@ -448,6 +452,8 @@ export class AgentControlSession {
         return { run: await this.scriptDeps().runner.stop() };
       case "proxyPool.list":
         return { nodes: this.listPoolNodes(params) };
+      case "ip.score":
+        return await this.ipScore(params);
       case "proxyPool.check":
         return { nodes: await this.checkPoolNodes(params) };
       case "profiles.setProxy":
@@ -487,6 +493,29 @@ export class AgentControlSession {
       default:
         throw agentError("unknown_method", `unknown agent method: ${method}`);
     }
+  }
+
+  /** An IP's score, or the score of a profile's exit (found from its pool node or by checking its proxy). */
+  private async ipScore(params: Record<string, unknown>): Promise<unknown> {
+    const scores = this.deps.ipScores;
+    if (!scores) throw agentError("unavailable", "IP scoring is unavailable in this Vela Browser");
+    let ip = typeof params.ip === "string" ? params.ip.trim() : "";
+    if (!ip && typeof params.profileId === "string") {
+      const profile = this.deps.store.getProfile(params.profileId.trim());
+      if (!profile) throw agentError("not_found", "Profile not found");
+      if (!profile.proxy) throw agentError("no_proxy", "This profile has no proxy: its exit is this computer's own address");
+      if (profile.proxy.type === "pool") ip = this.deps.store.proxyPool.get(profile.proxy.host)?.check?.ip ?? "";
+      else {
+        const { checkProxy } = await import("./proxy-check.ts");
+        const result = await (this.deps.checkProxy ?? checkProxy)(profile.proxy);
+        if (result.status !== "working" && result.status !== "unstable") throw agentError("exit_unreachable", "The profile's proxy did not answer the exit check");
+        ip = result.ip ?? "";
+      }
+      if (!ip) throw agentError("exit_unknown", "The exit of this profile's pool node has not been checked yet; check it with vela_proxy_pool_check first");
+    }
+    if (!ip) throw agentError("invalid_request", "Give ip or profileId");
+    try { return { score: await scores.score(ip, params.fresh === true) }; }
+    catch (error) { throw agentError("invalid_request", error instanceof Error ? error.message : String(error)); }
   }
 
   /** The pool as an AI sees it: no credentials, no subscription links. */

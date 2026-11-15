@@ -163,8 +163,10 @@ export class CdpWorkbench implements WorkbenchAdapter {
     const session = this.session;
     if (input.kind === "text") { await this.send("Input.insertText", { text: input.text }, session); return; }
     if (input.kind === "key") {
-      await this.send("Input.dispatchKeyEvent", { type: input.event === "down" ? "rawKeyDown" : "keyUp", key: input.key, code: input.code,
-        windowsVirtualKeyCode: input.keyCode, nativeVirtualKeyCode: input.keyCode, modifiers: input.modifiers }, session);
+      // A raw key-down types nothing; Enter must carry its character, or a form is never submitted.
+      const enter = input.event === "down" && input.key === "Enter" && !(input.modifiers & ~8);
+      await this.send("Input.dispatchKeyEvent", { type: input.event === "down" ? enter ? "keyDown" : "rawKeyDown" : "keyUp", key: input.key, code: input.code,
+        windowsVirtualKeyCode: input.keyCode, nativeVirtualKeyCode: input.keyCode, modifiers: input.modifiers, ...(enter ? { text: "\r", unmodifiedText: "\r" } : {}) }, session);
       return;
     }
     const params = input.kind === "wheel"

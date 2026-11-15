@@ -1,6 +1,7 @@
 import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { networkInterfaces } from "node:os";
+import { MobileLink, type MobileControl } from "./mobile-link.ts";
 
 /**
  * Watching from a phone on the same network: which browsers run, a small picture of each, and
@@ -34,14 +35,22 @@ export function lanAddresses(): string[] {
   return out.sort((a, b) => a.rank - b.rank).map((item) => item.address);
 }
 
+/** Phones find this computer by broadcasting "VELA?" to this UDP port on the local network. */
+export const DISCOVERY_PORT = 50481;
+
 export class MobileView {
-  private server?: ReturnType<typeof Bun.serve>;
+  private server?: ReturnType<typeof Bun.serve<any>>;
+  private discovery?: { close(): void };
+  /** The phone app's pairing and sealed connection; absent where there is nothing to control. */
+  readonly link?: MobileLink;
   private pin = "";
   private sessions = new Map<string, number>();
   private attempts = new Map<string, { count: number; first: number; total: number }>();
   private frames = new Map<string, { at: number; image: Buffer | null; title: string; host: string }>();
 
-  constructor(private readonly source: MobileSource, private readonly now: () => number = Date.now) {}
+  constructor(private readonly source: MobileSource, private readonly now: () => number = Date.now, options: { control?: MobileControl; file?: string } = {}) {
+    if (options.control) this.link = new MobileLink(options.control, options.file, now);
+  }
 
   get running(): boolean { return !!this.server; }
   get port(): number | undefined { return this.server?.port; }
@@ -51,14 +60,54 @@ export class MobileView {
   start(preferredPort = 50480): void {
     this.stop();
     this.pin = String(randomInt(0, 1_000_000)).padStart(6, "0");
-    const options = { hostname: "0.0.0.0", fetch: (req: Request, server: any) => this.handle(req, server?.requestIP?.(req)?.address ?? "?") };
+    this.link?.rotateSecret();
+    const link = this.link;
+    const options = {
+      hostname: "0.0.0.0",
+      fetch: async (req: Request, server: any) => {
+        let path: string;
+        try { path = new URL(req.url).pathname; } catch { return new Response("Bad request", { status: 400 }); }
+        if (link && path === "/app/ws") {
+          return server.upgrade(req, { data: {} }) ? undefined : new Response("WebSocket only", { status: 400 });
+        }
+        return this.handle(req, server?.requestIP?.(req)?.address ?? "?").catch(() => new Response("Bad request", { status: 400 }));
+      },
+      websocket: {
+        maxPayloadLength: 512 * 1024,
+        idleTimeout: 120,
+        open: (socket: any) => { if (link) socket.data.session = link.open(socket); else socket.close(); },
+        message: (socket: any, message: string | Buffer) => { if (link && socket.data.session) void link.message(socket.data.session, typeof message === "string" ? message : Buffer.from(message)); },
+        close: (socket: any) => { if (link && socket.data.session) link.close(socket.data.session); },
+      },
+    };
     try { this.server = Bun.serve({ ...options, port: preferredPort }); }
     catch { this.server = Bun.serve({ ...options, port: 0 }); }
+    if (link) void this.listenForPhones();
+  }
+
+  /** Answers a phone's "VELA?" broadcast with this computer's name, port and key fingerprint. */
+  private async listenForPhones(): Promise<void> {
+    const link = this.link!;
+    try {
+      const socket = await Bun.udpSocket({
+        hostname: "0.0.0.0", port: DISCOVERY_PORT,
+        socket: {
+          data: (sock, data, port, address) => {
+            if (!this.server || Buffer.from(data).toString("utf8").trim() !== "VELA?") return;
+            sock.send(JSON.stringify({ app: "vela-browser", name: link.computerName, port: this.server.port, fingerprint: link.fingerprint }), port, address);
+          },
+        },
+      });
+      if (!this.server) { socket.close(); return; }
+      this.discovery = socket;
+    } catch { /* another copy holds the port: phones can still type the address */ }
   }
 
   stop(): void {
     this.server?.stop(true);
     this.server = undefined;
+    this.discovery?.close(); this.discovery = undefined;
+    this.link?.closeAll();
     this.sessions.clear(); this.attempts.clear(); this.frames.clear();
   }
 
@@ -82,23 +131,41 @@ export class MobileView {
     return entry.count < 5 && entry.total < 20;
   }
 
+  /** Counts a PIN guess from this address; true when it is the PIN. */
+  private checkPin(ip: string, pin: string): boolean {
+    const given = Buffer.from(String(pin).trim().padEnd(6, " ").slice(0, 6)), want = Buffer.from(this.pin);
+    if (this.pin && given.length === want.length && timingSafeEqual(given, want)) { this.attempts.delete(ip); return true; }
+    const entry = this.attempts.get(ip) ?? { count: 0, first: this.now(), total: 0 };
+    entry.count++; entry.total++; this.attempts.set(ip, entry);
+    return false;
+  }
+
   async handle(req: Request, ip: string): Promise<Response> {
     const url = new URL(req.url);
     const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" };
+    const json = (body: object, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...headers, "Content-Type": "application/json" } });
+    if (this.link && url.pathname.startsWith("/app/")) {
+      if (url.pathname === "/app/hello" && req.method === "GET") return json(this.link.hello(this.port));
+      if (url.pathname === "/app/pair" && req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+        if (body.via !== "qr" && !this.allowAttempt(ip)) return json({ ok: false, error: "Too many tries. Wait a minute, or show a new PIN in Vela Browser." }, 429);
+        const result = this.link.pair(body, (pin) => this.checkPin(ip, pin));
+        return json(result.body, result.status);
+      }
+      const waiting = /^\/app\/pair\/([a-f0-9]{32})$/.exec(url.pathname);
+      if (waiting && req.method === "GET") { const result = this.link.pairStatus(waiting[1]!); return json(result.body, result.status); }
+      return json({ ok: false, error: "Not found" }, 404);
+    }
     if (url.pathname === "/login" && req.method === "POST") {
       if (!this.allowAttempt(ip)) return new Response(JSON.stringify({ ok: false, error: "Too many tries. Wait a minute, or show a new PIN in Vela Browser." }), { status: 429, headers: { ...headers, "Content-Type": "application/json" } });
       const body = await req.json().catch(() => ({})) as { pin?: unknown };
-      const given = Buffer.from(String(body.pin ?? "").trim().padEnd(6, " ").slice(0, 6)), want = Buffer.from(this.pin);
-      if (!this.pin || given.length !== want.length || !timingSafeEqual(given, want)) {
-        const entry = this.attempts.get(ip)!; entry.count++; entry.total++;
-        return new Response(JSON.stringify({ ok: false, error: "Wrong PIN" }), { status: 401, headers: { ...headers, "Content-Type": "application/json" } });
-      }
-      this.attempts.delete(ip);
+      if (!this.checkPin(ip, String(body.pin ?? ""))) return json({ ok: false, error: "Wrong PIN" }, 401);
       const token = randomBytes(24).toString("hex");
       this.sessions.set(token, this.now() + SESSION_MS);
       return new Response(JSON.stringify({ ok: true }), { headers: { ...headers, "Content-Type": "application/json", "Set-Cookie": `vela_m=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}` } });
     }
     if (req.method !== "GET") return new Response("Read only", { status: 405, headers });
+    if (url.pathname === "/pair") return new Response(PAIR_PAGE, { headers: { ...headers, "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" } });
     if (url.pathname === "/") return new Response(this.session(req) ? MOBILE_PAGE : PIN_PAGE, { headers: { ...headers, "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" } });
     if (!this.session(req)) return new Response("Sign in with the PIN first", { status: 401, headers });
     if (url.pathname === "/state") {
@@ -143,6 +210,15 @@ input{width:100%;font-size:28px;letter-spacing:.4em;text-align:center;padding:14
 button{width:100%;margin-top:12px;font-size:16px;padding:14px;border:0;border-radius:14px;background:var(--ink);color:var(--bg)}
 .err{color:var(--bad);font-size:13px;min-height:20px;margin-top:8px}
 </style>`;
+
+/** What the pairing QR code opens when scanned with the phone's own camera: where to get the app. */
+const PAIR_PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Vela Browser</title>${STYLE}</head><body>
+<h1>用 Vela Browser App 配对</h1><p class="sub">Pair with the Vela Browser app</p>
+<div class="bar">1. 下载并安装 Vela Browser 安卓 App<br><span style="color:var(--muted);font-size:13px">Download and install the Android app</span></div>
+<a href="https://github.com/accomplish07zrh-eng/vela-browser/releases/latest" style="display:block;text-align:center;text-decoration:none;font-size:16px;padding:14px;border-radius:14px;background:var(--ink);color:var(--bg);margin-bottom:14px">下载 App · Download</a>
+<div class="bar">2. 打开 App，点「配对」，再扫一次电脑上的二维码<br><span style="color:var(--muted);font-size:13px">Open the app, tap Pair and scan the code on the computer again</span></div>
+<p class="sub" style="margin-top:22px">只想看看？<a href="/" style="color:var(--accent)">用浏览器查看</a> · Just watching? <a href="/" style="color:var(--accent)">Open in the browser</a></p>
+</body></html>`;
 
 // Written in Chinese with an English line under it: this page has no language switch of its own.
 const PIN_PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Vela Browser</title>${STYLE}</head><body>

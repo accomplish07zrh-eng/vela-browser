@@ -1,0 +1,41 @@
+.ip-score-badge { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px 0 3px; border: 0; border-radius: 999px; font: 500 11.5px/1 var(--font); white-space: nowrap; vertical-align: middle; cursor: default; }
+button.ip-score-badge { cursor: pointer; }
+.ip-score-badge b { display: inline-grid; place-items: center; min-width: 24px; height: 16px; padding: 0 4px; border-radius: 999px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ip-score-badge.clean { background: color-mix(in srgb, var(--success, #4f8a5b) 12%, transparent); color: var(--success-ink, #3d6e47); }
+.ip-score-badge.clean b { background: color-mix(in srgb, var(--success, #4f8a5b) 22%, transparent); }
+.ip-score-badge.good { background: color-mix(in srgb, var(--success, #4f8a5b) 8%, transparent); color: var(--ink); }
+.ip-score-badge.good b { background: color-mix(in srgb, var(--success, #4f8a5b) 16%, transparent); }
+.ip-score-badge.fair { background: color-mix(in srgb, var(--warn, #c8902f) 12%, transparent); color: var(--warn-ink, #8a6420); }
+.ip-score-badge.fair b { background: color-mix(in srgb, var(--warn, #c8902f) 22%, transparent); }
+.ip-score-badge.poor { background: var(--danger-soft); color: var(--danger-ink); }
+.ip-score-badge.poor b { background: color-mix(in srgb, var(--danger-fill) 20%, transparent); }
+
+.modal.ip-score-modal { width: min(720px, calc(100vw - 32px)); max-height: min(90vh, 880px); }
+.ip-score-body { display: grid; gap: 14px; }
+.ip-score-summary { display: flex; gap: 20px; align-items: center; }
+.ip-score-big { display: grid; justify-items: center; min-width: 96px; padding: 12px 10px; border-radius: 16px; }
+.ip-score-big strong { font: 600 38px/1 var(--font-display, var(--font)); font-variant-numeric: tabular-nums; }
+.ip-score-big span { margin-top: 4px; font-size: 12.5px; }
+.ip-score-big.clean { background: color-mix(in srgb, var(--success, #4f8a5b) 12%, transparent); color: var(--success-ink, #3d6e47); }
+.ip-score-big.good { background: color-mix(in srgb, var(--success, #4f8a5b) 7%, transparent); }
+.ip-score-big.fair { background: color-mix(in srgb, var(--warn, #c8902f) 12%, transparent); color: var(--warn-ink, #8a6420); }
+.ip-score-big.poor { background: var(--danger-soft); color: var(--danger-ink); }
+.ip-score-summary dl { display: grid; gap: 4px; margin: 0; flex: 1; min-width: 0; }
+.ip-score-summary dl > div { display: grid; grid-template-columns: 80px 1fr; gap: 10px; font-size: 13px; }
+.ip-score-summary dt { color: var(--muted); }
+.ip-score-summary dd { margin: 0; overflow-wrap: anywhere; }
+.ip-score-findings { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.ip-score-findings li { position: relative; padding-left: 14px; font-size: 13px; line-height: 1.5; }
+.ip-score-findings li::before { content: ""; position: absolute; left: 0; top: .55em; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.ip-score-findings li.high { color: var(--danger-ink); }
+.ip-score-findings li.high::before { background: var(--danger-fill); }
+.ip-score-findings li.medium::before { background: var(--warn, #c8902f); }
+.ip-score-findings li.good { color: var(--success-ink, var(--ink)); }
+.ip-score-findings li.good::before { background: var(--success, #4f8a5b); }
+.ip-score-sources { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ip-score-sources th { text-align: left; font-weight: 600; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.ip-score-sources td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ip-score-sources tr.off td { color: var(--muted); }
+.ip-flag { display: inline-block; margin: 0 4px 2px 0; padding: 1px 7px; border-radius: 999px; font-size: 11.5px; background: var(--danger-soft); color: var(--danger-ink); }
+.ip-flag.mobile, .ip-flag.ok { background: color-mix(in srgb, var(--success, #4f8a5b) 12%, transparent); color: var(--success-ink, #3d6e47); }
+.ip-flag.hosting { background: color-mix(in srgb, var(--warn, #c8902f) 14%, transparent); color: var(--warn-ink, #8a6420); }

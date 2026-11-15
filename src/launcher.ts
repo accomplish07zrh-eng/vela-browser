@@ -53,7 +53,7 @@ import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import { fingerprintAudit, type FingerprintAudit } from "./fingerprint-audit.ts";
 import type { FingerprintSample } from "./diagnose.ts";
-import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
+import { claimedScreenArea, watchWindowFit, type ScreenArea } from "./window-fit.ts";
 import { applySessionToEndpoint, bundleTabUrls, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError, telegramHomeClient } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, FirefoxOwnerError, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
@@ -1745,6 +1745,14 @@ export class Launcher {
     const scale = this.deviceScale(profile);
     if (scale === 1) return profile;
     return { ...profile, screenWidth: Math.round(profile.screenWidth / scale), screenHeight: Math.round(profile.screenHeight / scale) };
+  }
+
+  /** The available screen a profile's pages see, in CSS pixels: windows are kept inside it. */
+  claimedArea(profileId: string): ScreenArea | null {
+    const profile = this.store.getProfile(profileId);
+    if (!profile) return null;
+    const launch = this.store.getLaunch(profileId);
+    return claimedScreenArea(this.pageScreen(launch ? launchedProfile(profile, launch) : profile), null);
   }
 
   /**

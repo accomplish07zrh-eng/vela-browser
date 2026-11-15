@@ -2,10 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { trapDialogTab } from "./dialog-focus.ts";
 import { useTranslation } from "./i18n.tsx";
 import "./health.css";
+import { IP_SUMMARY_LABELS, IpScoreBadge, IpScoreDialog, scoreIps, type IpScore } from "./ip-score.tsx";
 
 interface Issue { id: string; severity: "high" | "medium" | "low"; message: string; params?: Record<string, string | number> }
 interface Exit { status: "ok" | "failed"; ip?: string; country?: string; city?: string; timezone?: string; checkedAt: number; via: "proxy" | "pool" | "direct"; reason?: string }
-export interface HealthRow { profileId: string; name: string; group: string; score: number; level: "good" | "fair" | "poor"; issues: Issue[]; exit?: Exit; measuredAt?: string }
+export interface HealthRow { profileId: string; name: string; group: string; score: number; level: "good" | "fair" | "poor"; issues: Issue[]; exit?: Exit; measuredAt?: string; ipScore?: { score: number; grade: IpScore["grade"]; kind: IpScore["kind"]; summary: string[] } }
 interface AssociationProfile { id: string; name: string; group: string; platform: string; account: string }
 interface Associations {
   exits: Array<{ ip: string; country?: string; city?: string; via: string; profiles: AssociationProfile[]; risk: "high" | "medium" | "none"; platforms: string[] }>;
@@ -57,7 +58,14 @@ export function HealthSheet({ ids, focus, onClose, onOpenProfile }: { ids?: stri
   const counts = { poor: scope.filter((row) => row.level === "poor").length, fair: scope.filter((row) => row.level === "fair").length, good: scope.filter((row) => row.level === "good").length };
   const neverChecked = scope.filter((row) => !row.exit).length;
   const when = (at: number) => new Date(at).toLocaleString(language, { dateStyle: "short", timeStyle: "short" });
-  const message = (issue: Issue) => t(issue.message, issue.params);
+  const [ipDetail, setIpDetail] = useState<IpScore | null>(null);
+  // The IP item lists its problems by name; they are put into words here, in the reader's language.
+  const message = (issue: Issue) => t(issue.message, issue.id === "exit-ip-score" && typeof issue.params?.summary === "string"
+    ? { ...issue.params, summary: issue.params.summary.split("; ").filter(Boolean).map((key) => t(IP_SUMMARY_LABELS[key] ?? key)).join(t(", ")) }
+    : issue.params);
+  const openIp = async (ip: string) => {
+    try { const found = (await scoreIps([ip]))[ip]; if (found && !("error" in found)) setIpDetail(found); } catch { /* the badge stays */ }
+  };
   return <dialog ref={dialog} className="modal health-modal" aria-labelledby="health-title" onKeyDown={trapDialogTab} onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <div className="modal-head"><span id="health-title">{ids?.length ? t("Self-check of {count} profiles", { count: ids.length }) : t("Self-check")}</span>
       <button className="modal-close" type="button" aria-label={t("Close")} onClick={onClose}><svg className="icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg></button>
@@ -89,6 +97,7 @@ export function HealthSheet({ ids, focus, onClose, onOpenProfile }: { ids?: stri
               <div className="health-row-head">
                 {onOpenProfile ? <button type="button" className="health-name" onClick={() => onOpenProfile(row.profileId)}>{row.name}</button> : <strong className="health-name">{row.name}</strong>}
                 {row.group && <span className="health-group">{row.group}</span>}
+                {row.ipScore && row.exit?.ip && <IpScoreBadge score={row.ipScore} onClick={() => void openIp(row.exit!.ip!)} />}
                 <span className="health-exit">{row.exit?.status === "ok" ? [row.exit.ip, row.exit.city, row.exit.country, row.exit.timezone].filter(Boolean).join(" · ") || t("Direct") : row.exit ? t("Exit unreachable") : t("Exit not checked")}{row.exit ? ` · ${when(row.exit.checkedAt)}` : ""}</span>
               </div>
               {row.issues.length > 0 && <ul className="health-issues">{row.issues.map((issue) => <li key={issue.id} className={issue.severity}>{message(issue)}</li>)}</ul>}
@@ -114,5 +123,6 @@ export function HealthSheet({ ids, focus, onClose, onOpenProfile }: { ids?: stri
       </div>}
     </div>
     <div className="modal-foot"><button type="button" className="btn" onClick={onClose}>{t("Close")}</button></div>
+    {ipDetail && <IpScoreDialog initial={ipDetail} onClose={() => setIpDetail(null)} />}
   </dialog>;
 }

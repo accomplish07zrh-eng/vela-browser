@@ -58,3 +58,12 @@ test("direct egress reports request and service failures without exposing raw er
     "proxy_authentication_failed",
   ]);
 });
+
+test("answers from ip.sb and ipwho.is are read with their country code and timezone", async () => {
+  const { parseEgressResponse } = await import("./egress.ts");
+  expect(parseEgressResponse(JSON.stringify({ ip: "60.157.123.234", country: "Japan", country_code: "JP", timezone: "Asia/Tokyo", isp: "SoftBank Corp." })))
+    .toMatchObject({ ip: "60.157.123.234", country: "JP", timezone: "Asia/Tokyo", org: "SoftBank Corp." });
+  expect(parseEgressResponse(JSON.stringify({ ip: "60.157.123.234", success: true, country: "Japan", country_code: "JP", timezone: { id: "Asia/Tokyo" }, connection: { isp: "SoftBank" } })))
+    .toMatchObject({ country: "JP", timezone: "Asia/Tokyo", org: "SoftBank" });
+  expect(parseEgressResponse("60.157.123.234\n")).toEqual({ ip: "60.157.123.234" });
+});

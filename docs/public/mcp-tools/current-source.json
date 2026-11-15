@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.14",
+  "aliasModeVersion": "0.1.15",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -328,6 +328,34 @@
         "required": [
           "nodeIds"
         ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_ip_score",
+      "description": "Score an IP's quality from many free IP-intelligence services (proxycheck, ip-api, ipquery, iplocate, ip2location, ipinfo and more): whether it is a datacenter address, known as a proxy, VPN or Tor exit, reported for abuse, how risky they rate it, and whether they agree on its country. Give ip, or profileId to score that profile's exit (a pool node's last check, otherwise its proxy is checked first). Returns score 0-100, grade (clean/good/fair/poor), kind (residential/mobile/hosting), findings and each service's verdict. Only the IP is sent to the services; results are kept half a day.",
+      "annotations": {
+        "title": "Score an IP",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ip": {
+            "type": "string",
+            "minLength": 3
+          },
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fresh": {
+            "type": "boolean",
+            "description": "Ask the services again instead of using today's result."
+          }
+        },
         "additionalProperties": false
       }
     },

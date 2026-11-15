@@ -7,6 +7,11 @@ export const DEFAULT_EGRESS_ENDPOINTS = [
   "https://ipinfo.io/json",
   // Dual-stack, so proxies with an IPv6-only exit still resolve.
   "https://api64.ipify.org?format=json",
+  // Further services, asked only when the ones before did not answer.
+  "https://api.ip.sb/geoip",
+  "https://ipwho.is/",
+  "https://checkip.amazonaws.com",
+  "https://icanhazip.com",
 ] as const;
 
 export interface EgressInfo {
@@ -63,9 +68,20 @@ export function parseEgressResponse(body: string): EgressInfo | null {
           const val = typeof parsed[key] === "string" ? parsed[key].trim() : "";
           if (val) info[key] = val;
         }
-        if (typeof parsed.timezone === "string" && parsed.timezone.trim()) {
+        // Services that spell the country out give its two-letter code separately; the code is kept.
+        for (const key of ["country_code", "countryCode"]) {
+          const value = parsed[key];
+          if (typeof value === "string" && /^[A-Za-z]{2}$/.test(value.trim())) { info.country = value.trim().toUpperCase(); break; }
+        }
+        if (!info.org) {
+          const org = [parsed.isp, (parsed.connection as Record<string, unknown> | undefined)?.isp].find((value) => typeof value === "string" && value.trim());
+          if (typeof org === "string") info.org = org.trim();
+        }
+        const zone = typeof parsed.timezone === "string" ? parsed.timezone
+          : parsed.timezone && typeof parsed.timezone === "object" && typeof (parsed.timezone as Record<string, unknown>).id === "string" ? (parsed.timezone as Record<string, string>).id : "";
+        if (zone?.trim()) {
           try {
-            const timezone = parseStrictTimezone(parsed.timezone);
+            const timezone = parseStrictTimezone(zone);
             if (timezone) info.timezone = timezone;
           } catch {}
         }
