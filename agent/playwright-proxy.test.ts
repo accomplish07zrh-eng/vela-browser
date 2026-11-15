@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { PlaywrightToolProxy } from "./playwright-proxy.mjs";
+import { PlaywrightToolProxy, guardViewports } from "./playwright-proxy.mjs";
 import { DEVTOOLS_TOOLS } from "./devtools.mjs";
 
 test("Playwright proxy exposes stable annotated actions without a browser", async () => {
@@ -77,9 +77,41 @@ test("browser_resize resizes the window and never pins the page to a fixed viewp
   expect(sent).toContainEqual(["Browser.setWindowBounds", { windowId: 7, bounds: { width: 1022, height: 798 } }]);
   expect(sent.some(([method]) => method === "Emulation.setDeviceMetricsOverride")).toBe(false);
 
-  await expect(proxy.callTool("browser_run_code", { code: "async (page) => page.setViewportSize({ width: 600, height: 400 })" })).rejects.toThrow("fixed viewport");
-  // A page already pinned smaller than its window is reported, not "fixed" with a huge window.
-  layout = { clientWidth: 600, clientHeight: 400 };
-  await expect(proxy.callTool("browser_resize", { width: 1000, height: 700 })).rejects.toThrow("reopen the browser");
   await proxy.detach();
+});
+
+test("the viewport guard turns pinning into window resizes and refuses pinning CDP calls", async () => {
+  const sent: string[] = [];
+  let bounds = { width: 1400, height: 900, windowState: "normal" };
+  const rawSession = () => ({
+    send: async (method: string, params?: any) => {
+      sent.push(method);
+      if (method === "Browser.getWindowForTarget") return { windowId: 1, bounds };
+      if (method === "Browser.getWindowBounds") return { bounds };
+      if (method === "Page.getLayoutMetrics") return { cssLayoutViewport: { clientWidth: bounds.width - 22, clientHeight: bounds.height - 98 } };
+      if (method === "Browser.setWindowBounds" && params.bounds.width) bounds = { ...bounds, ...params.bounds };
+      return {};
+    },
+    detach: async () => {},
+  });
+  const page: any = { setViewportSize: () => { throw new Error("must not pin the viewport"); } };
+  const context: any = Object.assign(new EventEmitter(), { pages: () => [page], newCDPSession: async () => rawSession() });
+  const browser: any = { newBrowserCDPSession: async () => rawSession() };
+  const guard = guardViewports(context, browser);
+
+  await page.setViewportSize({ width: 600, height: 400 });
+  expect(bounds).toMatchObject({ width: 622, height: 498 });
+
+  const { sessions } = await guard.capture(async () => {
+    const pageSession = await context.newCDPSession(page);
+    await expect(pageSession.send("Emulation.setDeviceMetricsOverride", { width: 600, height: 400 })).rejects.toThrow("fixed viewport");
+    const browserSession = await browser.newBrowserCDPSession();
+    const wrapped = JSON.stringify({ id: 1, method: "Emulation.setDeviceMetricsOverride", params: { width: 600, height: 400 } });
+    await expect(browserSession.send("Target.sendMessageToTarget", { sessionId: "s", message: wrapped })).rejects.toThrow("fixed viewport");
+    await browserSession.send("Target.getTargets");
+  });
+  expect(sessions.size).toBe(2);
+  expect(sent).not.toContain("Emulation.setDeviceMetricsOverride");
+  expect(sent).not.toContain("Target.sendMessageToTarget");
+  guard.dispose();
 });
