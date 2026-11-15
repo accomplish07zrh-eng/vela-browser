@@ -26,7 +26,8 @@ function packageVersion() {
 
 const VERSION = process.env.ALIASMODE_APP_VERSION || packageVersion();
 const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
-const FIREFOX_FILTERED_TOOLS = new Set(["browser_close", "browser_install", "browser_pdf_save"]);
+// browser_resize would pin the page to a fixed viewport (see playwright-proxy.mjs); these engines have no window resize to give instead.
+const FIREFOX_FILTERED_TOOLS = new Set(["browser_close", "browser_install", "browser_pdf_save", "browser_resize"]);
 
 function firefoxTools(tools) {
   return tools.filter((tool) => !FIREFOX_FILTERED_TOOLS.has(tool.name) && (isPluginTool(tool.name) || !/pdf/i.test(tool.name)));
