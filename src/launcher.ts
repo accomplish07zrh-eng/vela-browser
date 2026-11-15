@@ -4839,13 +4839,16 @@ export class Launcher {
         }
         const operationallyVerified = liveness.cdpAlive
           && (!!trackedProc || liveness.process === "alive");
-        if (!operationallyVerified) {
+        // A browser still starting or stopping has no CDP yet, or none any more; that is expected.
+        const changing = this.startsInFlight.has(launch.profileId) || this.stopsInFlight.has(launch.profileId);
+        if (!operationallyVerified && !changing) {
           const reason = liveness.process === "recovering"
             ? "PID recovery grace"
             : liveness.process === "unknown"
               ? "ownership scan inconclusive"
               : `owned pid=${liveness.pid}`;
-          this.log(`reconcileOrphans quarantined unverified launch for ${launch.profileId} (${reason}, port=${launch.debugPort})`);
+          // Nothing is stopped here: the launch stays recorded and its port reserved until its process is gone.
+          this.log(`reconcileOrphans kept ${launch.profileId} running without CDP proof (${reason}, port=${launch.debugPort}); nothing was stopped`);
         }
         continue;
       }
