@@ -1,4 +1,5 @@
 import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { execFile } from "node:child_process";
 import { networkInterfaces } from "node:os";
 
 /**
@@ -169,3 +170,37 @@ async function load(){
 }
 load();setInterval(()=>{if(!document.hidden)load();},2500);
 </script></body></html>`;
+
+/** Why a phone may not reach this computer even though the phone view is on. */
+export interface Reachability { checked: boolean; firewallBlocked: boolean; publicNetwork: boolean; adapter?: string }
+
+let reachabilityCache: { at: number; value: Reachability } | undefined;
+/**
+ * Windows only: an inbound "Block" firewall rule for this program (often left by a dismissed
+ * firewall prompt) or a Wi-Fi marked as a public network both keep phones out. Only read here:
+ * the user changes their own firewall and network settings.
+ */
+export async function windowsReachability(exe = process.execPath, now = Date.now()): Promise<Reachability> {
+  if (process.platform !== "win32") return { checked: false, firewallBlocked: false, publicNetwork: false };
+  if (reachabilityCache && now - reachabilityCache.at < 60_000) return reachabilityCache.value;
+  const first = lanAddresses()[0];
+  const adapter = Object.entries(networkInterfaces()).find(([, addresses]) => (addresses ?? []).some((address) => address.address === first))?.[0];
+  const quote = (text: string) => `'${text.replace(/'/g, "''")}'`;
+  const script = [
+    `$exe = ${quote(exe)}`,
+    "$rules = @(Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { $_.Program -eq $exe } | Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' })",
+    adapter ? `$profile = Get-NetConnectionProfile -InterfaceAlias ${quote(adapter)} -ErrorAction SilentlyContinue` : "$profile = $null",
+    "[pscustomobject]@{ blocked = ($rules.Count -gt 0); public = [bool]($profile -and $profile.NetworkCategory -eq 'Public') } | ConvertTo-Json -Compress",
+  ].join("; ");
+  const value = await new Promise<Reachability>((resolve) => {
+    execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 15_000, windowsHide: true }, (error, stdout) => {
+      if (error) { resolve({ checked: false, firewallBlocked: false, publicNetwork: false }); return; }
+      try {
+        const parsed = JSON.parse(stdout);
+        resolve({ checked: true, firewallBlocked: parsed.blocked === true, publicNetwork: parsed.public === true, ...(adapter ? { adapter } : {}) });
+      } catch { resolve({ checked: false, firewallBlocked: false, publicNetwork: false }); }
+    });
+  });
+  reachabilityCache = { at: now, value };
+  return value;
+}

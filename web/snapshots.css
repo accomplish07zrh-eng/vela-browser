@@ -30,3 +30,6 @@
 .mobile-access span { min-width: 92px; color: var(--muted); }
 .mobile-access strong { font-size: 14px; }
 .mobile-pin { font-size: 22px !important; letter-spacing: .3em; }
+.mobile-warn { margin: 8px 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--danger-soft); color: var(--danger-ink); font-size: 13px; line-height: 1.55; }
+.mobile-warn strong { display: block; margin-bottom: 2px; }
+.mobile-warn p { margin: 0; }

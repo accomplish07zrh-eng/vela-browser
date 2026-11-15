@@ -1339,5 +1339,10 @@
   "No local network address found": "没找到局域网地址",
   "PIN": "PIN",
   "New PIN": "换一个 PIN",
-  "The first time, Windows may ask whether Vela Browser may use the network: allow private networks only. A new PIN is made each time the app starts.": "第一次开启时，Windows 可能会询问是否允许 Vela Browser 使用网络：只勾选专用网络即可。每次启动应用都会生成新的 PIN。"
+  "The first time, Windows may ask whether Vela Browser may use the network: allow private networks only. A new PIN is made each time the app starts.": "第一次开启时，Windows 可能会询问是否允许 Vela Browser 使用网络：只勾选专用网络即可。每次启动应用都会生成新的 PIN。",
+  "Windows Firewall is keeping phones out": "Windows 防火墙挡住了手机",
+  "A firewall rule blocks Vela Browser from receiving connections, often left by a dismissed permission prompt. In Windows Defender Firewall > Advanced settings > Inbound rules, delete the Block rules for aliasmode-sidecar.exe, then turn the phone view off and on and allow private networks when Windows asks.": "有一条防火墙规则不让 Vela Browser 接收连接，通常是之前关掉了授权提示留下的。在「Windows Defender 防火墙 → 高级设置 → 入站规则」里，删除 aliasmode-sidecar.exe 的「阻止」规则，再把手机查看关掉重开，Windows 询问时允许专用网络。",
+  "This Wi-Fi is set as a public network": "这个 Wi-Fi 被设为公用网络",
+  "Windows keeps devices on a public network from reaching this computer. If this is your own Wi-Fi, open Settings > Network & internet > {adapter} > the network's properties and choose Private network.": "在公用网络上，Windows 不让其他设备访问这台电脑。如果这是你自己的 Wi-Fi，打开「设置 → 网络和 Internet → {adapter} → 这个网络的属性」，改为「专用网络」。",
+  "Going around a TUN client is available on Windows only": "绕过 TUN 客户端目前只支持 Windows"
 }

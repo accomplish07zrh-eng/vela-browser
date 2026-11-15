@@ -187,7 +187,11 @@ test("proxy check uses a fresh relay for every attempt and always closes it", as
   expect(closed).toBe(3);
 });
 
-test("proxy check uses Bun fetch through a real loopback relay", async () => {
+// Bun reads NO_PROXY once at start and then skips even an explicit proxy for those hosts. Where it
+// lists loopback (common on machines with a local proxy client), this loopback test cannot route
+// through the relay and is skipped; CI and machines without it run it.
+const noProxyCoversLoopback = [process.env.NO_PROXY, process.env.no_proxy].some((value) => value?.split(",").map((part) => part.trim()).some((part) => part === "127.0.0.1" || part === "localhost" || part === "*"));
+test.skipIf(noProxyCoversLoopback)("proxy check uses Bun fetch through a real loopback relay", async () => {
   const egress = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
