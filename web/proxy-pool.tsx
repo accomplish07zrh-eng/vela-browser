@@ -2,6 +2,7 @@
  * The proxy pool in the dashboard: import proxies once, check them, and give them to profiles.
  * Nothing here ever holds a node's credentials; the server keeps them.
  */
+import { cachedIpScores, IpScoreBadge, IpScoreDialog, scoreIps, type IpScore } from "./ip-score.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApprovalCountdown, requestApprovalJson, useApprovalQueue } from "./approval-queue.tsx";
 import { Select } from "./select.tsx";
@@ -203,9 +204,29 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
   const [text, setText] = useState("");
   const [type, setType] = useState("http");
   const [tags, setTags] = useState("");
-  const [busy, setBusy] = useState<"import" | "check" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"import" | "check" | "delete" | "score" | null>(null);
   const [progress, setProgress] = useState<[number, number] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // IP scores of the exits: shown when already looked up; the button asks the services.
+  const [ipScores, setIpScores] = useState<Record<string, IpScore>>({});
+  const [ipDetail, setIpDetail] = useState<IpScore | null>(null);
+  useEffect(() => {
+    const ips = [...new Set((nodes ?? []).flatMap((node) => node.check?.ip ? [node.check.ip] : []))];
+    if (ips.length) void cachedIpScores(ips).then((found) => setIpScores((current) => ({ ...current, ...found })), () => {});
+  }, [nodes]);
+  const doScore = async () => {
+    const pick = (nodes ?? []).filter((node) => node.check?.ip && (!selected.size || selected.has(node.id)));
+    const ips = [...new Set(pick.map((node) => node.check!.ip!))].slice(0, 50);
+    if (!ips.length) return;
+    setBusy("score"); setError(null);
+    try {
+      const found = await scoreIps(ips);
+      const good = Object.fromEntries(Object.entries(found).filter(([, value]) => !("error" in value))) as Record<string, IpScore>;
+      setIpScores((current) => ({ ...current, ...good }));
+      setNotice(t("Scored {count} exit IPs.", { count: Object.keys(good).length }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(null); }
+  };
   const [editing, setEditing] = useState<string | null>(null);
   const [country, setCountry] = useState("");
   const [status, setStatus] = useState("");
@@ -356,11 +377,13 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
     </section>
     {error && <div className="tools-alert" role="alert">{error}</div>}
     {notice && <div className="tools-notice" role="status">{notice}</div>}
+    {ipDetail && <IpScoreDialog initial={ipDetail} onClose={() => setIpDetail(null)} onUpdated={(score) => setIpScores((current) => ({ ...current, [score.ip]: score }))} />}
     {progress && <div className="tools-progress" role="status"><div className="proxy-actions"><strong>{t("Checking proxies")}: {progress[0]} / {progress[1]}</strong></div>
       <progress aria-label={t("Proxy operation progress")} value={progress[0]} max={Math.max(1, progress[1])} /></div>}
     <section className="tools-panel">
       <div className="tools-panel-head"><div><h3>{t("Proxy pool")}</h3><p>{t("Exit country comes from the last check; before a check, from the name. Proxies that left through one IP are marked.")}</p></div>
         <div className="proxy-actions">
+          <button type="button" className="btn tip" data-tip={t("Look the exit IPs of the selected nodes (or all checked ones) up with many IP-intelligence services")} disabled={!!busy || !nodes?.some((node) => node.check?.ip)} onClick={() => void doScore()}>{busy === "score" ? t("Scoring…") : t("Score exit IPs")}</button>
           <button type="button" className="btn" disabled={!!busy || !selected.size} onClick={() => void doCheck([...selected])}>{t("Check selected")}</button>
           <button type="button" className="btn primary" disabled={!!busy || !nodes?.length} onClick={() => void doCheck()}>{busy === "check" ? t("Checking…") : t("Check all")}</button>
         </div></div>
@@ -406,7 +429,7 @@ export function ProxyPoolPanel({ active, onChanged }: { active: boolean; onChang
               {reasonLabel(t, node.check?.reason) && <small>{reasonLabel(t, node.check?.reason)}</small>}
               {node.check?.durationMs !== undefined && <small>{(node.check.durationMs / 1000).toFixed(1)} s</small>}
               {node.check?.rotating && <small className="pool-warn">{t("IP changes between requests")}</small>}</td>
-            <td className="tools-mono">{node.check?.ip ?? "—"}{(node.check?.city || node.check?.timezone) && <small>{[node.check?.city, node.check?.timezone].filter(Boolean).join(" · ")}</small>}
+            <td className="tools-mono">{node.check?.ip ?? "—"}{node.check?.ip && ipScores[node.check.ip] && <> <IpScoreBadge score={ipScores[node.check.ip]!} onClick={() => setIpDetail(ipScores[node.check!.ip!]!)} /></>}{(node.check?.city || node.check?.timezone) && <small>{[node.check?.city, node.check?.timezone].filter(Boolean).join(" · ")}</small>}
               {node.sameExitAs.length > 0 && <small className="pool-warn">{t("same exit as {names}", { names: node.sameExitAs.map((id) => byId.get(id)?.name ?? id).join(", ") })}</small>}</td>
             <td>{node.profiles.length}{node.maxProfiles === null ? ` / ${t("no limit")}` : ` / ${node.maxProfiles}`}
               {node.profiles.length > 0 && <small>{node.profiles.slice(0, 3).map((profile) => profile.name || profile.id).join(", ")}{node.profiles.length > 3 ? "…" : ""}</small>}

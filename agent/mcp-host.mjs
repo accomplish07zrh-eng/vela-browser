@@ -244,6 +244,16 @@ const ALIAS_TOOLS = [
     },
   },
 {
+    name: "vela_ip_score",
+    description: "Score an IP's quality from many free IP-intelligence services (proxycheck, ip-api, ipquery, iplocate, ip2location, ipinfo and more): whether it is a datacenter address, known as a proxy, VPN or Tor exit, reported for abuse, how risky they rate it, and whether they agree on its country. Give ip, or profileId to score that profile's exit (a pool node's last check, otherwise its proxy is checked first). Returns score 0-100, grade (clean/good/fair/poor), kind (residential/mobile/hosting), findings and each service's verdict. Only the IP is sent to the services; results are kept half a day.",
+    annotations: toolAnnotations("Score an IP", { openWorld: true }),
+    inputSchema: {
+      type: "object",
+      properties: { ip: { type: "string", minLength: 3 }, profileId: { type: "string", minLength: 1 }, fresh: { type: "boolean", description: "Ask the services again instead of using today's result." } },
+      additionalProperties: false,
+    },
+  },
+{
     name: "vela_browser_set_proxy",
     description: "Give a profile a proxy from the pool (nodeId from vela_proxy_pool_list). Changing a profile's exit shows its sites an IP change, so the user may have to approve it in Vela Browser first (the call waits up to a minute). The new proxy is checked before anything changes. A closed profile uses it from its next start. An open browser saves its session, closes and reopens on the new exit with its tabs (timezone and WebRTC follow the new exit); this connection reattaches to it. Errors: approval_denied, approval_timeout, node_unavailable, pool_exhausted, rate_limited (one change per profile every 30 seconds), profile_busy, switch_check_failed, teardown_unconfirmed, reopen_failed, exit_is_direct.",
     annotations: toolAnnotations("Change a profile's proxy", { destructive: true, openWorld: true }),
@@ -715,6 +725,7 @@ export async function createVelaBrowserMcp(options = {}) {
       if (name === "vela_proxy_pool_list") {
         return toolResult(await runtime.call("proxyPool.list", args));
       }
+      if (name === "vela_ip_score") return toolResult(await runtime.call("ip.score", args));
       if (name === "vela_proxy_pool_check") {
         return toolResult(await runtime.call("proxyPool.check", { nodeIds: args.nodeIds }));
       }

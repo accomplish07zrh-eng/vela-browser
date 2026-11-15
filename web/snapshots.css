@@ -33,3 +33,7 @@
 .mobile-warn { margin: 8px 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--danger-soft); color: var(--danger-ink); font-size: 13px; line-height: 1.55; }
 .mobile-warn strong { display: block; margin-bottom: 2px; }
 .mobile-warn p { margin: 0; }
+
+.check-sites-group { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: start; padding: 6px 0; border-top: 1px solid var(--line); }
+.check-sites-group > span { color: var(--muted); font-size: 12px; padding-top: 5px; }
+.check-sites-group > div { display: flex; flex-wrap: wrap; gap: 4px; }

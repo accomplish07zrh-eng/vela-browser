@@ -1065,3 +1065,23 @@ test("an AI only sees and uses profiles in the groups it was given, and what it 
   await other.enqueue(wire("session.identify", { name: "Cursor" }));
   expect(((await other.enqueue(wire("profiles.list"))).result as any).profiles).toEqual([]);
 });
+
+test("an AI scores an IP, or a profile's exit found from its pool node or its checked proxy", async () => {
+  const scored: string[] = [];
+  const profiles: Record<string, any> = {
+    pooled: { id: "pooled", name: "P", group: "", proxy: { type: "pool", host: "node-1", port: "0" } },
+    plain: { id: "plain", name: "Q", group: "", proxy: { type: "http", host: "203.0.113.1", port: "8080", user: "", pass: "" } },
+    direct: { id: "direct", name: "R", group: "" },
+  };
+  const session = new AgentControlSession({
+    launcher: {} as any, admission: { run: async (_: unknown, fn: () => Promise<unknown>) => await fn() } as any,
+    store: { getLaunch: () => null, getProfile: (id: string) => profiles[id] ?? null, listFolders: () => [], proxyPool: { get: () => ({ check: { ip: "198.51.100.7" } }) } } as any,
+    ipScores: { score: async (ip: string) => { scored.push(ip); return { ip, score: 90 }; } } as any,
+    checkProxy: async () => ({ status: "working", ip: "198.51.100.9", attempts: 3, successes: 3 }) as any,
+  });
+  expect((await session.enqueue(wire("ip.score", { ip: "8.8.8.8" }))).ok).toBe(true);
+  expect((await session.enqueue(wire("ip.score", { profileId: "pooled" }))).ok).toBe(true);
+  expect((await session.enqueue(wire("ip.score", { profileId: "plain" }))).ok).toBe(true);
+  expect(scored).toEqual(["8.8.8.8", "198.51.100.7", "198.51.100.9"]);
+  expect((await session.enqueue(wire("ip.score", { profileId: "direct" }))).error?.code).toBe("no_proxy");
+});

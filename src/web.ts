@@ -32,6 +32,7 @@ import { AuditLog } from "./audit.ts";
 import { backupSessions, SnapshotStore } from "./snapshots.ts";
 import { setTunBypass } from "./egress-binding.ts";
 import { MobileView } from "./mobile-view.ts";
+import { IpScoreCache } from "./ip-score.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
@@ -278,6 +279,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const aiProxyPolicy = (): AiProxyPolicy => {
     try { return opts.appConfig?.read().aiProxyChanges ?? "ask"; } catch { return "ask"; }
   };
+  // IP scores from many services, shared by the dashboard and AIs, kept half a day per IP.
+  const ipScores = new IpScoreCache(opts.paths && !opts.remote ? join(opts.paths.root, "ip-scores.json") : undefined);
   // What AIs, scripts and tasks did, kept for six months next to the profiles.
   const audit = opts.paths && !opts.remote ? new AuditLog(join(opts.paths.root, "audit")) : undefined;
   // Snapshots before fingerprint and proxy changes, and a daily backup of sign-ins that changed.
@@ -372,6 +375,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
         codeApprovals,
         aiCodePolicy,
         aiAccess: () => opts.appConfig?.read().aiAccess,
+        ipScores,
         ...(audit ? { audit } : {}),
         log,
       })
@@ -511,6 +515,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
           ...(snapshots ? { snapshots } : {}),
           connectedAgents: () => agentHub?.connectedAgents() ?? [],
           ...(mobileView ? { mobileView } : {}),
+          ipScores,
           shutdownSignal: shutdownController.signal,
         });
         if (ui) return ui;

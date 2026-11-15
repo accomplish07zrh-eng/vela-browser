@@ -10,7 +10,9 @@ import type { Profile } from "./types.ts";
 export type Severity = "high" | "medium" | "low";
 export interface HealthIssue { id: string; severity: Severity; message: string; params?: Record<string, string | number> }
 export interface ExitInfo { status: "ok" | "failed"; ip?: string; country?: string; city?: string; timezone?: string; rotating?: boolean; unstable?: boolean; reason?: string; checkedAt: number; via: "proxy" | "pool" | "direct" }
-export interface HealthReport { profileId: string; score: number; level: "good" | "fair" | "poor"; issues: HealthIssue[]; exit?: ExitInfo; measuredAt?: string }
+/** The exit IP's quality, as ip-score.ts judged it from many services (kept short in reports). */
+export interface ExitIpScore { score: number; grade: "clean" | "good" | "fair" | "poor"; kind: string; summary: string[] }
+export interface HealthReport { profileId: string; score: number; level: "good" | "fair" | "poor"; issues: HealthIssue[]; exit?: ExitInfo; measuredAt?: string; ipScore?: ExitIpScore }
 
 const COST: Record<Severity, number> = { high: 25, medium: 10, low: 4 };
 
@@ -54,7 +56,7 @@ function sameZone(a: string, b: string, at = Date.now()): boolean {
   } catch { return false; }
 }
 
-export function assessProfile(profile: Profile, exit: ExitInfo | undefined, context: { sharedExit?: number; now?: number } = {}): HealthReport {
+export function assessProfile(profile: Profile, exit: ExitInfo | undefined, context: { sharedExit?: number; now?: number; ipScore?: ExitIpScore } = {}): HealthReport {
   const issues: HealthIssue[] = [];
   const add = (id: string, severity: Severity, message: string, params?: Record<string, string | number>) => issues.push({ id, severity, message, ...(params ? { params } : {}) });
   const now = context.now ?? Date.now();
@@ -68,6 +70,12 @@ export function assessProfile(profile: Profile, exit: ExitInfo | undefined, cont
   if (exit?.unstable) add("exit-unstable", "medium", "Its exit only answered some of the checks");
   if (!exit) add("exit-unchecked", "low", "Its exit has not been checked yet");
   if ((context.sharedExit ?? 0) > 0) add("exit-shared", "medium", "Shares its exit address with {count} other profiles", { count: context.sharedExit! });
+  // What IP-intelligence services think of the exit: a datacenter or known proxy address gives it away.
+  const ip = context.ipScore;
+  if (ip && ip.grade !== "clean") {
+    const severity: Severity = ip.grade === "poor" ? "high" : ip.grade === "fair" ? "medium" : "low";
+    add("exit-ip-score", severity, "Its exit IP scores {score} out of 100 with IP-intelligence services: {summary}", { score: ip.score, summary: ip.summary.join("; ") });
+  }
 
   // What it claims, against where it comes out.
   const exitZone = exit?.status === "ok" ? exit.timezone : undefined;
@@ -119,7 +127,7 @@ export function assessProfile(profile: Profile, exit: ExitInfo | undefined, cont
   issues.sort((a, b) => COST[b.severity] - COST[a.severity]);
   return {
     profileId: profile.id, score, level: score >= 80 ? "good" : score >= 55 ? "fair" : "poor", issues,
-    ...(exit ? { exit } : {}), ...(observed?.capturedAt ? { measuredAt: observed.capturedAt } : {}),
+    ...(exit ? { exit } : {}), ...(observed?.capturedAt ? { measuredAt: observed.capturedAt } : {}), ...(ip ? { ipScore: ip } : {}),
   };
 }
 

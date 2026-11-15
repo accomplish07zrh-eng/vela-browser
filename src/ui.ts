@@ -552,6 +552,8 @@ export interface UiRuntimeOptions {
   snapshots?: import("./snapshots.ts").SnapshotStore;
   /** Watching from a phone on the same network. */
   mobileView?: import("./mobile-view.ts").MobileView;
+  /** IP scores, shared with AIs. */
+  ipScores?: import("./ip-score.ts").IpScoreCache;
 }
 
 /**
@@ -560,6 +562,18 @@ export interface UiRuntimeOptions {
  */
 /** The last exit check of each profile, loaded once per process. */
 let healthCache: import("./health.ts").ExitCache | undefined;
+/** IP scores from many services, kept half a day per IP. */
+let ipScores: import("./ip-score.ts").IpScoreCache | undefined;
+async function ipScoreCache(options: UiRuntimeOptions): Promise<import("./ip-score.ts").IpScoreCache> {
+  if (options.ipScores) return options.ipScores;
+  const { IpScoreCache } = await import("./ip-score.ts");
+  return ipScores ??= new IpScoreCache(options.paths ? join(options.paths.root, "ip-scores.json") : undefined);
+}
+/** The short form of an IP score that the self-check shows and counts. */
+function exitIpScore(score: import("./ip-score.ts").IpScore): import("./health.ts").ExitIpScore {
+  const summary = score.findings.filter((finding) => finding.severity === "high" || finding.severity === "medium").map((finding) => finding.id);
+  return { score: score.score, grade: score.grade, kind: score.kind, summary };
+}
 
 export async function handleUiRequest(
   req: Request,
@@ -1056,14 +1070,54 @@ export async function handleUiRequest(
           } catch { cache.set(profile.id, { status: "failed", reason: "check failed", checkedAt: now, via: "proxy" }); }
         }
       }));
+      // Each exit IP once, three at a time: what the IP-intelligence services think of it.
+      const scores = await ipScoreCache(options);
+      const ips = [...new Set(targets.flatMap((profile) => { const exit = cache.get(profile.id); return exit?.status === "ok" && exit.ip && exit.via !== "direct" ? [exit.ip] : []; }))];
+      const ipQueue = [...ips];
+      await Promise.all(Array.from({ length: Math.min(3, ipQueue.length) }, async () => {
+        for (let ip = ipQueue.shift(); ip; ip = ipQueue.shift()) await scores.score(ip).catch(() => undefined);
+      }));
     } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
     cache.forget(new Set(profiles.map((profile) => profile.id)));
     const shared = sharedExits(cache.all());
-    const reports = profiles.map((profile) => ({
-      ...assessProfile(profile, cache.get(profile.id), { sharedExit: shared.get(profile.id) }),
+    const scores = await ipScoreCache(options);
+    const reports = profiles.map((profile) => {
+      const exit = cache.get(profile.id);
+      const scored = exit?.ip ? scores.get(exit.ip) : undefined;
+      return {
+      ...assessProfile(profile, exit, { sharedExit: shared.get(profile.id), ...(scored ? { ipScore: exitIpScore(scored) } : {}) }),
       name: profile.name, group: profile.group ?? "", tags: profile.tags ?? [],
-    })).sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+    }; }).sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
     return noStoreJson({ ok: true, reports, associations: associations(profiles, cache.all()) });
+  }
+
+  // The quality of one IP, or several, from many IP-intelligence services.
+  if (pathname === "/ui/api/ip-score/cached" && req.method === "POST") {
+    const scores = await ipScoreCache(options);
+    const body = await req.json().catch(() => ({})) as { ips?: unknown };
+    const ips = Array.isArray(body.ips) ? body.ips.map(String).slice(0, 2000) : [];
+    return noStoreJson({ ok: true, scores: Object.fromEntries(ips.flatMap((ip) => { const score = scores.get(ip); return score ? [[ip, score]] : []; })) });
+  }
+  if ((pathname === "/ui/api/ip-score" || pathname === "/ui/api/ip-score/batch") && req.method === "POST") {
+    const scores = await ipScoreCache(options);
+    const body = await req.json().catch(() => ({})) as { ip?: unknown; ips?: unknown; fresh?: unknown };
+    try {
+      if (pathname.endsWith("/batch")) {
+        const ips = Array.isArray(body.ips) ? [...new Set(body.ips.map(String))].slice(0, 50) : [];
+        const results: Record<string, unknown> = {};
+        const queue = [...ips];
+        await Promise.all(Array.from({ length: Math.min(3, queue.length) }, async () => {
+          for (let ip = queue.shift(); ip; ip = queue.shift()) {
+            try { results[ip] = await scores.score(ip, body.fresh === true); } catch (error) { results[ip] = { ip, error: msg(error) }; }
+          }
+        }));
+        return noStoreJson({ ok: true, scores: results });
+      }
+      if (typeof body.ip !== "string") return noStoreJson({ ok: false, error: "ip is required" }, 400);
+      return noStoreJson({ ok: true, score: await scores.score(body.ip.trim(), body.fresh === true) });
+    } catch (error) {
+      return noStoreJson({ ok: false, error: msg(error) }, 400);
+    }
   }
 
   // Snapshots: list, take one by hand, roll back, delete; and the backups as a whole.
@@ -2103,6 +2157,29 @@ export async function handleUiRequest(
       const error = msg(e);
       const status = /currently open|in use/i.test(error) ? 409 : 500;
       return Response.json({ ok: false, error }, { status });
+    }
+  }
+
+  // Open a site (an IP or fingerprint test site) inside a profile's own browser.
+  const visitRoute = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/visit$/);
+  if (visitRoute && req.method === "POST") {
+    if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
+    const id = decodeURIComponent(visitRoute[1]!);
+    const profile = store.getProfile(id);
+    if (!profile) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+    const body = await req.json().catch(() => ({})) as { url?: unknown };
+    let url: URL;
+    try { url = new URL(String(body.url ?? "")); } catch { return Response.json({ ok: false, error: "Give an http or https address" }, { status: 400 }); }
+    if (url.protocol !== "https:" && url.protocol !== "http:") return Response.json({ ok: false, error: "Give an http or https address" }, { status: 400 });
+    try {
+      options.activity?.touch(id);
+      const launch = store.getLaunch(id);
+      if (!launch) return openResponse(profile, await launcher.start(id, [url.toString()]));
+      if (launch.firefoxOwner || launch.webkitOwner) return Response.json({ ok: false, error: "Firefox and WebKit browsers that are already open cannot get a new tab from here; close it first" }, { status: 409 });
+      await launcher.navigate(launch.ws, [url.toString()]);
+      return Response.json({ ok: true, opened: "tab" });
+    } catch (e) {
+      return Response.json({ ok: false, error: e instanceof BrowserLaunchError && e.guidance ? e.guidance : msg(e) }, { status: 500 });
     }
   }
 
