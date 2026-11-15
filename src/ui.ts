@@ -956,18 +956,20 @@ export async function handleUiRequest(
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({})) as { enabled?: unknown };
       if (typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "enabled must be true or false" }, 400);
+      if (body.enabled && !egress.TUN_BYPASS_SUPPORTED) return noStoreJson({ ok: false, error: "Going around a TUN client is available on Windows only" }, 400);
       const { tunBypass: _old, ...rest } = options.appConfig.read();
       options.appConfig.write(body.enabled ? { ...rest, tunBypass: true } : rest);
       egress.setTunBypass(body.enabled);
     } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
-    return noStoreJson({ ok: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? (egress.currentInterface() ?? await egress.refreshInterface()) : await egress.detectPhysicalInterface() });
+    if (!egress.TUN_BYPASS_SUPPORTED) return noStoreJson({ ok: true, supported: false, enabled: false, interface: null });
+    return noStoreJson({ ok: true, supported: true, enabled: egress.tunBypassEnabled(), interface: egress.tunBypassEnabled() ? (egress.currentInterface() ?? await egress.refreshInterface()) : await egress.detectPhysicalInterface() });
   }
 
   // Watching from a phone: on or off, the addresses to open, and the PIN.
   if (pathname === "/ui/api/mobile-view" || pathname === "/ui/api/mobile-view/pin") {
     const view = options.mobileView;
     if (!view || !options.appConfig) return noStoreJson({ ok: false, error: "The phone view is unavailable" }, 503);
-    const { lanAddresses } = await import("./mobile-view.ts");
+    const { lanAddresses, windowsReachability } = await import("./mobile-view.ts");
     try {
       if (pathname.endsWith("/pin") && req.method === "POST") { if (view.running) view.newPin(); }
       else if (req.method === "POST") {
@@ -977,7 +979,8 @@ export async function handleUiRequest(
         const { mobileView: _old, ...rest } = options.appConfig.read();
         options.appConfig.write(body.enabled ? { ...rest, mobileView: true } : rest);
       } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
-      return noStoreJson({ ok: true, enabled: view.running, port: view.port ?? null, pin: view.running ? view.currentPin : null, addresses: lanAddresses() });
+      return noStoreJson({ ok: true, enabled: view.running, port: view.port ?? null, pin: view.running ? view.currentPin : null, addresses: lanAddresses(),
+        ...(view.running ? { reachability: await windowsReachability() } : {}) });
     } catch (error) {
       return noStoreJson({ ok: false, error: msg(error) }, 500);
     }

@@ -138,7 +138,13 @@ export function refreshInterface(): Promise<PhysicalInterface | null> {
     .finally(() => { refreshing = undefined; });
 }
 
-export function setTunBypass(on: boolean): void { enabled = on; if (on) void refreshInterface(); else cached = undefined; }
+/**
+ * Windows only. Binding a socket to an adapter's address makes Windows send it out of that adapter
+ * (its strong-host model); macOS and Linux route by destination whatever the source address, so
+ * there the bypass would look on and do nothing.
+ */
+export const TUN_BYPASS_SUPPORTED = process.platform === "win32";
+export function setTunBypass(on: boolean): void { enabled = on && TUN_BYPASS_SUPPORTED; if (enabled) void refreshInterface(); else cached = undefined; }
 export function tunBypassEnabled(): boolean { return enabled; }
 
 /**

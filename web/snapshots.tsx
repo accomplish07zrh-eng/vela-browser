@@ -121,6 +121,8 @@ export function DataEncryptionCard({ flash }: { flash(message: string): void }) 
 /** Settings: the network path to profiles' proxies when a TUN proxy client runs on this computer. */
 export function TunBypassCard() {
   const { t } = useTranslation();
+  // Windows only (see egress-binding.ts); elsewhere the card is not shown.
+  if (!/Win/i.test(navigator.platform || navigator.userAgent)) return null;
   return <section className="settings-card tun-card">
     <header><svg className="icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h5l2-5 2 10 2-5h5" /></svg><h2>{t("Around this computer's proxy client")}</h2></header>
     <div className="card-body">
@@ -133,7 +135,7 @@ export function TunBypassCard() {
 /** Settings: watching the running browsers from a phone on the same network. */
 export function MobileViewCard({ flash }: { flash(message: string): void }) {
   const { t } = useTranslation();
-  const [state, setState] = useState<{ enabled: boolean; port: number | null; pin: string | null; addresses: string[] } | null>(null);
+  const [state, setState] = useState<{ enabled: boolean; port: number | null; pin: string | null; addresses: string[]; reachability?: { checked: boolean; firewallBlocked: boolean; publicNetwork: boolean; adapter?: string } } | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => { call<any>("/ui/api/mobile-view").then(setState, () => setState(null)); }, []);
   if (!state) return null;
@@ -149,6 +151,14 @@ export function MobileViewCard({ flash }: { flash(message: string): void }) {
       {state.enabled && <div className="mobile-access">
         <div><span>{t("Open on the phone")}</span>{state.addresses.length ? state.addresses.map((address) => <strong key={address} className="mono">http://{address}:{state.port}</strong>) : <em>{t("No local network address found")}</em>}</div>
         <div><span>{t("PIN")}</span><strong className="mobile-pin mono">{state.pin}</strong><button type="button" className="btn sm" disabled={busy} onClick={() => act("/ui/api/mobile-view/pin")}>{t("New PIN")}</button></div>
+      </div>}
+      {state.enabled && state.reachability?.firewallBlocked && <div className="mobile-warn" role="alert">
+        <strong>{t("Windows Firewall is keeping phones out")}</strong>
+        <p>{t("A firewall rule blocks Vela Browser from receiving connections, often left by a dismissed permission prompt. In Windows Defender Firewall > Advanced settings > Inbound rules, delete the Block rules for aliasmode-sidecar.exe, then turn the phone view off and on and allow private networks when Windows asks.")}</p>
+      </div>}
+      {state.enabled && state.reachability?.publicNetwork && <div className="mobile-warn" role="alert">
+        <strong>{t("This Wi-Fi is set as a public network")}</strong>
+        <p>{t("Windows keeps devices on a public network from reaching this computer. If this is your own Wi-Fi, open Settings > Network & internet > {adapter} > the network's properties and choose Private network.", { adapter: state.reachability.adapter ?? "Wi-Fi" })}</p>
       </div>}
       <p className="cardnote">{t("The first time, Windows may ask whether Vela Browser may use the network: allow private networks only. A new PIN is made each time the app starts.")}</p>
     </div>

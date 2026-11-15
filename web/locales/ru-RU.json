@@ -1341,5 +1341,10 @@
   "No local network address found": "Локальный адрес не найден",
   "PIN": "PIN",
   "New PIN": "Новый PIN",
-  "The first time, Windows may ask whether Vela Browser may use the network: allow private networks only. A new PIN is made each time the app starts.": "При первом включении Windows может спросить, разрешить ли Vela Browser доступ к сети: разрешите только частные сети. При каждом запуске приложения создаётся новый PIN."
+  "The first time, Windows may ask whether Vela Browser may use the network: allow private networks only. A new PIN is made each time the app starts.": "При первом включении Windows может спросить, разрешить ли Vela Browser доступ к сети: разрешите только частные сети. При каждом запуске приложения создаётся новый PIN.",
+  "Windows Firewall is keeping phones out": "Брандмауэр Windows не пускает телефоны",
+  "A firewall rule blocks Vela Browser from receiving connections, often left by a dismissed permission prompt. In Windows Defender Firewall > Advanced settings > Inbound rules, delete the Block rules for aliasmode-sidecar.exe, then turn the phone view off and on and allow private networks when Windows asks.": "Правило брандмауэра не даёт Vela Browser принимать подключения — обычно его оставляет закрытый запрос разрешения. В «Брандмауэр Защитника Windows → Дополнительные параметры → Правила для входящих» удалите блокирующие правила для aliasmode-sidecar.exe, затем выключите и включите просмотр с телефона и разрешите частные сети, когда Windows спросит.",
+  "This Wi-Fi is set as a public network": "Эта сеть Wi-Fi отмечена как общедоступная",
+  "Windows keeps devices on a public network from reaching this computer. If this is your own Wi-Fi, open Settings > Network & internet > {adapter} > the network's properties and choose Private network.": "В общедоступной сети Windows не пускает другие устройства к этому компьютеру. Если это ваша сеть, откройте «Параметры → Сеть и Интернет → {adapter} → свойства сети» и выберите «Частная сеть».",
+  "Going around a TUN client is available on Windows only": "Обход TUN-клиента доступен только в Windows"
 }

@@ -17,12 +17,12 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
  */
 export function TunBypassControl({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
-  const [state, setState] = useState<{ enabled: boolean; interface: Physical | null } | null>(null);
+  const [state, setState] = useState<{ supported?: boolean; enabled: boolean; interface: Physical | null } | null>(null);
   const [test, setTest] = useState<TestResult | null>(null);
   const [busy, setBusy] = useState<"toggle" | "test" | null>(null), [error, setError] = useState("");
   const [unavailable, setUnavailable] = useState(false);
   useEffect(() => { call<any>("/ui/api/tun-bypass").then(setState, () => setUnavailable(true)); }, []);
-  if (unavailable) return null;
+  if (unavailable || state?.supported === false) return null;
   if (!state) return <div className={`tun-bypass${compact ? " compact" : ""}`}><p className="tun-bypass-note">{t("Looking for the physical network adapter…")}</p></div>;
   const toggle = async (enabled: boolean) => {
     setBusy("toggle"); setError("");
