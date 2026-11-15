@@ -114,24 +114,9 @@
   color: var(--stage-ink); background: var(--pressed); box-shadow: none; font-weight: 500;
 }
 .app .sidebar.dock .navitem.active .icon { color: var(--gold); }
-/* In the dock's section group, the highlight is one piece of jelly that slides between items
-   (dock-blob.tsx); the items themselves stay clear so it shows through. */
-.app .sidebar.dock .sidenav { position: relative; isolation: isolate; }
-.app .sidebar.dock .sidenav > .navitem, .app .sidebar.dock .sidenav .navrow > .navitem { z-index: 1; transition: background-color 120ms ease, transform 260ms var(--spring-control); }
-.app .sidebar.dock .sidenav .navitem.active, .app .sidebar.dock .sidenav .navitem.active:hover { background: transparent; }
+/* Every button carries its name in small type under its icon; the section you are in is told by colour alone. */
+.app .sidebar.dock .navitem { transition: background-color 120ms ease, color 120ms ease, transform 260ms var(--spring-control); }
 .app .sidebar.dock .navitem:active:not(:disabled) { transform: scale(.94); transition-duration: 90ms; }
-.app .sidebar.dock .dock-blob {
-  position: absolute; left: 0; top: 5px; z-index: 0; height: 42px; width: 0; border-radius: 999px; pointer-events: none;
-  transform-origin: left center; will-change: transform; opacity: 0;
-  /* Flat: no highlight or shading, so it reads as a pressed spot, not a lens. */
-  background: var(--pressed); box-shadow: none;
-}
-/* Only the section you are in spells out its name. */
-.app .sidebar.dock .navitem .navlabel { max-width: 0; margin: 0; opacity: 0; transform: none; transition: max-width 420ms var(--spring-layout), margin 420ms var(--spring-layout), opacity 180ms var(--spring-control); }
-/* In the section group the label takes its width at once, so the jelly and the icons beside it
-   know where to go; it then fades in while they glide. */
-.app .sidebar.dock .sidenav .navitem .navlabel { transition: opacity 260ms ease 60ms; }
-.app .sidebar.dock .navitem.active .navlabel { max-width: 180px; margin-left: 8px; opacity: 1; }
 .app .sidebar.dock .navitem .cnt { display: none; }
 .app .sidebar.dock .navitem.dock-groups .cnt {
   display: block; max-width: 96px; min-width: 0; margin-left: 8px; padding: 0 8px; opacity: 1; overflow: hidden; text-overflow: ellipsis;
@@ -154,7 +139,18 @@
   opacity: 0; transform: translate(-50%, 4px); transition: opacity 120ms var(--spring-control) 250ms, transform 220ms var(--spring-control) 250ms;
 }
 .app .sidebar.dock .navitem[data-tip]:hover::after, .app .sidebar.dock .newrow .importbtn[data-tip]:hover::after { opacity: 1; transform: translate(-50%, 0); }
-.app .sidebar.dock .navitem.active[data-tip]::after, .app .sidebar.dock .navitem.open[data-tip]::after, .app .sidebar.dock .tip::before { display: none; }
+.app .sidebar.dock .navitem.open[data-tip]::after, .app .sidebar.dock .tip::before { display: none; }
+
+/* Names under the icons (see above); after the button rules so they win. */
+.app .sidebar.dock .navitem, .app .sidebar.dock .newrow .importbtn { flex-direction: column; height: 54px; min-height: 54px; padding: 0 12px; gap: 3px; border-radius: 18px; }
+.app .sidebar.dock .sidefoot > .navitem { width: 64px; height: 64px; min-height: 64px; padding: 0; border-radius: 999px; }
+.app .sidebar.dock .newrow .importbtn { width: auto; }
+.app .sidebar.dock .newrow .newbtn { height: 54px; }
+.app .sidebar.dock .navitem .navlabel, .app .sidebar.dock .newrow .importbtn .navlabel {
+  display: block; max-width: none; margin: 0; opacity: 1; transform: none;
+  font: 500 10.5px/14px var(--font); letter-spacing: .02em; color: inherit;
+}
+.app .sidebar.dock .navitem[data-tip]::after, .app .sidebar.dock .newrow .importbtn[data-tip]::after { display: none; }
 
 /* Groups open as a panel standing on the dock. */
 .app .sidebar.dock .sidesection {
@@ -314,7 +310,10 @@
 .app .sidebar.dock .navitem:active:not(:disabled) { transform: scale(.94); }
 .app .sidebar.dock .newrow .newbtn .icon { transition: transform 420ms var(--spring-layout); }
 .app .sidebar.dock .newrow .newbtn:hover .icon { transform: rotate(90deg); }
-.app .sidebar.dock .navitem:focus-visible, .app .sidebar.dock .newrow .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+/* Keyboard focus shows as the hover colour, not a ring around the button. */
+.app .sidebar.dock .navitem:focus-visible, .app .sidebar.dock .newrow .btn:focus-visible { outline: 0; }
+.app .sidebar.dock .navitem:focus-visible:not(.active) { color: var(--stage-ink); background: var(--hover); }
+.app .sidebar.dock .newrow .btn:focus-visible { box-shadow: 0 0 0 2px var(--hover); }
 /* The settings button stretches to fit its name when it is the open section. */
 .app .sidebar.dock .sidefoot > .navitem { min-width: 54px; width: auto; padding: 0 18px; transition: padding 320ms var(--spring-layout); }
 .app .sidebar.dock .sidefoot > .navitem.active { padding: 0 20px; }
@@ -407,7 +406,12 @@
 @media (max-width: 760px) {
   .app .sidebar.dock { gap: 6px; padding: 0 8px 14px; }
   .app .sidebar.dock .navitem { padding: 0 9px; }
-  .app .sidebar.dock .navitem.active .navlabel, .app .sidebar.dock .newrow .newbtn .navlabel { max-width: 0; margin: 0; opacity: 0; }
+  /* Too narrow for names: icons only, names back in the hover tip. */
+  .app .sidebar.dock .navitem, .app .sidebar.dock .newrow .importbtn, .app .sidebar.dock .newrow .newbtn { height: 42px; min-height: 42px; gap: 0; }
+  .app .sidebar.dock .sidefoot > .navitem { height: 54px; }
+  .app .sidebar.dock .navitem .navlabel, .app .sidebar.dock .newrow .importbtn .navlabel { display: none; }
+  .app .sidebar.dock .navitem[data-tip]::after, .app .sidebar.dock .newrow .importbtn[data-tip]::after { display: block; }
+  .app .sidebar.dock .newrow .newbtn .navlabel { max-width: 0; margin: 0; opacity: 0; }
   .app .sidebar.dock .newrow .newbtn { padding: 0 12px; gap: 0; }
   .app .wall .workbench-toolbar { top: 60px; left: 12px; right: 12px; }
   .app .wall .workbench-stage { top: 104px; }
