@@ -980,12 +980,21 @@ export async function handleUiRequest(
   }
 
   // Watching from a phone: on or off, the addresses to open, and the PIN.
-  if (pathname === "/ui/api/mobile-view" || pathname === "/ui/api/mobile-view/pin") {
+  if (pathname === "/ui/api/mobile-view" || pathname === "/ui/api/mobile-view/pin" || pathname === "/ui/api/mobile-view/pair" || pathname.startsWith("/ui/api/mobile-view/devices/")) {
     const view = options.mobileView;
     if (!view || !options.appConfig) return noStoreJson({ ok: false, error: "The phone view is unavailable" }, 503);
     const { lanAddresses, windowsReachability } = await import("./mobile-view.ts");
     try {
-      if (pathname.endsWith("/pin") && req.method === "POST") { if (view.running) view.newPin(); }
+      const link = view.link;
+      if (pathname.endsWith("/pin") && req.method === "POST") { if (view.running) { view.newPin(); link?.rotateSecret(); } }
+      else if (pathname === "/ui/api/mobile-view/pair" && req.method === "POST") {
+        // The yes or no for a phone pairing by PIN, after comparing the six digits on both screens.
+        const body = await req.json().catch(() => ({})) as { id?: unknown; allow?: unknown };
+        if (!link || typeof body.id !== "string" || typeof body.allow !== "boolean") return noStoreJson({ ok: false, error: "id and allow are required" }, 400);
+        if (!link.decide(body.id, body.allow)) return noStoreJson({ ok: false, error: "This request has expired" }, 404);
+      } else if (pathname.startsWith("/ui/api/mobile-view/devices/") && req.method === "DELETE") {
+        if (!link?.revoke(decodeURIComponent(pathname.slice("/ui/api/mobile-view/devices/".length)))) return noStoreJson({ ok: false, error: "No such phone" }, 404);
+      }
       else if (req.method === "POST") {
         const body = await req.json().catch(() => ({})) as { enabled?: unknown };
         if (typeof body.enabled !== "boolean") return noStoreJson({ ok: false, error: "enabled must be true or false" }, 400);
@@ -993,7 +1002,14 @@ export async function handleUiRequest(
         const { mobileView: _old, ...rest } = options.appConfig.read();
         options.appConfig.write(body.enabled ? { ...rest, mobileView: true } : rest);
       } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
-      return noStoreJson({ ok: true, enabled: view.running, port: view.port ?? null, pin: view.running ? view.currentPin : null, addresses: lanAddresses(),
+      const addresses = lanAddresses();
+      const app = link ? {
+        name: link.computerName, fingerprint: link.fingerprint, devices: link.devices(), pending: view.running ? link.pendingPairs() : [],
+        // What the phone app's QR code carries: where to find this computer, its key and a one-time secret.
+        // A plain link, so a phone camera without the app opens a page offering the app; the part after # never leaves the phone.
+        ...(view.running && view.port && addresses.length ? { qr: `http://${addresses[0]}:${view.port}/pair#v=1&h=${addresses.join(",")}&f=${link.fingerprint}&s=${link.pairingSecret()}&n=${encodeURIComponent(link.computerName)}` } : {}),
+      } : null;
+      return noStoreJson({ ok: true, enabled: view.running, port: view.port ?? null, pin: view.running ? view.currentPin : null, addresses, app,
         ...(view.running ? { reachability: await windowsReachability() } : {}) });
     } catch (error) {
       return noStoreJson({ ok: false, error: msg(error) }, 500);

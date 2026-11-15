@@ -1,0 +1,77 @@
+name: Android release assets
+
+# Adds the signed phone app to a GitHub Release that the Windows pipeline already published.
+# The other assets and their update feeds are never changed.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag, for example v0.1.15
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/android-app.yml
+    with:
+      ref: ${{ inputs.tag }}
+      sign: true
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+  publish:
+    name: Publish the Android app
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vela-android
+          path: assets
+      - name: Verify the release and the built files
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" == "v$VERSION" ]] || { echo "tag $TAG does not match built version $VERSION"; exit 1; }
+          gh release view "$TAG" --json isDraft,assets > release.json
+          jq -e '.isDraft == false' release.json
+          # A published asset is never replaced.
+          jq -e '[.assets[].name | select(test("android"; "i"))] | length == 0' release.json
+          cd assets
+          ls -la
+          expected="$(printf '%s\n' "Vela-Browser-Android-$VERSION.apk" SHA256SUMS-android.txt | sort)"
+          test "$(ls | sort)" = "$expected"
+          sha256sum --check --strict SHA256SUMS-android.txt
+      - name: Upload the Android assets
+        shell: bash
+        run: gh release upload "$TAG" "assets/Vela-Browser-Android-$VERSION.apk" assets/SHA256SUMS-android.txt
+      - name: Verify the public download
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir public
+          cd public
+          for name in "Vela-Browser-Android-$VERSION.apk" SHA256SUMS-android.txt; do
+            curl --fail --silent --show-error --location --retry 3 -o "$name" "https://github.com/$GH_REPO/releases/download/$TAG/$name"
+          done
+          cmp SHA256SUMS-android.txt ../assets/SHA256SUMS-android.txt
+          sha256sum --check --strict SHA256SUMS-android.txt

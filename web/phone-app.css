@@ -1,0 +1,20 @@
+.phone-card .card-body > p:first-child { margin: 0 0 8px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.phone-pairing { display: grid; grid-template-columns: 168px 1fr; gap: 18px; align-items: start; margin: 10px 0 6px; padding: 16px; border-radius: 14px; background: var(--surface-hover); }
+.phone-qr { display: block; width: 168px; height: 168px; border-radius: 10px; box-shadow: 0 0 0 1px var(--line); }
+.phone-qr.empty { display: grid; place-items: center; padding: 16px; text-align: center; color: var(--muted); font-size: 12px; background: var(--surface); }
+.phone-pairing-text > strong { display: block; font-size: 14px; margin-bottom: 4px; }
+.phone-pairing-text > p { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.phone-pairing-text > p.cardnote { margin: 6px 0 0; }
+.phone-pin-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
+.phone-pin-row > span { color: var(--muted); }
+.phone-pending { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 10px 0 4px; padding: 14px 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
+.phone-pending strong { display: block; font-size: 14px; }
+.phone-pending p { margin: 2px 0 6px; color: var(--muted); font-size: 12.5px; }
+.phone-pending b { font-size: 26px; letter-spacing: .12em; }
+.phone-pending-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.phone-devices { margin-top: 14px; }
+.phone-devices h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: none; }
+.phone-device { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.phone-device strong { display: block; font-size: 13.5px; }
+.phone-device span { display: block; color: var(--muted); font-size: 12px; }
+@media (max-width: 720px) { .phone-pairing { grid-template-columns: 1fr; } .phone-qr { margin: 0 auto; } }

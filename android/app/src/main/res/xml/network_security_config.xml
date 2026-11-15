@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The computer is reached over the local network by its address. What travels is sealed by the
+     app itself (AES-256-GCM with the key made when pairing), so plain HTTP carries only ciphertext,
+     the pairing handshake and public keys. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

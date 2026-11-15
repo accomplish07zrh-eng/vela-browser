@@ -32,6 +32,7 @@ import { AuditLog } from "./audit.ts";
 import { backupSessions, SnapshotStore } from "./snapshots.ts";
 import { setTunBypass } from "./egress-binding.ts";
 import { MobileView } from "./mobile-view.ts";
+import { ALIASMODE_VERSION } from "./version.ts";
 import { IpScoreCache } from "./ip-score.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
@@ -349,6 +350,43 @@ export function serveDashboard(opts: DashboardServerOptions) {
         script: run && run.status !== "finished" ? { name: run.scriptName, total: run.profiles.length, done: run.profiles.filter((item) => ["succeeded", "failed", "cancelled"].includes(item.status)).length, failed: run.profiles.filter((item) => item.status === "failed").length } : null,
         task: task ? { name: task.name } : null,
       };
+    },
+  }, Date.now, {
+    file: opts.paths ? join(opts.paths.root, "mobile-devices.json") : undefined,
+    // The phone app: what a paired phone may do, the same as the dashboard on this computer.
+    control: {
+      version: ALIASMODE_VERSION,
+      profiles: () => {
+        const running = new Set(store.listLaunches().map((launch) => launch.profileId));
+        return store.listProfiles().map((profile) => ({ id: profile.id, name: profile.name, group: profile.group ?? "", running: running.has(profile.id), engine: profile.engine ?? "chromium", tags: profile.tags ?? [] }));
+      },
+      open: async (id) => { activity.touch(id); await launcher.start(id); },
+      close: async (id) => {
+        const launch = store.getLaunch(id);
+        cooling?.forget(id);
+        await launcher.captureLocalSession(id);
+        if (!await launcher.stop(id, launch ?? undefined)) throw new Error("The browser did not close");
+      },
+      scripts: async () => scripts ? (await scripts.library.list()).map((script) => ({ id: script.id, name: script.name, description: script.description, language: script.language })) : [],
+      runScript: (scriptId, profileIds, by) => {
+        if (!scripts) throw new Error("Scripts are unavailable");
+        return scripts.runner.start({ scriptId, profileIds, inputs: {}, useCredentials: false, startedBy: { kind: "user", name: `Phone: ${by}` } });
+      },
+      stopScript: async () => await scripts?.runner.stop() ?? null,
+      scriptStatus: () => scripts?.runner.status() ?? null,
+      tasks: () => tasks?.list() ?? { tasks: [], history: [], runningTaskId: null },
+      runTask: (id) => { if (!tasks) throw new Error("Tasks are unavailable"); void tasks.run(id).catch(() => {}); },
+      approvals: () => ({ proxy: proxyApprovals.list(), code: codeApprovals.list() }),
+      answer: (kind, id, allow) => kind === "code" ? codeApprovals.answer(id, allow) : proxyApprovals.answer(id, allow),
+      connect: (id) => workbenchHub.connect(id),
+      visit: async (id, url) => {
+        activity.touch(id);
+        const launch = store.getLaunch(id);
+        if (!launch) { await launcher.start(id, [url]); return; }
+        if (launch.firefoxOwner || launch.webkitOwner) throw new Error("Firefox and WebKit browsers that are already open cannot get a new tab from here; close it first");
+        await launcher.navigate(launch.ws, [url]);
+      },
+      record: (entry) => audit?.record({ actor: { kind: "user", name: `Phone: ${entry.device}` }, action: entry.action, ok: entry.ok, ...(entry.profileId ? { profileId: entry.profileId } : {}), ...(entry.profileName ? { profileName: entry.profileName } : {}), ...(entry.detail ? { detail: entry.detail } : {}), ...(entry.error ? { error: entry.error } : {}) }),
     },
   }) : undefined;
   try { if (mobileView && opts.appConfig?.read().mobileView === true) mobileView.start(); } catch (error) { log(`phone view could not start: ${error instanceof Error ? error.message : error}`); }

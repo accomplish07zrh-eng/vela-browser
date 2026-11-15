@@ -1,0 +1,125 @@
+name: Android app build
+
+# Builds the Vela Browser phone app. On pull requests it only checks that the app builds; the
+# release workflow calls it with signing turned on.
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - ".github/workflows/android-*.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build
+        type: string
+        default: ""
+      sign:
+        description: Sign with the Vela Browser release key
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: Version of the built app
+        value: ${{ jobs.build.outputs.version }}
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-app-${{ github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.apk.outputs.version }}
+    env:
+      # The certificate the release key must produce; a different key could never update installed apps.
+      SIGNING_CERT: 748b7b159545dc61f14819307954fcad4283b9b98fab1911e54eb1440cef9d98
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unpack the release key
+        if: inputs.sign
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_B64" || -z "$STORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "::error::The Android release key is not configured."
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/vela-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$keystore"
+          {
+            echo "VELA_KEYSTORE=$keystore"
+            echo "VELA_KEY_ALIAS=$KEY_ALIAS"
+          } >> "$GITHUB_ENV"
+      - name: Build the APK
+        shell: bash
+        working-directory: android
+        env:
+          VELA_KEYSTORE_PASSWORD: ${{ inputs.sign && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          VELA_KEY_PASSWORD: ${{ inputs.sign && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleRelease
+      - name: Check and name the APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -er .version package.json)"
+          tools="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          built=android/app/build/outputs/apk/release/app-release.apk
+          files="$RUNNER_TEMP/android"
+          mkdir -p "$files"
+          apk="$files/Vela-Browser-Android-$version.apk"
+          cp "$built" "$apk"
+          "$tools/zipalign" -c 4 "$apk"
+          "$tools/apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+          badging="$("$tools/aapt" dump badging "$apk")"
+          grep -F "package: name='app.vela.mobile'" <<< "$badging"
+          grep -F "versionName='$version'" <<< "$badging"
+          if [[ "${{ inputs.sign }}" == true ]]; then
+            awk -v cert="$SIGNING_CERT" '
+              /certificate SHA-256 digest:/ { signatures++; if ($NF == cert) matches++ }
+              END { if (signatures != 1 || matches != 1) { print "the APK is not signed with the Vela Browser release key"; exit 1 } }' "$RUNNER_TEMP/certs.txt"
+          fi
+          (cd "$files" && sha256sum "Vela-Browser-Android-$version.apk" > SHA256SUMS-android.txt)
+          ls -l "$files"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Remove the release key
+        if: always() && inputs.sign
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/vela-release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vela-android
+          path: ${{ runner.temp }}/android/
+          if-no-files-found: error
+          compression-level: 0
