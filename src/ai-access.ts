@@ -9,6 +9,11 @@ export type AiAccessRule = "all" | "none" | string[];
 export interface AiAccessSettings { default: AiAccessRule; agents: Record<string, AiAccessRule> }
 
 export const AI_ACCESS_DEFAULT: AiAccessSettings = { default: "all", agents: {} };
+export const AUTOMATION_SCOPE_DENIED = "Outside the default AI access scope";
+export interface LocalAutomationScope {
+  allowsGroup(group: string): boolean;
+  allowsProfile(id: string): boolean;
+}
 const UNGROUPED = "";
 
 function normalizeRule(value: unknown): AiAccessRule | undefined {

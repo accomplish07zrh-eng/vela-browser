@@ -68,12 +68,14 @@ export class ViewportClient {
       socket.onclose = () => this.lost(socket);
     } catch (error) { this.publish({ status: "error", error: error instanceof Error ? error.message : String(error) }); }
   }
-  command(action: string, extra: object = {}): void {
+  command(action: string, extra: object = {}): boolean {
     if (!this.disposed && this.socket?.readyState === WebSocket.OPEN && this.state.generation) {
       this.socket.send(JSON.stringify({ action, generation: this.state.generation, targetId: this.state.targetId, ...extra }));
+      return true;
     }
+    return false;
   }
-  input(input: WorkbenchInput): void { this.command("input", { input }); }
+  input(input: WorkbenchInput): boolean { return this.command("input", { input }); }
   visibility(visible: boolean, focused: boolean): void {
     this.activity(visible ? focused ? "interactive" : "visible" : "hidden");
   }

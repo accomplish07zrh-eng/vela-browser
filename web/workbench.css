@@ -86,7 +86,9 @@
 .workbench-ring-preview small { color: var(--faint); font-size: 12px; }
 .workbench-sync, .workbench-error { display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin: 0 12px 8px; border-radius: 8px; font-size: 12px; flex: 0 0 auto; }
 .workbench-sync { background: var(--focus-accent-soft); color: var(--focus-accent); }
-.workbench-sync > span, .workbench-error > span { flex: 1; }
+.workbench-sync-status, .workbench-error > span { flex: 1; min-width: 0; }
+.workbench-sync-status ul { margin: 4px 0 0; padding: 0; list-style: none; max-height: 5em; overflow: auto; color: var(--danger-ink); }
+.workbench-sync-status li { overflow-wrap: anywhere; }
 .workbench-error { color: var(--status-error); background: var(--danger-soft); }
 .workbench-error > button { border: 0; color: inherit; background: none; cursor: pointer; padding: 4px; }
 .workbench-batch { position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--glass-popover); backdrop-filter: blur(20px); box-shadow: var(--sh-pop); max-width: calc(100% - 24px); white-space: nowrap; }

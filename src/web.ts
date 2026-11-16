@@ -16,6 +16,7 @@ import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { RemoteCoordinator } from "./remote.ts";
 import type { AppConfigStore } from "./app-config.ts";
+import { allowsGroup, type AiAccessRule, type LocalAutomationScope } from "./ai-access.ts";
 import type { StatePaths } from "./paths.ts";
 import {
   handleRequest,
@@ -175,15 +176,36 @@ async function handleAutomationRequest(
   lifecycle: BrowserLifecycleContext,
 ): Promise<Response> {
   const { launcher, store } = opts;
-
-  const users = await handleUserApi(req, launcher, store, opts.remote);
-  if (users) return users;
   const pathname = new URL(req.url).pathname;
+  let scope: LocalAutomationScope | undefined;
+  if (!opts.remote && opts.appConfig && /^\/api\/v[12]\/(?:browser\/|browser-profile\/|group\/|user\/)/.test(pathname)) {
+    let rule: AiAccessRule | undefined;
+    try {
+      rule = opts.appConfig.read().aiAccess?.default;
+    } catch {
+      return Response.json({ code: -1, msg: "Could not read the default AI access setting", data: {} });
+    }
+    // Compatibility clients have no MCP client name, so they use the default rule.
+    if (rule && rule !== "all") {
+      const folders = store.listFolders();
+      const allowsAutomationGroup = (group: string) => allowsGroup(rule, group, folders);
+      scope = {
+        allowsGroup: allowsAutomationGroup,
+        allowsProfile: (id) => {
+          const profile = store.getProfile(id);
+          return !!profile && allowsAutomationGroup(profile.group);
+        },
+      };
+    }
+  }
+
+  const users = await handleUserApi(req, launcher, store, opts.remote, undefined, undefined, scope);
+  if (users) return users;
   if (opts.remote && isAdsPowerBrowserControl(pathname)) {
     return handleRemoteBrowserControl(req, opts.remote, launcher, store, lifecycle);
   }
 
-  return handleRequest(req, launcher, store, lifecycle);
+  return handleRequest(req, launcher, store, scope ? { ...lifecycle, automationScope: scope } : lifecycle);
 }
 
 function isAllowedLoopbackHostHeader(hostHeader: string | null): boolean {

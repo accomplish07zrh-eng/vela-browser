@@ -68,7 +68,15 @@ export function FrameCanvas({ data, className = "viewport-frame" }: { data: stri
   }, [data]);
   return <canvas ref={canvas} className={className} aria-hidden="true" />;
 }
-interface SyncSession { master: string; generations: Map<string, string> }
+interface SyncSession { master: string; generations: Map<string, string>; issues: Map<string, string> }
+
+function syncIssue(state: ViewportState, generation: string): string | undefined {
+  if (state.status === "ended" || (state.generation && state.generation !== generation)) {
+    return "This environment has stopped or restarted.";
+  }
+  if (state.status === "error") return state.error || "Operation failed";
+  if (state.status === "connecting" || !state.targetId || !state.viewport) return state.error || "Waiting for the browser…";
+}
 
 const BrowserViewport = memo(function BrowserViewport({ profile, order, selected, focused, obscured, master, following, script, register, onState, onSelect, onFocus, onMaster, onAction, onInput, onHover }: {
   profile: UiProfile; order: number; selected: boolean; focused: boolean; obscured: boolean; master: boolean; following: boolean; script?: { progress: number; name: string };
@@ -201,7 +209,8 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
   covered?: boolean;
 }) {
   const { t } = useTranslation();
-  const [guideSkipped, setGuideSkipped] = useState(firstRunDismissed);
+  const [guide, setGuide] = useState<"initial" | "submitted" | "dismissed">(() => firstRunDismissed() ? "dismissed" : "initial");
+  const showGuide = guide === "submitted" || (guide === "initial" && !profiles.length && !covered);
   const root = useRef<HTMLElement>(null), scroller = useRef<HTMLDivElement>(null), canvasId = useId();
   const records = useRef(new Map<string, ViewportHandle>()), dots = useRef(new Map<string, HTMLButtonElement>());
   const [size, setSize] = useState({ width: 1000, height: 600 }), [overview, setOverview] = useState(false), [showStopped, setShowStopped] = useState(false);
@@ -324,7 +333,9 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       if (obscured || document.hidden || coveredRef.current) tier = "hidden";
       else if (visible && (focusId === id || hoveredCard.current === id)) tier = "interactive";
       if (tier !== last.tier) record.element.dataset.refreshTier = last.tier = tier;
-      record.client.current?.activity(tier, frozen, !!syncRef.current?.generations.has(id) && syncRef.current.master !== id, box.width * (window.devicePixelRatio || 1));
+      const session = syncRef.current, generation = session?.generations.get(id);
+      const following = !!generation && session?.master !== id && !syncIssue(record.state.current, generation);
+      record.client.current?.activity(tier, frozen, following, box.width * (window.devicePixelRatio || 1));
     }
     if (frozen !== movingAttribute.current) { root.current?.setAttribute("data-moving", String(frozen)); movingAttribute.current = frozen; }
   }, []);
@@ -337,7 +348,21 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     const profile = profilesRef.current.find((entry) => entry.id === id);
     if (profile) { const status = viewStatus(profile, state); setHealth((old) => old[id] === status ? old : { ...old, [id]: status }); }
     const session = syncRef.current;
-    if (session?.generations.has(id) && (state.generation !== session.generations.get(id) || state.status === "ended" || state.status === "error")) stopSync();
+    const generation = session?.generations.get(id);
+    if (session && generation) {
+      const issue = syncIssue(state, generation);
+      if (id === session.master && issue && state.status !== "connecting") {
+        stopSync();
+        setError(issue);
+      } else if (id !== session.master && issue !== session.issues.get(id)) {
+        const issues = new Map(session.issues);
+        if (issue) issues.set(id, issue);
+        else issues.delete(id);
+        const next = { ...session, issues };
+        syncRef.current = next;
+        setSync(next);
+      }
+    }
     paintRef.current();
   }, [stopSync]);
   const beginMorph = useCallback(() => {
@@ -485,25 +510,36 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
   }, [layout.mode, reducedMotion, turnTo]);
 
   const broadcast = useCallback((id: string, value: WorkbenchInput) => {
-    const record = records.current.get(id); record?.client.current?.input(value);
-    const session = syncRef.current, source = record?.state.current.viewport;
-    if (!session || session.master !== id || !source) return;
+    const record = records.current.get(id);
+    if (!record?.client.current?.input(value)) return;
+    const session = syncRef.current, source = record.state.current.viewport;
+    if (!session || session.master !== id || !source || syncIssue(record.state.current, session.generations.get(id)!)) return;
     for (const [follower, generation] of session.generations) {
       if (follower === id) continue;
       const target = records.current.get(follower), destination = target?.state.current.viewport;
-      if (!target || !destination || target.state.current.generation !== generation) continue;
+      if (!target || !destination || syncIssue(target.state.current, generation)) continue;
       const input = workbenchFollowerInput(value, source, destination); if (input) target.client.current?.input(input);
     }
   }, []);
   const setMaster = useCallback((id: string) => {
-    stopSync();
-    const chosen = selectedRef.current, candidates = chosen.size > 1 ? new Set([...chosen, id]) : new Set(idsRef.current), generations = new Map<string, string>();
+    const chosen = selectedRef.current;
+    if (!Array.from(chosen).some((candidate) => candidate !== id)) {
+      setError(t("Select at least one follower before setting the control browser.")); return;
+    }
+    const candidates = new Set([id, ...chosen]);
+    const generations = new Map<string, string>();
     for (const candidate of candidates) {
       const state = records.current.get(candidate)?.state.current;
-      if (state?.generation && state.viewport && state.status !== "error" && state.status !== "ended") generations.set(candidate, state.generation);
+      if (state?.generation && !syncIssue(state, state.generation)) generations.set(candidate, state.generation);
     }
     if (!generations.has(id) || generations.size < 2) { setError(t("Wait for at least two environments to connect before synchronizing.")); return; }
-    const session = { master: id, generations }; syncRef.current = session; setSync(session); if (focusedRef.current !== id) focus(id); paintRef.current();
+    stopSync();
+    setError(null);
+    const session: SyncSession = { master: id, generations, issues: new Map() };
+    syncRef.current = session;
+    setSync(session);
+    if (focusedRef.current !== id) focus(id);
+    paintRef.current();
   }, [stopSync, focus, t]);
   const action = useCallback(async (kind: "start" | "stop" | "raise", ids: string[]) => {
     if (busy) return; setBusy(true); setError(null);
@@ -602,6 +638,13 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
   const running = displayed.filter((profile) => profile.running).length, issues = displayed.filter((profile) => profile.proxyError || health[profile.id] === "disconnected").length;
   const scriptProgress = scriptRun ? Math.round(scriptRun.profiles.filter((profile) => ["succeeded", "failed", "cancelled"].includes(profile.status)).length / Math.max(1, scriptRun.profiles.length) * 100) : 0;
   const previewProfile = displayed.find((profile) => profile.id === preview), previewFrame = preview ? records.current.get(preview)?.state.current.frame : undefined;
+  const masterProfile = sync && profiles.find((profile) => profile.id === sync.master);
+  const followerIssues = sync ? Array.from(sync.generations.keys()).flatMap((id) => {
+    if (id === sync.master) return [];
+    const profile = profiles.find((entry) => entry.id === id);
+    const issue = profile?.running ? sync.issues.get(id) : "This environment has stopped or restarted.";
+    return issue ? [{ id, name: profile?.name || id, issue }] : [];
+  }) : [];
   return <section ref={root} className={`workbench${morphing ? " morphing" : ""}${filtering ? " filtering" : ""}`} aria-label={t("Multi-view workbench")}
     onPointerEnter={(event) => { if (event.pointerType !== "touch") hovered.current = true; }}
     onPointerLeave={() => { hovered.current = false; hoveredCard.current = null; motion.current.resumeAfter = performance.now() + 900; paintRef.current(); }}>
@@ -624,8 +667,15 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       <button type="button" className="iconbtn" aria-label={t("Scroll workbench left")} title={t("Scroll workbench left")} disabled={!!focused || layout.mode !== "ring"} onClick={() => step(-1)}><Glyph name="left" /></button>
       <button type="button" className="iconbtn" aria-label={t("Scroll workbench right")} title={t("Scroll workbench right")} disabled={!!focused || layout.mode !== "ring"} onClick={() => step(1)}><Glyph name="right" /></button>
     </div>
-    {sync && <div className="workbench-sync" role="status"><Glyph name="link" /><span>{t("Synchronizing · control {number} · {count} followers", { number: numberOf(profiles.find((profile) => profile.id === sync.master)!), count: sync.generations.size - 1 })}</span><button type="button" className="btn ghost xs" onClick={stopSync}>{t("Stop synchronization")}</button></div>}
-    {error && <div className="workbench-error" role="alert"><span>{error}</span><button type="button" title={t("Dismiss error")} aria-label={t("Dismiss error")} onClick={() => setError(null)}><Glyph name="close" /></button></div>}
+    {sync && <div className="workbench-sync">
+      <Glyph name="link" />
+      <div className="workbench-sync-status" role="status">
+        {t("Synchronizing · control {number} · {count} followers", { number: masterProfile ? numberOf(masterProfile) : sync.master, count: sync.generations.size - 1 - followerIssues.length })}
+        {!!followerIssues.length && <ul>{followerIssues.map(({ id, name, issue }) => <li key={id}>{name} · {t(issue)}</li>)}</ul>}
+      </div>
+      <button type="button" className="btn ghost xs" onClick={stopSync}>{t("Stop synchronization")}</button>
+    </div>}
+    {error && <div className="workbench-error" role="alert"><span>{t(error)}</span><button type="button" title={t("Dismiss error")} aria-label={t("Dismiss error")} onClick={() => setError(null)}><Glyph name="close" /></button></div>}
     <div className="workbench-stage">
     <div className={`workbench-scroll ${layout.mode}${focused ? " focused" : ""}${moving ? " moving" : ""}`} ref={scroller} tabIndex={0} aria-label={t("Browser canvas")} onScroll={paint}
       onClickCapture={(event) => { if (ignoreClick.current) { event.preventDefault(); event.stopPropagation(); } }}
@@ -643,15 +693,15 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       }}>
       <div className="workbench-canvas" id={canvasId} style={{ height: layout.height }}>
         {displayed.map((profile, order) => <BrowserViewport key={profile.id} profile={profile} order={order} selected={selected.has(profile.id)} focused={focused === profile.id} obscured={!!focused && focused !== profile.id}
-          master={sync?.master === profile.id} following={!!sync?.generations.has(profile.id) && sync.master !== profile.id}
+          master={sync?.master === profile.id} following={!!sync?.generations.has(profile.id) && sync.master !== profile.id && !sync.issues.has(profile.id)}
           script={scriptRun?.profiles.some((entry) => entry.id === profile.id && entry.status === "running") ? { progress: scriptProgress, name: scriptRun.scriptName } : undefined}
           register={register} onState={onState} onSelect={select} onFocus={focus} onMaster={setMaster} onAction={onAction} onInput={broadcast}
           onHover={onHover} />)}
         {highlighted && <style>{`[data-viewport="${CSS.escape(highlighted)}"] { animation: viewport-locate 420ms var(--spring-control); }`}</style>}
         {marquee && <div className="workbench-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
       </div>
-      {!profiles.length && !guideSkipped && !covered && <FirstRunGuide onDone={() => { void onRefresh(); }} onSkip={() => setGuideSkipped(true)} onImport={() => onImport?.()} />}
-      {!displayed.length && (profiles.length > 0 || guideSkipped) && <div className="workbench-empty"><Glyph name="lanes" /><h2>{t("Your browsers, together")}</h2><p>{t("Open environments in this group to bring their live pages into the workbench.")}</p><button type="button" className="btn primary" onClick={onOpenProfiles}>{t("Open environments")}</button></div>}
+      {showGuide && <FirstRunGuide hidden={covered} onStart={() => setGuide("submitted")} onDone={() => { setGuide("dismissed"); void onRefresh(); }} onSkip={() => setGuide("dismissed")} onImport={() => onImport?.()} />}
+      {!showGuide && !displayed.length && (profiles.length > 0 || guide === "dismissed") && <div className="workbench-empty"><Glyph name="lanes" /><h2>{t("Your browsers, together")}</h2><p>{t("Open environments in this group to bring their live pages into the workbench.")}</p><button type="button" className="btn primary" onClick={onOpenProfiles}>{t("Open environments")}</button></div>}
     </div>
     {laneLabels && !focused && <div className="workbench-lanes">
       {laneLabels.map((lane, row) => <button type="button" key={lane.name} className={`workbench-lane${activeRow === row ? " active" : ""}${layout.wraps[row] ? " wraps" : ""}`} style={{ top: layout.tracks[row]!.y, height: layout.tracks[row]!.height - 32 }}
