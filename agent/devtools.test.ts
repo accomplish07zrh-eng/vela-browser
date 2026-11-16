@@ -341,7 +341,7 @@ test("page inspection can address a deep frame and page through its accessibilit
     expect(selector).toBe(":root");
     return {
       evaluate: async (_evaluate: Function, options: object) => {
-        expect(options).toEqual({ wholeDocument: true, domOffset: 1, hiddenOffset: 0, nodeLimit: 1 });
+        expect(options).toEqual({ wholeDocument: true, domOffset: 1, hiddenOffset: 0, nodeLimit: 1, textOffset: 0, characters: 7 });
         return { title: "Last frame", dom, hidden };
       },
       ariaSnapshot: async () => snapshot,
@@ -387,6 +387,70 @@ test("semantic actions require an explicit ambiguous match and report verificati
   const result = await call("action", { action: "click", target: { ...target, index: 1 }, verify: { text: "Draft saved", timeoutMs: 20 } });
   expect(result).toMatchObject({ action: "click", actionCompleted: true, verification: { passed: false, error: "Expected text never appeared" } });
   expect(clicks).toEqual([1]);
+});
+
+test("unusual rendered glyphs attach a screenshot of the inspected viewport region", async () => {
+  const { context, observer } = setup();
+  const page = context.page as any;
+  page.viewportSize = () => ({ width: 1200, height: 800 });
+  page.screenshot = async (options: any) => {
+    expect(options.clip).toEqual({ x: 30, y: 10, width: 300, height: 120 });
+    return Buffer.from("fixture");
+  };
+  page.frame.locator = () => ({
+    evaluate: async () => ({ readableText: { text: "\uE000", unusualGlyphs: 1 } }),
+    ariaSnapshot: async () => "- paragraph: \uE000",
+    boundingBox: async () => ({ x: 30, y: 10, width: 300, height: 120 }),
+  });
+  try {
+    const reply = await observer.call("browser_devtools_page_inspect");
+    expect(reply.structuredContent).toMatchObject({ visualEvidence: { scope: "current viewport" } });
+    expect(reply.content[1]).toEqual({ type: "image", mimeType: "image/jpeg", data: Buffer.from("fixture").toString("base64") });
+  } finally { observer.dispose(); }
+});
+
+test("browser programs operate on captured bytes and correlate network, websocket and page errors", async () => {
+  const { context, observer, call } = setup();
+  const socket = Object.assign(new EventEmitter(), { url: () => "wss://fixture.test/events" });
+  const encoded = Buffer.from([...Buffer.from("Decoded draft")].map(byte => byte ^ 99));
+  const fixture = requestFixture(context, encoded);
+  const prior = consoleMessage("info", "before the program", context.page);
+  context.page.emit("console", prior);
+  (context.page.frame as any).trigger = async (message: string) => {
+    context.emit("request", fixture.req);
+    context.emit("response", fixture.response);
+    context.emit("requestfinished", fixture.req);
+    context.page.emit("websocket", socket);
+    socket.emit("framereceived", { payload: Buffer.from([0, 255, 10]) });
+    context.page.emit("console", consoleMessage("info", message, context.page));
+    context.page.emit("pageerror", new Error("script failure fixture"));
+  };
+  try {
+    const output = await call("program", {
+      argument: "during the program",
+      code: `async ({ frame, devtools, argument }) => {
+        const capture = await devtools.capture(() => frame.trigger(argument));
+        const requestId = capture.network.records[0].requestId;
+        const bytes = await devtools.bytes(requestId);
+        const post = await devtools.bytes(requestId, "request");
+        console.info("decoded", bytes.length);
+        return {
+          decoded: Buffer.from(bytes.map(byte => byte ^ 99)).toString("utf8"),
+          post: post.toString("hex"),
+          events: capture.events.records,
+          status: capture.network.records[0].status,
+        };
+      }`,
+    });
+    expect(output).toMatchObject({ completed: true, logs: [{ level: "info", text: "decoded 13" }], value: { decoded: "Decoded draft", post: encoded.toString("hex"), status: 200 } });
+    expect(output.value.events.map((event: any) => event.kind)).toEqual(["websocket-open", "websocket-received", "console", "exception"]);
+    expect(output.value.events[1].base64).toBe(Buffer.from([0, 255, 10]).toString("base64"));
+    expect(output.value.events[2].text).toBe("during the program");
+    expect(output.value.events[3].stack).toContain("script failure fixture");
+    const failure = await call("program", { code: `async ({ devtools }) => devtools.capture(() => { throw new Error("capture failed"); })` });
+    expect(failure.value).toMatchObject({ completed: false, error: "capture failed", network: { records: [] } });
+    expect(fixture.bodyReads()).toBe(1);
+  } finally { observer.dispose(); }
 });
 
 test("the network wait settles on idle, matches a finished request, and the new tools are listed", async () => {

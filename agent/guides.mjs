@@ -23,6 +23,7 @@ Vela Browser keeps many browser profiles, each with its own fingerprint, proxy, 
 - \`browser_click\`, \`browser_type\`, \`browser_navigate\` and the other actions already return the new page snapshot. Take \`browser_snapshot\` only to look before the first action.
 - For page structure, use \`browser_devtools_page_inspect\`. It includes the accessibility and DOM trees, form states, hidden content and open shadow roots. \`browser_devtools_pages\` lists deeply nested frames with their own ids.
 - Use \`browser_devtools_action\` to act by role, label, text, test id or selector. Supply a verification condition when you need to confirm visible text, element state or the expected URL after the action.
+- For custom browser automation use \`browser_devtools_program\`: run Playwright code, capture the operation's HTTP, WebSocket and console records with \`devtools.capture\`, and decode captured bodies in code with \`devtools.bytes\`.
 - Several steps in a row (fill email, fill password, press Sign in) go as one \`browser_batch\` call: up to 25 steps, in order, stopping at the first failure.
 - Input is human-like by default: curved pointer paths, key-by-key typing. \`vela_humanize\` changes the pace; turn it off only for pages that do not watch behaviour.
 - For the same work in many profiles, write a script (\`vela_guide\` topic \`scripts\`) and run it with \`vela_script_run\` instead of repeating tool calls profile by profile.
@@ -173,6 +174,7 @@ Vela Browser 里有很多浏览器环境，每个都有自己的指纹、代理�
 - \`browser_click\`、\`browser_type\`、\`browser_navigate\` 这些操作本身就会返回新的页面快照。只有在第一步操作之前想先看看页面，才需要单独调用 \`browser_snapshot\`。
 - 要看页面结构，调用 \`browser_devtools_page_inspect\`。结果默认带无障碍树、DOM 树、表单状态、隐藏内容和开放式 Shadow DOM。用 \`browser_devtools_pages\` 获取深层 iframe 的 ID。
 - 用 \`browser_devtools_action\` 按角色、标签、文字、测试 ID 或选择器操作元素。需要确认结果时，随操作传入预期文字、元素状态或网址。
+- 自定义浏览器流程用 \`browser_devtools_program\`。脚本可调 Playwright，给操作加 \`devtools.capture\` 捕获请求、WebSocket 和日志，并用 \`devtools.bytes\` 直接解包捕获的响应。
 - 连续几步（填邮箱、填密码、点登录）合成一次 \`browser_batch\`：最多 25 步，按顺序执行，遇到失败就停。
 - 默认是拟人输入：指针走曲线，逐键打字。\`vela_humanize\` 可以调快慢；只有在不检测操作行为的页面上才考虑关掉。
 - 同一件事要在很多环境里做：写成脚本（\`vela_guide\` 的 \`scripts\` 主题），用 \`vela_script_run\` 一次跑完，不要一个环境一个环境地重复调用工具。

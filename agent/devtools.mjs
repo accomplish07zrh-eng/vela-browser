@@ -1,6 +1,8 @@
 // One observer per persistent browser context. Nothing is injected into a page, and no browser
 // option, preference, permission, route, fingerprint, cache or storage value is changed to observe it.
-import { randomUUID } from "node:crypto";
+import { randomUUID, webcrypto } from "node:crypto";
+import { formatWithOptions } from "node:util";
+import { runInNewContext } from "node:vm";
 
 const string = { type: "string" };
 const pageId = { type: "string", description: "Stable page id from browser_devtools_pages. Required to choose a page when several are open." };
@@ -58,11 +60,12 @@ export const DEVTOOLS_TOOLS = [
     styles: { type: "array", items: string }, offset: { type: "integer", minimum: 0, default: 0 },
     characters: { type: "integer", minimum: 1, maximum: 1048576, default: 65536 },
   }, ["selector"]),
-  tool("browser_devtools_page_inspect", "Read a page or iframe's accessibility tree, forms, child frames and DOM tree. Includes hidden nodes and field values, element attributes, comments, templates and open shadow roots by default. The DOM tree gives each node an index and parent index. Pass frameId to inspect a deeply nested frame directly, or selector to narrow the inspection to a region.", {
+  tool("browser_devtools_page_inspect", "Read a page or iframe's accessibility tree, forms, child frames and DOM tree. Includes hidden nodes and field values, element attributes, comments, templates and open shadow roots by default. Readable text filters invisible fragments and flags unusual glyphs for visual comparison. The DOM tree gives each node an index and parent index. Pass frameId to inspect a deeply nested frame directly, or selector to narrow the inspection to a region.", {
     pageId, frameId: string, selector: string, offset: { type: "integer", minimum: 0, default: 0 },
     characters: { type: "integer", minimum: 1, maximum: 65536, default: 16000 }, timeoutMs,
     domOffset: { type: "integer", minimum: 0, default: 0, description: "Continue the DOM tree from dom.nextOffset." },
     hiddenOffset: { type: "integer", minimum: 0, default: 0, description: "Continue the hidden and data attribute index from hidden.nextOffset." },
+    textOffset: { type: "integer", minimum: 0, default: 0, description: "Continue readable text from readableText.nextOffset." },
     nodeLimit: { type: "integer", minimum: 1, maximum: 100, default: 40, description: "Maximum entries per DOM or hidden result page." },
   }),
   tool("browser_devtools_action", "Operate an element in the selected page or iframe by accessible role and name, label, text, test id or selector. An ambiguous target requires an explicit index. Optionally verify visible text, an element state or a page URL after acting. The result reports whether the action completed separately from its verification.", {
@@ -75,6 +78,11 @@ export const DEVTOOLS_TOOLS = [
       target: elementTarget, state: { type: "string", enum: elementStates }, timeoutMs,
     }),
   }, ["action", "target"], false),
+  tool("browser_devtools_program", "Run an async JavaScript function with the selected profile's native Playwright page, frame, context or worker. The function receives {page, frame, context, worker, devtools, argument}. Use devtools.call for existing tools, devtools.capture(async () => ...) for correlated HTTP, WebSocket and console records, and devtools.bytes(requestId, part) for recorded binary bodies. Use standard JavaScript, Buffer, Web Crypto and compression streams to decode or transform captured data and act on the same page. Function results and program console logs are returned.", {
+    pageId, frameId: string, workerId: string,
+    code: { ...string, description: "An async function such as async ({ frame, argument }) => await frame.locator(argument).textContent()." },
+    argument: {},
+  }, ["code"], false),
   tool("browser_devtools_storage", "Read the selected page/frame's cookies, localStorage, sessionStorage, IndexedDB database names and Cache Storage keys. Cookies default to those that page or frame would send, like the DevTools Application panel; pass urls for other sites or allCookies for every cookie in the profile. Opens no helper pages and changes no storage, permissions or browser identity.", {
     pageId, frameId: string, urls: { type: "array", items: string, description: "Return the cookies these URLs would send instead of the selected page's." },
     allCookies: { type: "boolean", default: false, description: "Return every cookie in this profile, across all sites." },
@@ -154,7 +162,7 @@ function result(value) {
   const normalized = json(value);
   return { content: [{ type: "text", text: JSON.stringify(normalized) }], structuredContent: normalized };
 }
-function errorText(error) { return error instanceof Error ? error.message : String(error); }
+function errorText(error) { return typeof error?.message === "string" ? error.message : String(error); }
 
 function elementLocator(frame, target) {
   const keys = ["selector", "role", "label", "text", "testId"].filter(key => target?.[key] !== undefined);
@@ -199,7 +207,7 @@ function verifyAction(page, frame, verify) {
 }
 
 /** Serialized by Playwright to the selected frame. */
-function pageOutline(element, { wholeDocument, domOffset, hiddenOffset, nodeLimit }) {
+function pageOutline(element, { wholeDocument, domOffset, hiddenOffset, nodeLimit, textOffset, characters }) {
   const doc = element.ownerDocument;
   const text = value => (value ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
   const visible = item => item.getClientRects().length > 0
@@ -212,6 +220,32 @@ function pageOutline(element, { wholeDocument, domOffset, hiddenOffset, nodeLimi
     return text(referenced || item.getAttribute("aria-label") || Array.from(item.labels ?? [], label => label.textContent).join(" "));
   };
   const dom = [], hidden = [], forms = [];
+  const range = doc.createRange();
+  const view = doc.defaultView;
+  let readable = "", readableLength = 0, formatControls = 0, unusualGlyphs = 0;
+  const addReadable = node => {
+    const parent = node.parentElement ?? node.parentNode?.host;
+    if (!node.nodeValue?.trim() || !parent) return;
+    const style = view.getComputedStyle(parent);
+    if (style.fontSize === "0px" || (style.color === "rgba(0, 0, 0, 0)" && style.textShadow === "none" && style.backgroundClip !== "text")) return;
+    if ((style.clip ?? "").replace(/\s/g, "") === "rect(0px,0px,0px,0px)" || /^inset\(50%\)$/.test(style.clipPath)) return;
+    range.selectNodeContents(node);
+    if (!Array.from(range.getClientRects?.() ?? []).some(rect => rect.width >= 0.5 && rect.height >= 0.5
+      && rect.right + view.scrollX > 0 && rect.bottom + view.scrollY > 0)) return;
+
+    const raw = node.nodeValue;
+    const formatted = raw.replace(/[\u00AD\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/gu, "");
+    formatControls += raw.length - formatted.length;
+    unusualGlyphs += (formatted.match(/[\uE000-\uF8FF\uFFFD\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu) ?? []).length;
+    const clean = formatted.normalize("NFC").replace(/\s+/gu, " ").trim();
+    if (!clean) return;
+    const segment = readableLength ? `\n${clean}` : clean;
+    const next = readableLength + segment.length;
+    if (next > textOffset && readable.length < characters) {
+      readable += segment.slice(Math.max(0, textOffset - readableLength), textOffset + characters - readableLength);
+    }
+    readableLength = next;
+  };
   let domIndex = 0, hiddenIndex = 0;
   const pending = [{ node: wholeDocument ? doc : element, parentIndex: null, depth: 0, inherited: null }];
   while (pending.length) {
@@ -234,6 +268,7 @@ function pageOutline(element, { wholeDocument, domOffset, hiddenOffset, nodeLimi
       else if (style.opacity === "0") hiddenBy = "opacity: 0";
     }
     if (tag === "form" && !hiddenBy && visible(node)) forms.push(node);
+    if (node.nodeType === 3 && !hiddenBy) addReadable(node);
     const hasData = attrs.some(attr => attr.name.startsWith("data-"));
     const dataScript = tag === "script" && /json|importmap/i.test(node.type);
     const namedHidden = hiddenBy && isElement && !["head", "script", "style", "link"].includes(tag)
@@ -288,6 +323,8 @@ function pageOutline(element, { wholeDocument, domOffset, hiddenOffset, nodeLimi
   return {
     title: doc.title, language: doc.documentElement.lang, readyState: doc.readyState,
     dom: nodePage(dom, domOffset, domIndex), hidden: nodePage(hidden, hiddenOffset, hiddenIndex),
+    readableText: { text: readable, offset: textOffset, nextOffset: textOffset + readable.length, totalCharacters: readableLength,
+      hasMore: textOffset + readable.length < readableLength, formatControls, unusualGlyphs },
     formCount: forms.length,
     forms: forms.slice(0, 8).map(form => {
       const fields = Array.from(form.elements).filter(item => item.matches('input:not([type="hidden"]), select, textarea, button') && visible(item));
@@ -584,6 +621,77 @@ export class BrowserDevtools {
     } else value.responseBody = { available: false, reason: item.data.failure ?? "No response received" };
     return value;
   }
+  async capturedBytes(requestId, part = "response") {
+    const item = this.requests.get(requestId);
+    if (!item) throw new Error("Unknown or evicted requestId in this profile");
+    if (part === "request") return Buffer.from(item.request.postDataBuffer() ?? []);
+    if (part !== "response") throw new Error("Choose request or response bytes");
+    if (!item.response) throw new Error("No response was received for this request");
+    if (!["finished", "failed"].includes(item.data.state)) throw new Error("The response is still streaming");
+    return Buffer.from(await item.response.body());
+  }
+  async captureProgramWork(work, options = {}) {
+    if (typeof work !== "function") throw new Error("Capture expects a function to run");
+    const since = this.sequence;
+    const limit = integer(options.limit, 100, 1, 500);
+    const outcome = await Promise.resolve().then(work).then(value => ({ completed: true, value }), error => ({ completed: false, error: errorText(error) }));
+    const query = { since, limit, pageId: options.pageId };
+    const records = structuredClone({
+      network: this.query([...this.requests.values()].map(entry => entry.data), query, this.droppedRequests),
+      events: this.query(this.events.map(entry => entry.entry), query, this.droppedEvents),
+    });
+    return {
+      ...outcome, since, until: this.sequence, ...records,
+    };
+  }
+  async runProgram(args) {
+    if (typeof args.code !== "string" || !args.code.trim()) throw new Error("code must contain a JavaScript function");
+    let page, frame, worker;
+    if (args.workerId) {
+      if (args.frameId) throw new Error("Choose either workerId or frameId");
+      const selected = this.workers.get(args.workerId);
+      if (!selected || (args.pageId && this.pageIds.get(selected.page) !== args.pageId)) throw new Error("Unknown workerId in this page/profile");
+      ({ page, worker } = selected);
+      frame = page?.mainFrame();
+    } else {
+      ({ page, frame } = this.selectFrame(args));
+    }
+    const frameTarget = page && frame ? { pageId: this.pageIds.get(page), frameId: this.frameId(frame, page) } : {};
+    const devtools = Object.freeze({
+      call: async (tool, options = {}) => {
+        const shortName = String(tool);
+        const name = shortName.startsWith("browser_devtools_") ? shortName : `browser_devtools_${shortName}`;
+        if (!DEVTOOLS_TOOL_NAMES.has(name) || name === "browser_devtools_program") throw new Error(`Unknown program developer operation: ${shortName}`);
+        const target = worker && name === "browser_devtools_evaluate" ? { workerId: args.workerId } : frameTarget;
+        const explicitTarget = ["pageId", "frameId", "workerId"].some(key => Object.hasOwn(options, key));
+        const reply = await this.call(name, explicitTarget ? options : { ...target, ...options });
+        if (reply.isError) throw new Error(reply.structuredContent?.error || reply.content?.[0]?.text || "Developer operation failed");
+        return reply.structuredContent;
+      },
+      bytes: (requestId, part) => this.capturedBytes(requestId, part),
+      capture: (work, options) => this.captureProgramWork(work, options),
+    });
+    const logs = [];
+    let droppedLogs = 0;
+    const console = Object.fromEntries(["log", "debug", "info", "warn", "error"].map(level => [level, (...values) => {
+      if (logs.length >= 500) { droppedLogs++; return; }
+      const text = formatWithOptions({ depth: 3, maxArrayLength: 30, maxStringLength: 4096 }, ...values);
+      logs.push({ level, text: text.slice(0, 4096) });
+    }]));
+    const runtime = {
+      vela: Object.freeze({ page, frame, worker, context: this.context, devtools, argument: args.argument }),
+      Buffer, TextDecoder, TextEncoder, URL, URLSearchParams, Blob, Response, AbortController,
+      CompressionStream, DecompressionStream, crypto: webcrypto, console,
+    };
+    const scope = { ...frameTarget, ...(worker ? { workerId: args.workerId } : {}) };
+    // Like the Playwright code tool, this executes a caller's snippet on the selected connection.
+    try {
+      const value = await runInNewContext(`(${args.code}\n)(vela)`, runtime, { filename: "vela-browser-program.js" });
+      return result({ ...scope, completed: true, value, logs, droppedLogs });
+    } catch (error) {
+      return { ...result({ ...scope, completed: false, error: errorText(error), logs, droppedLogs }), isError: true };
+    }
+  }
   /** One DevTools protocol session per page, shared by the tools that need one. */
   async cdp(page) {
     let pending = this.protocolSessions.get(page);
@@ -614,6 +722,7 @@ export class BrowserDevtools {
       (!args.failedOnly || e.failure || e.status >= 400) && (!args.resourceType || e.resourceType === args.resourceType)
       && (args.status === undefined || e.status === args.status)), args, this.droppedRequests));
     if (name === "browser_devtools_request") return result(await this.requestDetail(args));
+    if (name === "browser_devtools_program") return this.runProgram(args);
     if (name === "browser_devtools_evaluate") {
       if (typeof args.expression !== "string" || !args.expression.trim()) throw new Error("expression must be non-empty JavaScript");
       if (args.workerId) {
@@ -649,6 +758,7 @@ export class BrowserDevtools {
       const outline = await locator.evaluate(pageOutline, {
         wholeDocument: args.selector === undefined,
         domOffset: integer(args.domOffset, 0, 0), hiddenOffset: integer(args.hiddenOffset, 0, 0), nodeLimit: integer(args.nodeLimit, 40, 1, 100),
+        textOffset: integer(args.textOffset, 0, 0), characters,
       }, { timeout });
       let snapshot = "", accessibilityError;
       try { snapshot = await locator.ariaSnapshot({ timeout }); }
@@ -656,9 +766,27 @@ export class BrowserDevtools {
       const accessibility = snapshot.slice(offset, offset + characters);
       const nextOffset = offset + accessibility.length;
       const childFrames = (page.frames?.() ?? []).filter(child => child.parentFrame() === frame).map(child => this.describeFrame(child, page));
-      return result({ pageId: this.pageIds.get(page), ...this.describeFrame(frame, page), childFrames, ...outline,
+      let screenshot, visualEvidence;
+      if (outline.readableText?.unusualGlyphs) {
+        try {
+          const viewport = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+          const bounds = await locator.boundingBox({ timeout });
+          const x = Math.max(0, Math.floor(bounds?.x ?? 0));
+          const y = Math.max(0, Math.floor(bounds?.y ?? 0));
+          const right = Math.min(viewport.width, Math.ceil(bounds ? bounds.x + bounds.width : viewport.width));
+          const bottom = Math.min(viewport.height, Math.ceil(bounds ? bounds.y + bounds.height : viewport.height));
+          if (right <= x || bottom <= y) throw new Error("The inspected area is outside the current viewport");
+          const clip = { x, y, width: Math.min(1600, right - x), height: Math.min(1000, bottom - y) };
+          screenshot = await page.screenshot({ type: "jpeg", quality: 72, scale: "css", clip, timeout });
+          visualEvidence = { scope: "current viewport", clip };
+        } catch (error) { visualEvidence = { error: errorText(error) }; }
+      }
+      const reply = result({ pageId: this.pageIds.get(page), ...this.describeFrame(frame, page), childFrames, ...outline,
+        ...(visualEvidence ? { visualEvidence } : {}),
         accessibility, ...(accessibilityError ? { accessibilityError } : {}),
         offset, nextOffset, totalCharacters: snapshot.length, hasMore: nextOffset < snapshot.length });
+      if (screenshot) return { ...reply, content: [...reply.content, { type: "image", data: screenshot.toString("base64"), mimeType: "image/jpeg" }] };
+      return reply;
     }
     if (name === "browser_devtools_action") {
       if (!Object.hasOwn(locatorActions, args.action)) throw new Error("Unknown developer action");
