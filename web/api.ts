@@ -8,6 +8,7 @@ import type {
   ScriptSummary,
 } from "../contracts/cloud-v1.ts";
 import type { ScriptRun } from "../src/scripts.ts";
+import type { BrowserTaskView } from "../src/browser-tasks.ts";
 import type { PythonRuntimeStatus } from "../src/python-runtime.ts";
 import type { RuntimeDownload } from "../src/runtime-download.ts";
 import type { FolderInfo } from "../src/folders.ts";
@@ -825,6 +826,7 @@ export async function deleteGroup(name: string): Promise<any> {
 
 // ---- Local scripts ------------------------------------------------------------
 export type { ScriptLanguage, ScriptRecord, ScriptRun, ScriptSummary };
+export type { BrowserTaskView };
 
 type ScriptInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 
@@ -931,6 +933,29 @@ export async function importPublishedScript(id: string): Promise<ScriptRecord> {
 export async function fetchScriptRun(): Promise<ScriptRun | null> {
   const body = await scriptRequest("/ui/api/scripts/run");
   return body.run === null ? null : body.run as ScriptRun;
+}
+
+const BROWSER_TASKS = "/ui/api/scripts/browser-tasks";
+
+export async function fetchBrowserTasks(offset: number): Promise<{ tasks: BrowserTaskView[]; nextOffset: number; hasMore: boolean }> {
+  return await scriptRequest(`${BROWSER_TASKS}?offset=${offset}`);
+}
+
+export async function changeBrowserTask(runId: string, operation: "pause" | "cancel" | "resume"): Promise<void> {
+  await scriptRequest(BROWSER_TASKS, { method: "POST", body: JSON.stringify({ runId, operation }) });
+}
+
+export async function fetchBrowserTaskEvidence(runId: string, sequence: number, part: string, signal?: AbortSignal): Promise<unknown> {
+  const query = new URLSearchParams({ runId, sequence: String(sequence), part });
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  for (;;) {
+    const { evidence } = await scriptRequest(`${BROWSER_TASKS}?${query}`, { signal });
+    if (part === "summary") return evidence;
+    chunks.push(decoder.decode(Uint8Array.from(atob(evidence.base64), character => character.charCodeAt(0)), { stream: evidence.hasMore }));
+    if (!evidence.hasMore) return JSON.parse(chunks.join(""));
+    query.set("offset", String(evidence.nextOffset));
+  }
 }
 
 export async function startScriptRun(input: { scriptId: string; profileIds: string[]; inputs: object; useCredentials: boolean; concurrency?: number }): Promise<ScriptRun> {

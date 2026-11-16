@@ -1424,6 +1424,12 @@ async function operate(chromium, operation, payload) {
   const timeout = Math.max(1, Math.min(Number(payload.connectTimeoutMs) || 30_000, 120_000));
   if (operation === "page" && payload.kind === "fingerprint") return chromiumFingerprint(endpoint, payload.fingerprintScript, timeout);
   return withBrowser(chromium, endpoint, timeout, operation, async (browser, context) => {
+    if (operation === "devtools-program") {
+      const { BrowserDevtools } = await import("./agent/devtools.mjs");
+      const devtools = new BrowserDevtools(context, { engine: "chromium" });
+      try { return await devtools.runTaskProgram(payload); }
+      finally { devtools.dispose(); }
+    }
     if (operation === "session-capture") return captureSession(browser, payload);
     if (operation === "session-restore") return restoreSession(browser, context, payload);
     if (operation === "cookie-add") {

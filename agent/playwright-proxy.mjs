@@ -209,7 +209,7 @@ export class PlaywrightToolProxy {
 
     try {
       this.viewportGuard = guardViewports(context, browser);
-      this.devtools = new BrowserDevtools(context);
+      this.devtools = new BrowserDevtools(context, { engine: "chromium" });
       this.plugins = new PluginHost({ context, engine: "chromium", profileId, devtools: this.devtools, log: (msg) => process.stderr.write(`${msg}\n`) });
       const official = await connectOfficial(
         this.version,

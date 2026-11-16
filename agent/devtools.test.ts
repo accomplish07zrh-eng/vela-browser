@@ -90,6 +90,99 @@ test("developer observation leaves browser configuration, page execution and mod
   expect(context.closes).toBe(0);
 });
 
+test("disk capture wakes a waiting reader and returns exact oversized socket payloads across cursor pages", async () => {
+  const { observer, context, call } = setup();
+  try {
+    const { captureId } = await call("stream", { action: "start" });
+    const waiting = call("stream", { action: "read", captureId, limit: 1, waitMs: 1000 });
+    const socket = Object.assign(new EventEmitter(), { url: () => "wss://fixture.test/live" });
+    const bytes = Buffer.alloc(180_007, 173);
+    context.page.emit("websocket", socket);
+    socket.emit("framereceived", { payload: bytes });
+    const opened = await waiting;
+    expect(opened.records[0].kind).toBe("websocket-open");
+    expect(opened.hasMore).toBe(true);
+    const frame = await call("stream", { action: "read", captureId, since: opened.nextCursor });
+    expect(frame.records[0].payload.totalBytes).toBe(bytes.length);
+    const roundTrip = await call("stream", { action: "bytes", captureId, offset: frame.records[0].payload.offset, bytes: bytes.length });
+    expect(Buffer.from(roundTrip.base64, "base64")).toEqual(bytes);
+    const afterStop = call("stream", { action: "read", captureId, since: frame.nextCursor, waitMs: 1000 });
+    await call("stream", { action: "stop", captureId });
+    expect((await afterStop).active).toBe(false);
+  } finally { observer.dispose(); }
+});
+
+test("Chromium capture orders the buffered prefix before live chunks and keeps SSE messages readable before completion", async () => {
+  const { observer, context, call } = setup({ engine: "chromium" });
+  const prefix = Promise.withResolvers<{ bufferedData: string }>();
+  const session = Object.assign(new EventEmitter(), {
+    async send(method: string) { return method === "Network.streamResourceContent" ? await prefix.promise : {}; }, async detach() {},
+  });
+  (context as any).newCDPSession = async () => session;
+  try {
+    const { captureId } = await call("stream", { action: "start" });
+    const requestId = "native-stream", url = "https://fixture.test/live";
+    session.emit("Network.requestWillBeSent", { requestId, request: { url, method: "GET", headers: {} } });
+    session.emit("Network.responseReceived", { requestId, response: { url, status: 200, mimeType: "text/event-stream" } });
+    session.emit("Network.dataReceived", { requestId, data: Buffer.from("tail").toString("base64") });
+    session.emit("Network.eventSourceMessageReceived", { requestId, eventName: "draft", eventId: "42", data: "value" });
+    prefix.resolve({ bufferedData: Buffer.from("prefix-").toString("base64") });
+    await Bun.sleep(0);
+    const { records } = await call("stream", { action: "read", captureId });
+    expect(records.some((item: any) => item.kind === "http-finished")).toBe(false);
+    expect(records.find((item: any) => item.kind === "sse-message").eventId).toBe("42");
+    const buffers = await Promise.all(records.filter((item: any) => item.kind === "http-data").map(async (item: any) =>
+      Buffer.from((await call("stream", { action: "bytes", captureId, offset: item.payload.offset, bytes: item.payload.totalBytes })).base64, "base64")));
+    expect(Buffer.concat(buffers).toString()).toBe("prefix-tail");
+  } finally { observer.dispose(); }
+});
+
+test("fresh response evidence is attached before clicking and ignores an earlier in-flight request", async () => {
+  const { observer, context, call } = setup();
+  const old = requestFixture(context), next = requestFixture(context);
+  context.emit("request", old.req);
+  (context.page.frame as any).getByRole = () => ({ count: async () => 1,
+    click: async () => {
+      context.emit("response", old.response);
+      context.emit("request", next.req);
+      context.emit("response", next.response);
+    } });
+  try {
+    const clicked = await call("action", { action: "click", target: { role: "button", name: "Apply" }, verify: { response: { urlIncludes: "/data", method: "POST" } } });
+    const records = clicked.evidence.records.filter((record: any) => record.kind === "request-response");
+    expect(records).toHaveLength(2);
+    expect(clicked.verification.match.requestId).toBe(records[1].requestId);
+  } finally { observer.dispose(); }
+});
+
+test("developer JSON keeps shared locator scopes while marking actual cycles", async () => {
+  const { observer, call } = setup();
+  try {
+    const output = await call("program", { code: `async () => {
+      const within = { role: "form", name: "Draft" };
+      const value = { candidates: [{ selector: "#old", within }, { text: "Save", within }] };
+      value.self = value;
+      return value;
+    }` });
+    expect(output.value.candidates[1].within).toEqual({ role: "form", name: "Draft" });
+    expect(output.value.self).toEqual({ circularReference: "$.value" });
+  } finally { observer.dispose(); }
+});
+
+test("a durable program binds the exact nested frame after CDP discovers it", async () => {
+  const { context, observer } = setup();
+  const frame = new Frame(context.page, "https://embedded.test/deep");
+  frame.parentFrame = () => context.page.frame;
+  const frames = [context.page.frame];
+  context.page.frames = () => [...frames];
+  const arriving = setTimeout(() => frames.push(frame), 15);
+  try {
+    const captured = await observer.runTaskProgram({ code: "async ({ frame }) => frame.url()", argument: null, screenshots: false,
+      pageUrl: context.page.url(), frameUrl: frame.url(), timeoutMs: 1500 });
+    expect(captured).toMatchObject({ completed: true, invoked: true, value: frame.url() });
+  } finally { clearTimeout(arriving); observer.dispose(); }
+});
+
 test("console captures every severity and exception stack once; cursors do not consume history", async () => {
   const { context, observer, call } = setup();
   for (const type of ["debug", "log", "info", "warning", "error", "trace", "assert", "startGroup"]) {

@@ -167,7 +167,7 @@ test("MCP catalogs list the expected tools", () => {
   const scriptPluginTools = [
     "vela_guide", "vela_profile_update", "vela_scripts_list", "vela_script_read",
     "vela_script_save", "vela_script_run", "vela_script_run_status", "vela_script_stop",
-    "vela_plugins_list", "vela_plugin_save",
+    "vela_plugins_list", "vela_plugin_save", "vela_browser_task",
   ];
   expect(current.aliasModeTools.length).toBe(10 + proxyPoolTools.length + scriptPluginTools.length + DEVTOOLS_TOOLS.length);
   for (const tool of DEVTOOLS_TOOLS) expect(current.aliasModeTools.some((item: any) => item.name === tool.name)).toBe(true);

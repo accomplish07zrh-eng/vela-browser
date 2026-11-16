@@ -452,6 +452,7 @@ async function run() {
       await page.bringToFront();
       return null;
     }
+    if (name === "devtools-program") return devtools.runTaskProgram(payload);
     if (name === "mcp-list") {
       const bridge = await initializeOfficial();
       return [...bridge.tools.filter((tool) => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS, ...pluginTools(payload.plugins)];

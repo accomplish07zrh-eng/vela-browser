@@ -76,6 +76,10 @@ export class ViewportClient {
     return false;
   }
   input(input: WorkbenchInput): boolean { return this.command("input", { input }); }
+  readyGeneration(): string | undefined {
+    return this.socket?.readyState === WebSocket.OPEN && ["live", "paused"].includes(this.state.status) && this.state.targetId && this.state.viewport
+      ? this.state.generation : undefined;
+  }
   visibility(visible: boolean, focused: boolean): void {
     this.activity(visible ? focused ? "interactive" : "visible" : "hidden");
   }

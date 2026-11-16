@@ -682,6 +682,121 @@
       }
     },
     {
+      "name": "vela_browser_task",
+      "description": "Run durable JavaScript steps in a Vela Browser profile, independently of this connection. Start returns a runId immediately. Supply a stable idempotencyKey to recover a lost start reply. On resume, an uncertain step's verifier returns {state: 'applied' | 'absent' | 'unknown', value}; absent means the original write cannot still commit. See status and evidence for the action and verification receipts.",
+      "annotations": {
+        "title": "Manage a durable browser task",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "start",
+              "list",
+              "status",
+              "resume",
+              "pause",
+              "cancel",
+              "evidence"
+            ]
+          },
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "screenshots": {
+            "type": "boolean"
+          },
+          "argument": {},
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "run": {
+                  "type": "string"
+                },
+                "verify": {
+                  "type": "string"
+                },
+                "timeoutMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "pageUrl": {
+                  "type": "string",
+                  "description": "Wait for a uniquely matching page with this exact URL before running the step."
+                },
+                "frameUrl": {
+                  "type": "string",
+                  "description": "Wait for a uniquely matching iframe with this exact URL at any depth."
+                }
+              },
+              "required": [
+                "id",
+                "run"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "verify": {
+            "type": "string",
+            "description": "Replacement verification function for the uncertain step during this resume."
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "part": {
+            "type": "string",
+            "enum": [
+              "summary",
+              "network",
+              "events",
+              "logs",
+              "screenshot",
+              "value"
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "vela_script_stop",
       "description": "Stop the current script run. Profiles that already finished keep their results.",
       "annotations": {
@@ -970,6 +1085,195 @@
       }
     },
     {
+      "name": "browser_devtools_stream",
+      "description": "Record live developer events and full WebSocket payloads to a disk journal. Chromium additionally observes passive SSE messages and streamed response bytes where CDP supplies them. In any engine fetch starts a streamed request through the selected frame with its real cookies, proxy and CORS rules. Read by nextCursor and retrieve any payload range by offset. Stop retains the recording, discard removes it.",
+      "annotations": {
+        "title": "Browser stream",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "list",
+              "read",
+              "bytes",
+              "fetch",
+              "mark",
+              "stop",
+              "discard"
+            ]
+          },
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "captureId": {
+            "type": "string"
+          },
+          "urlIncludes": {
+            "type": "string"
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Return records updated after this cursor. Reading does not consume records."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100
+          },
+          "waitMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20000
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048576
+          },
+          "url": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "body": {
+            "type": "string"
+          },
+          "bodyBase64": {
+            "type": "string"
+          },
+          "credentials": {
+            "type": "string",
+            "enum": [
+              "omit",
+              "same-origin",
+              "include"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "value": {},
+          "screenshot": {
+            "type": "boolean"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_sources",
+      "description": "Index scripts, workers and matching requests in the selected page or frame. On Chromium index runtime-loaded code including eval, blobs and Wasm, read compiled source and source maps, and add non-pausing tracepoints in generated or original code. Trace values appear in developer events and the live journal. On other engines read loaded script tags and captured script or worker responses.",
+      "annotations": {
+        "title": "Browser sources",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "read",
+              "map",
+              "trace_add",
+              "trace_remove",
+              "close"
+            ]
+          },
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "workerId": {
+            "type": "string"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "urlIncludes": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100
+          },
+          "characters": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "column": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "originalSource": {
+            "type": "string"
+          },
+          "expression": {
+            "type": "string"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "browser_devtools_evaluate",
       "description": "Execute JavaScript in a specific page, iframe, dedicated worker or service worker of this profile, like the DevTools Console execution-context selector. expression may be a JavaScript expression or a function; argument is passed to a function. Returns the value and context ids. Existing browser identity and context are used.",
       "annotations": {
@@ -1134,8 +1438,181 @@
       }
     },
     {
+      "name": "browser_devtools_anchor",
+      "description": "Capture a portable semantic locator and its complete iframe ancestry from the current DOM. Use the returned anchor with browser_devtools_action after a rerender, frame replacement, or reconnect. Ambiguous replacements require a narrower locator.",
+      "annotations": {
+        "title": "Browser anchor",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "selector": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string",
+                "description": "Accessible name when using role."
+              },
+              "label": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "testId": {
+                "type": "string"
+              },
+              "exact": {
+                "type": "boolean",
+                "default": true,
+                "description": "Use exact name, label or text matching."
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Zero-based match to use when a locator matches multiple elements."
+              },
+              "within": {
+                "type": "object",
+                "properties": {
+                  "selector": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Accessible name when using role."
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "testId": {
+                    "type": "string"
+                  },
+                  "exact": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use exact name, label or text matching."
+                  },
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Zero-based match to use when a locator matches multiple elements."
+                  }
+                },
+                "additionalProperties": false
+              },
+              "near": {
+                "type": "string",
+                "description": "Text that must appear in the within container."
+              }
+            },
+            "additionalProperties": false
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000,
+            "default": 5000
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_dom_delta",
+      "description": "Capture a scoped DOM snapshot or compare it with baselineId. Includes hidden nodes, form values, comments, templates and open shadow roots. Read a frozen result by snapshotId and offset to page through changes while the live DOM keeps rendering.",
+      "annotations": {
+        "title": "Browser dom delta",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "take",
+              "read",
+              "discard"
+            ]
+          },
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "baselineId": {
+            "type": "string"
+          },
+          "snapshotId": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000,
+            "default": 5000
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "browser_devtools_action",
-      "description": "Operate an element in the selected page or iframe by accessible role and name, label, text, test id or selector. An ambiguous target requires an explicit index. Optionally verify visible text, an element state or a page URL after acting. The result reports whether the action completed separately from its verification.",
+      "description": "Operate a uniquely located element by semantics, selector or a portable anchor. Verify a fresh response, popup, navigation, visible text or an element state. Event observers are registered before the action. Action completion and verification have separate results, with correlated evidence.",
       "annotations": {
         "title": "Browser action",
         "readOnlyHint": false,
@@ -1198,9 +1675,52 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "Zero-based match to use when a locator matches multiple elements."
+              },
+              "within": {
+                "type": "object",
+                "properties": {
+                  "selector": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Accessible name when using role."
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "testId": {
+                    "type": "string"
+                  },
+                  "exact": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use exact name, label or text matching."
+                  },
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Zero-based match to use when a locator matches multiple elements."
+                  }
+                },
+                "additionalProperties": false
+              },
+              "near": {
+                "type": "string",
+                "description": "Text that must appear in the within container."
               }
             },
             "additionalProperties": false
+          },
+          "anchor": {
+            "type": "object",
+            "additionalProperties": true
           },
           "value": {
             "description": "Text for fill, a key for press, or one or more option values for select_option.",
@@ -1264,6 +1784,45 @@
                     "type": "integer",
                     "minimum": 0,
                     "description": "Zero-based match to use when a locator matches multiple elements."
+                  },
+                  "within": {
+                    "type": "object",
+                    "properties": {
+                      "selector": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Accessible name when using role."
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "testId": {
+                        "type": "string"
+                      },
+                      "exact": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Use exact name, label or text matching."
+                      },
+                      "index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Zero-based match to use when a locator matches multiple elements."
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "near": {
+                    "type": "string",
+                    "description": "Text that must appear in the within container."
                   }
                 },
                 "additionalProperties": false
@@ -1282,6 +1841,52 @@
                 "minimum": 1,
                 "maximum": 20000,
                 "default": 5000
+              },
+              "response": {
+                "type": "object",
+                "properties": {
+                  "urlIncludes": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "urlIncludes"
+                ],
+                "additionalProperties": false
+              },
+              "popup": {
+                "type": "object",
+                "properties": {
+                  "urlIncludes": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "navigation": {
+                "type": "object",
+                "properties": {
+                  "urlIncludes": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "frame",
+                      "page"
+                    ]
+                  }
+                },
+                "required": [
+                  "urlIncludes"
+                ],
+                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -1292,8 +1897,7 @@
           }
         },
         "required": [
-          "action",
-          "target"
+          "action"
         ],
         "additionalProperties": false
       }

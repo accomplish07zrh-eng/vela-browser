@@ -44,10 +44,38 @@ index 9cf6f63d155b7c8e230871d9f11fa7bf748e0fb8..4e135ff38d2c087f5ba2e906392cb499
    }
    async doGetCookies(urls) {
 diff --git a/lib/server/chromium/crPage.js b/lib/server/chromium/crPage.js
-index 422b2f0f6bf47c0d42c544edd04d7851e3b83d4c..b07321d690b85fac950330521d0621407fc814b2 100644
+index 422b2f0f6bf47c0d42c544edd04d7851e3b83d4c..383a58f2d2a4cfac69d0690f8ee40ade2ea87bf8 100644
 --- a/lib/server/chromium/crPage.js
 +++ b/lib/server/chromium/crPage.js
-@@ -408,7 +408,9 @@ class FrameSession {
+@@ -361,22 +361,20 @@
+     if (!this._page.isStorageStatePage && this._isMainFrame() && hasUIWindow)
+       videoOptions = this._crPage._page.screencast.launchVideoRecorder();
+     let lifecycleEventsEnabled;
+-    if (!this._isMainFrame())
+-      this._addRendererListeners();
+     this._addBrowserListeners();
+     this._bufferedAttachedToTargetEvents = [];
+     const promises = [
+       this._client.send("Page.enable"),
+       this._client.send("Page.getFrameTree").then(({ frameTree }) => {
+-        if (this._isMainFrame()) {
+-          this._handleFrameTree(frameTree);
+-          this._addRendererListeners();
+-        }
++        // Rebuild the already loaded documents, including the local children of an OOP iframe,
++        // before consuming target and execution-context events. Backported from Playwright #43000.
++        const localFrames = [];
++        this._handleFrameTree(frameTree, localFrames);
++        this._addRendererListeners();
+         const attachedToTargetEvents = this._bufferedAttachedToTargetEvents || [];
+         this._bufferedAttachedToTargetEvents = void 0;
+         for (const event of attachedToTargetEvents)
+           this._onAttachedToTarget(event);
+-        const localFrames = this._isMainFrame() ? this._page.frames() : [this._page.frameManager.frame(this._targetId)];
+         for (const frame of localFrames) {
+           this._client._sendMayFail("Page.createIsolatedWorld", {
+             frameId: frame._id,
+@@ -408,7 +406,9 @@
      if (!this._page.isStorageStatePage) {
        if (this._crPage._browserContext.needsPlaywrightBinding())
          promises.push(this.exposePlaywrightBinding());
@@ -58,6 +86,43 @@ index 422b2f0f6bf47c0d42c544edd04d7851e3b83d4c..b07321d690b85fac950330521d062140
          promises.push(this._client.send("Emulation.setFocusEmulationEnabled", { enabled: true }));
        const options = this._crPage._browserContext._options;
        if (options.bypassCSP)
+@@ -473,13 +473,19 @@
+     else if (event.name === "DOMContentLoaded")
+       this._page.frameManager.frameLifecycleEvent(event.frameId, "domcontentloaded");
+   }
+-  _handleFrameTree(frameTree) {
+-    this._onFrameAttached(frameTree.frame.id, frameTree.frame.parentId || null);
+-    this._onFrameNavigated(frameTree.frame, true);
+-    if (!frameTree.childFrames)
+-      return;
+-    for (const child of frameTree.childFrames)
+-      this._handleFrameTree(child);
++  _handleFrameTree(tree, localFrames) {
++    const { frame, childFrames } = tree;
++    const remoteRoot = !this._isMainFrame() && frame.id === this._targetId;
++    if (!remoteRoot)
++      this._onFrameAttached(frame.id, frame.parentId || null);
++    const registered = this._page.frameManager.frame(frame.id);
++    if (!registered)
++      return;
++    if (!remoteRoot || frame.url && frame.url !== ":")
++      this._onFrameNavigated(frame, true);
++    localFrames.push(registered);
++    for (const child of childFrames || [])
++      this._handleFrameTree(child, localFrames);
+   }
+   _eventBelongsToStaleFrame(frameId) {
+     const frame = this._page.frameManager.frame(frameId);
+@@ -568,7 +574,8 @@
+       const targetId = event.targetInfo.targetId;
+       let frame = this._page.frameManager.frame(targetId);
+       if (!frame && event.targetInfo.parentFrameId) {
+-        frame = this._page.frameManager.frameAttached(targetId, event.targetInfo.parentFrameId);
++        const parent = this._page.frameManager.frame(event.targetInfo.parentFrameId) ?? this._page.mainFrame();
++        frame = this._page.frameManager.frameAttached(targetId, parent._id);
+       }
+       if (!frame)
+         return;
 diff --git a/lib/server/firefox/ffBrowser.js b/lib/server/firefox/ffBrowser.js
 index 118018e155d72dcff80ea17bd673de4ec9033a1c..91017a2524cbd9bea7a25be73a251412f91087d0 100644
 --- a/lib/server/firefox/ffBrowser.js

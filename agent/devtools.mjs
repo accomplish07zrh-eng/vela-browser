@@ -1,8 +1,11 @@
 // One observer per persistent browser context. Nothing is injected into a page, and no browser
 // option, preference, permission, route, fingerprint, cache or storage value is changed to observe it.
-import { randomUUID, webcrypto } from "node:crypto";
+import { createHash, randomUUID, webcrypto } from "node:crypto";
 import { formatWithOptions } from "node:util";
 import { runInNewContext } from "node:vm";
+import { DevtoolsJournal, captureNativeNetwork } from "./devtools-live.mjs";
+import { TRACE_PREFIX, addTracepoint, observeRuntimeSources, sourceMapData, sourceMapReference, originalPosition, generatedPosition } from "./devtools-sources.mjs";
+import { compareSnapshots, domSnapshot } from "./devtools-dom.mjs";
 
 const string = { type: "string" };
 const pageId = { type: "string", description: "Stable page id from browser_devtools_pages. Required to choose a page when several are open." };
@@ -16,12 +19,13 @@ const tool = (name, description, properties = {}, required = [], readOnly = true
 });
 
 const timeoutMs = { type: "integer", minimum: 1, maximum: 20000, default: 5000 };
-const elementTarget = schema({
+const locatorPattern = schema({
   selector: string, role: string, name: { ...string, description: "Accessible name when using role." },
   label: string, text: string, testId: string,
   exact: { type: "boolean", default: true, description: "Use exact name, label or text matching." },
   index: { type: "integer", minimum: 0, description: "Zero-based match to use when a locator matches multiple elements." },
 });
+const elementTarget = schema({ ...locatorPattern.properties, within: locatorPattern, near: { ...string, description: "Text that must appear in the within container." } });
 const elementStates = ["visible", "hidden", "attached", "detached"];
 const locatorActions = {
   click: (locator, options) => locator.click(options),
@@ -52,6 +56,20 @@ export const DEVTOOLS_TOOLS = [
   tool("browser_devtools_events", "Read developer events from this profile: WebSocket sent/received frames, socket errors, page lifecycle, downloads and workers. Console output and page exceptions are also available. Frame payloads include encoding, byte counts and explicit truncation metadata.", {
     ...filters, kind: string,
   }),
+  tool("browser_devtools_stream", "Record live developer events and full WebSocket payloads to a disk journal. Chromium additionally observes passive SSE messages and streamed response bytes where CDP supplies them. In any engine fetch starts a streamed request through the selected frame with its real cookies, proxy and CORS rules. Read by nextCursor and retrieve any payload range by offset. Stop retains the recording, discard removes it.", {
+    action: { type: "string", enum: ["start", "list", "read", "bytes", "fetch", "mark", "stop", "discard"] },
+    pageId, frameId: string, captureId: string, urlIncludes: string, since: cursor, limit, waitMs: { type: "integer", minimum: 0, maximum: 20000 },
+    offset: { type: "integer", minimum: 0 }, bytes: { type: "integer", minimum: 0, maximum: 1048576 },
+    url: string, method: string, headers: { type: "object", additionalProperties: { type: "string" } },
+    body: string, bodyBase64: string, credentials: { type: "string", enum: ["omit", "same-origin", "include"] },
+    label: string, value: {}, screenshot: { type: "boolean" },
+  }, ["action"], false),
+  tool("browser_devtools_sources", "Index scripts, workers and matching requests in the selected page or frame. On Chromium index runtime-loaded code including eval, blobs and Wasm, read compiled source and source maps, and add non-pausing tracepoints in generated or original code. Trace values appear in developer events and the live journal. On other engines read loaded script tags and captured script or worker responses.", {
+    action: { type: "string", enum: ["list", "read", "map", "trace_add", "trace_remove", "close"] },
+    pageId, frameId: string, workerId: string, sourceId: string, traceId: string, urlIncludes: string,
+    offset: { type: "integer", minimum: 0 }, limit, characters: { type: "integer", minimum: 1, maximum: 1048576 },
+    line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 }, originalSource: string, expression: string,
+  }, ["action"], false),
   tool("browser_devtools_evaluate", "Execute JavaScript in a specific page, iframe, dedicated worker or service worker of this profile, like the DevTools Console execution-context selector. expression may be a JavaScript expression or a function; argument is passed to a function. Returns the value and context ids. Existing browser identity and context are used.", {
     pageId, frameId: string, workerId: string, expression: string, argument: {},
   }, ["expression"], false),
@@ -68,16 +86,27 @@ export const DEVTOOLS_TOOLS = [
     textOffset: { type: "integer", minimum: 0, default: 0, description: "Continue readable text from readableText.nextOffset." },
     nodeLimit: { type: "integer", minimum: 1, maximum: 100, default: 40, description: "Maximum entries per DOM or hidden result page." },
   }),
-  tool("browser_devtools_action", "Operate an element in the selected page or iframe by accessible role and name, label, text, test id or selector. An ambiguous target requires an explicit index. Optionally verify visible text, an element state or a page URL after acting. The result reports whether the action completed separately from its verification.", {
-    pageId, frameId: string, action: { type: "string", enum: Object.keys(locatorActions) }, target: elementTarget,
+  tool("browser_devtools_anchor", "Capture a portable semantic locator and its complete iframe ancestry from the current DOM. Use the returned anchor with browser_devtools_action after a rerender, frame replacement, or reconnect. Ambiguous replacements require a narrower locator.", {
+    pageId, frameId: string, target: elementTarget, timeoutMs,
+  }, ["target"]),
+  tool("browser_devtools_dom_delta", "Capture a scoped DOM snapshot or compare it with baselineId. Includes hidden nodes, form values, comments, templates and open shadow roots. Read a frozen result by snapshotId and offset to page through changes while the live DOM keeps rendering.", {
+    action: { type: "string", enum: ["take", "read", "discard"] },
+    pageId, frameId: string, selector: string, baselineId: string, snapshotId: string,
+    offset: { type: "integer", minimum: 0 }, limit, timeoutMs,
+  }, ["action"]),
+  tool("browser_devtools_action", "Operate a uniquely located element by semantics, selector or a portable anchor. Verify a fresh response, popup, navigation, visible text or an element state. Event observers are registered before the action. Action completion and verification have separate results, with correlated evidence.", {
+    pageId, frameId: string, action: { type: "string", enum: Object.keys(locatorActions) }, target: elementTarget, anchor: { type: "object", additionalProperties: true },
     value: { description: "Text for fill, a key for press, or one or more option values for select_option.", oneOf: [string, { type: "array", items: string }] },
     timeoutMs,
     verify: schema({
       text: { ...string, description: "Visible text to wait for in the action's frame." },
       urlIncludes: { ...string, description: "Substring of the top-level page URL to wait for." },
       target: elementTarget, state: { type: "string", enum: elementStates }, timeoutMs,
+      response: schema({ urlIncludes: string, method: string, status: { type: "integer" } }, ["urlIncludes"]),
+      popup: schema({ urlIncludes: string }),
+      navigation: schema({ urlIncludes: string, scope: { type: "string", enum: ["frame", "page"] } }, ["urlIncludes"]),
     }),
-  }, ["action", "target"], false),
+  }, ["action"], false),
   tool("browser_devtools_program", "Run an async JavaScript function with the selected profile's native Playwright page, frame, context or worker. The function receives {page, frame, context, worker, devtools, argument}. Use devtools.call for existing tools, devtools.capture(async () => ...) for correlated HTTP, WebSocket and console records, and devtools.bytes(requestId, part) for recorded binary bodies. Use standard JavaScript, Buffer, Web Crypto and compression streams to decode or transform captured data and act on the same page. Function results and program console logs are returned.", {
     pageId, frameId: string, workerId: string,
     code: { ...string, description: "An async function such as async ({ frame, argument }) => await frame.locator(argument).textContent()." },
@@ -147,12 +176,14 @@ function json(value, seen = new WeakMap(), path = "$") {
   if (!value || typeof value !== "object") return value;
   if (seen.has(value)) return { circularReference: seen.get(value) };
   seen.set(value, path);
-  if (value instanceof Date) return { type: "date", value: value.toISOString() };
-  if (value instanceof RegExp) return { type: "regexp", value: String(value) };
-  if (value instanceof Map) return { type: "map", entries: [...value].map(([k, v], i) => [json(k, seen, `${path}.${i}.key`), json(v, seen, `${path}.${i}.value`)]) };
-  if (value instanceof Set) return { type: "set", values: [...value].map((v, i) => json(v, seen, `${path}.${i}`)) };
-  if (Array.isArray(value)) return value.map((v, i) => json(v, seen, `${path}[${i}]`));
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, json(v, seen, `${path}.${k}`)]));
+  try {
+    if (value instanceof Date) return { type: "date", value: value.toISOString() };
+    if (value instanceof RegExp) return { type: "regexp", value: String(value) };
+    if (value instanceof Map) return { type: "map", entries: [...value].map(([k, v], i) => [json(k, seen, `${path}.${i}.key`), json(v, seen, `${path}.${i}.value`)]) };
+    if (value instanceof Set) return { type: "set", values: [...value].map((v, i) => json(v, seen, `${path}.${i}`)) };
+    if (Array.isArray(value)) return value.map((v, i) => json(v, seen, `${path}[${i}]`));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, json(v, seen, `${path}.${k}`)]));
+  } finally { seen.delete(value); }
 }
 /** A URL glob as DevTools writes them: ** crosses slashes, * stays within one part, ? is one character. */
 function globToRegExp(glob) {
@@ -173,21 +204,53 @@ function elementLocator(frame, target) {
   if (target.name !== undefined && (key !== "role" || typeof target.name !== "string")) {
     throw new Error("An accessible name is only supported with role");
   }
+  let root = frame;
+  if (target.within) {
+    root = elementLocator(frame, target.within);
+    if (target.within.index !== undefined) root = root.nth(integer(target.within.index, 0, 0));
+    if (target.near !== undefined) root = root.filter({ hasText: target.near });
+  } else if (target.near !== undefined) throw new Error("near requires a within locator");
   const exact = target.exact !== false;
   switch (key) {
-    case "selector": return frame.locator(value);
-    case "role": return frame.getByRole(value, { ...(target.name === undefined ? {} : { name: target.name }), exact });
-    case "label": return frame.getByLabel(value, { exact });
-    case "text": return frame.getByText(value, { exact });
-    case "testId": return frame.getByTestId(value);
+    case "selector": return root.locator(value);
+    case "role": return root.getByRole(value, { ...(target.name === undefined ? {} : { name: target.name }), exact });
+    case "label": return root.getByLabel(value, { exact });
+    case "text": return root.getByText(value, { exact });
+    case "testId": return root.getByTestId(value);
   }
+}
+
+function urlPath(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin === "null" ? parsed.href.split("#", 1)[0] : parsed.origin + parsed.pathname;
+  } catch { return url; }
+}
+
+function elementIdentity(element) {
+  const text = value => (value || "").replace(/\s+/g, " ").trim().slice(0, 240);
+  const form = element.form ?? element.closest("form");
+  return {
+    tag: element.localName, type: element.getAttribute("type") || "", name: element.getAttribute("name") || "",
+    testId: element.getAttribute("data-testid") || "", text: text(element.textContent),
+    label: text(element.getAttribute("aria-label")) || text(Array.from(element.labels || [], label => label.textContent).join(" ")),
+    formLabel: form?.getAttribute("aria-label") || "", formName: form?.getAttribute("name") || "",
+  };
+}
+
+function stableCandidate(expected, current, candidate) {
+  if (expected.tag !== current.tag || expected.type !== current.type) return false;
+  if (expected.formLabel && expected.formLabel !== current.formLabel || expected.formName && expected.formName !== current.formName) return false;
+  if (candidate.testId !== undefined) return true;
+  return (!expected.name || expected.name === current.name) && (!expected.label || expected.label === current.label)
+    && (!expected.text || expected.text === current.text);
 }
 
 function verifyAction(page, frame, verify) {
   if (verify === undefined) return undefined;
   if (!verify || typeof verify !== "object" || Array.isArray(verify)
-    || [verify.text, verify.urlIncludes, verify.target].filter(value => value !== undefined).length !== 1) {
-    throw new Error("Verification requires one of text, urlIncludes or target");
+    || [verify.text, verify.urlIncludes, verify.target, verify.response, verify.popup, verify.navigation].filter(value => value !== undefined).length !== 1) {
+    throw new Error("Verification requires one condition");
   }
   const timeout = integer(verify.timeoutMs, 5000, 1, 20000);
   if (verify.target !== undefined) {
@@ -198,6 +261,7 @@ function verifyAction(page, frame, verify) {
     return () => target.waitFor({ state, timeout });
   }
   if (verify.state !== undefined) throw new Error("Verification state requires a target");
+  if (verify.response !== undefined || verify.popup !== undefined || verify.navigation !== undefined) return undefined;
   if (verify.urlIncludes !== undefined) {
     if (typeof verify.urlIncludes !== "string" || !verify.urlIncludes.trim()) throw new Error("urlIncludes must be non-empty");
     return () => page.waitForURL(url => url.href.includes(verify.urlIncludes), { waitUntil: "commit", timeout });
@@ -372,11 +436,21 @@ function chunk(buffer, options, contentType = "") {
 }
 
 export class BrowserDevtools {
-  constructor(context, { engine, maxEvents = 2000, maxRequests = 1000, maxEventBytes = 8 * 1024 * 1024 } = {}) {
+  /** @param {{ engine?: "chromium" | "firefox" | "webkit", maxEvents?: number, maxRequests?: number, maxEventBytes?: number }} [options] */
+  constructor(context, options = {}) {
+    const { engine, maxEvents = 2000, maxRequests = 1000, maxEventBytes = 8 * 1024 * 1024 } = options;
     this.context = context;
+    this.engine = engine ?? context.browser?.()?.browserType?.().name();
     this.mainWorld = engine === "firefox";
     this.id = randomUUID();
     this.startedAt = new Date().toISOString();
+    this.captures = new Map();
+    this.observers = new Set();
+    this.popupOpeners = new WeakMap();
+    this.runtimeSources = new Map();
+    this.sourceSessions = new Map();
+    this.tracepoints = new Map();
+    this.domSnapshots = new Map();
     this.sequence = 0;
     this.maxEvents = maxEvents;
     this.maxRequests = maxRequests;
@@ -411,6 +485,7 @@ export class BrowserDevtools {
       item.response = response; item.data.status = response.status(); item.data.statusText = response.statusText();
       item.data.responseHeaders = response.headers(); item.data.fromServiceWorker = response.fromServiceWorker?.() ?? false;
       item.data.sequence = ++this.sequence;
+      this.publish({ kind: "request-response", ...item.data });
     });
     this.listen(context, "requestfinished", request => this.finishRequest(request, pageFor(request)));
     this.listen(context, "requestfailed", request => this.finishRequest(request, pageFor(request), request.failure()?.errorText ?? "Request failed"));
@@ -436,9 +511,14 @@ export class BrowserDevtools {
     for (const [name, callback] of this.listeners.get(emitter) ?? []) emitter.off?.(name, callback);
     this.listeners.delete(emitter);
   }
-  log(kind, page, value = {}) {
+  publish(entry, payload) {
+    for (const observe of this.observers) observe(entry);
+    for (const capture of this.captures.values()) capture.append(entry, payload);
+  }
+  log(kind, page, value = {}, payload) {
     const entry = { id: `${this.id}-event-${++this.sequence}`, sequence: this.sequence, timestamp: new Date().toISOString(), kind,
       ...(page ? { pageId: this.pageIds.get(page), pageUrl: page.url() } : {}), ...value };
+    this.publish(entry, payload);
     // Bounded, explicit history; payloads cannot turn a long-running AI connection into an
     // unbounded memory queue. Eviction is reported with every query, never hidden as an empty log.
     for (const key of ["text", "stack"]) if (typeof entry[key] === "string" && entry[key].length > 65536) {
@@ -485,9 +565,41 @@ export class BrowserDevtools {
     this.pageIds.set(page, id); this.pages.set(id, page);
     for (const frame of page.frames?.() ?? []) this.frameId(frame, page);
     this.listen(page, "frameattached", frame => this.frameId(frame, page));
-    this.listen(page, "framedetached", frame => this.frames.delete(this.frameIds.get(frame)));
-    this.listen(page, "framenavigated", frame => this.log("navigation", page, { frameId: this.frameId(frame, page), url: frame.url() }));
-    this.listen(page, "console", message => this.log("console", page, { type: message.type(), text: message.text(), location: message.location() }));
+    this.listen(page, "popup", popup => {
+      this.watchPage(popup);
+      this.popupOpeners.set(popup, page);
+      this.log("popup-opened", page, { popupPageId: this.pageIds.get(popup), url: popup.url() });
+    });
+    this.listen(page, "framedetached", frame => {
+      this.frames.delete(this.frameIds.get(frame));
+      this.closeTargetSource(frame);
+      for (const capture of this.captures.values()) {
+        const pending = capture.native.get(frame);
+        capture.native.delete(frame);
+        void pending?.then(session => session?.detach()).catch(() => {});
+      }
+    });
+    this.listen(page, "framenavigated", frame => {
+      const frameId = this.frameId(frame, page);
+      const opener = this.popupOpeners.get(page);
+      this.log("navigation", page, { frameId, url: frame.url(), ...(opener && frame === page.mainFrame() ? { openerPageId: this.pageIds.get(opener), popupPageId: this.pageIds.get(page) } : {}) });
+      if (frame !== page.mainFrame()) for (const capture of this.captures.values()) void this.attachNative(capture, page, frame);
+    });
+    this.listen(page, "console", message => {
+      const text = message.text(), location = message.location();
+      if (text.startsWith(TRACE_PREFIX)) {
+        const separator = text.indexOf(" ");
+        const traceId = text.slice(TRACE_PREFIX.length, separator < 0 ? undefined : separator);
+        const trace = this.tracepoints.get(traceId);
+        if (trace) {
+          const raw = separator < 0 ? "undefined" : text.slice(separator + 1);
+          let value;
+          try { value = JSON.parse(raw); } catch { value = raw; }
+          this.log("source-trace", page, { traceId, sourceId: trace.sourceId, text: raw, location, value });
+        }
+      }
+      this.log("console", page, { type: message.type(), text, location });
+    });
     this.listen(page, "pageerror", error => this.log("exception", page, { type: "error", name: error.name, text: error.message, stack: error.stack }));
     this.listen(page, "crash", () => this.log("crash", page, { type: "error", text: "Page renderer crashed" }));
     this.listen(page, "websocket", socket => {
@@ -496,14 +608,15 @@ export class BrowserDevtools {
       this.log("websocket-open", page, { socketId, url: socket.url() });
       for (const [event, kind] of [["framesent", "websocket-sent"], ["framereceived", "websocket-received"]]) this.listen(socket, event, frame => {
         if (Buffer.isBuffer(frame.payload)) {
-          this.log(kind, page, { socketId, url: socket.url(), binary: true, ...chunk(frame.payload, {}), truncated: frame.payload.length > 65536 });
+          const preview = chunk(frame.payload, {});
+          this.log(kind, page, { socketId, url: socket.url(), binary: true, ...preview, truncated: frame.payload.length > 65536 }, frame.payload);
           return;
         }
         // A text frame arrives as a string. Cutting it by characters keeps it exact, so it needs
         // no base64 copy; that halves what each frame costs in the shared history.
         const text = String(frame.payload), kept = text.slice(0, 65536), returnedBytes = Buffer.byteLength(kept), totalBytes = Buffer.byteLength(text);
         this.log(kind, page, { socketId, url: socket.url(), binary: false, encoding: "text", text: kept, totalBytes, totalCharacters: text.length,
-          returnedBytes, hasMore: kept.length < text.length, truncated: kept.length < text.length });
+          returnedBytes, hasMore: kept.length < text.length, truncated: kept.length < text.length }, this.captures.size ? Buffer.from(text, "utf8") : undefined);
       });
       this.listen(socket, "socketerror", text => this.log("websocket-error", page, { socketId, text }));
       this.listen(socket, "close", () => { this.log("websocket-close", page, { socketId }); this.unlisten(socket); });
@@ -515,15 +628,26 @@ export class BrowserDevtools {
     for (const worker of page.workers?.() ?? []) this.watchWorker(worker, page, "worker");
     this.listen(page, "close", () => {
       this.log("page-closed", page); this.pages.delete(id);
-      for (const [frameId, item] of this.frames) if (item.page === page) this.frames.delete(frameId);
+      for (const [frameId, item] of this.frames) if (item.page === page) {
+        this.frames.delete(frameId); this.closeTargetSource(item.frame);
+      }
+      this.closeTargetSource(page);
       for (const [workerId, item] of this.workers) if (item.page === page) this.workers.delete(workerId);
       const protocol = this.protocolSessions.get(page);
       if (protocol) void protocol.then(session => session.detach()).catch(() => {});
       this.protocolSessions.delete(page);
       for (const emitter of [...this.listeners.keys()]) if (this.emitterPages.get(emitter) === page) this.unlisten(emitter);
       this.unlisten(page);
+      for (const capture of this.captures.values()) {
+        for (const [target, pending] of capture.native) {
+          if (target !== page && target.page?.() !== page) continue;
+          capture.native.delete(target);
+          void pending.then(session => session?.detach()).catch(() => {});
+        }
+      }
     });
     this.log("page-opened", page);
+    for (const capture of this.captures.values()) void this.attachNative(capture, page);
   }
   watchRequest(request, page) {
     const knownId = this.requestIds.get(request);
@@ -537,7 +661,13 @@ export class BrowserDevtools {
       ...(page ? { pageId: this.pageIds.get(page) } : {}), ...(frameId ? { frameId } : {}), url: request.url(), method: request.method(),
       resourceType: request.resourceType(), requestHeaders: request.headers(), state: "pending",
       ...(previous && this.requestIds.has(previous) ? { redirectedFrom: this.requestIds.get(previous) } : {}) } };
+    item.data.startedSequence = item.data.sequence;
     this.requests.set(id, item);
+    this.publish({ kind: "request-started", ...item.data });
+    if ([...this.captures.values()].some(capture => capture.live && capture.accepts(item.data))) {
+      const body = request.postDataBuffer();
+      if (body?.length) this.publish({ kind: "request-upload", ...item.data }, body);
+    }
     while (this.requests.size > this.maxRequests) { this.requests.delete(this.requests.keys().next().value); this.droppedRequests++; }
     return item;
   }
@@ -546,6 +676,13 @@ export class BrowserDevtools {
     if (!item) return; // an old request may finish after its history entry was evicted
     Object.assign(item.data, { sequence: ++this.sequence, state: failure ? "failed" : "finished", finishedAt: new Date().toISOString(),
       ...(failure ? { failure } : {}), timing: request.timing() });
+    this.publish({ kind: failure ? "request-failed" : "request-finished", ...item.data });
+    const captures = [...this.captures.values()].filter(capture => capture.live && capture.accepts(item.data));
+    if (!failure && item.response && captures.length) void item.response.body().then(body => {
+      for (const capture of captures) capture.append({ kind: "response-body", ...item.data }, body);
+    }, error => {
+      for (const capture of captures) capture.append({ kind: "response-body-unavailable", ...item.data, error: errorText(error) });
+    });
   }
   query(entries, args, dropped) {
     const since = integer(args.since, 0, 0), count = integer(args.limit, 100, 1, 500);
@@ -621,6 +758,293 @@ export class BrowserDevtools {
     } else value.responseBody = { available: false, reason: item.data.failure ?? "No response received" };
     return value;
   }
+
+
+  closeTargetSource(target) {
+    const pending = this.sourceSessions.get(target);
+    this.sourceSessions.delete(target);
+    void pending?.then(holder => holder?.close()).catch(() => {});
+  }
+  observeSources(page, frame) {
+    const target = frame ?? page;
+    if (this.sourceSessions.has(target)) return this.sourceSessions.get(target);
+    const scope = { pageId: this.pageIds.get(page), frameId: this.frameId(frame ?? page.mainFrame(), page) };
+    const pending = observeRuntimeSources(this.context, target, scope, this.runtimeSources, this.tracepoints).catch(error => {
+      this.sourceSessions.delete(target);
+      if (!frame) return { error: errorText(error) };
+    });
+    this.sourceSessions.set(target, pending);
+    return pending;
+  }
+  sourceRequests(url) {
+    return [...this.requests.values()].filter(item => item.data.url === url);
+  }
+  async loadedResource(frame, url) {
+    const entries = this.sourceRequests(url);
+    for (const entry of entries.reverse()) {
+      if (entry.data.state !== "finished" || !entry.response) continue;
+      try {
+        return { content: (await entry.response.body()).toString("utf8"), requestId: entry.data.requestId };
+      } catch {}
+    }
+    if (!frame || frame.isDetached?.()) throw new Error("This resource was not captured and its source frame is unavailable");
+    const content = await evaluate(frame, async url => {
+      const response = await fetch(url, { credentials: "include" });
+      if (!response.ok) throw new Error(`Resource returned HTTP ${response.status}`);
+      return response.text();
+    }, url, this.mainWorld);
+    return { content, fetched: true };
+  }
+  async sourceContent(record) {
+    if (record.script) {
+      const value = await record.holder.session.send("Debugger.getScriptSource", { scriptId: record.script.scriptId });
+      return { content: value.bytecode ?? value.scriptSource, encoding: value.bytecode === undefined ? "text" : "base64" };
+    }
+    if (record.transport === "dom" && !record.external) {
+      const tag = record.frame.locator("script").nth(record.index);
+      const script = await tag.evaluate(element => ({ text: element.textContent, id: element.id, external: element.hasAttribute("src") }));
+      const text = script.text ?? "";
+      if (record.frame.url() !== record.documentUrl || script.external || script.id !== record.elementId || text.length !== record.length
+        || text.slice(0, 96) !== record.head || text.slice(-96) !== record.tail) throw new Error("The script changed; refresh the source index");
+      return { content: text, encoding: "text" };
+    }
+    return { ...(await this.loadedResource(record.frame, record.url)), encoding: "text" };
+  }
+  async sourceMap(record) {
+    const source = record.script?.sourceMapURL ? undefined : await this.sourceContent(record);
+    const reference = record.script?.sourceMapURL || sourceMapReference(source.content);
+    if (!reference) return null;
+    if (reference.startsWith("data:")) return { content: sourceMapData(reference), inline: true };
+    const frame = record.frame ?? record.holder?.target.mainFrame?.() ?? record.holder?.target;
+    const url = new URL(reference, record.url || record.script?.url || frame.url()).href;
+    return { ...(await this.loadedResource(frame, url)), url };
+  }
+  async sources(args) {
+    if (args.action === "close") {
+      for (const target of this.sourceSessions.keys()) {
+        const page = target.page?.() ?? target;
+        if (!args.pageId || args.pageId === this.pageIds.get(page)) this.closeTargetSource(target);
+      }
+      for (const [id, record] of this.runtimeSources) if (!record.script && (!args.pageId || args.pageId === record.pageId)) this.runtimeSources.delete(id);
+      return { closed: true };
+    }
+    if (args.action === "trace_remove") {
+      const point = this.tracepoints.get(args.traceId);
+      if (!point) throw new Error("Unknown traceId in this profile");
+      await point.holder.session.send("Debugger.removeBreakpoint", { breakpointId: point.breakpointId });
+      this.tracepoints.delete(args.traceId);
+      return { traceId: args.traceId, removed: true };
+    }
+    if (args.action === "list") {
+      const worker = args.workerId ? this.workers.get(args.workerId) : undefined;
+      if (args.workerId && !worker) throw new Error("Unknown workerId in this profile");
+      const selected = worker ? { page: worker.page, frame: worker.page?.mainFrame() } : this.selectFrame(args);
+      const { page, frame } = selected;
+      const pageId = page && this.pageIds.get(page), native = [];
+      const frames = worker ? [] : args.frameId ? [frame] : page.frames();
+      if (this.engine === "chromium" && !worker) {
+        const sessions = await Promise.all([this.observeSources(page), ...frames.filter(frame => frame !== page.mainFrame()).map(frame => this.observeSources(page, frame))]);
+        for (const session of sessions) if (session?.error) native.push(session.error);
+      }
+      for (const [id, record] of this.runtimeSources) {
+        if (record.transport === "network" && !this.requests.has(id.slice("request-".length))) this.runtimeSources.delete(id);
+        if (record.workerId && !this.workers.has(record.workerId)) this.runtimeSources.delete(id);
+        if (!record.script && record.pageId === pageId && !record.workerId && frames.includes(record.frame)) this.runtimeSources.delete(id);
+      }
+      for (const owner of frames) {
+        const frameId = this.frameId(owner, page), documentUrl = owner.url();
+        const scripts = await owner.locator("script").evaluateAll(elements => elements.map((element, index) => {
+          const text = element.textContent ?? "", external = element.hasAttribute("src");
+          return { index, elementId: element.id, type: element.type, external, url: external ? element.src : "",
+            length: text.length, head: text.slice(0, 96), tail: text.slice(-96) };
+        })).catch(() => []);
+        for (const script of scripts) {
+          const sourceId = createHash("sha256").update(JSON.stringify([frameId, documentUrl, script])).digest("hex");
+          this.runtimeSources.set(sourceId, { ...script, sourceId, pageId, frameId, transport: "dom", frame: owner, documentUrl,
+            url: script.url || documentUrl });
+        }
+      }
+      const workers = [...this.workers.entries()].filter(([id, item]) => worker ? id === args.workerId : item.page === page || !item.page);
+      const workerUrls = new Map();
+      for (const [workerId, item] of workers) {
+        const url = item.worker.url(), ownerId = item.page && this.pageIds.get(item.page);
+        const sourceId = "worker-" + workerId;
+        workerUrls.set(url, workerId);
+        this.runtimeSources.set(sourceId, { sourceId, pageId: ownerId, workerId, url, transport: item.type, frame });
+      }
+      for (const item of this.requests.values()) {
+        const data = item.data;
+        if (worker ? data.url !== worker.worker.url() : data.pageId !== pageId || !(data.resourceType === "script" || workerUrls.has(data.url))) continue;
+        const sourceId = "request-" + data.requestId;
+        this.runtimeSources.set(sourceId, { sourceId, pageId: data.pageId, frameId: data.frameId, workerId: workerUrls.get(data.url), url: data.url,
+          transport: "network", frame: this.frames.get(data.frameId)?.frame ?? frame });
+      }
+      const matches = [...this.runtimeSources.values()].filter(record => {
+        if (worker ? record.workerId !== args.workerId : record.pageId !== pageId && record.transport !== "serviceworker") return false;
+        if (args.frameId && record.frameId !== args.frameId && record.script?.executionContextAuxData?.isDefault === false) return false;
+        if (args.frameId && !record.script && record.frameId !== args.frameId) return false;
+        return !args.urlIncludes || (record.url ?? record.script?.url ?? "").includes(args.urlIncludes);
+      });
+      const offset = integer(args.offset, 0, 0);
+      const records = matches.slice(offset, offset + integer(args.limit, 100, 1, 500)).map(record => ({
+        sourceId: record.sourceId, pageId: record.pageId, frameId: record.frameId, workerId: record.workerId,
+        transport: record.transport, url: record.url ?? record.script?.url ?? "", inline: record.transport === "dom" ? !record.external : undefined,
+        type: record.type, ...(record.script ? { executionContextId: record.script.executionContextId, hash: record.script.hash,
+          nativeFrameId: record.script.executionContextAuxData?.frameId, startLine: record.script.startLine + 1, startColumn: record.script.startColumn + 1,
+          hasSourceMap: !!record.script.sourceMapURL, language: record.script.scriptLanguage } : {}),
+        requestIds: this.sourceRequests(record.url ?? record.script?.url).filter(item => !record.pageId || item.data.pageId === record.pageId).map(item => item.data.requestId),
+      }));
+      return { records, nextOffset: offset + records.length, total: matches.length, hasMore: offset + records.length < matches.length, nativeErrors: native };
+    }
+    const record = this.runtimeSources.get(args.sourceId);
+    if (!record) throw new Error("Unknown or expired sourceId; refresh browser_devtools_sources list");
+    const offset = integer(args.offset, 0, 0), size = integer(args.characters, 65536, 1, 1048576);
+    const lines = (content, extra) => ({ sourceId: args.sourceId, ...extra, text: content.slice(offset, offset + size), offset,
+      nextOffset: Math.min(content.length, offset + size), totalCharacters: content.length, hasMore: offset + size < content.length });
+    if (args.action === "read") {
+      const { content, ...meta } = await this.sourceContent(record);
+      return lines(content ?? "", meta);
+    }
+    if (args.action === "map") {
+      const map = await this.sourceMap(record);
+      if (!map) return { sourceId: args.sourceId, map: null };
+      const { content, ...meta } = map;
+      const startLine = record.script?.startLine ?? 0, startColumn = record.script?.startColumn ?? 0;
+      const line = integer(args.line, undefined, 1);
+      const column = integer(args.column, 1, 1);
+      return lines(content, { ...meta, ...(line === undefined ? {} : { original: originalPosition(JSON.parse(content), line - startLine, column - (line === startLine + 1 ? startColumn : 0)) }) });
+    }
+    if (args.action === "trace_add") {
+      if (!record.script) throw new Error("Runtime tracepoints require a Chromium CDP source");
+      if (typeof args.expression !== "string" || !args.expression.trim()) throw new Error("trace_add requires an expression");
+      let line = integer(args.line, 0, 1), column = integer(args.column, 1, 1);
+      if (!line) throw new Error("trace_add requires a line");
+      if (args.originalSource !== undefined) {
+        const map = await this.sourceMap(record);
+        if (!map) throw new Error("The source has no usable source map");
+        const position = generatedPosition(JSON.parse(map.content), args.originalSource, line, column);
+        if (!position) throw new Error("No compiled location matched the original position");
+        line = position.generatedLine + record.script.startLine;
+        column = position.generatedColumn + (position.generatedLine === 1 ? record.script.startColumn : 0);
+      }
+      const point = await addTracepoint(record, line, column, args.expression);
+      this.tracepoints.set(point.id, { ...point, sourceId: args.sourceId });
+      return { traceId: point.id, sourceId: args.sourceId, line: point.actualLocation.lineNumber + 1, column: point.actualLocation.columnNumber + 1 };
+    }
+    throw new Error("Unknown source operation");
+  }
+  getCapture(id) {
+    const capture = this.captures.get(id);
+    if (!capture) throw new Error("Unknown captureId in this profile");
+    return capture;
+  }
+  attachNative(capture, page, frame) {
+    if (this.engine !== "chromium" || !capture.live || (capture.settings.pageId && this.pageIds.get(page) !== capture.settings.pageId)) return;
+    const target = frame ?? page;
+    if (capture.native.has(target)) return capture.native.get(target);
+    const scope = { pageId: this.pageIds.get(page), ...(frame ? { frameId: this.frameId(frame, page) } : {}) };
+    const pending = captureNativeNetwork(this.context, target, capture, scope).catch(error => {
+      capture.native.delete(target);
+      // Same-process frames share the parent session, which already captures their requests.
+      if (!frame) capture.append({ ...scope, kind: "native-capture-unavailable", error: errorText(error) });
+    });
+    capture.native.set(target, pending);
+    return pending;
+  }
+  async *watchCapture(id, options = {}) {
+    const capture = this.getCapture(id);
+    let since = integer(options.since, 0, 0);
+    const limit = integer(options.limit, 100, 1, 500), waitMs = integer(options.waitMs, 1000, 1, 20000);
+    for (;;) {
+      if (options.signal?.aborted) return;
+      const update = await capture.read(since, limit, waitMs, options.signal);
+      if (options.signal?.aborted) return;
+      since = update.nextCursor;
+      yield* update.records;
+      if (!update.active && !update.hasMore) return;
+    }
+  }
+  async captureFetch(capture, args) {
+    if (!capture.live) throw new Error("Start an active capture before fetching");
+    if (typeof args.url !== "string" || !args.url) throw new Error("url is required");
+    const { page, frame } = this.selectFrame(args);
+    const pageId = this.pageIds.get(page);
+    if (capture.settings.pageId && capture.settings.pageId !== pageId) throw new Error("Choose a frame in the captured page");
+    const scope = { pageId, frameId: this.frameId(frame, page), fetchId: randomUUID(), url: new URL(args.url, frame.url()).href, transport: "fetch" };
+    const method = args.method ?? "GET", key = "__vela_stream_" + scope.fetchId;
+    if (!capture.accepts(scope)) throw new Error("The request URL does not match this capture's filter");
+    const abort = () => evaluate(frame, id => {
+      globalThis[id]?.controller.abort();
+      delete globalThis[id];
+    }, key, this.mainWorld).catch(() => {});
+    capture.fetches.set(scope.fetchId, abort);
+    void (async () => {
+      try {
+        capture.append({ ...scope, kind: "fetch-started", method });
+        const response = await evaluate(frame, async input => {
+          const controller = new AbortController();
+          const state = { controller, reader: null, pending: null };
+          globalThis[input.key] = state;
+          const response = await fetch(input.url, { method: input.method, headers: input.headers, credentials: input.credentials, signal: controller.signal,
+            ...(input.bodyBase64 !== undefined ? { body: Uint8Array.from(atob(input.bodyBase64), c => c.charCodeAt(0)) }
+              : input.body !== undefined ? { body: input.body } : {}) });
+          state.reader = response.body?.getReader();
+          return { responseUrl: response.url, status: response.status, statusText: response.statusText, headers: Object.fromEntries(response.headers) };
+        }, { key, url: args.url, method, headers: args.headers, credentials: args.credentials ?? "include", body: args.body, bodyBase64: args.bodyBase64 }, this.mainWorld);
+        capture.append({ ...scope, kind: "fetch-response", ...response });
+        while (capture.live) {
+          const data = await evaluate(frame, async id => {
+            const state = globalThis[id];
+            if (!state?.reader) return null;
+            if (!state.pending?.length) {
+              const { done, value } = await state.reader.read();
+              if (done) return null;
+              state.pending = value;
+            }
+            const part = state.pending.subarray(0, 32768);
+            state.pending = state.pending.subarray(part.length);
+            return btoa(String.fromCharCode(...part));
+          }, key, this.mainWorld);
+          if (data === null) { capture.append({ ...scope, kind: "fetch-finished" }); break; }
+          if (data) capture.append({ ...scope, kind: "fetch-data" }, Buffer.from(data, "base64"));
+        }
+      } catch (error) { capture.append({ ...scope, kind: "fetch-failed", error: errorText(error) }); }
+      finally { capture.fetches.delete(scope.fetchId); await abort(); }
+    })();
+    return { ...capture.info(), ...scope };
+  }
+  async captureStream(args) {
+    if (args.action === "list") return { captures: [...this.captures.values()].map(capture => capture.info()) };
+    if (args.action === "start") {
+      const page = args.pageId ? this.selectPage(args.pageId) : undefined;
+      const capture = new DevtoolsJournal({ pageId: args.pageId, urlIncludes: args.urlIncludes });
+      this.captures.set(capture.id, capture);
+      const pages = page ? [page] : [...this.pages.values()];
+      await Promise.all(pages.flatMap(current => [this.attachNative(capture, current),
+        ...(current.frames?.() ?? []).filter(frame => frame !== current.mainFrame()).map(frame => this.attachNative(capture, current, frame))]));
+      return { ...capture.info(), chromiumNative: this.engine === "chromium" };
+    }
+    const capture = this.getCapture(args.captureId);
+    switch (args.action) {
+      case "read": return capture.read(integer(args.since, 0, 0), integer(args.limit, 100, 1, 500), integer(args.waitMs, 0, 0, 20000));
+      case "bytes": {
+        const offset = integer(args.offset, 0, 0), length = integer(args.bytes, Math.min(65536, Math.max(0, capture.size - offset)), 0, 1048576);
+        return { ...capture.info(), offset, returnedBytes: length, nextOffset: offset + length, base64: capture.bytes(offset, length).toString("base64") };
+      }
+      case "fetch": return this.captureFetch(capture, args);
+      case "mark": {
+        const page = args.pageId || args.screenshot ? this.selectPage(args.pageId ?? capture.settings.pageId) : null;
+        if (capture.settings.pageId && page && this.pageIds.get(page) !== capture.settings.pageId) throw new Error("Choose the captured page");
+        const entry = { kind: "mark", pageId: page ? this.pageIds.get(page) : capture.settings.pageId, label: args.label, value: json(args.value) };
+        const image = args.screenshot ? await page.screenshot({ type: "jpeg", quality: 55, timeout: 2500 }) : undefined;
+        capture.append({ ...entry, ...(image ? { mediaType: "image/jpeg" } : {}) }, image);
+        return capture.info();
+      }
+      case "stop": capture.stop(); return capture.info();
+      case "discard": capture.dispose(); this.captures.delete(capture.id); return { captureId: capture.id, discarded: true };
+      default: throw new Error("Unknown capture action");
+    }
+  }
   async capturedBytes(requestId, part = "response") {
     const item = this.requests.get(requestId);
     if (!item) throw new Error("Unknown or evicted requestId in this profile");
@@ -644,7 +1068,170 @@ export class BrowserDevtools {
       ...outcome, since, until: this.sequence, ...records,
     };
   }
-  async runProgram(args) {
+  async taskTarget({ pageUrl, frameUrl, timeoutMs }) {
+    if (!pageUrl && !frameUrl) return {};
+    const deadline = Date.now() + Math.max(1, (timeoutMs ?? 120_000) - 1000);
+    let ambiguous = false;
+    do {
+      const pages = this.context.pages().filter(page => !page.isClosed() && (!pageUrl || page.url() === pageUrl));
+      const matches = pages.flatMap(page => (frameUrl ? page.frames().filter(frame => frame.url() === frameUrl && !frame.isDetached()) : [page.mainFrame()])
+        .map(frame => ({ page, frame })));
+      if (matches.length === 1) {
+        const { page, frame } = matches[0];
+        this.watchPage(page);
+        return { pageId: this.pageIds.get(page), frameId: this.frameId(frame, page) };
+      }
+      ambiguous = matches.length > 1;
+      if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    } while (!this.closed && Date.now() < deadline);
+    throw new Error(ambiguous ? "More than one browsing context matched the task URLs" : "The task page or frame URL did not become available");
+  }
+  async runTaskProgram({ code, argument, screenshots, pageUrl, frameUrl, timeoutMs }) {
+    let invoked = false;
+    const record = await this.captureProgramWork(async () => {
+      const target = await this.taskTarget({ pageUrl, frameUrl, timeoutMs });
+      invoked = true;
+      return (await this.runProgram({ code, argument, ...target }, { task: !target.frameId })).structuredContent;
+    }, { limit: 30 });
+    const { value, error, network, events, since, until } = record;
+    const receipt = { ...(value ?? { completed: false, error }), invoked, network, events, since, until };
+    if (screenshots && invoked) {
+      try {
+        const page = this.selectPage(value?.pageId);
+        const image = await page.screenshot({ type: "jpeg", quality: 55, timeout: 2500 });
+        receipt.screenshot = { mediaType: "image/jpeg", base64: image.toString("base64"), url: page.url() };
+      } catch (error) { receipt.screenshotError = errorText(error); }
+    }
+    return receipt;
+  }
+  async createAnchor(args) {
+    const { page, frame } = this.selectFrame(args);
+    const timeout = integer(args.timeoutMs, 5000, 1, 20000), target = elementLocator(frame, args.target);
+    const index = integer(args.target.index, undefined, 0);
+    const locator = index === undefined ? target : target.nth(index);
+    if (index === undefined && await locator.count() > 1) throw new Error("The anchor target is ambiguous");
+    const identity = await locator.evaluate(elementIdentity, undefined, { timeout });
+    const { index: _index, ...original } = args.target;
+    const scope = original.within ? { within: original.within, ...(original.near === undefined ? {} : { near: original.near }) } : {};
+    const candidates = [
+      ...(identity.testId ? [{ ...scope, testId: identity.testId }] : []),
+      original,
+      ...(identity.label ? [{ ...scope, label: identity.label }] : []),
+      ...(identity.name ? [{ ...scope, selector: `[name=${JSON.stringify(identity.name)}]` }] : []),
+      ...(identity.text ? [{ ...scope, text: identity.text }] : []),
+    ];
+    const frames = [];
+    for (let current = frame; current.parentFrame(); current = current.parentFrame()) {
+      frames.unshift({ name: current.name(), path: urlPath(current.url()) });
+    }
+    return { version: 1, page: { id: this.pageIds.get(page), path: urlPath(page.url()) }, frames, identity, candidates };
+  }
+  async snapshotDOM(args) {
+    if (args.action === "discard") return { discarded: this.domSnapshots.delete(args.snapshotId) };
+    let snapshotId = args.snapshotId;
+    if (args.action === "take") {
+      const baseline = args.baselineId ? this.domSnapshots.get(args.baselineId) : undefined;
+      if (args.baselineId && !baseline) throw new Error("Unknown baselineId in this profile");
+      const { page, frame } = this.selectFrame({
+        pageId: args.pageId ?? baseline?.pageId, frameId: args.frameId ?? baseline?.frameId,
+      });
+      const selector = args.selector ?? baseline?.selector ?? ":root";
+      if (baseline && (baseline.pageId !== this.pageIds.get(page) || baseline.selector !== selector || baseline.framePath !== urlPath(frame.url()))) {
+        throw new Error("Use a baseline from the same page, frame URL and selector");
+      }
+      const rows = await frame.locator(selector).evaluate(domSnapshot, undefined, { timeout: integer(args.timeoutMs, 5000, 1, 20000) });
+      snapshotId = randomUUID();
+      this.domSnapshots.set(snapshotId, {
+        rows, records: baseline ? compareSnapshots(baseline.rows, rows) : rows, baselineId: args.baselineId,
+        capturedAt: new Date().toISOString(), pageId: this.pageIds.get(page), frameId: this.frameId(frame, page),
+        framePath: urlPath(frame.url()), selector,
+      });
+    } else if (args.action !== "read") throw new Error("Unknown DOM snapshot operation");
+    const snapshot = this.domSnapshots.get(snapshotId);
+    if (!snapshot) throw new Error("Unknown snapshotId in this profile");
+    const { rows, records, framePath, ...scope } = snapshot;
+    const offset = integer(args.offset, 0, 0), entries = records.slice(offset, offset + integer(args.limit, 100, 1, 500));
+    return { snapshotId, ...scope, totalNodes: rows.length, totalRecords: records.length, records: entries,
+      nextOffset: offset + entries.length, hasMore: offset + entries.length < records.length };
+  }
+  async resolveAnchor(args, deadline) {
+    const { anchor } = args;
+    if (anchor?.version !== 1 || !Array.isArray(anchor.frames) || !Array.isArray(anchor.candidates) || !anchor.candidates.length
+      || !anchor.page?.path || !anchor.identity?.tag) throw new Error("Use an anchor returned by browser_devtools_anchor");
+    let reason = "The anchor no longer matches the current document";
+    do {
+      const live = [...this.pages.values()].filter(page => !page.isClosed?.());
+      const explicit = args.pageId ? this.selectPage(args.pageId) : this.pages.get(anchor.page.id);
+      const pages = explicit && !explicit.isClosed?.() && urlPath(explicit.url()) === anchor.page.path
+        ? [explicit] : live.filter(page => urlPath(page.url()) === anchor.page.path);
+      if (pages.length === 1) {
+        const page = pages[0];
+        let frame = page.mainFrame();
+        for (const segment of anchor.frames) {
+          const children = page.frames().filter(candidate => candidate.parentFrame() === frame && !candidate.isDetached?.());
+          const exact = children.filter(candidate => urlPath(candidate.url()) === segment.path && (!segment.name || candidate.name() === segment.name));
+          const named = segment.name ? children.filter(candidate => candidate.name() === segment.name) : [];
+          const matches = exact.length ? exact : named;
+          if (matches.length !== 1) {
+            if (matches.length > 1) reason = "The anchor matched multiple frames";
+            frame = null; break;
+          }
+          frame = matches[0];
+        }
+        if (frame && (!args.frameId || this.frameId(frame, page) === args.frameId)) {
+          for (const candidate of anchor.candidates) {
+            const locator = elementLocator(frame, candidate);
+            const count = await locator.count().catch(() => 0);
+            if (count > 1) reason = "The anchor matched multiple elements";
+            if (count !== 1) continue;
+            const identity = await locator.evaluate(elementIdentity, undefined, { timeout: Math.max(1, deadline - Date.now()) }).catch(() => undefined);
+            if (identity && stableCandidate(anchor.identity, identity, candidate)) return { page, frame, locator, candidate };
+          }
+        }
+      } else if (pages.length > 1) reason = "The anchor matched multiple pages; choose pageId";
+      if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, Math.min(60, Math.max(0, deadline - Date.now()))));
+    } while (!this.closed && Date.now() < deadline);
+    throw new Error(reason);
+  }
+  observeAction(page, frame, verify) {
+    const since = this.sequence, pageId = this.pageIds.get(page), frameId = this.frameId(frame, page);
+    const entries = [];
+    const { response, popup, navigation } = verify ?? {};
+    for (const spec of [response, popup, navigation]) {
+      if (spec !== undefined && (!spec || typeof spec !== "object" || Array.isArray(spec)
+        || (spec === popup && spec.urlIncludes === undefined ? false : typeof spec.urlIncludes !== "string" || !spec.urlIncludes))) {
+        throw new Error("Event verification requires a non-empty urlIncludes");
+      }
+    }
+    let match, complete;
+    const observe = entry => {
+      const inPage = entry.pageId === pageId || entry.openerPageId === pageId;
+      if (!inPage) return;
+      const data = { ...Object.fromEntries(["id", "sequence", "kind", "requestId", "popupPageId", "pageId", "frameId", "url", "method", "status"]
+        .filter(key => entry[key] !== undefined).map(key => [key, entry[key]])) };
+      if (entries.length < 40 && ["request-started", "request-response", "request-failed", "navigation", "popup-opened", "download", "exception"].includes(entry.kind)) entries.push(data);
+      if (match) return;
+      const hit = response && entry.kind === "request-response" && entry.startedSequence > since && entry.frameId === frameId
+        && entry.url.includes(response.urlIncludes) && (!response.method || entry.method === response.method.toUpperCase())
+        && (response.status === undefined || entry.status === response.status)
+        || popup && entry.popupPageId && (!popup.urlIncludes || entry.url.includes(popup.urlIncludes))
+        || navigation && entry.pageId === pageId && entry.kind === "navigation"
+        && entry.frameId === (navigation.scope === "page" ? this.frameId(page.mainFrame(), page) : frameId) && entry.url.includes(navigation.urlIncludes);
+      if (hit) { match = data; complete?.({ passed: true, match }); }
+    };
+    if (response?.method !== undefined && typeof response.method !== "string") throw new Error("Verification method must be a string");
+    this.observers.add(observe);
+    return {
+      since, entries,
+      wait: response || popup || navigation ? () => new Promise(resolve => {
+        if (match) { resolve({ passed: true, match }); return; }
+        const timer = setTimeout(() => resolve({ passed: false, error: "No matching event followed the action" }), integer(verify.timeoutMs, 5000, 1, 20000));
+        complete = value => { clearTimeout(timer); resolve(value); };
+      }) : undefined,
+      close: () => this.observers.delete(observe),
+    };
+  }
+  async runProgram(args, { task = false } = {}) {
     if (typeof args.code !== "string" || !args.code.trim()) throw new Error("code must contain a JavaScript function");
     let page, frame, worker;
     if (args.workerId) {
@@ -653,6 +1240,9 @@ export class BrowserDevtools {
       if (!selected || (args.pageId && this.pageIds.get(selected.page) !== args.pageId)) throw new Error("Unknown workerId in this page/profile");
       ({ page, worker } = selected);
       frame = page?.mainFrame();
+    } else if (task) {
+      page = this.context.pages().at(-1) ?? await this.context.newPage();
+      frame = page.mainFrame();
     } else {
       ({ page, frame } = this.selectFrame(args));
     }
@@ -663,13 +1253,15 @@ export class BrowserDevtools {
         const name = shortName.startsWith("browser_devtools_") ? shortName : `browser_devtools_${shortName}`;
         if (!DEVTOOLS_TOOL_NAMES.has(name) || name === "browser_devtools_program") throw new Error(`Unknown program developer operation: ${shortName}`);
         const target = worker && name === "browser_devtools_evaluate" ? { workerId: args.workerId } : frameTarget;
-        const explicitTarget = ["pageId", "frameId", "workerId"].some(key => Object.hasOwn(options, key));
+        const explicitTarget = ["pageId", "frameId", "workerId", "anchor"].some(key => Object.hasOwn(options, key));
         const reply = await this.call(name, explicitTarget ? options : { ...target, ...options });
         if (reply.isError) throw new Error(reply.structuredContent?.error || reply.content?.[0]?.text || "Developer operation failed");
         return reply.structuredContent;
       },
       bytes: (requestId, part) => this.capturedBytes(requestId, part),
       capture: (work, options) => this.captureProgramWork(work, options),
+      watch: (captureId, options) => this.watchCapture(captureId, options),
+      payload: (captureId, range) => this.getCapture(captureId).bytes(range.offset, range.totalBytes),
     });
     const logs = [];
     let droppedLogs = 0;
@@ -702,6 +1294,7 @@ export class BrowserDevtools {
     }
     return await pending;
   }
+  /** @returns {Promise<{content: Array<object>, structuredContent: any, isError?: boolean}>} */
   async call(name, args = {}) {
     if (this.closed) throw new Error("This browser's developer session has closed");
     if (name === "browser_devtools_pages") return result(await this.pageList());
@@ -718,6 +1311,9 @@ export class BrowserDevtools {
         && (rank[e.type] ?? 1) >= minimum), args, this.droppedEvents));
     }
     if (name === "browser_devtools_events") return result(this.query(this.events.map(e => e.entry).filter(e => !args.kind || e.kind === args.kind), args, this.droppedEvents));
+    if (name === "browser_devtools_stream") return result(await this.captureStream(args));
+    if (name === "browser_devtools_sources") return result(await this.sources(args));
+    if (name === "browser_devtools_dom_delta") return result(await this.snapshotDOM(args));
     if (name === "browser_devtools_network") return result(this.query([...this.requests.values()].map(e => e.data).filter(e =>
       (!args.failedOnly || e.failure || e.status >= 400) && (!args.resourceType || e.resourceType === args.resourceType)
       && (args.status === undefined || e.status === args.status)), args, this.droppedRequests));
@@ -788,6 +1384,7 @@ export class BrowserDevtools {
       if (screenshot) return { ...reply, content: [...reply.content, { type: "image", data: screenshot.toString("base64"), mimeType: "image/jpeg" }] };
       return reply;
     }
+    if (name === "browser_devtools_anchor") return result(await this.createAnchor(args));
     if (name === "browser_devtools_action") {
       if (!Object.hasOwn(locatorActions, args.action)) throw new Error("Unknown developer action");
       if ((args.action === "fill" || args.action === "press") && typeof args.value !== "string") throw new Error("This action requires a string value");
@@ -795,22 +1392,33 @@ export class BrowserDevtools {
         && !(Array.isArray(args.value) && args.value.length && args.value.every(value => typeof value === "string"))) {
         throw new Error("Select an option with a value or an array of values");
       }
-      const { page, frame } = this.selectFrame(args);
       const timeout = integer(args.timeoutMs, 5000, 1, 20000);
+      const deadline = Date.now() + timeout;
+      if ((args.target === undefined) === (args.anchor === undefined)) throw new Error("Choose either target or anchor");
+      const { page, frame, locator: anchored, candidate } = args.anchor ? await this.resolveAnchor(args, deadline) : this.selectFrame(args);
       const verify = verifyAction(page, frame, args.verify);
-      const locator = elementLocator(frame, args.target);
-      const index = integer(args.target.index, undefined, 0);
+      const locator = anchored ?? elementLocator(frame, args.target);
+      const index = integer(args.target?.index, undefined, 0);
       const target = index === undefined ? locator : locator.nth(index);
       if (index === undefined && await locator.count() > 1) throw new Error("The action target matched multiple elements. Narrow the target or provide an index.");
       const scope = { pageId: this.pageIds.get(page), frameId: this.frameId(frame, page), action: args.action };
-      try { await locatorActions[args.action](target, { timeout }, args.value); }
-      catch (error) { return { ...result({ ...scope, actionCompleted: false, error: errorText(error), url: frame.url() }), isError: true }; }
-      let verification = null;
-      if (verify) {
-        try { await verify(); verification = { passed: true }; }
-        catch (error) { verification = { passed: false, error: errorText(error) }; }
+      const evidence = this.observeAction(page, frame, args.verify);
+      try {
+        let actionError, verification = null;
+        try { await locatorActions[args.action](target, { timeout: Math.max(1, deadline - Date.now()) }, args.value); }
+        catch (error) { actionError = errorText(error); }
+        if (evidence.wait) verification = await evidence.wait();
+        else if (verify && !actionError) {
+          try { await verify(); verification = { passed: true }; }
+          catch (error) { verification = { passed: false, error: errorText(error) }; }
+        }
+        const reply = result({ ...scope, actionCompleted: actionError === undefined, verification, url: frame.url(),
+          ...(candidate ? { resolvedBy: candidate } : {}), ...(actionError === undefined ? {} : { error: actionError }),
+          evidence: { since: evidence.since, until: this.sequence, records: evidence.entries } });
+        return actionError === undefined ? reply : { ...reply, isError: true };
+      } finally {
+        evidence.close();
       }
-      return result({ ...scope, actionCompleted: true, verification, url: frame.url() });
     }
     if (name === "browser_devtools_storage") {
       const { page, frame } = this.selectFrame(args);
@@ -1132,6 +1740,11 @@ export class BrowserDevtools {
     this.authenticators.clear();
     for (const pending of this.protocolSessions.values()) void pending.then(session => session.detach()).catch(() => {});
     this.protocolSessions.clear();
+    for (const target of this.sourceSessions.keys()) this.closeTargetSource(target);
+    this.runtimeSources.clear(); this.tracepoints.clear();
+    this.domSnapshots.clear();
+    for (const capture of this.captures.values()) capture.dispose();
+    this.captures.clear();
     this.events.length = 0; this.requests.clear(); this.pages.clear(); this.frames.clear(); this.workers.clear();
   }
 }

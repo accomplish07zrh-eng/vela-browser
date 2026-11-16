@@ -16,7 +16,7 @@ import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { RemoteCoordinator } from "./remote.ts";
 import type { AppConfigStore } from "./app-config.ts";
-import { allowsGroup, type AiAccessRule, type LocalAutomationScope } from "./ai-access.ts";
+import { allowsGroup, ruleFor, type AiAccessRule, type LocalAutomationScope } from "./ai-access.ts";
 import type { StatePaths } from "./paths.ts";
 import {
   handleRequest,
@@ -29,6 +29,7 @@ import {
 import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { TaskRunner, TaskStore } from "./tasks.ts";
+import { BrowserTaskError, BrowserTaskSupervisor, type BrowserTaskConnection } from "./browser-tasks.ts";
 import { AuditLog } from "./audit.ts";
 import { backupSessions, SnapshotStore } from "./snapshots.ts";
 import { setTunBypass } from "./egress-binding.ts";
@@ -37,7 +38,7 @@ import { ALIASMODE_VERSION } from "./version.ts";
 import { PhoneWindows } from "./phone-window.ts";
 import { IpScoreCache } from "./ip-score.ts";
 import { PythonRuntime } from "./python-runtime.ts";
-import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
+import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
 import { WorkbenchHub, WORKBENCH_PATH, WORKBENCH_PROTOCOL, validWorkbenchAuthorization, type WorkbenchConnection } from "./workbench.ts";
 
@@ -49,7 +50,7 @@ import {
   AGENT_CONTROL_PATH,
   AGENT_CONTROL_PROTOCOL,
   AgentControlHub,
-  type AgentControlSession,
+  AgentControlSession,
   validAgentAuthorization,
 } from "./agent-control.ts";
 import { ProxyApprovalQueue, type AiProxyPolicy } from "./proxy-approvals.ts";
@@ -428,6 +429,45 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const aiCodePolicy = (): AiCodePolicy => {
     try { return opts.appConfig?.read().aiCodeChanges ?? "ask"; } catch { return "ask"; }
   };
+  const aiAccess = () => opts.appConfig?.read().aiAccess;
+  const browserTasks = agentNonce && opts.paths && !opts.remote ? new BrowserTaskSupervisor({
+    root: join(opts.paths.root, "browser-tasks"),
+    authorize(profileId, client) {
+      const profile = store.getProfile(profileId);
+      if (!profile) throw new BrowserTaskError("no_such_profile", "The browser task profile was not found", 404);
+      if (!allowsGroup(ruleFor(aiAccess(), client), profile.group ?? "", store.listFolders())) {
+        throw new BrowserTaskError("not_permitted", "This AI may not use the profile's group", 403);
+      }
+    },
+    async open(profileId, client) {
+      const session = new AgentControlSession({ launcher, store, admission, aiAccess, activity, log });
+      const call = async (method: string, params: Record<string, unknown>) => {
+        const response = await session.enqueue(JSON.stringify({ protocol: AGENT_CONTROL_PROTOCOL, id: 1, method, params }));
+        if (!response.ok) throw new BrowserTaskError(response.error?.code ?? "operation_failed", response.error?.message ?? "Browser task could not open its profile");
+        return response.result as { ownedByConnection?: boolean };
+      };
+      try {
+        await call("session.identify", { name: client });
+        const opened = await call("browser.open", { profileId });
+        const endpoint = store.getLaunch(profileId)?.ws;
+        if (!endpoint) throw new BrowserTaskError("browser_not_running", "The task browser did not expose its control endpoint");
+        if (opened.ownedByConnection) await call("browser.detach", { profileId });
+        const connection: BrowserTaskConnection = {
+          async program(input) {
+            if (store.getLaunch(profileId)?.ws !== endpoint) throw new BrowserTaskError("browser_changed", "The task browser closed or restarted");
+            return await runPlaywrightWorker("devtools-program", { ...input, endpoint }, { timeoutMs: input.timeoutMs });
+          },
+          close: () => session.disconnect(),
+        };
+        return connection;
+      } catch (error) {
+        await session.disconnect();
+        throw error;
+      }
+    },
+    hold: (profileId) => activity.hold(profileId),
+    log,
+  }) : undefined;
   const agentHub = agentNonce
     ? new AgentControlHub({
         launcher,
@@ -442,10 +482,11 @@ export function serveDashboard(opts: DashboardServerOptions) {
         proxyApprovals,
         aiProxyPolicy,
         ...(scripts ? { scripts: { library: scripts.library, runner: scripts.runner } } : {}),
+        browserTasks,
         ...(opts.paths && !opts.remote ? { pluginsRoot: pluginsDirectory(opts.paths.root) } : {}),
         codeApprovals,
         aiCodePolicy,
-        aiAccess: () => opts.appConfig?.read().aiAccess,
+        aiAccess,
         ipScores,
         ...(audit ? { audit } : {}),
         log,
@@ -578,7 +619,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
 
 
           health: opts.health,
-          scripts: scripts && tasks ? { ...scripts, tasks } : scripts,
+          scripts: scripts ? { ...scripts, tasks, browserTasks } : undefined,
           runtimeMode,
           proxyApprovals,
           codeApprovals,
@@ -613,6 +654,6 @@ export function serveDashboard(opts: DashboardServerOptions) {
       ]);
       return await stopServer(closeActiveConnections);
     },
-    stopScripts: () => scripts?.runner.shutdown() ?? Promise.resolve(),
+    stopScripts: async () => { await Promise.all([scripts?.runner.shutdown(), browserTasks?.shutdown()]); },
   });
 }

@@ -22,6 +22,7 @@ import type { AiProxyPolicy, ProxyApprovalQueue } from "./proxy-approvals.ts";
 import type { AiCodePolicy, CodeApprovalQueue, CodeApprovalRequest } from "./code-approvals.ts";
 import { preparePlugin, scanPlugins, writePlugin } from "./plugins.ts";
 import type { ScriptLibrary, ScriptSupervisor } from "./scripts.ts";
+import { BrowserTaskError, type BrowserTaskSupervisor } from "./browser-tasks.ts";
 import { existsSync as pathExists } from "node:fs";
 import { allowsGroup, ruleFor, type AiAccessSettings } from "./ai-access.ts";
 import type { AuditLog } from "./audit.ts";
@@ -74,6 +75,7 @@ export interface AgentControlDeps {
   pointer?: (profileId: string, pointer: import("./workbench.ts").WorkbenchPointer) => void;
   /** Saved scripts and their runner: an AI lists, writes (with approval) and runs them. */
   scripts?: { library: ScriptLibrary; runner: ScriptSupervisor };
+  browserTasks?: BrowserTaskSupervisor;
   /** The plugins folder, where a plugin an AI wrote lands once approved. */
   pluginsRoot?: string;
   /** People approve the scripts and plugins an AI asks to save here. */
@@ -94,7 +96,7 @@ export interface AgentControlDeps {
 }
 
 /** Calls that only read: kept out of the record so it stays readable. */
-const UNAUDITED = new Set(["profiles.list", "browser.status", "plugins.list", "scripts.list", "scripts.get", "scripts.status", "scripts.log", "proxyPool.list", "workbench.pointer", "firefox.tools.list", "webkit.tools.list", "session.identify", "session.audit"]);
+const UNAUDITED = new Set(["profiles.list", "browser.status", "browserTasks.list", "browserTasks.status", "browserTasks.evidence", "plugins.list", "scripts.list", "scripts.get", "scripts.status", "scripts.log", "proxyPool.list", "workbench.pointer", "firefox.tools.list", "webkit.tools.list", "session.identify", "session.audit"]);
 
 function humanizeParam(value: unknown): { enabled: boolean; speed: number; pasteOver: number | null; agent?: string } {
   const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
@@ -193,13 +195,13 @@ function agentError(code: string, message: string): AgentControlError {
 }
 
 function errorResponse(id: number, error: unknown): AgentControlResponse {
-  if (error instanceof AgentControlError || error instanceof ProxyReplacementInputError) {
+  if (error instanceof AgentControlError || error instanceof BrowserTaskError || error instanceof ProxyReplacementInputError) {
     return {
       protocol: AGENT_CONTROL_PROTOCOL,
       id,
       ok: false,
       error: {
-        code: error instanceof AgentControlError ? error.code : "invalid_request",
+        code: error instanceof ProxyReplacementInputError ? "invalid_request" : error.code,
         message: error.message,
       },
     };
@@ -354,7 +356,7 @@ export class AgentControlSession {
     };
     // Approval-capable RPCs validate, release the session queue while waiting on a human (abortable on
     // disconnect), then serialize the state mutation after approval so unrelated calls stay unblocked.
-    if (["scripts.save", "plugins.save", "profiles.setProxy"].includes(request.method)) {
+    if (request.method.startsWith("browserTasks.") || ["scripts.save", "plugins.save", "profiles.setProxy"].includes(request.method)) {
       return this.track(execute());
     }
     // Page actions of different browsers run side by side, so an AI can drive many windows at
@@ -380,7 +382,7 @@ export class AgentControlSession {
     this.sessionAbort.abort();
     this.cleanup = Promise.all([...this.inFlight, this.queue, ...this.lanes.values()]).then(async () => {
       for (const profileId of [...this.openedByConnection]) {
-        await this.closeProfile(profileId).catch((error) => {
+        await this.closeProfile(profileId, undefined, true).catch((error) => {
           this.deps.log?.(`agent cleanup for ${profileId} remains unconfirmed (${error instanceof Error ? error.message : "failed"})`);
         });
       }
@@ -400,6 +402,7 @@ export class AgentControlSession {
       this.guard(params.profileId.trim());
       this.deps.activity?.touch(params.profileId.trim());
     }
+    if (method.startsWith("browserTasks.")) return this.browserTask(method.slice("browserTasks.".length), params);
     switch (method) {
       case "session.identify": {
         // Named once, by the MCP client's own name; later calls cannot rename the connection.
@@ -485,7 +488,7 @@ export class AgentControlSession {
         return this.detachProfile(stringParam(params, "profileId"));
       case "browser.close":
         return await this.closeProfile(stringParam(params, "profileId"),
-          params.expectedEndpoint === undefined ? undefined : stringParam(params, "expectedEndpoint"));
+          params.expectedEndpoint === undefined ? undefined : stringParam(params, "expectedEndpoint"), params.cleanup === true);
       case "mcp.connectors.create":
       case "mcp.connectors.list":
       case "mcp.connectors.revoke":
@@ -645,6 +648,37 @@ export class AgentControlSession {
   private scriptDeps(): { library: ScriptLibrary; runner: ScriptSupervisor } {
     if (!this.deps.scripts) throw agentError("unsupported", "Scripts need the Vela Browser desktop app");
     return this.deps.scripts;
+  }
+
+  private browserTask(operation: string, params: Record<string, unknown>) {
+    const tasks = this.deps.browserTasks;
+    if (!tasks) throw agentError("unsupported", "Browser tasks need the local Vela Browser desktop app");
+    const number = (key: string, fallback: number, min: number, max = Number.MAX_SAFE_INTEGER) => {
+      const value = params[key] ?? fallback;
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
+        throw agentError("invalid_request", `Invalid ${key}`);
+      }
+      return value;
+    };
+    if (operation === "list") {
+      return tasks.list(id => {
+        const profile = this.profileGroup(id);
+        return this.accessRule() === "all" || !!profile && this.mayUseGroup(profile.group);
+      }, number("offset", 0, 0), number("limit", 25, 1, 100));
+    }
+    if (operation === "start") return { task: tasks.start(stringParam(params, "profileId"), this.client, params) };
+    const runId = stringParam(params, "runId");
+    const task = tasks.status(runId);
+    this.guard(task.profileId);
+    switch (operation) {
+      case "status": return { task };
+      case "resume": return { task: tasks.resume(runId, this.client, params.verify) };
+      case "pause": return tasks.stop(runId, "paused");
+      case "cancel": return tasks.stop(runId, "cancelled");
+      case "evidence": return tasks.evidence(runId, number("sequence", 0, 1), params.part === undefined ? "summary" : stringParam(params, "part"),
+        number("offset", 0, 0), number("bytes", 65536, 1, 1048576));
+      default: throw agentError("invalid_request", "Unknown browser task operation");
+    }
   }
 
   /** The user's setting decides whether code an AI wrote is saved: never, always, or (by default) after a person reads it. */
@@ -959,7 +993,7 @@ export class AgentControlSession {
       this.openedByConnection.add(profileId);
       this.openedEndpoints.set(profileId, opened.ws);
     }
-    if (this.closed && !opened.alreadyOpen) await this.closeProfile(profileId);
+    if (this.closed && !opened.alreadyOpen) await this.closeProfile(profileId, undefined, true);
     const launch = this.deps.store.getLaunch(profileId) as (ReturnType<ProfileStore["getLaunch"]> & FirefoxLaunch) | null;
     const firefox = isFirefoxEngine(launch) || opened.ws.startsWith("firefox://");
     return {
@@ -1003,15 +1037,20 @@ export class AgentControlSession {
     };
   }
 
-  private async closeProfile(profileId: string, expectedEndpoint?: string): Promise<{
+  private async closeProfile(profileId: string, expectedEndpoint?: string, cleanup = false): Promise<{
     profileId: string;
     closed: true;
     sync?: "complete" | "pending" | "conflict";
     deleted: boolean;
-  }> {
+  } | { profileId: string; closed: false; retainedByTask: true }> {
     return await this.deps.admission.run(
       { kind: "stop", profileIds: [profileId] },
       async () => {
+        if (cleanup && this.deps.browserTasks?.keeps(profileId)) {
+          this.openedByConnection.delete(profileId);
+          this.openedEndpoints.delete(profileId);
+          return { profileId, closed: false as const, retainedByTask: true as const };
+        }
         const expected = expectedEndpoint ?? this.openedEndpoints.get(profileId);
         if (expected && this.deps.store.getLaunch(profileId)?.ws !== expected) {
           this.openedByConnection.delete(profileId);
@@ -1122,7 +1161,7 @@ export class AgentControlHub {
 
   private async doCleanupTemporaryProfiles(): Promise<void> {
     for (const profileId of this.deps.store.listAgentTemporary()) {
-      if (this.deps.store.getLaunch(profileId)) continue;
+      if (this.deps.store.getLaunch(profileId) || this.deps.browserTasks?.keeps(profileId)) continue;
       const session = new AgentControlSession(this.deps);
       await session.enqueue(JSON.stringify({
         protocol: AGENT_CONTROL_PROTOCOL,
