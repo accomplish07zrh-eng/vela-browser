@@ -43,7 +43,7 @@ const sse = "event: snapshot\nid: 42\ndata: stream-before-end\n\n";
 const useSourceMap = Buffer.from(JSON.stringify({ version: 3, sources: ["value.ts"], names: [], mappings: "AAAA;AACA;AACA" })).toString("base64");
 const compiled = `window.runFixture = (encoded) => {\n  const value = atob(encoded);\n  return value;\n};\n//# sourceMappingURL=data:application/json;base64,${useSourceMap}`;
 const leaf = Bun.serve({
-  hostname: "127.0.0.1", port: 0,
+  hostname: "127.0.0.1", port: 0, idleTimeout: 0,
   fetch(request, server) {
     const url = new URL(request.url);
     if (url.pathname === "/wire" && server.upgrade(request)) return;
@@ -61,6 +61,11 @@ const leaf = Bun.serve({
       }), { headers: { "Content-Type": "application/json" } });
     }
     if (url.pathname === "/script.js") return new Response(compiled, { headers: { "Content-Type": "text/javascript" } });
+    if (url.pathname === "/inside") {
+      const level = Number(url.searchParams.get("level"));
+      const address = level === 3 ? "/leaf" : "/inside?level=3";
+      return new Response(`<!doctype html><iframe name="layer-${level}" src="${address}"></iframe>`, { headers: { "Content-Type": "text/html" } });
+    }
     if (url.pathname === "/leaf") {
       return new Response(`<!doctype html><title>Leaf</title>
         <form aria-label="Other"><button type="button" onclick="fetch('/wrong')">Read receipt</button></form>
@@ -74,7 +79,9 @@ const leaf = Bun.serve({
 const leafUrl = `http://127.0.0.1:${leaf.port}/leaf`;
 const pages = Bun.serve({ hostname: "localhost", port: 0, fetch(request) {
   const level = Number(new URL(request.url).searchParams.get("level") ?? 0);
-  const address = level === 3 ? leafUrl : `/?level=${level + 1}`;
+  // The first cross-site frame has two same-process descendants, so reattaching must rebuild
+  // the frame tree in both renderer sessions before resolving the deepest target.
+  const address = level === 1 ? `http://127.0.0.1:${leaf.port}/inside?level=2` : "/?level=1";
   return new Response(`<!doctype html><iframe name="layer-${level}" src="${address}"></iframe>`, { headers: { "Content-Type": "text/html" } });
 } });
 
@@ -154,8 +161,12 @@ try {
   stage = "reattaching to the already loaded cross-origin frame";
   const secondBrowser = await chromium.connectOverCDP(endpoint);
   try {
-    const frameUrls = () => secondBrowser.contexts()[0]!.pages().filter(candidate => candidate.url() === address).flatMap(candidate => candidate.frames().map(frame => frame.url()));
+    const top = secondBrowser.contexts()[0]!.pages().find(candidate => candidate.url() === address);
+    assert.ok(top);
+    const frameUrls = () => top.frames().map(frame => frame.url());
     await until(frameUrls, urls => urls.includes(leafUrl), "Reattached frame tree");
+    assert.equal(await top.evaluate(() => window === window.top), true);
+    assert.equal(await top.frames().find(frame => frame.url() === leafUrl)!.title(), "Leaf");
   } finally { await secondBrowser.close(); }
 
   stage = "opening the desktop task connection";
