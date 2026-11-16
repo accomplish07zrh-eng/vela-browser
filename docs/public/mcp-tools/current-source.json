@@ -1063,7 +1063,7 @@
     },
     {
       "name": "browser_devtools_page_inspect",
-      "description": "Read a page or iframe's accessibility tree, forms, child frames and DOM tree. Includes hidden nodes and field values, element attributes, comments, templates and open shadow roots by default. The DOM tree gives each node an index and parent index. Pass frameId to inspect a deeply nested frame directly, or selector to narrow the inspection to a region.",
+      "description": "Read a page or iframe's accessibility tree, forms, child frames and DOM tree. Includes hidden nodes and field values, element attributes, comments, templates and open shadow roots by default. Readable text filters invisible fragments and flags unusual glyphs for visual comparison. The DOM tree gives each node an index and parent index. Pass frameId to inspect a deeply nested frame directly, or selector to narrow the inspection to a region.",
       "annotations": {
         "title": "Browser page inspect",
         "readOnlyHint": true,
@@ -1111,6 +1111,12 @@
             "minimum": 0,
             "default": 0,
             "description": "Continue the hidden and data attribute index from hidden.nextOffset."
+          },
+          "textOffset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Continue readable text from readableText.nextOffset."
           },
           "nodeLimit": {
             "type": "integer",
@@ -1288,6 +1294,44 @@
         "required": [
           "action",
           "target"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_program",
+      "description": "Run an async JavaScript function with the selected profile's native Playwright page, frame, context or worker. The function receives {page, frame, context, worker, devtools, argument}. Use devtools.call for existing tools, devtools.capture(async () => ...) for correlated HTTP, WebSocket and console records, and devtools.bytes(requestId, part) for recorded binary bodies. Use standard JavaScript, Buffer, Web Crypto and compression streams to decode or transform captured data and act on the same page. Function results and program console logs are returned.",
+      "annotations": {
+        "title": "Browser program",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "workerId": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "An async function such as async ({ frame, argument }) => await frame.locator(argument).textContent()."
+          },
+          "argument": {},
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "code"
         ],
         "additionalProperties": false
       }

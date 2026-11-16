@@ -16,6 +16,7 @@ Each environment keeps its existing persistent context, process, cookies, proxy,
 | `browser_devtools_element` | Element markup, text, attributes, rectangle and computed CSS |
 | `browser_devtools_page_inspect` | Accessibility tree, paginated DOM, form state, and an index of hidden nodes and data attributes |
 | `browser_devtools_action` | Locate and operate an element by role and name, label, text, test ID or selector, with optional post-action verification |
+| `browser_devtools_program` | Run a custom Playwright and JavaScript program with binary HTTP bodies, correlated traffic and logs, and the developer tools API |
 | `browser_devtools_storage` | The cookies the selected page or frame would send (other sites with `urls`, the whole profile with `allCookies`), its local/session storage, IndexedDB database names and Cache Storage keys |
 | `browser_devtools_storage_edit` | Set, remove and clear cookies or local/session storage; JavaScript can modify IndexedDB and Cache Storage |
 | `browser_devtools_fetch` | HTTP requests through the actual page/frame's browser network stack, including text or binary POST data |
@@ -38,6 +39,8 @@ Frames include `depth` and `parentFrameId`. The top-level document has depth zer
 
 Page inspection includes hidden fields, collapsed content, comments, templates, attributes, live input values and open shadow roots by default. Each DOM node has an `index` and `parentIndex`. Continue a long accessibility snapshot using `nextOffset`, the DOM tree using `dom.nextOffset`, and the hidden and data-attribute index using `hidden.nextOffset`. Node text, values and attributes have bounded previews. Use `browser_devtools_element` or `browser_devtools_evaluate` in the same frame for raw detail. DOM indexes describe the current traversal and can change as the page updates.
 
+`readableText` uses the rendered layout and normalizes formatting characters while the DOM tree preserves the source text. Continue it using `textOffset` and `readableText.nextOffset`. If visible text contains private-use or replacement glyphs, the tool can include a current-viewport image for comparison with the DOM. Programs can take a dedicated screenshot of any region using Playwright.
+
 To click a named button in a nested frame and wait for the resulting text, call `browser_devtools_action` with the frame and target.
 
 ```json
@@ -51,6 +54,28 @@ To click a named button in a nested frame and wait for the resulting text, call 
 ```
 
 `actionCompleted` and `verification.passed` report distinct outcomes. A click can complete while its expected result times out. Examine the resulting page before retrying an operation with side effects.
+
+## Programmable browser operations
+
+`browser_devtools_program` calls an async JavaScript function with `{ page, frame, worker, context, devtools, argument }`. Use the native Playwright objects for multi-step interactions, response waits, routing, request interception, or WebSocket event handlers. `pageId`, `frameId`, and `workerId` select the starting context. `devtools.call` can invoke the other developer tools by short name, with the selected target as its default.
+
+`devtools.capture(fn)` returns the function's result with the HTTP requests and browser events recorded during its execution. Events include WebSocket messages, console output and uncaught exceptions. A failed callback still returns its capture. Use the same cursors as the network and event tools to continue reading retained history. Program `console.log`, `console.warn` and other console calls appear in the program's `logs`.
+
+`devtools.bytes(requestId)` returns a finished response body as a Buffer. Pass `"request"` for the HTTP request body. The program can use JavaScript, `Buffer`, encoding and compression streams, and Web Crypto to decode, unpack, analyze or decrypt those bytes using the material available to it. For example, this follows a response and interprets its Base64 envelope before continuing:
+
+```javascript
+async ({ page, frame, devtools }) => {
+  return devtools.capture(async () => {
+    const [reply] = await Promise.all([
+      page.waitForResponse(response => response.url().includes("/draft")),
+      frame.getByRole("button", { name: "Load draft" }).click(),
+    ]);
+    const text = Buffer.from(await reply.text(), "base64").toString("utf8");
+    await frame.getByLabel("Message").fill(text);
+    return { decodedLength: text.length };
+  });
+}
+```
 
 For example, call `browser_devtools_evaluate` with:
 

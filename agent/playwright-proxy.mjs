@@ -235,7 +235,8 @@ export class PlaywrightToolProxy {
 
   async callTool(name, args) {
     if (!this.officialClient) throw new Error("select an open Vela Browser browser first");
-    if (DEVTOOLS_TOOL_NAMES.has(name)) return await this.devtools.call(name, args ?? {});
+    const program = name === "browser_devtools_program";
+    if (DEVTOOLS_TOOL_NAMES.has(name) && !program) return await this.devtools.call(name, args ?? {});
     if (isPluginTool(name)) return await this.plugins.call(this.pluginSpecs ?? [], name, args ?? {});
     if (FILTERED_TOOLS.has(name)) throw new Error("Vela Browser owns browser lifecycle operations");
     const session = this.viewportGuard?.originalSession;
@@ -246,8 +247,8 @@ export class PlaywrightToolProxy {
       const size = await resizeWindow(this.context, page, Number(args?.width), Number(args?.height), session);
       return { content: [{ type: "text", text: `Resized the browser window; the page area is now ${size.width}x${size.height}.` }] };
     }
-    const call = () => this.officialClient.callTool({ name, arguments: args ?? {} });
-    if (name !== "browser_run_code" || !this.context || !session) return await call();
+    const call = () => program ? this.devtools.call(name, args ?? {}) : this.officialClient.callTool({ name, arguments: args ?? {} });
+    if ((!program && name !== "browser_run_code") || !this.context || !session) return await call();
     // Code can still pin a page some way the guard does not see; whatever it pinned is undone here.
     const { result, sessions } = await this.viewportGuard.capture(call);
     const pages = this.context.pages();
@@ -258,7 +259,7 @@ export class PlaywrightToolProxy {
     for (const page of stuck) await unpinViewport(this.context, page, session).catch(() => false);
     let freed = 0;
     for (const page of stuck) if (!(await viewportPinned(page, session).catch(() => true))) freed += 1;
-    process.stderr.write(`[viewport-guard] browser_run_code pinned ${stuck.length} page(s); ${freed} now fill their window\n`);
+    process.stderr.write(`[viewport-guard] ${name} pinned ${stuck.length} page(s); ${freed} now fill their window\n`);
     const note = freed === stuck.length
       ? "Vela Browser undid a fixed viewport this code gave the page: pages always fill their real window. Use browser_resize to change the window size."
       : "This code gave the page a fixed viewport that Vela Browser could not undo, so the page draws in part of its window. Close and reopen this browser, and use browser_resize to change the window size.";

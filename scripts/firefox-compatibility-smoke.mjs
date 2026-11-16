@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createCipheriv } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -60,14 +61,25 @@ let official;
 
 async function verifyNestedDevtools(context) {
   // A second loopback port gives the deepest frame a distinct origin.
-  const leaf = createServer((_request, response) => {
+  const key = Buffer.alloc(16, 61), nonce = Buffer.alloc(12, 43);
+  const cipher = createCipheriv("aes-128-gcm", key, nonce);
+  const encrypted = Buffer.concat([nonce, cipher.update("Decoded draft", "utf8"), cipher.final(), cipher.getAuthTag()]);
+  const leaf = createServer((request, response) => {
+    if (request.url === "/packed") {
+      response.writeHead(200, { "content-type": "application/octet-stream" });
+      response.end(encrypted);
+      return;
+    }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(`<!doctype html><html lang="en"><head><title>Deep frame</title><meta name="state" content="loaded"></head><body>
       <main><h1>Draft editor</h1><form aria-label="Draft">
         <label>Message<input name="message" required></label><input type="hidden" name="draftId" value="fixture-draft">
         <button type="button" onclick="document.querySelector('#saved').hidden = false">Save draft</button>
+        <button type="button" onclick="console.info('packed-draft-request'); fetch('/packed').catch(console.error)">Load encoded draft</button>
       </form><p id="saved" hidden>Draft saved</p><details><summary>More</summary><p id="collapsed">Collapsed detail</p></details>
+      <p>Visi\u200bble evidence</p><p style="opacity:0">Invisible fixture noise</p><p style="font-size:0">Tiny fixture noise</p>
       <!-- DOM fixture comment --><template><p id="template-info">Template detail</p></template><div id="host"></div></main>
+      <script type="application/json" id="draft-material">${JSON.stringify({ draftKey: key.toString("base64") })}</script>
       <script>document.querySelector('#host').attachShadow({mode:'open'}).innerHTML = '<p hidden data-private-state="fixture-shadow">Shadow detail</p>';</script>
       </body></html>`);
   });
@@ -93,6 +105,9 @@ async function verifyNestedDevtools(context) {
     const inspection = await call("page_inspect", { ...target, nodeLimit: 100 });
     assert.equal(inspection.title, "Deep frame");
     assert.ok(inspection.accessibility.includes("Draft editor"));
+    assert.ok(inspection.readableText.text.includes("Visible evidence"));
+    assert.ok(inspection.readableText.formatControls > 0);
+    assert.ok(!inspection.readableText.text.includes("fixture noise"));
     assert.ok(inspection.forms[0].fields.some((field) => field.label === "Message" && field.required && field.invalid));
     assert.ok(inspection.hidden.nodes.some((node) => node.hiddenBy === "hidden input" && node.value === "fixture-draft"));
     assert.ok(inspection.hidden.nodes.some((node) => node.hiddenBy === "collapsed details" && node.text === "Collapsed detail"));
@@ -106,6 +121,27 @@ async function verifyNestedDevtools(context) {
     assert.equal(saved.verification.passed, true);
     const updated = await call("page_inspect", target);
     assert.ok(updated.forms[0].fields.some((field) => field.label === "Message" && !field.invalid));
+    const programmed = await call("program", { ...target, code: `async ({ page, frame, devtools }) => {
+      const trace = await devtools.capture(async () => {
+        const [response] = await Promise.all([
+          page.waitForResponse(candidate => candidate.url().endsWith("/packed")),
+          frame.getByRole("button", { name: "Load encoded draft" }).click(),
+        ]);
+        await response.finished();
+      });
+      const record = trace.network.records.find(entry => entry.url.endsWith("/packed"));
+      const packed = await devtools.bytes(record.requestId);
+      const material = await devtools.call("element", { selector: "#draft-material" });
+      const { draftKey } = JSON.parse(material.text);
+      const key = await crypto.subtle.importKey("raw", Buffer.from(draftKey, "base64"), "AES-GCM", false, ["decrypt"]);
+      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: packed.subarray(0, 12) }, key, packed.subarray(12));
+      await frame.getByLabel("Message").fill(new TextDecoder().decode(plain));
+      console.log("draft decrypted");
+      return { input: await frame.getByLabel("Message").inputValue(), sawRequest: record.status === 200,
+        sawLog: trace.events.records.some(event => event.kind === "console" && event.text === "packed-draft-request") };
+    }` });
+    assert.deepEqual(programmed.value, { input: "Decoded draft", sawRequest: true, sawLog: true });
+    assert.equal(programmed.logs[0].text, "draft decrypted");
     assert.equal(page.url(), start);
   } finally {
     devtools?.dispose();
