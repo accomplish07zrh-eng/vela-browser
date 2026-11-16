@@ -31,8 +31,13 @@ async function until<T>(run: () => T | Promise<T>, expected: (value: T) => boole
   throw new Error(`${label}: ${JSON.stringify(value)}`);
 }
 
-let saves = 0, rebuilt = false;
-const accepted = Promise.withResolvers<void>(), dropReply = Promise.withResolvers<void>();
+let saves = 0, rebuilt = false, stage = "connecting Chromium";
+const watchdog = setTimeout(() => {
+  console.error(`Timed out while ${stage}`);
+  child.kill();
+  process.exit(1);
+}, 48_000);
+const dropReply = Promise.withResolvers<void>();
 const binary = Buffer.alloc(180_007, 249);
 const sse = "event: snapshot\nid: 42\ndata: stream-before-end\n\n";
 const useSourceMap = Buffer.from(JSON.stringify({ version: 3, sources: ["value.ts"], names: [], mappings: "AAAA;AACA;AACA" })).toString("base64");
@@ -48,7 +53,6 @@ const leaf = Bun.serve({
     if (url.pathname === "/receipt") return Response.json(saves ? { state: "applied", value: "receipt-1" } : { state: "absent" });
     if (url.pathname === "/save" && request.method === "POST") {
       saves++;
-      accepted.resolve();
       return new Response(new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode('{"receipt":'));
@@ -88,6 +92,7 @@ try {
   const address = `http://localhost:${pages.port}/?level=0`;
   tools = new BrowserDevtools(context, { engine: "chromium" });
   await page.goto(address);
+  stage = "rebinding the nested iframe anchor";
   const call = async (tool: string, args: Record<string, unknown> = {}) => {
     const reply = await tools!.call(`browser_devtools_${tool}`, args);
     assert.notEqual(reply.isError, true, JSON.stringify(reply));
@@ -105,6 +110,7 @@ try {
   assert.notEqual(action.frameId, select.frameId);
   assert.equal(action.resolvedBy.text, "Read receipt");
 
+  stage = "capturing live SSE and full WebSocket bytes";
   const live = await call("stream", { action: "start", pageId: listing.pageId });
   const captureId = live.captureId;
   const nested = page.frames().find(frame => frame.url() === leafUrl)!;
@@ -126,23 +132,26 @@ try {
   const event = capture.records.find((entry: any) => entry.kind === "sse-message");
   assert.equal(event.eventId, "42");
   assert.equal((await bytes(event)).toString(), "stream-before-end");
-  const streamBytes = await Promise.all(capture.records.filter((entry: any) => entry.kind === "http-data" && entry.url.endsWith("/live")).map(bytes));
+  const streamBytes = await Promise.all(capture.records.filter((entry: any) => entry.kind === "http-data" && entry.requestId === event.requestId).map(bytes));
   assert.equal(Buffer.concat(streamBytes).toString(), sse);
   assert.deepEqual(await bytes(capture.records.find((entry: any) => entry.kind === "websocket-received")), binary);
   assert.equal(capture.records.some((entry: any) => entry.kind === "http-finished" && entry.url.endsWith("/live")), false);
   await call("stream", { action: "stop", captureId });
 
+  stage = "reading an out-of-process frame's source and source map";
   const sources = await call("sources", { action: "list", pageId: listing.pageId, urlIncludes: "/script.js" });
   const script = sources.records.find((record: any) => record.transport === "cdp");
   assert.ok(script, JSON.stringify(sources));
   assert.match((await call("sources", { action: "read", sourceId: script.sourceId })).text, /const value = atob/);
   assert.equal((await call("sources", { action: "map", sourceId: script.sourceId, line: 3 })).original.source, "value.ts");
+  stage = "evaluating the mapped runtime tracepoint";
   const tracepoint = await call("sources", { action: "trace_add", sourceId: script.sourceId, originalSource: "value.ts", line: 3, expression: "value" });
   assert.equal(await nested.evaluate(() => (window as any).runFixture("ZGVjb2RlZA==")), "decoded");
   const trace = await until(() => call("events", { kind: "source-trace" }), result => result.records.some((record: any) => record.traceId === tracepoint.traceId), "Runtime tracepoint");
   assert.equal(trace.records.at(-1).value, "decoded");
   await call("sources", { action: "trace_remove", traceId: tracepoint.traceId });
 
+  stage = "opening the desktop task connection";
   const nonce = "a".repeat(64);
   const profile = buildNewProfile({ name: "Resilience", platformOs: "windows" }, () => false);
   store.upsertProfile(profile);
@@ -179,6 +188,7 @@ try {
   const plan = { profileId: profile.id, name: "Save and reconnect", idempotencyKey: "save-once", screenshots: true,
     argument: { leafUrl }, steps: [{
       id: "save",
+      timeoutMs: 15_000,
       run: `async ({page, argument}) => {
         const leaf = page.frames().find(frame => frame.url() === argument.input.leafUrl);
         await leaf.evaluate(async (key) => (await fetch("/save", {method: "POST", headers: {"Idempotency-Key": key}})).json(), argument.actionKey);
@@ -189,12 +199,19 @@ try {
       }`,
     }, { id: "confirm", run: `async ({argument}) => ({receipt: argument.previous.save})` }] };
   const { task } = await first.send("browserTasks.start", plan);
-  await accepted.promise;
+  stage = "waiting for the fixture to commit the save";
+  await until(async () => {
+    const { task: active } = await first.send("browserTasks.status", { runId: task.runId });
+    if (!saves && active.state !== "running") throw new Error(`The browser task stopped before submitting: ${JSON.stringify(active)}`);
+    return active;
+  }, () => saves > 0, "The save request reached the fixture");
+  stage = "disconnecting the first agent while the response is still open";
   await new Promise<void>(resolve => { first.ws.once("close", resolve); first.ws.close(); });
   dropReply.resolve();
   const reconnected = await connect();
   const status = () => reconnected.send("browserTasks.status", { runId: task.runId }).then(response => response.task);
   await until(status, value => value.state === "needs_verification", "Uncertain save");
+  stage = "reloading the page and reconciling the save receipt";
   await page.reload();
   assert.equal((await reconnected.send("browserTasks.start", plan)).task.runId, task.runId);
   await reconnected.send("browserTasks.resume", { runId: task.runId });
@@ -206,6 +223,7 @@ try {
   assert.deepEqual(JSON.parse(Buffer.from(result.base64, "base64").toString("utf8")), { receipt: "receipt-1" });
   console.log("Chromium verified live SSE and response bytes, full WebSocket payloads, runtime tracepoints, cross-origin rebind and a single committed save after reconnect.");
 } finally {
+  stage = "finishing fixture cleanup";
   dropReply.resolve();
   for (const socket of connections) socket.terminate();
   await dashboard?.stop(true);
@@ -215,4 +233,5 @@ try {
   child.kill(); await child.exited;
   pages.stop(true); leaf.stop(true);
   rmSync(root, { recursive: true, force: true });
+  clearTimeout(watchdog);
 }
