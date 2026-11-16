@@ -79,7 +79,8 @@ async function verifyNestedDevtools(context) {
       </form><p id="saved" hidden>Draft saved</p><details><summary>More</summary><p id="collapsed">Collapsed detail</p></details>
       <p>Visi\u200bble evidence</p><p style="opacity:0">Invisible fixture noise</p><p style="font-size:0">Tiny fixture noise</p>
       <!-- DOM fixture comment --><template><p id="template-info">Template detail</p></template><div id="host"></div></main>
-      <script>globalThis.draftKey = ${JSON.stringify(key.toString("base64"))}; document.querySelector('#host').attachShadow({mode:'open'}).innerHTML = '<p hidden data-private-state="fixture-shadow">Shadow detail</p>';</script>
+      <script type="application/json" id="draft-material">${JSON.stringify({ draftKey: key.toString("base64") })}</script>
+      <script>document.querySelector('#host').attachShadow({mode:'open'}).innerHTML = '<p hidden data-private-state="fixture-shadow">Shadow detail</p>';</script>
       </body></html>`);
   });
   await new Promise((resolve, reject) => { leaf.once("error", reject); leaf.listen(0, "127.0.0.1", resolve); });
@@ -130,8 +131,9 @@ async function verifyNestedDevtools(context) {
       });
       const record = trace.network.records.find(entry => entry.url.endsWith("/packed"));
       const packed = await devtools.bytes(record.requestId);
-      const keyText = await devtools.call("evaluate", { expression: "globalThis.draftKey" });
-      const key = await crypto.subtle.importKey("raw", Buffer.from(keyText.value, "base64"), "AES-GCM", false, ["decrypt"]);
+      const material = await devtools.call("element", { selector: "#draft-material" });
+      const { draftKey } = JSON.parse(material.text);
+      const key = await crypto.subtle.importKey("raw", Buffer.from(draftKey, "base64"), "AES-GCM", false, ["decrypt"]);
       const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: packed.subarray(0, 12) }, key, packed.subarray(12));
       await frame.getByLabel("Message").fill(new TextDecoder().decode(plain));
       console.log("draft decrypted");
