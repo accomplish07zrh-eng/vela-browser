@@ -21,6 +21,7 @@
  */
 
 import type { Launcher } from "./launcher.ts";
+import { AUTOMATION_SCOPE_DENIED, type LocalAutomationScope } from "./ai-access.ts";
 import type { ProfileStore } from "./store.ts";
 import type { RemoteCoordinator } from "./remote.ts";
 import type { Profile, ProxySpec } from "./types.ts";
@@ -164,6 +165,7 @@ export async function handleUserApi(
   remote?: RemoteCoordinator | null,
   geoipFetch?: GeoipFetch,
   roster: ProfileRoster | null = remote ?? null,
+  scope?: LocalAutomationScope,
 ): Promise<Response | null> {
   const { pathname, searchParams } = new URL(req.url);
 
@@ -178,7 +180,8 @@ export async function handleUserApi(
       : roster
         ? [...new Set((await roster.listProfiles()).map((p) => normalizeGroup(p.group)).filter((g) => g))].sort()
         : store.listGroups();
-    const list = names.slice((page - 1) * pageSize, page * pageSize).map((g) => ({ group_id: g, group_name: g }));
+    const permitted = scope ? names.filter((group) => scope.allowsGroup(group)) : names;
+    const list = permitted.slice((page - 1) * pageSize, page * pageSize).map((g) => ({ group_id: g, group_name: g }));
     return ok({ list, page, page_size: pageSize });
   }
 
@@ -192,6 +195,7 @@ export async function handleUserApi(
     }
     const name = String(body?.group_name ?? "").trim();
     if (!name) return fail("missing group_name");
+    if (scope && !scope.allowsGroup(name)) return fail(AUTOMATION_SCOPE_DENIED);
     // Remote: the hub has no empty-group registry; the folder materializes when a
     // profile is created/moved into it (id == name, so this is enough for the
     // create flow). Standalone: persist it so empty folders list immediately.
@@ -212,6 +216,7 @@ export async function handleUserApi(
       // verdict rather than a misleading empty-means-verified one.
       ? (await roster.listProfiles()).map((p, i) => ({ id: p.id, name: p.name, group: p.group, createdAt: 0, lastOpenAt: 0, serial: i + 1, fpVerdict: "", fpCapturedAt: "" }))
       : store.listUserRecords();
+    if (scope) rows = rows.filter((row) => scope.allowsGroup(row.group));
 
     const groupId = searchParams.get("group_id");
     if (groupId != null) {
@@ -263,6 +268,7 @@ export async function handleUserApi(
       return fail("invalid JSON body");
     }
     const input = inputFromCreateBody(body);
+    if (scope && !scope.allowsGroup(input.group ?? "")) return fail(AUTOMATION_SCOPE_DENIED);
     try {
       if (remote && input.chromiumRuntime) throw new Error("Vela Chromium is unavailable in legacy Remote mode");
       if (remote) {
@@ -294,6 +300,7 @@ export async function handleUserApi(
       return fail("invalid JSON body");
     }
     const ids = Array.isArray(body?.user_ids) ? body.user_ids.map(String) : [];
+    if (scope && ids.some((id: string) => !scope.allowsProfile(id))) return fail(AUTOMATION_SCOPE_DENIED);
     if (remote) {
       const r = await remote.deleteProfiles(ids); // hub deletes centrally (respects locks)
       return ok({ deleted: r.deleted, locked: r.locked });
@@ -330,6 +337,7 @@ export async function handleUserApi(
     }
     const id = typeof body?.user_id === "string" ? body.user_id : "";
     if (!id) return fail("missing user_id");
+    if (scope && !scope.allowsProfile(id)) return fail(AUTOMATION_SCOPE_DENIED);
     if (body.name !== undefined && !isValidProfileName(body.name)) return fail("name must be a non-empty string");
     let edits: ProfileEdits;
     try {
@@ -368,6 +376,7 @@ export async function handleUserApi(
       // Apply to the current copy, so changes saved during the lookup are kept.
       const current = store.getProfile(id);
       if (!current) return fail(`no such profile: ${id}`);
+      if (scope && !scope.allowsGroup(current.group)) return fail(AUTOMATION_SCOPE_DENIED);
       store.upsertProfile(profileWithEdits(current, edits, store.getLaunch(id) ? null : timezone));
       return ok({});
     } catch (e) {

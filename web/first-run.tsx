@@ -19,7 +19,9 @@ export function resetFirstRun(): void {
  * The workbench before there is any profile: three steps to a first browser on the wall.
  * Name it, give it an exit, open it.
  */
-export function FirstRunGuide({ onDone, onSkip, onImport }: { onDone(id: string): void; onSkip(): void; onImport(): void }) {
+export function FirstRunGuide({ hidden, onStart, onDone, onSkip, onImport }: {
+  hidden: boolean; onStart(): void; onDone(id: string): void; onSkip(): void; onImport(): void;
+}) {
   const { t } = useTranslation();
   const [step, setStep] = useState(1);
   const [name, setName] = useState(() => t("My first profile"));
@@ -29,7 +31,8 @@ export function FirstRunGuide({ onDone, onSkip, onImport }: { onDone(id: string)
   const [nodes, setNodes] = useState<Array<{ id: string; name: string; regionHint?: string; check?: { status?: string; country?: string } }>>([]);
   const [nodeId, setNodeId] = useState("");
   const [check, setCheck] = useState<ProxyCheckResult | null>(null);
-  const [busy, setBusy] = useState<"check" | "create" | null>(null), [error, setError] = useState("");
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"check" | "create" | "open" | null>(null), [error, setError] = useState("");
   useEffect(() => { void fetchPool().then((list) => { setNodes(list as any); if (list.length) setExit((current) => current === "paste" ? "pool" : current); }, () => setNodes([])); }, []);
   const parsed = line.trim() ? parsePastedProxy(line.trim()) : null;
   const proxy = exit === "pool" && nodeId ? { type: "pool", host: nodeId, port: "0" }
@@ -42,18 +45,31 @@ export function FirstRunGuide({ onDone, onSkip, onImport }: { onDone(id: string)
     finally { setBusy(null); }
   };
   const finish = async () => {
-    setBusy("create"); setError("");
+    if (busy) return;
+    onStart();
+    setError("");
     try {
-      const created = await createProfile({ name: name.trim() || t("My first profile"), engine, proxy: exit === "direct" ? null : proxy });
-      if (!created.ok || !created.id) throw new Error(created.error || t("Could not create the profile"));
-      const opened = await openProfile(created.id);
-      if ((opened as any)?.ok === false) throw new Error((opened as any).error || t("The profile was created but did not open"));
+      let id = createdId;
+      if (!id) {
+        setBusy("create");
+        const created = await createProfile({ name: name.trim() || t("My first profile"), engine, proxy: exit === "direct" ? null : proxy });
+        if (!created.ok || !created.id) throw new Error(created.error || t("Could not create the profile"));
+        id = created.id;
+        setCreatedId(id);
+      }
+      setBusy("open");
+      const opened = await openProfile(id);
+      if (opened?.ok !== true) throw new Error(opened?.error || t("The profile was created but did not open"));
       try { localStorage.setItem(DISMISSED, "1"); } catch { /* storage off */ }
-      onDone(created.id);
-    } catch (cause) { setError(t(cause instanceof Error ? cause.message : String(cause))); setBusy(null); }
+      onDone(id);
+    } catch (cause) {
+      setError(t(cause instanceof Error ? cause.message : String(cause)));
+    } finally {
+      setBusy(null);
+    }
   };
   const steps = [t("Name it"), t("Give it an exit"), t("Open it")];
-  return <section className="first-run" aria-labelledby="first-run-title">
+  return <section className="first-run" hidden={hidden} aria-labelledby="first-run-title">
     <header>
       <h2 id="first-run-title">{t("Your first browser in three steps")}</h2>
       <p>{t("Each profile is a separate browser: its own fingerprint, sign-ins and exit. Websites cannot tell two profiles are the same computer.")}</p>
@@ -97,9 +113,15 @@ export function FirstRunGuide({ onDone, onSkip, onImport }: { onDone(id: string)
         <div><dt>{t("Exit")}</dt><dd>{exit === "direct" ? t("Direct") : exit === "pool" ? nodes.find((node) => node.id === nodeId)?.name : `${proxy?.type}://${proxy?.host}:${proxy?.port}`}</dd></div>
       </dl>
       <p className="first-run-note">{t("It opens here on the workbench. Double-click its card to work in it; the timezone and language follow its exit.")}</p>
-      <div className="first-run-actions"><button type="button" className="btn ghost" onClick={() => setStep(2)}>{t("Back")}</button><span className="spacer" /><button type="button" className="btn primary" disabled={busy === "create"} onClick={() => void finish()}>{busy === "create" ? t("Creating…") : t("Create and open")}</button></div>
+      <div className="first-run-actions">
+        <button type="button" className="btn ghost" disabled={!!busy || !!createdId} onClick={() => setStep(2)}>{t("Back")}</button>
+        <span className="spacer" />
+        <button type="button" className="btn primary" disabled={!!busy} onClick={() => void finish()}>
+          {busy === "create" ? t("Creating…") : busy === "open" ? t("Opening…") : createdId ? t("Retry opening") : t("Create and open")}
+        </button>
+      </div>
     </div>}
     {error && <p className="first-run-error" role="alert">{error}</p>}
-    <button type="button" className="first-run-skip" onClick={() => { try { localStorage.setItem(DISMISSED, "1"); } catch { /* storage off */ } onSkip(); }}>{t("Skip, I know my way around")}</button>
+    <button type="button" className="first-run-skip" disabled={busy === "create" || busy === "open"} onClick={() => { try { localStorage.setItem(DISMISSED, "1"); } catch { /* storage off */ } onSkip(); }}>{t("Skip, I know my way around")}</button>
   </section>;
 }

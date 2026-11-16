@@ -11,6 +11,7 @@
  */
 
 import { webkitPublicFields } from "./browser-capabilities.ts";
+import { AUTOMATION_SCOPE_DENIED, type LocalAutomationScope } from "./ai-access.ts";
 import type { Launcher } from "./launcher.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import type { CloudBrowserLifecycle } from "./cloud-browser.ts";
@@ -67,6 +68,7 @@ async function captureFirefoxSession(store: ProfileStore, profileId: string, own
 export interface BrowserLifecycleContext {
   admission?: LifecycleAdmissionController;
   remote?: Pick<RemoteCoordinator, "lifecycleState" | "publishAutomationHealthSnapshot">;
+  automationScope?: LocalAutomationScope;
 }
 
 function currentLifecycle(profileId: string, lifecycle?: BrowserLifecycleContext): LifecycleState | null {
@@ -200,6 +202,10 @@ export async function handleRequest(
   const url = new URL(req.url);
   const { pathname, searchParams } = url;
   const userId = searchParams.get("user_id") ?? "";
+  const scope = lifecycle?.automationScope;
+  if (scope && userId && (isAdsPowerBrowserControl(pathname) || pathname === "/api/v1/browser/cookies") && !scope.allowsProfile(userId)) {
+    return fail(AUTOMATION_SCOPE_DENIED);
+  }
 
   if (pathname === "/api/xactions/health-snapshot") {
     if (!lifecycle?.remote) {
@@ -287,6 +293,7 @@ export async function handleRequest(
     } catch {
       /* missing/invalid body → nothing to clear */
     }
+    if (scope && ids.some((id) => !scope.allowsProfile(id))) return fail(AUTOMATION_SCOPE_DENIED);
     for (const id of ids) await launcher.clearCache(id);
     return ok();
   }

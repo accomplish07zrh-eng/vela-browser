@@ -1,10 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AppConfigStore } from "./app-config.ts";
 import { LifecycleAdmissionController } from "./lifecycle-admission.ts";
 import { ProfileStore } from "./store.ts";
 import { buildNewProfile } from "./create.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
+import { PLAYWRIGHT_PROTOCOL_VERSION } from "./playwright-runtime.ts";
 import {
   serveAutomationApi,
   serveDashboard,
@@ -143,6 +146,74 @@ test("automation API serves compatibility routes without desktop UI", async () =
   } finally {
     await server.stop(true);
     store.close();
+  }
+});
+
+test.each([serveAutomationApi, serveDashboard])("compatibility API keeps default access and respects an explicit scope (%p)", async (serve) => {
+  const root = mkdtempSync(join(tmpdir(), "vela-automation-scope-"));
+  const appConfig = new AppConfigStore(join(root, "app-config.json"));
+  const store = new ProfileStore(":memory:");
+  const allowed = buildNewProfile({ engine: "firefox", name: "Allowed", group: "Work" }, () => false);
+  const excluded = buildNewProfile({ engine: "firefox", name: "Excluded", group: "Personal" }, (id) => id === allowed.id);
+  store.upsertProfiles([allowed, excluded]);
+  const cookie = { name: "session", value: "fixture-only", domain: "example.test", path: "/" };
+  let reads = 0;
+  const owner = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    async fetch(request) {
+      const body = await request.json() as { operation: string };
+      expect(body.operation).toBe("cookie-harvest");
+      reads++;
+      return Response.json({ version: PLAYWRIGHT_PROTOCOL_VERSION, ok: true, result: [cookie] });
+    },
+  });
+  for (const profile of [allowed, excluded]) {
+    store.recordLaunch({
+      profileId: profile.id, pid: 1, debugPort: owner.port!, ws: `firefox://127.0.0.1:${owner.port}/${profile.id}`,
+      startedAt: 1, userDataDir: join(root, profile.id), engine: "firefox",
+      firefoxOwner: { endpoint: owner.url.href, token: "fixture-token", pid: 1, browserPid: 1, generation: profile.id },
+    });
+  }
+  const launchCalls: string[] = [];
+  const cacheCalls: string[] = [];
+  const launcher = {
+    certifiedActive: async () => true,
+    start: async (id: string) => { launchCalls.push(id); return { ws: store.getLaunch(id)!.ws, port: owner.port }; },
+    clearCache: async (id: string) => { cacheCalls.push(id); },
+  } as any;
+  const api = serve({ port: 0, launcher, appConfig, store, log: () => {} });
+  const call = (path: string, body?: object) => fetch(`http://127.0.0.1:${api.port}${path}`, body && {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }).then((response) => response.json());
+  const browser = (action: string, id: string) => call(`/api/v1/browser/${action}?user_id=${id}`);
+
+  try {
+    expect(await browser("start", excluded.id)).toMatchObject({ code: 0, data: { engine: "firefox" } });
+    expect(await browser("cookies", excluded.id)).toMatchObject({ code: 0, data: { cookies: [cookie] } });
+
+    appConfig.write({ ...appConfig.read(), aiAccess: { default: ["Work"], agents: {} } });
+    expect(await browser("cookies", allowed.id)).toMatchObject({ code: 0, data: { cookies: [cookie] } });
+    for (const action of ["start", "stop", "active", "cookies"]) {
+      expect(await browser(action, excluded.id)).toMatchObject({ code: -1, msg: "Outside the default AI access scope" });
+    }
+    expect(launchCalls).toEqual([excluded.id]);
+    expect(reads).toBe(2);
+    expect(await call("/api/v1/user/list")).toMatchObject({ code: 0, data: { list: [{ user_id: allowed.id }] } });
+    expect(await call("/api/v1/group/list")).toMatchObject({ code: 0, data: { list: [{ group_id: "Work" }] } });
+    expect(await call("/api/v2/browser-profile/delete-cache", { profile_id: [allowed.id, excluded.id] })).toMatchObject({ code: -1 });
+    expect(cacheCalls).toEqual([]);
+    expect(await call("/api/v2/browser-profile/delete-cache", { profile_id: [allowed.id] })).toMatchObject({ code: 0 });
+    expect(cacheCalls).toEqual([allowed.id]);
+
+    appConfig.write({ ...appConfig.read(), aiAccess: { default: "none", agents: {} } });
+    expect(await browser("start", allowed.id)).toMatchObject({ code: -1 });
+    expect(await browser("cookies", allowed.id)).toMatchObject({ code: -1 });
+    expect(await call("/api/v1/status")).toMatchObject({ code: 0 });
+  } finally {
+    await api.stop(true);
+    owner.stop(true);
+    store.close();
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
