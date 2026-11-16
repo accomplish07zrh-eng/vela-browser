@@ -1095,7 +1095,7 @@ export class BrowserDevtools {
     }, { limit: 30 });
     const { value, error, network, events, since, until } = record;
     const receipt = { ...(value ?? { completed: false, error }), invoked, network, events, since, until };
-    if (screenshots) {
+    if (screenshots && invoked) {
       try {
         const page = this.selectPage(value?.pageId);
         const image = await page.screenshot({ type: "jpeg", quality: 55, timeout: 2500 });

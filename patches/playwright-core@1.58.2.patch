@@ -47,7 +47,23 @@ diff --git a/lib/server/chromium/crPage.js b/lib/server/chromium/crPage.js
 index 422b2f0f6bf47c0d42c544edd04d7851e3b83d4c..b07321d690b85fac950330521d0621407fc814b2 100644
 --- a/lib/server/chromium/crPage.js
 +++ b/lib/server/chromium/crPage.js
-@@ -408,7 +408,9 @@ class FrameSession {
+@@ -370,6 +370,15 @@ class FrameSession {
+         if (this._isMainFrame()) {
+           this._handleFrameTree(frameTree);
+           this._addRendererListeners();
++        } else {
++          // Attaching to an already loaded out-of-process iframe may never emit frameNavigated.
++          // Seed its existing document and local descendants without resetting a live navigation.
++          const frame = this._page.frameManager.frame(this._targetId);
++          if (frame && !frame._url && frameTree.frame.id === this._targetId) {
++            this._onFrameNavigated(frameTree.frame, true);
++            for (const child of frameTree.childFrames || [])
++              this._handleFrameTree(child);
++          }
+         }
+         const attachedToTargetEvents = this._bufferedAttachedToTargetEvents || [];
+         this._bufferedAttachedToTargetEvents = void 0;
+@@ -408,7 +417,9 @@ class FrameSession {
      if (!this._page.isStorageStatePage) {
        if (this._crPage._browserContext.needsPlaywrightBinding())
          promises.push(this.exposePlaywrightBinding());

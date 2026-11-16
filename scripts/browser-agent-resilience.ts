@@ -151,6 +151,13 @@ try {
   assert.equal(trace.records.at(-1).value, "decoded");
   await call("sources", { action: "trace_remove", traceId: tracepoint.traceId });
 
+  stage = "reattaching to the already loaded cross-origin frame";
+  const secondBrowser = await chromium.connectOverCDP(endpoint);
+  try {
+    const frameUrls = () => secondBrowser.contexts()[0]!.pages().filter(candidate => candidate.url() === address).flatMap(candidate => candidate.frames().map(frame => frame.url()));
+    await until(frameUrls, urls => urls.includes(leafUrl), "Reattached frame tree");
+  } finally { await secondBrowser.close(); }
+
   stage = "opening the desktop task connection";
   const nonce = "a".repeat(64);
   const profile = buildNewProfile({ name: "Resilience", platformOs: "windows" }, () => false);
