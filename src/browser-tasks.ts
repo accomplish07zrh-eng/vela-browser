@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 type StepState = "pending" | "uncertain" | "completed";
 type RunState = "running" | "paused" | "interrupted" | "needs_verification" | "completed" | "cancelled";
 type Phase = "run" | "verify";
-type Step = { id: string; run: string; verify?: string; timeoutMs?: number };
+type Step = { id: string; run: string; verify?: string; timeoutMs?: number; pageUrl?: string; frameUrl?: string };
 type Definition = { profileId: string; name: string; argument?: unknown; screenshots: boolean; steps: Step[] };
 type Checkpoint = { id: string; state: StepState; attempts: number; evidence?: number; error?: string };
 type BrowserTask = {
@@ -15,7 +15,7 @@ type BrowserTask = {
   stopRequested?: "paused" | "cancelled";
 };
 type BrowserProgram = {
-  code: string; argument: unknown; screenshots: boolean; timeoutMs: number;
+  code: string; argument: unknown; screenshots: boolean; timeoutMs: number; pageUrl?: string; frameUrl?: string;
 };
 type ProgramReceipt = { completed: boolean; value?: unknown; error?: string; [key: string]: unknown };
 export interface BrowserTaskConnection {
@@ -58,8 +58,12 @@ function taskDefinition(profileId: string, params: Record<string, unknown>): Def
       || (step.timeoutMs !== undefined && (!Number.isSafeInteger(step.timeoutMs) || step.timeoutMs < 1 || step.timeoutMs > 2 ** 31 - 1))) {
       badRequest("Each step needs a unique id, a JavaScript function in run, and an optional verifier and positive timeoutMs");
     }
+    for (const url of [step.pageUrl, step.frameUrl]) {
+      if (url !== undefined && (typeof url !== "string" || !url.trim())) badRequest("Task pageUrl and frameUrl must be non-empty URL strings");
+    }
     seen.add(step.id);
-    return { id: step.id, run: step.run, ...(step.verify ? { verify: step.verify } : {}), ...(step.timeoutMs ? { timeoutMs: step.timeoutMs } : {}) };
+    return { id: step.id, run: step.run, ...(step.verify ? { verify: step.verify } : {}), ...(step.timeoutMs ? { timeoutMs: step.timeoutMs } : {}),
+      ...(step.pageUrl ? { pageUrl: step.pageUrl } : {}), ...(step.frameUrl ? { frameUrl: step.frameUrl } : {}) };
   });
   return { profileId, name: typeof params.name === "string" && params.name.trim() ? params.name.trim().slice(0, 120) : profileId,
     ...(params.argument === undefined ? {} : { argument: params.argument }), screenshots: params.screenshots === true, steps };
@@ -264,7 +268,7 @@ export class BrowserTaskSupervisor {
         const act = async (phase: Phase, code: string) => {
           this.options.authorize(profileId, task.client);
           const startedAt = new Date().toISOString();
-          const receipt: ProgramReceipt = await connection!.program({ code, screenshots, timeoutMs: step.timeoutMs ?? 120_000, argument: {
+          const receipt: ProgramReceipt = await connection!.program({ code, screenshots, timeoutMs: step.timeoutMs ?? 120_000, pageUrl: step.pageUrl, frameUrl: step.frameUrl, argument: {
             input: argument, runId: task.runId, stepId: step.id, actionKey: `${task.runId}:${step.id}`, attempt: checkpoint.attempts, previous: values,
           } }).catch(error => ({ completed: false, error: message(error) } satisfies ProgramReceipt));
           const sequence = task.evidenceCount + 1;
@@ -300,7 +304,9 @@ export class BrowserTaskSupervisor {
         const receipt = await act("run", step.run);
         if (!receipt.completed) {
           checkpoint.error = receipt.error ?? "The action did not acknowledge completion";
-          state = "needs_verification"; break;
+          if (receipt.invoked === false) checkpoint.state = "pending";
+          state = checkpoint.state === "pending" ? "interrupted" : "needs_verification";
+          break;
         }
         if (verifier) {
           const verified = await reconcile();

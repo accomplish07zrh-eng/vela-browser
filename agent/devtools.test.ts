@@ -169,6 +169,20 @@ test("developer JSON keeps shared locator scopes while marking actual cycles", a
   } finally { observer.dispose(); }
 });
 
+test("a durable program binds the exact nested frame after CDP discovers it", async () => {
+  const { context, observer } = setup();
+  const frame = new Frame(context.page, "https://embedded.test/deep");
+  frame.parentFrame = () => context.page.frame;
+  const frames = [context.page.frame];
+  context.page.frames = () => [...frames];
+  const arriving = setTimeout(() => frames.push(frame), 15);
+  try {
+    const captured = await observer.runTaskProgram({ code: "async ({ frame }) => frame.url()", argument: null, screenshots: false,
+      pageUrl: context.page.url(), frameUrl: frame.url(), timeoutMs: 1500 });
+    expect(captured).toMatchObject({ completed: true, invoked: true, value: frame.url() });
+  } finally { clearTimeout(arriving); observer.dispose(); }
+});
+
 test("console captures every severity and exception stack once; cursors do not consume history", async () => {
   const { context, observer, call } = setup();
   for (const type of ["debug", "log", "info", "warning", "error", "trace", "assert", "startGroup"]) {

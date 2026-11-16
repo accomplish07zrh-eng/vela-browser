@@ -399,6 +399,8 @@ const ALIAS_TOOLS = [
         screenshots: { type: "boolean" }, argument: {},
         steps: { type: "array", items: { type: "object", properties: {
           id: { type: "string" }, run: { type: "string" }, verify: { type: "string" }, timeoutMs: { type: "integer", minimum: 1 },
+          pageUrl: { type: "string", description: "Wait for a uniquely matching page with this exact URL before running the step." },
+          frameUrl: { type: "string", description: "Wait for a uniquely matching iframe with this exact URL at any depth." },
         }, required: ["id", "run"], additionalProperties: false } },
         verify: { type: "string", description: "Replacement verification function for the uncertain step during this resume." },
         sequence: { type: "integer", minimum: 1 }, part: { type: "string", enum: ["summary", "network", "events", "logs", "screenshot", "value"] },

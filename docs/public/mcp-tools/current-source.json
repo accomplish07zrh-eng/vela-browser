@@ -739,6 +739,14 @@
                 "timeoutMs": {
                   "type": "integer",
                   "minimum": 1
+                },
+                "pageUrl": {
+                  "type": "string",
+                  "description": "Wait for a uniquely matching page with this exact URL before running the step."
+                },
+                "frameUrl": {
+                  "type": "string",
+                  "description": "Wait for a uniquely matching iframe with this exact URL at any depth."
                 }
               },
               "required": [

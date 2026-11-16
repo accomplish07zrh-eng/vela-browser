@@ -186,16 +186,15 @@ try {
   const first = await connect();
   assert.equal((await first.send("browser.open", { profileId: profile.id })).ownedByConnection, true);
   const plan = { profileId: profile.id, name: "Save and reconnect", idempotencyKey: "save-once", screenshots: true,
-    argument: { leafUrl }, steps: [{
+    steps: [{
       id: "save",
       timeoutMs: 15_000,
-      run: `async ({page, argument}) => {
-        const leaf = page.frames().find(frame => frame.url() === argument.input.leafUrl);
-        await leaf.evaluate(async (key) => (await fetch("/save", {method: "POST", headers: {"Idempotency-Key": key}})).json(), argument.actionKey);
+      pageUrl: address, frameUrl: leafUrl,
+      run: `async ({frame, argument}) => {
+        await frame.evaluate(async (key) => (await fetch("/save", {method: "POST", headers: {"Idempotency-Key": key}})).json(), argument.actionKey);
       }`,
-      verify: `async ({page, argument}) => {
-        const leaf = page.frames().find(frame => frame.url() === argument.input.leafUrl);
-        return leaf.evaluate(async () => (await fetch("/receipt")).json());
+      verify: `async ({frame}) => {
+        return frame.evaluate(async () => (await fetch("/receipt")).json());
       }`,
     }, { id: "confirm", run: `async ({argument}) => ({receipt: argument.previous.save})` }] };
   const { task } = await first.send("browserTasks.start", plan);
@@ -221,6 +220,9 @@ try {
   assert.equal(closes, 0);
   const result = await reconnected.send("browserTasks.evidence", { runId: task.runId, sequence: finished.steps[1].evidence, part: "value" });
   assert.deepEqual(JSON.parse(Buffer.from(result.base64, "base64").toString("utf8")), { receipt: "receipt-1" });
+  const image = await reconnected.send("browserTasks.evidence", { runId: task.runId, sequence: finished.steps[0].evidence, part: "screenshot" });
+  const screenshot = JSON.parse(Buffer.from(image.base64, "base64").toString("utf8"));
+  assert.ok(screenshot.base64.startsWith("/9j/"), "The verified step returned its real JPEG evidence");
   console.log("Chromium verified live SSE and response bytes, full WebSocket payloads, runtime tracepoints, cross-origin rebind and a single committed save after reconnect.");
 } finally {
   stage = "finishing fixture cleanup";

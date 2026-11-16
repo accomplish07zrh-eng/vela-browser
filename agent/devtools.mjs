@@ -884,7 +884,9 @@ export class BrowserDevtools {
         if (args.frameId && record.frameId !== args.frameId && record.script?.executionContextAuxData?.isDefault === false) return false;
         if (args.frameId && !record.script && record.frameId !== args.frameId) return false;
         return !args.urlIncludes || (record.url ?? record.script?.url ?? "").includes(args.urlIncludes);
-      }).map(record => ({
+      });
+      const offset = integer(args.offset, 0, 0);
+      const records = matches.slice(offset, offset + integer(args.limit, 100, 1, 500)).map(record => ({
         sourceId: record.sourceId, pageId: record.pageId, frameId: record.frameId, workerId: record.workerId,
         transport: record.transport, url: record.url ?? record.script?.url ?? "", inline: record.transport === "dom" ? !record.external : undefined,
         type: record.type, ...(record.script ? { executionContextId: record.script.executionContextId, hash: record.script.hash,
@@ -892,7 +894,6 @@ export class BrowserDevtools {
           hasSourceMap: !!record.script.sourceMapURL, language: record.script.scriptLanguage } : {}),
         requestIds: this.sourceRequests(record.url ?? record.script?.url).filter(item => !record.pageId || item.data.pageId === record.pageId).map(item => item.data.requestId),
       }));
-      const offset = integer(args.offset, 0, 0), records = matches.slice(offset, offset + integer(args.limit, 100, 1, 500));
       return { records, nextOffset: offset + records.length, total: matches.length, hasMore: offset + records.length < matches.length, nativeErrors: native };
     }
     const record = this.runtimeSources.get(args.sourceId);
@@ -1067,10 +1068,33 @@ export class BrowserDevtools {
       ...outcome, since, until: this.sequence, ...records,
     };
   }
-  async runTaskProgram({ code, argument, screenshots }) {
-    const record = await this.captureProgramWork(async () => (await this.runProgram({ code, argument }, { task: true })).structuredContent, { limit: 30 });
+  async taskTarget({ pageUrl, frameUrl, timeoutMs }) {
+    if (!pageUrl && !frameUrl) return {};
+    const deadline = Date.now() + Math.max(1, (timeoutMs ?? 120_000) - 1000);
+    let ambiguous = false;
+    do {
+      const pages = this.context.pages().filter(page => !page.isClosed() && (!pageUrl || page.url() === pageUrl));
+      const matches = pages.flatMap(page => (frameUrl ? page.frames().filter(frame => frame.url() === frameUrl && !frame.isDetached()) : [page.mainFrame()])
+        .map(frame => ({ page, frame })));
+      if (matches.length === 1) {
+        const { page, frame } = matches[0];
+        this.watchPage(page);
+        return { pageId: this.pageIds.get(page), frameId: this.frameId(frame, page) };
+      }
+      ambiguous = matches.length > 1;
+      if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    } while (!this.closed && Date.now() < deadline);
+    throw new Error(ambiguous ? "More than one browsing context matched the task URLs" : "The task page or frame URL did not become available");
+  }
+  async runTaskProgram({ code, argument, screenshots, pageUrl, frameUrl, timeoutMs }) {
+    let invoked = false;
+    const record = await this.captureProgramWork(async () => {
+      const target = await this.taskTarget({ pageUrl, frameUrl, timeoutMs });
+      invoked = true;
+      return (await this.runProgram({ code, argument, ...target }, { task: !target.frameId })).structuredContent;
+    }, { limit: 30 });
     const { value, error, network, events, since, until } = record;
-    const receipt = { ...(value ?? { completed: false, error }), network, events, since, until };
+    const receipt = { ...(value ?? { completed: false, error }), invoked, network, events, since, until };
     if (screenshots) {
       try {
         const page = this.selectPage(value?.pageId);
