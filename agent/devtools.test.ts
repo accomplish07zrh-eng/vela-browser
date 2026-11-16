@@ -7,7 +7,7 @@ class Frame {
   page() { return this.owner; }
   url() { return this.address; }
   name() { return ""; }
-  parentFrame() { return null; }
+  parentFrame(): Frame | null { return null; }
   isDetached() { return false; }
   async evaluate(expression: string | Function, argument: unknown) {
     return typeof expression === "function" ? await expression(argument) : (0, eval)(expression);
@@ -221,9 +221,11 @@ test("arbitrary JavaScript and native protocol changes work by default without a
     expect(context.cdpConnections).toBe(1);
     expect(context.cdpCalls.map(c => c.method)).toEqual(["DOM.setAttributeValue", "Runtime.evaluate"]);
     const names = new Set(DEVTOOLS_TOOLS.map(tool => tool.name));
-    expect(names.size).toBe(19);
+    expect(names.size).toBe(DEVTOOLS_TOOLS.length);
     expect(names.has("browser_devtools_fetch")).toBe(true);
     expect(names.has("browser_devtools_storage_edit")).toBe(true);
+    expect(names.has("browser_devtools_page_inspect")).toBe(true);
+    expect(names.has("browser_devtools_action")).toBe(true);
   } finally { observer.dispose(); }
   await Promise.resolve(); await Promise.resolve();
   expect(context.cdpDetaches).toBe(1);
@@ -318,6 +320,73 @@ test("cookies default to the selected page's site; other sites and the whole pro
     expect(all.cookies.map((c: any) => c.name)).toEqual(["here", "elsewhere"]);
     await expect(call("storage", { urls: "https://other.test/" })).rejects.toThrow(/urls/);
   } finally { observer.dispose(); }
+});
+
+test("page inspection can address a deep frame and page through its accessibility and DOM results", async () => {
+  const { call, context } = setup();
+  const top = context.page.frame;
+  const frames = [top];
+  for (let depth = 1; depth <= 4; depth++) {
+    const parent = frames.at(-1)!;
+    const frame = new Frame(context.page, `https://frame-${depth}.test/`);
+    frame.parentFrame = () => parent;
+    frames.push(frame);
+  }
+  context.page.frames = () => frames;
+  const deepest = frames.at(-1)! as any;
+  const snapshot = '- main:\n  - button "Save"';
+  const dom = { nodes: [{ index: 1, parentIndex: 0, tag: "main" }], offset: 1, total: 3, nextOffset: 2, hasMore: true };
+  const hidden = { nodes: [{ index: 2, parentIndex: 1, tag: "input", value: "fixture" }], offset: 0, total: 1, nextOffset: 1, hasMore: false };
+  deepest.locator = (selector: string) => {
+    expect(selector).toBe(":root");
+    return {
+      evaluate: async (_evaluate: Function, options: object) => {
+        expect(options).toEqual({ wholeDocument: true, domOffset: 1, hiddenOffset: 0, nodeLimit: 1 });
+        return { title: "Last frame", dom, hidden };
+      },
+      ariaSnapshot: async () => snapshot,
+    };
+  };
+  const { pages: [page] } = await call("pages");
+  const target = page.frames.at(-1);
+  expect(target).toMatchObject({ url: "https://frame-4.test/", depth: 4, parentFrameId: page.frames[3].frameId });
+  expect(await call("page_inspect", { frameId: target.frameId, domOffset: 1, nodeLimit: 1, offset: 2, characters: 7 })).toMatchObject({
+    pageId: page.pageId, frameId: target.frameId, depth: 4, title: "Last frame", accessibility: snapshot.slice(2, 9),
+    nextOffset: 9, totalCharacters: snapshot.length, hasMore: true, dom, hidden,
+  });
+  await expect(call("page_inspect", { frameId: target.frameId, pageId: "other-profile-page" })).rejects.toThrow("Unknown or detached frameId");
+});
+
+test("semantic actions require an explicit ambiguous match and report verification separately", async () => {
+  const { call, context } = setup();
+  const frame = context.page.frame as any;
+  const clicks: number[] = [];
+  const waitFor = async () => {
+    expect(clicks).toEqual([1]);
+    throw new Error("Expected text never appeared");
+  };
+  frame.getByRole = (role: string, options: object) => {
+    expect(role).toBe("button");
+    expect(options).toEqual({ name: "Save", exact: true });
+    return {
+      count: async () => 2,
+      nth: (index: number) => ({ click: async () => { clicks.push(index); } }),
+    };
+  };
+  frame.getByText = (text: string) => {
+    expect(text).toBe("Draft saved");
+    return { filter: (options: object) => {
+      expect(options).toEqual({ visible: true });
+      return { first: () => ({ waitFor }) };
+    } };
+  };
+  const target = { role: "button", name: "Save" };
+  await expect(call("action", { action: "click", target })).rejects.toThrow("matched multiple elements");
+  await expect(call("action", { action: "click", target: { ...target, index: 1 }, verify: { text: "Saved", urlIncludes: "/done" } })).rejects.toThrow("requires one");
+  expect(clicks).toEqual([]);
+  const result = await call("action", { action: "click", target: { ...target, index: 1 }, verify: { text: "Draft saved", timeoutMs: 20 } });
+  expect(result).toMatchObject({ action: "click", actionCompleted: true, verification: { passed: false, error: "Expected text never appeared" } });
+  expect(clicks).toEqual([1]);
 });
 
 test("the network wait settles on idle, matches a finished request, and the new tools are listed", async () => {

@@ -13,9 +13,30 @@ const tool = (name, description, properties = {}, required = [], readOnly = true
   annotations: { title: name.replace(/^browser_devtools_/, "Browser ").replaceAll("_", " "), readOnlyHint: readOnly, destructiveHint: !readOnly, openWorldHint: !readOnly },
 });
 
+const timeoutMs = { type: "integer", minimum: 1, maximum: 20000, default: 5000 };
+const elementTarget = schema({
+  selector: string, role: string, name: { ...string, description: "Accessible name when using role." },
+  label: string, text: string, testId: string,
+  exact: { type: "boolean", default: true, description: "Use exact name, label or text matching." },
+  index: { type: "integer", minimum: 0, description: "Zero-based match to use when a locator matches multiple elements." },
+});
+const elementStates = ["visible", "hidden", "attached", "detached"];
+const locatorActions = {
+  click: (locator, options) => locator.click(options),
+  double_click: (locator, options) => locator.dblclick(options),
+  fill: (locator, options, value) => locator.fill(value, options),
+  press: (locator, options, value) => locator.press(value, options),
+  check: (locator, options) => locator.check(options),
+  uncheck: (locator, options) => locator.uncheck(options),
+  select_option: (locator, options, value) => locator.selectOption(value, options),
+  focus: (locator, options) => locator.focus(options),
+  hover: (locator, options) => locator.hover(options),
+  scroll_into_view: (locator, options) => locator.scrollIntoViewIfNeeded(options),
+};
+
 export const DEVTOOLS_TOOLS = [
   tool("browser_devtools_summary", "Inspect this profile's automatically recorded developer diagnostics: pages, console errors, failed requests, downloads and workers. Includes capture time and buffer eviction counts; no enable step is needed."),
-  tool("browser_devtools_pages", "List this profile's pages, frames, dedicated workers and service workers with stable ids. Ids belong only to this browser session; use them to target developer tools."),
+  tool("browser_devtools_pages", "List this profile's pages, frames at every nesting depth, dedicated workers and service workers with stable ids. Each frame shows its depth and parent frame id. Use its frameId directly with developer tools, including for cross-origin frames."),
   tool("browser_devtools_console", "Read console output and uncaught exceptions across this profile's tabs, including severity, source location and exception stacks. Includes log/debug, groups, traces, assertions and errors. Captured automatically, preserved across navigation; cursor pagination never consumes messages.", {
     ...filters, level: { type: "string", enum: ["all", "debug", "info", "warning", "error"], default: "all" },
   }),
@@ -37,6 +58,23 @@ export const DEVTOOLS_TOOLS = [
     styles: { type: "array", items: string }, offset: { type: "integer", minimum: 0, default: 0 },
     characters: { type: "integer", minimum: 1, maximum: 1048576, default: 65536 },
   }, ["selector"]),
+  tool("browser_devtools_page_inspect", "Read a page or iframe's accessibility tree, forms, child frames and DOM tree. Includes hidden nodes and field values, element attributes, comments, templates and open shadow roots by default. The DOM tree gives each node an index and parent index. Pass frameId to inspect a deeply nested frame directly, or selector to narrow the inspection to a region.", {
+    pageId, frameId: string, selector: string, offset: { type: "integer", minimum: 0, default: 0 },
+    characters: { type: "integer", minimum: 1, maximum: 65536, default: 16000 }, timeoutMs,
+    domOffset: { type: "integer", minimum: 0, default: 0, description: "Continue the DOM tree from dom.nextOffset." },
+    hiddenOffset: { type: "integer", minimum: 0, default: 0, description: "Continue the hidden and data attribute index from hidden.nextOffset." },
+    nodeLimit: { type: "integer", minimum: 1, maximum: 100, default: 40, description: "Maximum entries per DOM or hidden result page." },
+  }),
+  tool("browser_devtools_action", "Operate an element in the selected page or iframe by accessible role and name, label, text, test id or selector. An ambiguous target requires an explicit index. Optionally verify visible text, an element state or a page URL after acting. The result reports whether the action completed separately from its verification.", {
+    pageId, frameId: string, action: { type: "string", enum: Object.keys(locatorActions) }, target: elementTarget,
+    value: { description: "Text for fill, a key for press, or one or more option values for select_option.", oneOf: [string, { type: "array", items: string }] },
+    timeoutMs,
+    verify: schema({
+      text: { ...string, description: "Visible text to wait for in the action's frame." },
+      urlIncludes: { ...string, description: "Substring of the top-level page URL to wait for." },
+      target: elementTarget, state: { type: "string", enum: elementStates }, timeoutMs,
+    }),
+  }, ["action", "target"], false),
   tool("browser_devtools_storage", "Read the selected page/frame's cookies, localStorage, sessionStorage, IndexedDB database names and Cache Storage keys. Cookies default to those that page or frame would send, like the DevTools Application panel; pass urls for other sites or allCookies for every cookie in the profile. Opens no helper pages and changes no storage, permissions or browser identity.", {
     pageId, frameId: string, urls: { type: "array", items: string, description: "Return the cookies these URLs would send instead of the selected page's." },
     allCookies: { type: "boolean", default: false, description: "Return every cookie in this profile, across all sites." },
@@ -117,6 +155,156 @@ function result(value) {
   return { content: [{ type: "text", text: JSON.stringify(normalized) }], structuredContent: normalized };
 }
 function errorText(error) { return error instanceof Error ? error.message : String(error); }
+
+function elementLocator(frame, target) {
+  const keys = ["selector", "role", "label", "text", "testId"].filter(key => target?.[key] !== undefined);
+  const key = keys[0], value = target?.[key];
+  if (keys.length !== 1 || typeof value !== "string" || !value.trim()) {
+    throw new Error("Choose one non-empty locator: selector, role, label, text or testId");
+  }
+  if (target.name !== undefined && (key !== "role" || typeof target.name !== "string")) {
+    throw new Error("An accessible name is only supported with role");
+  }
+  const exact = target.exact !== false;
+  switch (key) {
+    case "selector": return frame.locator(value);
+    case "role": return frame.getByRole(value, { ...(target.name === undefined ? {} : { name: target.name }), exact });
+    case "label": return frame.getByLabel(value, { exact });
+    case "text": return frame.getByText(value, { exact });
+    case "testId": return frame.getByTestId(value);
+  }
+}
+
+function verifyAction(page, frame, verify) {
+  if (verify === undefined) return undefined;
+  if (!verify || typeof verify !== "object" || Array.isArray(verify)
+    || [verify.text, verify.urlIncludes, verify.target].filter(value => value !== undefined).length !== 1) {
+    throw new Error("Verification requires one of text, urlIncludes or target");
+  }
+  const timeout = integer(verify.timeoutMs, 5000, 1, 20000);
+  if (verify.target !== undefined) {
+    const state = verify.state ?? "visible";
+    if (!elementStates.includes(state)) throw new Error("Unknown verification state");
+    const locator = elementLocator(frame, verify.target);
+    const target = verify.target.index === undefined ? locator : locator.nth(integer(verify.target.index, 0, 0));
+    return () => target.waitFor({ state, timeout });
+  }
+  if (verify.state !== undefined) throw new Error("Verification state requires a target");
+  if (verify.urlIncludes !== undefined) {
+    if (typeof verify.urlIncludes !== "string" || !verify.urlIncludes.trim()) throw new Error("urlIncludes must be non-empty");
+    return () => page.waitForURL(url => url.href.includes(verify.urlIncludes), { waitUntil: "commit", timeout });
+  }
+  if (typeof verify.text !== "string" || !verify.text.trim()) throw new Error("Verification text must be non-empty");
+  return () => frame.getByText(verify.text).filter({ visible: true }).first().waitFor({ state: "visible", timeout });
+}
+
+/** Serialized by Playwright to the selected frame. */
+function pageOutline(element, { wholeDocument, domOffset, hiddenOffset, nodeLimit }) {
+  const doc = element.ownerDocument;
+  const text = value => (value ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const visible = item => item.getClientRects().length > 0
+    && doc.defaultView.getComputedStyle(item).visibility === "visible"
+    && !item.closest('[aria-hidden="true"]');
+  const labelOf = item => {
+    const labelledBy = item.getAttribute("aria-labelledby")?.trim();
+    const root = item.getRootNode();
+    const referenced = labelledBy?.split(/\s+/).map(id => root.getElementById?.(id)?.textContent).filter(Boolean).join(" ");
+    return text(referenced || item.getAttribute("aria-label") || Array.from(item.labels ?? [], label => label.textContent).join(" "));
+  };
+  const dom = [], hidden = [], forms = [];
+  let domIndex = 0, hiddenIndex = 0;
+  const pending = [{ node: wholeDocument ? doc : element, parentIndex: null, depth: 0, inherited: null }];
+  while (pending.length) {
+    const { node, parentIndex, depth, inherited } = pending.pop();
+    const index = domIndex++;
+    const isElement = node.nodeType === 1;
+    const tag = isElement ? node.localName : node.host ? "#shadow-root" : node.nodeName;
+    const attrs = isElement ? Array.from(node.attributes) : [];
+    const isHiddenInput = tag === "input" && node.type === "hidden";
+    let hiddenBy = inherited;
+    if (!hiddenBy && isElement) {
+      const style = doc.defaultView.getComputedStyle(node);
+      if (isHiddenInput) hiddenBy = "hidden input";
+      else if (node.hasAttribute("hidden")) hiddenBy = "hidden attribute";
+      else if (node.getAttribute("aria-hidden") === "true") hiddenBy = "aria-hidden";
+      else if (node.hasAttribute("inert")) hiddenBy = "inert";
+      else if (style.display === "none") hiddenBy = "display: none";
+      else if (style.visibility === "hidden" || style.visibility === "collapse") hiddenBy = `visibility: ${style.visibility}`;
+      else if (style.contentVisibility === "hidden") hiddenBy = "content-visibility: hidden";
+      else if (style.opacity === "0") hiddenBy = "opacity: 0";
+    }
+    if (tag === "form" && !hiddenBy && visible(node)) forms.push(node);
+    const hasData = attrs.some(attr => attr.name.startsWith("data-"));
+    const dataScript = tag === "script" && /json|importmap/i.test(node.type);
+    const namedHidden = hiddenBy && isElement && !["head", "script", "style", "link"].includes(tag)
+      && (node.id || node.hasAttribute("hidden") || node.hasAttribute("aria-hidden") || node.hasAttribute("inert")
+        || Array.from(node.childNodes).some(child => child.nodeType === 3 && child.nodeValue?.trim()));
+    const notable = hasData || (hiddenBy && (isHiddenInput || tag === "meta" || dataScript || namedHidden));
+    const inDomPage = index >= domOffset && dom.length < nodeLimit;
+    const inHiddenPage = notable && hiddenIndex++ >= hiddenOffset && hidden.length < nodeLimit;
+    if (inDomPage || inHiddenPage) {
+      const description = { index, parentIndex, depth, tag, nodeType: node.nodeType, ...(hiddenBy ? { hiddenBy } : {}) };
+      if (attrs.length) {
+        description.attributes = Object.fromEntries(attrs.slice(0, 24).map(attr => [attr.name, attr.value.slice(0, 256)]));
+        description.attributesTruncated = attrs.length > 24 || attrs.some(attr => attr.value.length > 256);
+      }
+      const rawText = node.nodeValue;
+      if (rawText) {
+        description.text = rawText.slice(0, 1024);
+        description.textCharacters = rawText.length;
+      }
+      if (["input", "textarea", "select"].includes(tag) && typeof node.value === "string") {
+        description.value = node.value.slice(0, 1024);
+        description.valueCharacters = node.value.length;
+        if (tag === "input" && ["radio", "checkbox"].includes(node.type)) description.checked = node.checked;
+        if (tag === "select" && node.multiple) {
+          description.selectedValues = Array.from(node.selectedOptions).slice(0, 32).map(option => option.value.slice(0, 256));
+          description.selectedCount = node.selectedOptions.length;
+        }
+      }
+      if (inDomPage) dom.push(description);
+      if (inHiddenPage) {
+        const content = isElement && hiddenBy ? node.textContent : null;
+        hidden.push({ ...description,
+          ...(description.attributes ? { attributes: { ...description.attributes } } : {}),
+          ...(description.selectedValues ? { selectedValues: [...description.selectedValues] } : {}),
+          ...(content ? { text: content.slice(0, 1024), textCharacters: content.length } : {}),
+          ...(hasData ? { dataAttributes: Object.fromEntries(attrs.filter(attr => attr.name.startsWith("data-")).slice(0, 12).map(attr => [attr.name, attr.value.slice(0, 256)])) } : {}),
+        });
+      }
+    }
+    const children = Array.from(node.childNodes);
+    if (isElement && node.shadowRoot) children.push(node.shadowRoot);
+    if (tag === "template" && node.content) children.push(node.content);
+    for (let i = children.length - 1; i >= 0; i--) {
+      const child = children[i];
+      // CSS visibility can be overridden by a descendant. The other hidden states affect the subtree.
+      const collapsed = tag === "details" && !node.open && child.localName !== "summary";
+      const childHidden = tag === "template" ? "template" : collapsed ? "collapsed details" : hiddenBy?.startsWith("visibility:") ? null : hiddenBy;
+      pending.push({ node: child, parentIndex: index, depth: depth + 1, inherited: childHidden });
+    }
+  }
+  const nodePage = (nodes, offset, total) => ({ nodes, offset, total, nextOffset: offset + nodes.length, hasMore: offset + nodes.length < total });
+  return {
+    title: doc.title, language: doc.documentElement.lang, readyState: doc.readyState,
+    dom: nodePage(dom, domOffset, domIndex), hidden: nodePage(hidden, hiddenOffset, hiddenIndex),
+    formCount: forms.length,
+    forms: forms.slice(0, 8).map(form => {
+      const fields = Array.from(form.elements).filter(item => item.matches('input:not([type="hidden"]), select, textarea, button') && visible(item));
+      return {
+        label: labelOf(form), name: text(form.name), method: form.method, fieldCount: fields.length,
+        fields: fields.slice(0, 20).map(field => ({
+          label: labelOf(field), name: text(field.name), type: field.type, placeholder: text(field.getAttribute("placeholder")),
+          required: !!field.required || field.getAttribute("aria-required") === "true",
+          disabled: field.matches(":disabled") || !!field.closest('[aria-disabled="true"]'),
+          readOnly: !!field.readOnly || field.getAttribute("aria-readonly") === "true",
+          invalid: field.validity?.valid === false || (field.hasAttribute("aria-invalid") && field.getAttribute("aria-invalid") !== "false"),
+        })),
+      };
+    }),
+  };
+}
+
 function evaluate(target, compiled, argument, mainWorld) {
   // Firefox's native main-world channel preserves the normal isolated automation world.
   // Only this explicit developer operation runs in the page's own execution context.
@@ -352,11 +540,17 @@ export class BrowserDevtools {
     const page = this.selectPage(args.pageId);
     return { page, frame: page.mainFrame() };
   }
+  describeFrame(frame, page) {
+    const parent = frame.parentFrame();
+    let depth = 0;
+    for (let ancestor = parent; ancestor; ancestor = ancestor.parentFrame()) depth++;
+    return { frameId: this.frameId(frame, page), url: frame.url(), name: frame.name(), main: frame === page.mainFrame(),
+      parentFrameId: parent ? this.frameId(parent, page) : null, depth };
+  }
   async pageList() {
     return { captureStartedAt: this.startedAt, pages: await Promise.all([...this.pages].map(async ([id, page]) => ({
       pageId: id, url: page.url(), title: await page.title().catch(() => ""),
-      frames: (page.frames?.() ?? []).map(frame => ({ frameId: this.frameId(frame, page), url: frame.url(), name: frame.name(), main: frame === page.mainFrame(),
-        parentFrameId: frame.parentFrame() ? this.frameId(frame.parentFrame(), page) : null })),
+      frames: (page.frames?.() ?? []).map(frame => this.describeFrame(frame, page)),
     }))), workers: [...this.workers].map(([id, item]) => ({ workerId: id, type: item.type, url: item.worker.url(), ...(item.page ? { pageId: this.pageIds.get(item.page) } : {}) })) };
   }
   async requestDetail(args) {
@@ -445,6 +639,50 @@ export class BrowserDevtools {
           nextOffset: input.offset + input.characters, hasMore: Math.max(markup.length, text.length) > input.offset + input.characters };
       }, { offset: integer(args.offset, 0, 0), characters: integer(args.characters, 65536, 1, 1048576), styles: args.styles ?? ["display", "visibility", "color", "font-family", "font-size"] });
       return result({ pageId: this.pageIds.get(page), frameId: this.frameId(frame, page), count, index, ...value });
+    }
+    if (name === "browser_devtools_page_inspect") {
+      const { page, frame } = this.selectFrame(args);
+      const timeout = integer(args.timeoutMs, 5000, 1, 20000);
+      const offset = integer(args.offset, 0, 0);
+      const characters = integer(args.characters, 16000, 1, 65536);
+      const locator = frame.locator(args.selector ?? ":root");
+      const outline = await locator.evaluate(pageOutline, {
+        wholeDocument: args.selector === undefined,
+        domOffset: integer(args.domOffset, 0, 0), hiddenOffset: integer(args.hiddenOffset, 0, 0), nodeLimit: integer(args.nodeLimit, 40, 1, 100),
+      }, { timeout });
+      let snapshot = "", accessibilityError;
+      try { snapshot = await locator.ariaSnapshot({ timeout }); }
+      catch (error) { accessibilityError = errorText(error); }
+      const accessibility = snapshot.slice(offset, offset + characters);
+      const nextOffset = offset + accessibility.length;
+      const childFrames = (page.frames?.() ?? []).filter(child => child.parentFrame() === frame).map(child => this.describeFrame(child, page));
+      return result({ pageId: this.pageIds.get(page), ...this.describeFrame(frame, page), childFrames, ...outline,
+        accessibility, ...(accessibilityError ? { accessibilityError } : {}),
+        offset, nextOffset, totalCharacters: snapshot.length, hasMore: nextOffset < snapshot.length });
+    }
+    if (name === "browser_devtools_action") {
+      if (!Object.hasOwn(locatorActions, args.action)) throw new Error("Unknown developer action");
+      if ((args.action === "fill" || args.action === "press") && typeof args.value !== "string") throw new Error("This action requires a string value");
+      if (args.action === "select_option" && typeof args.value !== "string"
+        && !(Array.isArray(args.value) && args.value.length && args.value.every(value => typeof value === "string"))) {
+        throw new Error("Select an option with a value or an array of values");
+      }
+      const { page, frame } = this.selectFrame(args);
+      const timeout = integer(args.timeoutMs, 5000, 1, 20000);
+      const verify = verifyAction(page, frame, args.verify);
+      const locator = elementLocator(frame, args.target);
+      const index = integer(args.target.index, undefined, 0);
+      const target = index === undefined ? locator : locator.nth(index);
+      if (index === undefined && await locator.count() > 1) throw new Error("The action target matched multiple elements. Narrow the target or provide an index.");
+      const scope = { pageId: this.pageIds.get(page), frameId: this.frameId(frame, page), action: args.action };
+      try { await locatorActions[args.action](target, { timeout }, args.value); }
+      catch (error) { return { ...result({ ...scope, actionCompleted: false, error: errorText(error), url: frame.url() }), isError: true }; }
+      let verification = null;
+      if (verify) {
+        try { await verify(); verification = { passed: true }; }
+        catch (error) { verification = { passed: false, error: errorText(error) }; }
+      }
+      return result({ ...scope, actionCompleted: true, verification, url: frame.url() });
     }
     if (name === "browser_devtools_storage") {
       const { page, frame } = this.selectFrame(args);
