@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { firefox } from "playwright-core";
 import { connectOfficial, nonClosingContext } from "../agent/playwright-proxy.mjs";
+import { BrowserDevtools } from "../agent/devtools.mjs";
 
 const executablePath = process.argv[2];
 const root = process.argv[3] && resolve(process.argv[3]);
@@ -37,8 +38,16 @@ function appBundlePath(path) {
 const nativeExecutable = nativeUi ? resolve(executablePath) : undefined;
 const nativeAppBundle = nativeUi ? appBundlePath(executablePath) : undefined;
 await mkdir(root, { recursive: false });
-const server = createServer((_request, response) => {
+const server = createServer((request, response) => {
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  const url = new URL(request.url, "http://fixture.test");
+  if (url.pathname === "/devtools-frame") {
+    const level = Number(url.searchParams.get("level"));
+    const leafPort = Number(url.searchParams.get("leafPort"));
+    const child = level === 3 ? `http://127.0.0.1:${leafPort}/leaf` : `/devtools-frame?level=${level + 1}&amp;leafPort=${leafPort}`;
+    response.end(`<!doctype html><title>Frame ${level}</title><iframe name="depth-${level + 1}" src="${child}"></iframe>`);
+    return;
+  }
   response.end("<!doctype html><title>Vela Firefox proof</title><h1>Browser compatibility fixture</h1><button onclick=\"this.textContent='Clicked'\">Click</button>");
 });
 await new Promise((resolve, reject) => {
@@ -48,6 +57,63 @@ await new Promise((resolve, reject) => {
 const origin = `http://127.0.0.1:${server.address().port}`;
 const contexts = new Set();
 let official;
+
+async function verifyNestedDevtools(context) {
+  // A second loopback port gives the deepest frame a distinct origin.
+  const leaf = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(`<!doctype html><html lang="en"><head><title>Deep frame</title><meta name="state" content="loaded"></head><body>
+      <main><h1>Draft editor</h1><form aria-label="Draft">
+        <label>Message<input name="message" required></label><input type="hidden" name="draftId" value="fixture-draft">
+        <button type="button" onclick="document.querySelector('#saved').hidden = false">Save draft</button>
+      </form><p id="saved" hidden>Draft saved</p><details><summary>More</summary><p id="collapsed">Collapsed detail</p></details>
+      <!-- DOM fixture comment --><template><p id="template-info">Template detail</p></template><div id="host"></div></main>
+      <script>document.querySelector('#host').attachShadow({mode:'open'}).innerHTML = '<p hidden data-private-state="fixture-shadow">Shadow detail</p>';</script>
+      </body></html>`);
+  });
+  await new Promise((resolve, reject) => { leaf.once("error", reject); leaf.listen(0, "127.0.0.1", resolve); });
+  const port = leaf.address().port;
+  let page, devtools;
+  const call = async (tool, args) => {
+    const reply = await devtools.call(`browser_devtools_${tool}`, args);
+    assert.notEqual(reply.isError, true, JSON.stringify(reply));
+    return reply.structuredContent;
+  };
+  const start = `${origin}/devtools-frame?level=0&leafPort=${port}`;
+  try {
+    page = await context.newPage();
+    devtools = new BrowserDevtools(context, { engine: "firefox" });
+    await page.goto(start);
+    const listing = await call("pages", {});
+    const targetPage = listing.pages.find((entry) => entry.url === start);
+    const deepest = targetPage?.frames.find((frame) => frame.url === `http://127.0.0.1:${port}/leaf`);
+    assert.equal(deepest?.depth, 4);
+    assert.equal(targetPage.frames.find((frame) => frame.frameId === deepest.parentFrameId)?.depth, 3);
+    const target = { pageId: targetPage.pageId, frameId: deepest.frameId };
+    const inspection = await call("page_inspect", { ...target, nodeLimit: 100 });
+    assert.equal(inspection.title, "Deep frame");
+    assert.ok(inspection.accessibility.includes("Draft editor"));
+    assert.ok(inspection.forms[0].fields.some((field) => field.label === "Message" && field.required && field.invalid));
+    assert.ok(inspection.hidden.nodes.some((node) => node.hiddenBy === "hidden input" && node.value === "fixture-draft"));
+    assert.ok(inspection.hidden.nodes.some((node) => node.hiddenBy === "collapsed details" && node.text === "Collapsed detail"));
+    assert.ok(inspection.hidden.nodes.some((node) => node.hiddenBy === "template" && node.text === "Template detail"));
+    assert.ok(inspection.hidden.nodes.some((node) => node.dataAttributes?.["data-private-state"] === "fixture-shadow"));
+    assert.ok(inspection.dom.nodes.some((node) => node.nodeType === 8 && node.text.includes("DOM fixture comment")));
+    assert.ok(inspection.dom.nodes.some((node) => node.tag === "#shadow-root"));
+    const filled = await call("action", { ...target, action: "fill", target: { label: "Message" }, value: "Notes" });
+    assert.equal(filled.actionCompleted, true);
+    const saved = await call("action", { ...target, action: "click", target: { role: "button", name: "Save draft" }, verify: { text: "Draft saved" } });
+    assert.equal(saved.verification.passed, true);
+    const updated = await call("page_inspect", target);
+    assert.ok(updated.forms[0].fields.some((field) => field.label === "Message" && !field.invalid));
+    assert.equal(page.url(), start);
+  } finally {
+    devtools?.dispose();
+    await page?.close().catch(() => {});
+    leaf.closeAllConnections();
+    await new Promise((resolve) => leaf.close(resolve));
+  }
+}
 
 async function launch(directory, browser = executablePath) {
   const context = await firefox.launchPersistentContext(join(root, directory), {
@@ -520,6 +586,7 @@ try {
   assert.ok((await context.cookies()).some((cookie) => cookie.name === "proof" && cookie.value === "saved"));
   assert.equal(await page.evaluate(() => localStorage.getItem("proof")), "saved");
   assert.deepEqual(await databaseValue(page, null), { restored: true });
+  await verifyNestedDevtools(context);
 
   const result = {
     platform: process.platform,
@@ -529,6 +596,7 @@ try {
     nativeIdentityStableAcrossRestart: true,
     officialMcp: true,
     mcpDisconnectPreservesContext: true,
+    nestedDeveloperTools: true,
     scriptContext: true,
     selectedStateTransfer: true,
     indexedDbSnapshot: true,

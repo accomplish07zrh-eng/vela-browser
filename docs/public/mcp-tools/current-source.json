@@ -767,7 +767,7 @@
     },
     {
       "name": "browser_devtools_pages",
-      "description": "List this profile's pages, frames, dedicated workers and service workers with stable ids. Ids belong only to this browser session; use them to target developer tools.",
+      "description": "List this profile's pages, frames at every nesting depth, dedicated workers and service workers with stable ids. Each frame shows its depth and parent frame id. Use its frameId directly with developer tools, including for cross-origin frames.",
       "annotations": {
         "title": "Browser pages",
         "readOnlyHint": true,
@@ -1057,6 +1057,237 @@
         },
         "required": [
           "selector"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_page_inspect",
+      "description": "Read a page or iframe's accessibility tree, forms, child frames and DOM tree. Includes hidden nodes and field values, element attributes, comments, templates and open shadow roots by default. The DOM tree gives each node an index and parent index. Pass frameId to inspect a deeply nested frame directly, or selector to narrow the inspection to a region.",
+      "annotations": {
+        "title": "Browser page inspect",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "characters": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536,
+            "default": 16000
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000,
+            "default": 5000
+          },
+          "domOffset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Continue the DOM tree from dom.nextOffset."
+          },
+          "hiddenOffset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Continue the hidden and data attribute index from hidden.nextOffset."
+          },
+          "nodeLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 40,
+            "description": "Maximum entries per DOM or hidden result page."
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_action",
+      "description": "Operate an element in the selected page or iframe by accessible role and name, label, text, test id or selector. An ambiguous target requires an explicit index. Optionally verify visible text, an element state or a page URL after acting. The result reports whether the action completed separately from its verification.",
+      "annotations": {
+        "title": "Browser action",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "click",
+              "double_click",
+              "fill",
+              "press",
+              "check",
+              "uncheck",
+              "select_option",
+              "focus",
+              "hover",
+              "scroll_into_view"
+            ]
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "selector": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string",
+                "description": "Accessible name when using role."
+              },
+              "label": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "testId": {
+                "type": "string"
+              },
+              "exact": {
+                "type": "boolean",
+                "default": true,
+                "description": "Use exact name, label or text matching."
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Zero-based match to use when a locator matches multiple elements."
+              }
+            },
+            "additionalProperties": false
+          },
+          "value": {
+            "description": "Text for fill, a key for press, or one or more option values for select_option.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000,
+            "default": 5000
+          },
+          "verify": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "Visible text to wait for in the action's frame."
+              },
+              "urlIncludes": {
+                "type": "string",
+                "description": "Substring of the top-level page URL to wait for."
+              },
+              "target": {
+                "type": "object",
+                "properties": {
+                  "selector": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Accessible name when using role."
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "testId": {
+                    "type": "string"
+                  },
+                  "exact": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use exact name, label or text matching."
+                  },
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Zero-based match to use when a locator matches multiple elements."
+                  }
+                },
+                "additionalProperties": false
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "visible",
+                  "hidden",
+                  "attached",
+                  "detached"
+                ]
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20000,
+                "default": 5000
+              }
+            },
+            "additionalProperties": false
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "action",
+          "target"
         ],
         "additionalProperties": false
       }

@@ -1,4 +1,4 @@
-# MCP developer tools in 0.1.3
+# MCP developer tools
 
 The developer tools are listed by default alongside the existing Playwright tools. They can read and change the selected browser, or a browser addressed explicitly by `profileId`. No enable command, approval step, or read-only mode is required.
 
@@ -14,6 +14,8 @@ Each environment keeps its existing persistent context, process, cookies, proxy,
 | `browser_devtools_events` | WebSocket frames, socket errors, downloads, navigation, crashes and page/worker lifecycle |
 | `browser_devtools_evaluate` | JavaScript expressions, function source or statements, with an argument, in a selected page, iframe or worker |
 | `browser_devtools_element` | Element markup, text, attributes, rectangle and computed CSS |
+| `browser_devtools_page_inspect` | Accessibility tree, paginated DOM, form state, and an index of hidden nodes and data attributes |
+| `browser_devtools_action` | Locate and operate an element by role and name, label, text, test ID or selector, with optional post-action verification |
 | `browser_devtools_storage` | The cookies the selected page or frame would send (other sites with `urls`, the whole profile with `allCookies`), its local/session storage, IndexedDB database names and Cache Storage keys |
 | `browser_devtools_storage_edit` | Set, remove and clear cookies or local/session storage; JavaScript can modify IndexedDB and Cache Storage |
 | `browser_devtools_fetch` | HTTP requests through the actual page/frame's browser network stack, including text or binary POST data |
@@ -31,6 +33,24 @@ Chromium attaches to the profile's existing CDP context. Firefox and WebKit run 
 ## Targeting and editing
 
 First call `browser_devtools_pages`, then use its `pageId`, `frameId` or `workerId`. All tools also accept `profileId`; omitting it uses the selected profile. When multiple pages are open, choose a page explicitly. IDs are unique to a browser session and cannot select an object in another environment. Calls within one profile are serialized; calls to different profiles can run concurrently.
+
+Frames include `depth` and `parentFrameId`. The top-level document has depth zero. Use the deepest relevant `frameId` directly, including for a loaded cross-origin frame. `browser_devtools_page_inspect` reports the selected frame and its child frames.
+
+Page inspection includes hidden fields, collapsed content, comments, templates, attributes, live input values and open shadow roots by default. Each DOM node has an `index` and `parentIndex`. Continue a long accessibility snapshot using `nextOffset`, the DOM tree using `dom.nextOffset`, and the hidden and data-attribute index using `hidden.nextOffset`. Node text, values and attributes have bounded previews. Use `browser_devtools_element` or `browser_devtools_evaluate` in the same frame for raw detail. DOM indexes describe the current traversal and can change as the page updates.
+
+To click a named button in a nested frame and wait for the resulting text, call `browser_devtools_action` with the frame and target.
+
+```json
+{
+  "profileId": "my-profile",
+  "frameId": "id-from-browser_devtools_pages",
+  "action": "click",
+  "target": { "role": "button", "name": "Save draft" },
+  "verify": { "text": "Draft saved" }
+}
+```
+
+`actionCompleted` and `verification.passed` report distinct outcomes. A click can complete while its expected result times out. Examine the resulting page before retrying an operation with side effects.
 
 For example, call `browser_devtools_evaluate` with:
 
