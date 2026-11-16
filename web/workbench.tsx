@@ -68,11 +68,13 @@ export function FrameCanvas({ data, className = "viewport-frame" }: { data: stri
   }, [data]);
   return <canvas ref={canvas} className={className} aria-hidden="true" />;
 }
-interface SyncSession { master: string; generations: Map<string, string>; issues: Map<string, string> }
+interface SyncSession { master: string; generations: Map<string, string>; issues: Map<string, string>; departed: Map<string, string | undefined> }
+
+const SYNC_DEPARTED = "This environment has stopped or restarted.";
 
 function syncIssue(state: ViewportState, generation: string): string | undefined {
   if (state.status === "ended" || (state.generation && state.generation !== generation)) {
-    return "This environment has stopped or restarted.";
+    return SYNC_DEPARTED;
   }
   if (state.status === "error") return state.error || "Operation failed";
   if (state.status === "connecting" || !state.targetId || !state.viewport) return state.error || "Waiting for the browser…";
@@ -100,7 +102,7 @@ const BrowserViewport = memo(function BrowserViewport({ profile, order, selected
     if (!profile.running) return;
     const connection = client.current = new ViewportClient(profile.id, (next) => { snapshot.current = next; setState(next); onState(profile.id, next); });
     return () => { connection.dispose(); client.current = null; };
-  }, [profile.id, profile.running, retry, onState]);
+  }, [profile.id, profile.running, profile.startedAt, retry, onState]);
   const sendInput = (value: WorkbenchInput) => inputRef.current(profile.id, value);
   const point = (x: number, y: number, clamp = false) => {
     const frame = snapshot.current.frame, rect = surface.current?.getBoundingClientRect();
@@ -302,6 +304,19 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     for (const id of syncRef.current?.generations.keys() ?? []) records.current.get(id)?.client.current?.release();
     syncRef.current = null; setSync(null); paintRef.current();
   }, []);
+  const suspendFollowers = useCallback((ids: Iterable<string>, ready?: string) => {
+    const session = syncRef.current;
+    if (!session) return;
+    const departed = new Map(session.departed);
+    for (const id of ids) {
+      if (id === session.master || !session.generations.has(id) || departed.has(id)) continue;
+      records.current.get(id)?.client.current?.release();
+      departed.set(id, ready);
+    }
+    if (departed.size === session.departed.size) return;
+    const next = { ...session, departed };
+    syncRef.current = next; setSync(next); paintRef.current();
+  }, []);
   const paint = useCallback(() => {
     const current = motion.current, plan = layoutRef.current, container = scroller.current, focusId = focusedRef.current;
     if (!container) return;
@@ -334,7 +349,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       else if (visible && (focusId === id || hoveredCard.current === id)) tier = "interactive";
       if (tier !== last.tier) record.element.dataset.refreshTier = last.tier = tier;
       const session = syncRef.current, generation = session?.generations.get(id);
-      const following = !!generation && session?.master !== id && !syncIssue(record.state.current, generation);
+      const following = !!generation && session?.master !== id && !session?.departed.has(id) && !syncIssue(record.state.current, generation);
       record.client.current?.activity(tier, frozen, following, box.width * (window.devicePixelRatio || 1));
     }
     if (frozen !== movingAttribute.current) { root.current?.setAttribute("data-moving", String(frozen)); movingAttribute.current = frozen; }
@@ -354,7 +369,16 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       if (id === session.master && issue && state.status !== "connecting") {
         stopSync();
         setError(issue);
-      } else if (id !== session.master && issue !== session.issues.get(id)) {
+      } else if (session.departed.has(id)) {
+        const generation = records.current.get(id)?.client.current?.readyGeneration();
+        if (session.departed.get(id) !== generation) {
+          const next = { ...session, departed: new Map(session.departed).set(id, generation) };
+          syncRef.current = next; setSync(next);
+        }
+      } else if (id !== session.master && issue === SYNC_DEPARTED) {
+        suspendFollowers([id], records.current.get(id)?.client.current?.readyGeneration());
+      } else if (id !== session.master && !session.departed.has(id) && issue !== session.issues.get(id)) {
+        if (issue) records.current.get(id)?.client.current?.release();
         const issues = new Map(session.issues);
         if (issue) issues.set(id, issue);
         else issues.delete(id);
@@ -364,7 +388,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       }
     }
     paintRef.current();
-  }, [stopSync]);
+  }, [stopSync, suspendFollowers]);
   const beginMorph = useCallback(() => {
     if (morphTimer.current) clearTimeout(morphTimer.current);
     motion.current.morphing = !reducedRef.current; setMorphing(!reducedRef.current);
@@ -486,8 +510,12 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     const allowed = new Set(displayed.map((profile) => profile.id));
     setSelected((old) => [...old].some((id) => !allowed.has(id)) ? new Set([...old].filter((id) => allowed.has(id))) : old);
     if (focused && !displayed.some((profile) => profile.id === focused && profile.running)) collapse();
-    if (sync && [...sync.generations.keys()].some((id) => !displayed.some((profile) => profile.id === id && profile.running))) stopSync();
-  }, [displayed, focused, sync, collapse, stopSync]);
+    const session = syncRef.current;
+    if (!session) return;
+    const running = new Set(displayed.filter((profile) => profile.running).map((profile) => profile.id));
+    if (!running.has(session.master)) stopSync();
+    else suspendFollowers([...session.generations.keys()].filter((id) => !running.has(id)));
+  }, [displayed, focused, collapse, stopSync, suspendFollowers]);
   useEffect(() => {
     if (!locateId) return;
     const profile = profilesRef.current.find((entry) => entry.id === locateId); if (profile && !profile.running) setShowStopped(true);
@@ -515,7 +543,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     const session = syncRef.current, source = record.state.current.viewport;
     if (!session || session.master !== id || !source || syncIssue(record.state.current, session.generations.get(id)!)) return;
     for (const [follower, generation] of session.generations) {
-      if (follower === id) continue;
+      if (follower === id || session.departed.has(follower)) continue;
       const target = records.current.get(follower), destination = target?.state.current.viewport;
       if (!target || !destination || syncIssue(target.state.current, generation)) continue;
       const input = workbenchFollowerInput(value, source, destination); if (input) target.client.current?.input(input);
@@ -535,24 +563,39 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     if (!generations.has(id) || generations.size < 2) { setError(t("Wait for at least two environments to connect before synchronizing.")); return; }
     stopSync();
     setError(null);
-    const session: SyncSession = { master: id, generations, issues: new Map() };
+    const session: SyncSession = { master: id, generations, issues: new Map(), departed: new Map() };
     syncRef.current = session;
     setSync(session);
     if (focusedRef.current !== id) focus(id);
     paintRef.current();
   }, [stopSync, focus, t]);
+  const rejoinFollower = (id: string) => {
+    const session = syncRef.current, record = records.current.get(id), generation = record?.client.current?.readyGeneration();
+    if (!session?.departed.has(id) || !generation
+      || !profilesRef.current.some((profile) => profile.id === id && profile.running)) return;
+    record?.client.current?.release();
+    const next = { ...session, generations: new Map(session.generations), issues: new Map(session.issues), departed: new Map(session.departed) };
+    next.departed.delete(id); next.issues.delete(id); next.generations.set(id, generation);
+    syncRef.current = next; setSync(next); paintRef.current();
+  };
   const action = useCallback(async (kind: "start" | "stop" | "raise", ids: string[]) => {
     if (busy) return; setBusy(true); setError(null);
-    if (kind === "stop" && syncRef.current && ids.some((id) => syncRef.current!.generations.has(id))) stopSync();
     try {
       const failures: string[] = [];
       for (let i = 0; i < ids.length; i += 3) await Promise.all(ids.slice(i, i + 3).map(async (id) => {
-        try { const result = await (kind === "start" ? openProfile(id) : kind === "stop" ? closeProfile(id) : raiseProfile(id)); if (!result.ok) throw new Error(result.error || t("Operation failed")); }
+        try {
+          const result = await (kind === "start" ? openProfile(id) : kind === "stop" ? closeProfile(id) : raiseProfile(id));
+          if (!result.ok) throw new Error(result.error || t("Operation failed"));
+          if (kind === "stop") {
+            if (id === syncRef.current?.master) stopSync();
+            else suspendFollowers([id]);
+          }
+        }
         catch (cause) { failures.push(`${profilesRef.current.find((profile) => profile.id === id)?.name ?? id}: ${cause instanceof Error ? cause.message : String(cause)}`); }
       }));
       await onRefresh(); if (failures.length) setError(failures.join(" · "));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); }
-  }, [busy, onRefresh, stopSync, t]);
+  }, [busy, onRefresh, stopSync, suspendFollowers, t]);
   const applyBatch = async () => {
     if (busy || !selected.size) return; setBusy(true); setError(null);
     try {
@@ -642,8 +685,10 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
   const followerIssues = sync ? Array.from(sync.generations.keys()).flatMap((id) => {
     if (id === sync.master) return [];
     const profile = profiles.find((entry) => entry.id === id);
-    const issue = profile?.running ? sync.issues.get(id) : "This environment has stopped or restarted.";
-    return issue ? [{ id, name: profile?.name || id, issue }] : [];
+    const departed = sync.departed.has(id);
+    const issue = profile?.running && !departed ? sync.issues.get(id) : SYNC_DEPARTED;
+    const canRejoin = departed && profile?.running && !!sync.departed.get(id);
+    return issue ? [{ id, name: profile?.name || id, issue, canRejoin }] : [];
   }) : [];
   return <section ref={root} className={`workbench${morphing ? " morphing" : ""}${filtering ? " filtering" : ""}`} aria-label={t("Multi-view workbench")}
     onPointerEnter={(event) => { if (event.pointerType !== "touch") hovered.current = true; }}
@@ -671,7 +716,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       <Glyph name="link" />
       <div className="workbench-sync-status" role="status">
         {t("Synchronizing · control {number} · {count} followers", { number: masterProfile ? numberOf(masterProfile) : sync.master, count: sync.generations.size - 1 - followerIssues.length })}
-        {!!followerIssues.length && <ul>{followerIssues.map(({ id, name, issue }) => <li key={id}>{name} · {t(issue)}</li>)}</ul>}
+        {!!followerIssues.length && <ul>{followerIssues.map(({ id, name, issue, canRejoin }) => <li key={id}>{name} · {t(issue)}{canRejoin && <> <button type="button" className="btn ghost xs" onClick={() => rejoinFollower(id)}>{t("Rejoin synchronization")}</button></>}</li>)}</ul>}
       </div>
       <button type="button" className="btn ghost xs" onClick={stopSync}>{t("Stop synchronization")}</button>
     </div>}
@@ -693,7 +738,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       }}>
       <div className="workbench-canvas" id={canvasId} style={{ height: layout.height }}>
         {displayed.map((profile, order) => <BrowserViewport key={profile.id} profile={profile} order={order} selected={selected.has(profile.id)} focused={focused === profile.id} obscured={!!focused && focused !== profile.id}
-          master={sync?.master === profile.id} following={!!sync?.generations.has(profile.id) && sync.master !== profile.id && !sync.issues.has(profile.id)}
+          master={sync?.master === profile.id} following={!!sync?.generations.has(profile.id) && sync.master !== profile.id && !sync.departed.has(profile.id) && !sync.issues.has(profile.id)}
           script={scriptRun?.profiles.some((entry) => entry.id === profile.id && entry.status === "running") ? { progress: scriptProgress, name: scriptRun.scriptName } : undefined}
           register={register} onState={onState} onSelect={select} onFocus={focus} onMaster={setMaster} onAction={onAction} onInput={broadcast}
           onHover={onHover} />)}

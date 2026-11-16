@@ -205,3 +205,11 @@
 .guide-markdown th { font-weight: 600; color: var(--ink); background: var(--surface-sunken); }
 .guide-markdown tr:last-child td { border-bottom: 0; }
 @media (prefers-reduced-motion: reduce) { .guide-drawer[open] { animation: none; } }
+.browser-task-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.browser-task-steps li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.browser-task-steps li small, .browser-task-receipt small { color: var(--muted); overflow-wrap: anywhere; }
+.browser-task-evidence { display: grid; min-width: 0; gap: 10px; }
+.browser-task-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.browser-task-receipt { display: grid; gap: 3px; }
+.browser-task-evidence img { display: block; max-width: 100%; max-height: 380px; object-fit: contain; border-radius: 6px; }
+.browser-task-evidence pre { max-height: 340px; overflow: auto; }

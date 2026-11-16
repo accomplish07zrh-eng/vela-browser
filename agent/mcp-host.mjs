@@ -388,6 +388,28 @@ const ALIAS_TOOLS = [
     inputSchema: { type: "object", properties: { logOffset: { type: "integer", minimum: 0 } }, additionalProperties: false },
   },
   {
+    name: "vela_browser_task",
+    description: "Run durable JavaScript steps in a Vela Browser profile, independently of this connection. Start returns a runId immediately. Supply a stable idempotencyKey to recover a lost start reply. On resume, an uncertain step's verifier returns {state: 'applied' | 'absent' | 'unknown', value}; absent means the original write cannot still commit. See status and evidence for the action and verification receipts.",
+    annotations: toolAnnotations("Manage a durable browser task", { destructive: true, openWorld: true }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        operation: { type: "string", enum: ["start", "list", "status", "resume", "pause", "cancel", "evidence"] },
+        profileId: PROFILE_ID, name: { type: "string" }, runId: { type: "string" }, idempotencyKey: { type: "string" },
+        screenshots: { type: "boolean" }, argument: {},
+        steps: { type: "array", items: { type: "object", properties: {
+          id: { type: "string" }, run: { type: "string" }, verify: { type: "string" }, timeoutMs: { type: "integer", minimum: 1 },
+        }, required: ["id", "run"], additionalProperties: false } },
+        verify: { type: "string", description: "Replacement verification function for the uncertain step during this resume." },
+        sequence: { type: "integer", minimum: 1 }, part: { type: "string", enum: ["summary", "network", "events", "logs", "screenshot", "value"] },
+        offset: { type: "integer", minimum: 0 }, bytes: { type: "integer", minimum: 1, maximum: 1048576 },
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+      },
+      required: ["operation"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "vela_script_stop",
     description: "Stop the current script run. Profiles that already finished keep their results.",
     annotations: toolAnnotations("Stop a script run", { destructive: true }),
@@ -712,6 +734,11 @@ export async function createVelaBrowserMcp(options = {}) {
       if (name === "vela_script_read") return toolResult(await runtime.call("scripts.get", { scriptId: args.scriptId }));
       if (name === "vela_script_save") return toolResult(await runtime.call("scripts.save", { ...args, client: agent() }));
       if (name === "vela_script_run") return toolResult(await runtime.call("scripts.run", args));
+      if (name === "vela_browser_task") {
+        const { operation, ...params } = args;
+        if (!["start", "list", "status", "resume", "pause", "cancel", "evidence"].includes(operation)) throw new Error("Choose a browser task operation");
+        return toolResult(await runtime.call(`browserTasks.${operation}`, params));
+      }
       if (name === "vela_script_stop") return toolResult(await runtime.call("scripts.stop"));
       if (name === "vela_script_run_status") {
         const { run } = await runtime.call("scripts.status");
@@ -906,7 +933,7 @@ export async function createVelaBrowserMcp(options = {}) {
       diagnose("playwright detached");
       for (const profileId of [...ownedProfileIds]) {
         diagnose("owned browser close started");
-        const closed = await runtime.call("browser.close", { profileId })
+        const closed = await runtime.call("browser.close", { profileId, cleanup: true })
           .then(() => true, () => false);
         diagnose(`owned browser close finished closed=${closed}`);
         if (closed) ownedProfileIds.delete(profileId);

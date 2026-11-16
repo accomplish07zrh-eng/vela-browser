@@ -55,7 +55,7 @@ async function run() {
   const browserPid = context?._connection?.toImpl?.(context)?._browser?.options?.browserProcess?.process?.pid;
   if (!Number.isSafeInteger(browserPid) || browserPid <= 0) { await context.close(); throw error("runtime_unavailable"); }
   const workbench = new ContextWorkbench(context);
-  const devtools = new BrowserDevtools(context);
+  const devtools = new BrowserDevtools(context, { engine: "webkit" });
   const plugins = new PluginHost({ context, engine: "webkit", profileId: input.profileId, devtools, log: (msg) => process.stderr.write(`${msg}\n`) });
   // What the user downloads lands in their Downloads folder, not in Playwright's temporary one.
   keepDownloads(context);
@@ -134,6 +134,7 @@ async function run() {
       ...payload.captureSeed, origins: [...new Set([...(payload.captureSeed?.origins ?? []), ...(payload.captureSeed?.openTabsOnly ? [] : origins)])],
     } };
     if (name === "session-restore") storageCache.clear();
+    if (name === "devtools-program") return devtools.runTaskProgram(payload);
     if (name === "mcp-list") return [...(await initializeOfficial()).tools.filter(tool => !/pdf/i.test(tool.name)), ...DEVTOOLS_TOOLS, ...pluginTools(payload.plugins)];
     if (name === "mcp-call") {
       if (typeof payload.name !== "string") throw error("invalid_request");

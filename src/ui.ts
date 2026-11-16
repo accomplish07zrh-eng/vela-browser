@@ -55,6 +55,7 @@ import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
 import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
+import { BrowserTaskError } from "./browser-tasks.ts";
 import { TaskError } from "./tasks.ts";
 import type { PythonRuntime } from "./python-runtime.ts";
 import { runtimeDownloads } from "./runtime-download.ts";
@@ -520,7 +521,8 @@ export interface UiRuntimeOptions {
   mcpTunnel?: import("./mcp-tunnel.ts").McpTunnelLifecycle;
   defaultCloudUrl?: string;
 
-  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime; tasks?: import("./tasks.ts").TaskRunner };
+  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime; tasks?: import("./tasks.ts").TaskRunner;
+    browserTasks?: import("./browser-tasks.ts").BrowserTaskSupervisor };
   appConfig?: AppConfigStore;
   /** Re-applies taskbar-hidden mode right after the setting changes. */
   taskbarMode?: import("./taskbar.ts").TaskbarMode;
@@ -603,6 +605,40 @@ export async function handleUiRequest(
       if (rejected) return rejected;
     }
     try {
+      if (pathname === "/ui/api/scripts/browser-tasks") {
+        const tasks = scripts.browserTasks;
+        if (!tasks) return noStoreJson({ ok: false, error: "Browser tasks require the local desktop app" }, 503);
+        try {
+          const params = new URL(req.url).searchParams;
+          if (req.method === "GET") {
+            const runId = params.get("runId");
+            if (!runId) {
+              const offset = Number(params.get("offset") ?? 0);
+              if (!Number.isSafeInteger(offset) || offset < 0) return noStoreJson({ ok: false, error: "Invalid task offset" }, 400);
+              return noStoreJson({ ok: true, ...tasks.list(() => true, offset) });
+            }
+            const sequence = params.get("sequence");
+            if (!sequence) return noStoreJson({ ok: true, task: tasks.status(runId) });
+            const offset = Number(params.get("offset") ?? 0);
+            if (!Number.isSafeInteger(offset) || offset < 0) return noStoreJson({ ok: false, error: "Invalid evidence offset" }, 400);
+            return noStoreJson({ ok: true, evidence: tasks.evidence(runId, Number(sequence), params.get("part") ?? "summary", offset, 524288) });
+          }
+          if (req.method === "POST") {
+            const body = await req.json();
+            if (typeof body?.runId === "string" && (body.operation === "pause" || body.operation === "cancel")) {
+              return noStoreJson({ ok: true, ...tasks.stop(body.runId, body.operation === "pause" ? "paused" : "cancelled") });
+            }
+            if (typeof body?.runId === "string" && body.operation === "resume") {
+              const task = tasks.status(body.runId);
+              return noStoreJson({ ok: true, task: tasks.resume(task.runId, task.client) });
+            }
+          }
+          return noStoreJson({ ok: false, error: "Unknown browser task operation" }, 404);
+        } catch (error) {
+          if (error instanceof BrowserTaskError) return noStoreJson({ ok: false, error: error.message }, error.status);
+          throw error;
+        }
+      }
       // Automated tasks: saved scripts in order, by hand or on a schedule (tasks.ts).
       if (pathname === "/ui/api/scripts/tasks" || pathname.startsWith("/ui/api/scripts/tasks/")) {
         const tasks = scripts.tasks;

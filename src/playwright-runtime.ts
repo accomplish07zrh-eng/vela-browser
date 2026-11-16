@@ -28,6 +28,7 @@ export type PlaywrightWorkerOperation =
   | "session-restore"
   | "cookie-add"
   | "cookie-harvest"
+  | "devtools-program"
   | "diagnostics";
 
 export interface PlaywrightWorkerErrorDetails {

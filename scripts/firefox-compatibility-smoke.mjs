@@ -65,6 +65,11 @@ async function verifyNestedDevtools(context) {
   const cipher = createCipheriv("aes-128-gcm", key, nonce);
   const encrypted = Buffer.concat([nonce, cipher.update("Decoded draft", "utf8"), cipher.final(), cipher.getAuthTag()]);
   const leaf = createServer((request, response) => {
+    if (request.url === "/live") {
+      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      response.write("event: draft\ndata: still connected\n\n");
+      return;
+    }
     if (request.url === "/packed") {
       response.writeHead(200, { "content-type": "application/octet-stream" });
       response.end(encrypted);
@@ -142,6 +147,17 @@ async function verifyNestedDevtools(context) {
     }` });
     assert.deepEqual(programmed.value, { input: "Decoded draft", sawRequest: true, sawLog: true });
     assert.equal(programmed.logs[0].text, "draft decrypted");
+    const capture = await call("stream", { action: "start", pageId: target.pageId });
+    const captureId = capture.captureId;
+    const stream = await call("program", { ...target, argument: captureId, code: `async ({devtools, argument: captureId}) => {
+      await devtools.call("stream", { action: "fetch", captureId, url: "/live" });
+      for await (const event of devtools.watch(captureId)) {
+        if (event.kind === "fetch-failed") throw new Error(event.error);
+        if (event.kind === "fetch-data") return devtools.payload(captureId, event.payload).toString("utf8");
+      }
+    }` });
+    assert.match(stream.value, /still connected/);
+    await call("stream", { action: "discard", captureId });
     assert.equal(page.url(), start);
   } finally {
     devtools?.dispose();

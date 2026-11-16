@@ -3,10 +3,10 @@ import { chromium, firefox } from "playwright-core";
 import { BrowserDevtools } from "./devtools.mjs";
 
 /** The developer record a script reads: what this browser logged and requested since the script started. */
-function scriptDevtools(context) {
+function scriptDevtools(context, engine) {
   // A script that never reads the record must not fail because the record could not start.
   let observer, failure;
-  try { observer = new BrowserDevtools(context); } catch (error) { failure = error; }
+  try { observer = new BrowserDevtools(context, { engine }); } catch (error) { failure = error; }
   return {
     observer,
     api: Object.freeze({
@@ -62,7 +62,7 @@ async function run(input) {
     if (typeof module.default !== "function") {
       throw new Error("Playwright script must export a default async function");
     }
-    devtools = scriptDevtools(context);
+    devtools = scriptDevtools(context, input.engine ?? "chromium");
     await module.default({
       browser,
       context,

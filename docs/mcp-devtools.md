@@ -2,7 +2,7 @@
 
 The developer tools are listed by default alongside the existing Playwright tools. They can read and change the selected browser, or a browser addressed explicitly by `profileId`. No enable command, approval step, or read-only mode is required.
 
-Each environment keeps its existing persistent context, process, cookies, proxy, and native fingerprint configuration. The developer observer uses browser events; it does not wrap `console`, inject initialization scripts, alter network routes, enable the Debugger domain, or change browser identity. Explicit JavaScript, storage edits, requests, and protocol commands perform the changes requested by the caller.
+Each environment uses its persistent context, process, cookies, proxy, and native fingerprint configuration. Background observation uses browser events. Explicit requests such as live native capture, runtime source indexing, JavaScript execution, storage edits, and protocol commands act in the chosen context.
 
 | Tool | Capability |
 | --- | --- |
@@ -12,10 +12,14 @@ Each environment keeps its existing persistent context, process, cookies, proxy,
 | `browser_devtools_network` | Requests including static resources, response status, failures, timing and redirect relationships |
 | `browser_devtools_request` | Full request and response headers including duplicate headers, POST data, response bytes, TLS details and transfer sizes |
 | `browser_devtools_events` | WebSocket frames, socket errors, downloads, navigation, crashes and page/worker lifecycle |
+| `browser_devtools_stream` | Disk-backed live event cursor and full binary payload ranges, including WebSocket messages and streamed HTTP |
+| `browser_devtools_sources` | Script, source map, worker, and request provenance. Chromium also supports runtime-loaded code and tracepoints |
 | `browser_devtools_evaluate` | JavaScript expressions, function source or statements, with an argument, in a selected page, iframe or worker |
 | `browser_devtools_element` | Element markup, text, attributes, rectangle and computed CSS |
 | `browser_devtools_page_inspect` | Accessibility tree, paginated DOM, form state, and an index of hidden nodes and data attributes |
-| `browser_devtools_action` | Locate and operate an element by role and name, label, text, test ID or selector, with optional post-action verification |
+| `browser_devtools_anchor` | Capture a reusable locator with scope and iframe ancestry |
+| `browser_devtools_dom_delta` | Preserve a DOM snapshot and page through additions, removals, changes, and sibling ordering |
+| `browser_devtools_action` | Act by role and name, label, text, test ID, selector or anchor, with optional event or state verification |
 | `browser_devtools_program` | Run a custom Playwright and JavaScript program with binary HTTP bodies, correlated traffic and logs, and the developer tools API |
 | `browser_devtools_storage` | The cookies the selected page or frame would send (other sites with `urls`, the whole profile with `allCookies`), its local/session storage, IndexedDB database names and Cache Storage keys |
 | `browser_devtools_storage_edit` | Set, remove and clear cookies or local/session storage; JavaScript can modify IndexedDB and Cache Storage |
@@ -54,6 +58,28 @@ To click a named button in a nested frame and wait for the resulting text, call 
 ```
 
 `actionCompleted` and `verification.passed` report distinct outcomes. A click can complete while its expected result times out. Examine the resulting page before retrying an operation with side effects.
+
+Use `target.within` to scope repeated controls to a named form, dialog or other container. `target.near` can match text inside that container. For reusable targeting, pass the same target to `browser_devtools_anchor` and keep its returned object as `action.anchor`. Resolution follows the page and its named or URL-matched frame ancestry, then tries semantic candidates whose identity matches the original. Ambiguous frames or controls need a narrower target. For fresh evidence use `verify.response` with a URL substring and optional method/status, `verify.popup`, or `verify.navigation`. The result includes the evidence window and matching request, frame or popup ID.
+
+Use `dom_delta` with `action: "take"` for a baseline, then take a second snapshot with `baselineId`. Its result is frozen while the live page keeps updating. Read further pages by `snapshotId` and `nextOffset`. Discard snapshots when finished.
+
+## Durable browser tasks
+
+`vela_browser_task` with `operation: "start"` accepts a `profileId`, an optional `idempotencyKey` and `argument`, and ordered `steps` with an `id` and a JavaScript `run` function. It returns a `runId` after storing the plan. The desktop runs the steps after the MCP client disconnects. If the desktop restarts, `operation: "resume"` continues from the saved checkpoint. Resending the same plan and `idempotencyKey` retrieves the same run after a lost start reply.
+
+Each function gets the browser program API and an `argument` with `input`, `runId`, `stepId`, a stable `actionKey`, the current `attempt`, and `previous` step receipts keyed by step ID. Select the page or frame again by a reusable anchor or its semantic identity if the task can span browser restarts. Where a site supports idempotency keys, send `argument.actionKey` with the write.
+
+Add a `verify` function to a step that writes. It can read a receipt endpoint or another authoritative site state and return `{state: "applied", value: receipt}`, `{state: "absent"}`, or `{state: "unknown"}`. An absent result means the effect is absent and the earlier request can no longer commit. After an uncertain write, the task checks this verifier before reissuing the action. An unknown result holds the task in `needs_verification`. Resume can supply a new verifier for that attempt. Completed step values remain available to later steps.
+
+`operation: "status"` returns each checkpoint. `pause` and `cancel` take effect at a step boundary. `evidence` returns step and attempt metadata by `sequence`, plus paged result, network, console, events, and optional screenshots. The **Browser tasks** tab on the Scripts page shows the same evidence locally. Set `screenshots: true` in the plan to capture step screenshots.
+
+## Live streams and source tracing
+
+Start a `browser_devtools_stream` journal, then open the target request or socket. Use `read` with `nextCursor` for incremental records and `bytes` for the ranges in `record.payload`. A browser program can use `for await (const record of devtools.watch(captureId))` and `devtools.payload(captureId, record.payload)` to read a complete payload as a Buffer. Use `mark` to associate a result, decoded value or current screenshot with that sequence of events. `stop` finishes capture and preserves the journal until discard or the developer connection ends.
+
+Chromium records passive SSE messages and response chunks for attached CDP targets. The native Network domain exposes browser response content, including its buffered prefix when streaming starts. Firefox and WebKit record WebSocket messages and completed response bodies exposed by the engine. `stream.fetch` opens a streamed request in the chosen frame on any engine and yields its response bytes while the connection remains open.
+
+`browser_devtools_sources` links native and DOM script records to captured request IDs. Select a source to read its body or map a generated position to its original source. On Chromium, `trace_add` evaluates an expression at a compiled line or a line mapped from an original source using `originalSource`. The matching `source-trace` event contains the same `traceId`, `sourceId` and the evaluated value. Remove that tracepoint with `trace_remove` or detach the source session with `close`. Decoders can use loaded sources, captured bytes, and trace values together in browser programs.
 
 ## Programmable browser operations
 
