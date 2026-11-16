@@ -176,12 +176,14 @@ function json(value, seen = new WeakMap(), path = "$") {
   if (!value || typeof value !== "object") return value;
   if (seen.has(value)) return { circularReference: seen.get(value) };
   seen.set(value, path);
-  if (value instanceof Date) return { type: "date", value: value.toISOString() };
-  if (value instanceof RegExp) return { type: "regexp", value: String(value) };
-  if (value instanceof Map) return { type: "map", entries: [...value].map(([k, v], i) => [json(k, seen, `${path}.${i}.key`), json(v, seen, `${path}.${i}.value`)]) };
-  if (value instanceof Set) return { type: "set", values: [...value].map((v, i) => json(v, seen, `${path}.${i}`)) };
-  if (Array.isArray(value)) return value.map((v, i) => json(v, seen, `${path}[${i}]`));
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, json(v, seen, `${path}.${k}`)]));
+  try {
+    if (value instanceof Date) return { type: "date", value: value.toISOString() };
+    if (value instanceof RegExp) return { type: "regexp", value: String(value) };
+    if (value instanceof Map) return { type: "map", entries: [...value].map(([k, v], i) => [json(k, seen, `${path}.${i}.key`), json(v, seen, `${path}.${i}.value`)]) };
+    if (value instanceof Set) return { type: "set", values: [...value].map((v, i) => json(v, seen, `${path}.${i}`)) };
+    if (Array.isArray(value)) return value.map((v, i) => json(v, seen, `${path}[${i}]`));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, json(v, seen, `${path}.${k}`)]));
+  } finally { seen.delete(value); }
 }
 /** A URL glob as DevTools writes them: ** crosses slashes, * stays within one part, ? is one character. */
 function globToRegExp(glob) {
@@ -948,10 +950,14 @@ export class BrowserDevtools {
     capture.native.set(target, pending);
     return pending;
   }
-  async *watchCapture(id, { since = 0, limit = 100, waitMs = 1000 } = {}) {
+  async *watchCapture(id, options = {}) {
     const capture = this.getCapture(id);
+    let since = integer(options.since, 0, 0);
+    const limit = integer(options.limit, 100, 1, 500), waitMs = integer(options.waitMs, 1000, 1, 20000);
     for (;;) {
-      const update = await capture.read(since, limit, waitMs);
+      if (options.signal?.aborted) return;
+      const update = await capture.read(since, limit, waitMs, options.signal);
+      if (options.signal?.aborted) return;
       since = update.nextCursor;
       yield* update.records;
       if (!update.active && !update.hasMore) return;
@@ -1082,7 +1088,7 @@ export class BrowserDevtools {
     if (index === undefined && await locator.count() > 1) throw new Error("The anchor target is ambiguous");
     const identity = await locator.evaluate(elementIdentity, undefined, { timeout });
     const { index: _index, ...original } = args.target;
-    const scope = original.within ? { within: original.within, near: original.near } : {};
+    const scope = original.within ? { within: original.within, ...(original.near === undefined ? {} : { near: original.near }) } : {};
     const candidates = [
       ...(identity.testId ? [{ ...scope, testId: identity.testId }] : []),
       original,
@@ -1187,7 +1193,7 @@ export class BrowserDevtools {
         || popup && entry.popupPageId && (!popup.urlIncludes || entry.url.includes(popup.urlIncludes))
         || navigation && entry.pageId === pageId && entry.kind === "navigation"
         && entry.frameId === (navigation.scope === "page" ? this.frameId(page.mainFrame(), page) : frameId) && entry.url.includes(navigation.urlIncludes);
-      if (hit) { match = { ...data }; complete?.({ passed: true, match }); }
+      if (hit) { match = data; complete?.({ passed: true, match }); }
     };
     if (response?.method !== undefined && typeof response.method !== "string") throw new Error("Verification method must be a string");
     this.observers.add(observe);

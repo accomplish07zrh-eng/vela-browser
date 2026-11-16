@@ -61,7 +61,7 @@ export class DevtoolsJournal {
     for (const wake of this.waiters) wake();
   }
 
-  async read(since, limit, waitMs) {
+  async read(since, limit, waitMs, signal) {
     if (since > this.cursor) throw new Error("Unknown capture cursor");
     if (since && since !== this.cursor) {
       const previous = Buffer.alloc(1);
@@ -69,9 +69,11 @@ export class DevtoolsJournal {
       if (previous[0] !== 10) throw new Error("Use a nextCursor returned by this capture");
     }
     if (this.live && since === this.cursor && waitMs) await new Promise(resolve => {
-      const wake = () => { clearTimeout(timer); this.waiters.delete(wake); resolve(); };
+      const wake = () => { clearTimeout(timer); this.waiters.delete(wake); signal?.removeEventListener("abort", wake); resolve(); };
       const timer = setTimeout(wake, waitMs);
       this.waiters.add(wake);
+      signal?.addEventListener("abort", wake, { once: true });
+      if (signal?.aborted) wake();
     });
     if (this.disposed) throw new Error("Capture was discarded");
     let position = since;

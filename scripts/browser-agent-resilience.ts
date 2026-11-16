@@ -108,6 +108,10 @@ try {
   const live = await call("stream", { action: "start", pageId: listing.pageId });
   const captureId = live.captureId;
   const nested = page.frames().find(frame => frame.url() === leafUrl)!;
+  const baseline = await call("dom_delta", { action: "take", frameId: action.frameId, selector: 'form[aria-label="Draft"]' });
+  await nested.locator("#rebuilt").evaluate(button => button.setAttribute("data-state", "changed after baseline"));
+  const delta = await call("dom_delta", { action: "take", baselineId: baseline.snapshotId });
+  assert.equal(delta.records.find((item: any) => item.type === "changed").after.attributes["data-state"], "changed after baseline");
   await nested.evaluate(() => {
     const connection = new EventSource("/live");
     connection.addEventListener("snapshot", () => {});
@@ -160,7 +164,9 @@ try {
     await new Promise<void>((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
     return { ws, async send(method: string, params: Record<string, unknown>) {
       const reply = new Promise<any>((resolve, reject) => {
-        ws.once("message", raw => resolve(JSON.parse(raw.toString()))); ws.once("error", reject);
+        const onError = (error: Error) => { ws.off("message", onMessage); reject(error); };
+        const onMessage = (raw: WebSocket.RawData) => { ws.off("error", onError); resolve(JSON.parse(raw.toString())); };
+        ws.once("message", onMessage); ws.once("error", onError);
       });
       ws.send(JSON.stringify({ protocol: AGENT_CONTROL_PROTOCOL, id: 1, method, params }));
       const result = await reply;

@@ -172,6 +172,8 @@ async function launch(directory, browser = executablePath) {
     executablePath: resolve(browser),
     headless: !headed,
     viewport: null,
+    // Match the profile owner for developer operations that need the frame's page world.
+    ...(resolve(browser) === resolve(executablePath) ? { env: { ...process.env, CAMOU_CONFIG_1: '{"allowMainWorld":true}' } } : {}),
     // Expose Gecko's native controls to System Events in these scratch profiles.
     ...(nativeUi ? { firefoxUserPrefs: { "accessibility.force_disabled": -1 } } : {}),
     timeout: 120_000,

@@ -155,6 +155,20 @@ test("fresh response evidence is attached before clicking and ignores an earlier
   } finally { observer.dispose(); }
 });
 
+test("developer JSON keeps shared locator scopes while marking actual cycles", async () => {
+  const { observer, call } = setup();
+  try {
+    const output = await call("program", { code: `async () => {
+      const within = { role: "form", name: "Draft" };
+      const value = { candidates: [{ selector: "#old", within }, { text: "Save", within }] };
+      value.self = value;
+      return value;
+    }` });
+    expect(output.value.candidates[1].within).toEqual({ role: "form", name: "Draft" });
+    expect(output.value.self).toEqual({ circularReference: "$.value" });
+  } finally { observer.dispose(); }
+});
+
 test("console captures every severity and exception stack once; cursors do not consume history", async () => {
   const { context, observer, call } = setup();
   for (const type of ["debug", "log", "info", "warning", "error", "trace", "assert", "startGroup"]) {

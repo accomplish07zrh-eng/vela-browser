@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 type StepState = "pending" | "uncertain" | "completed";
@@ -12,6 +12,7 @@ type Checkpoint = { id: string; state: StepState; attempts: number; evidence?: n
 type BrowserTask = {
   version: 1; runId: string; client: string; definition: Definition; state: RunState;
   createdAt: string; updatedAt: string; steps: Checkpoint[]; evidenceCount: number; error?: string;
+  stopRequested?: "paused" | "cancelled";
 };
 type BrowserProgram = {
   code: string; argument: unknown; screenshots: boolean; timeoutMs: number;
@@ -29,12 +30,22 @@ export class BrowserTaskError extends Error {
 function badRequest(message: string): never { throw new BrowserTaskError("invalid_request", message); }
 function message(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 2000); }
 
+function syncDirectory(path: string) {
+  if (process.platform === "win32") return;
+  const fd = openSync(path, "r");
+  try { fsyncSync(fd); }
+  catch (error) {
+    if (!["EINVAL", "ENOTSUP", "EBADF"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+  } finally { closeSync(fd); }
+}
+
 function atomicJson(path: string, value: unknown) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     const fd = openSync(temporary, "wx", 0o600);
     try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(temporary, path);
+    syncDirectory(dirname(path));
   } finally { rmSync(temporary, { force: true }); }
 }
 
@@ -59,6 +70,7 @@ function view(task: BrowserTask) {
     runId: task.runId, client: task.client, profileId: task.definition.profileId, name: task.definition.name, state: task.state,
     createdAt: task.createdAt, updatedAt: task.updatedAt, steps: structuredClone(task.steps),
     evidenceCount: task.evidenceCount, ...(task.error ? { error: task.error } : {}),
+    ...(task.stopRequested ? { stopRequested: task.stopRequested } : {}),
   };
 }
 export type BrowserTaskView = ReturnType<typeof view>;
@@ -85,10 +97,13 @@ export class BrowserTaskSupervisor {
     for (const id of readdirSync(options.root)) {
       if (!/^[0-9a-f]{32}$/.test(id)) continue;
       try {
-        const task: BrowserTask = JSON.parse(readFileSync(this.path(id, "state.json"), "utf8"));
+        const manifest = this.path(id, "state.json");
+        if (!existsSync(manifest)) continue;
+        const task: BrowserTask = JSON.parse(readFileSync(manifest, "utf8"));
         if (task.version !== 1 || task.runId !== id) continue;
         if (task.state === "running") {
-          task.state = "interrupted";
+          task.state = task.stopRequested ?? "interrupted";
+          delete task.stopRequested;
           this.save(task);
         }
         this.history.set(id, task);
@@ -139,7 +154,12 @@ export class BrowserTaskSupervisor {
       version: 1, runId, client, definition, state: "running", createdAt: now, updatedAt: now,
       steps: definition.steps.map(step => ({ id: step.id, state: "pending", attempts: 0 })), evidenceCount: 0,
     };
-    mkdirSync(this.path(runId), { mode: 0o700 });
+    const directory = this.path(runId);
+    mkdirSync(directory, { mode: 0o700, recursive: true });
+    if (readdirSync(directory).some(name => !name.endsWith(".tmp"))) {
+      throw new BrowserTaskError("task_storage_unreadable", "This key has task data that could not be loaded", 409);
+    }
+    syncDirectory(this.options.root);
     try { this.save(task); } catch (error) { rmSync(this.path(runId), { recursive: true, force: true }); throw error; }
     this.history.set(runId, task);
     this.launch(task);
@@ -166,7 +186,10 @@ export class BrowserTaskSupervisor {
     const task = this.get(runId);
     const active = this.running.get(runId);
     if (active) {
-      active.stop = active.stop === "cancelled" ? active.stop : state;
+      const requested = active.stop === "cancelled" ? active.stop : state;
+      task.stopRequested = requested;
+      this.save(task);
+      active.stop = requested;
       return { task: view(task), stopping: true };
     }
     if (task.state !== "completed" && task.state !== "cancelled" && state === "cancelled") {
@@ -180,12 +203,14 @@ export class BrowserTaskSupervisor {
     if (!Number.isSafeInteger(sequence) || sequence < 1 || sequence > task.evidenceCount) throw new BrowserTaskError("evidence_not_found", "Evidence was not found", 404);
     const data = this.readEvidence(runId, sequence);
     if (part === "summary") {
-      const { sequence, stepId, attempt, phase, startedAt, endedAt, completed, error, screenshot, network, events, logs, value } = data;
-      return { sequence, stepId, attempt, phase, startedAt, endedAt, completed, error,
+      const { sequence, stepId, attempt, phase, startedAt, endedAt, completed, error, screenshot, screenshotError, network, events, logs, value } = data;
+      return { sequence, stepId, attempt, phase, startedAt, endedAt, completed, error, screenshotError,
         available: { screenshot: !!screenshot, network: !!network, events: !!events, logs: !!logs, value: value !== undefined } };
     }
     if (!["value", "network", "events", "logs", "screenshot"].includes(part)) badRequest("Unknown evidence part");
-    const buffer = Buffer.from(JSON.stringify(data[part] ?? null));
+    const browserEvents = (data.events as { records?: Array<{ kind: string }> } | undefined)?.records;
+    const value = part === "logs" ? { program: data.logs ?? [], browser: browserEvents?.filter(event => ["console", "exception", "crash"].includes(event.kind)) ?? [] } : data[part];
+    const buffer = Buffer.from(JSON.stringify(value ?? null));
     const page = buffer.subarray(offset, offset + bytes);
     return { part, offset, returnedBytes: page.length, totalBytes: buffer.length, nextOffset: offset + page.length,
       hasMore: offset + page.length < buffer.length, base64: page.toString("base64") };
@@ -296,6 +321,7 @@ export class BrowserTaskSupervisor {
       release?.();
       await connection?.close().catch(error => this.options.log?.(`Browser task detach: ${message(error)}`));
       task.state = state;
+      delete task.stopRequested;
       this.save(task);
     }
   }
