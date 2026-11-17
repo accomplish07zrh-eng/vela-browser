@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -64,6 +64,14 @@ test("persistent fingerprint capture never evaluates the probe across privileged
 /** Bun started under the name `node` drops process.argv[1] after --eval, so this Node is a wrapper script. */
 async function fakePackagedNode(root: string): Promise<void> {
   await writeFile(join(root, "node", PACKAGED_NODE), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+}
+
+async function stagePackagedWorker(root: string): Promise<void> {
+  const sourceRoot = join(import.meta.dir, "..");
+  await fakePackagedNode(root);
+  await mkdir(join(root, "agent"), { recursive: true });
+  await copyFile(join(sourceRoot, "playwright-worker.mjs"), join(root, "worker.mjs"));
+  await copyFile(join(sourceRoot, "agent", "chromium-fingerprint.mjs"), join(root, "agent", "chromium-fingerprint.mjs"));
 }
 
 const bunAsNodeTest = process.platform === "win32" ? test.skip : test;
@@ -905,8 +913,7 @@ bunAsNodeTest("worker imports all sites without replacing existing cookies and r
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     const jar = join(root, "jar.json");
     const events = join(root, "events.json");
@@ -956,8 +963,7 @@ bunAsNodeTest("worker adds exactly one cookie without clearing the live jar", as
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       let added = false;
@@ -1022,8 +1028,7 @@ bunAsNodeTest("installed worker loads its packaged ESM dependency", async () => 
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), "export const chromium = {};\n");
     await chmod(join(root, "node", PACKAGED_NODE), 0o755);
@@ -1043,8 +1048,7 @@ bunAsNodeTest("worker retries until the persistent context appears without creat
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       let connects = 0;
@@ -1075,8 +1079,7 @@ bunAsNodeTest("search provider uses the managed browser and closes only its temp
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       import { appendFile } from "node:fs/promises";
@@ -1179,8 +1182,7 @@ bunAsNodeTest("profile card setup preserves a minimized browser window", async (
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       let mode = "normal";
@@ -1313,8 +1315,7 @@ bunAsNodeTest("worker restore failures preserve operation and outcome details", 
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       const context = { pages: () => [], async clearCookies() { throw new Error("secret"); } };
@@ -1348,8 +1349,7 @@ bunAsNodeTest("capture failures identify connection, context, cookies, and detac
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       export const chromium = { async connectOverCDP(endpoint) {
@@ -1389,8 +1389,7 @@ bunAsNodeTest("worker captures arbitrary web sessions, rejects malformed capture
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       const cookie = { name: "custom_auth", value: "value", domain: ".example.com", path: "/", partitionKey: "https://example.com", _crHasCrossSiteAncestor: false };
@@ -1533,8 +1532,7 @@ bunAsNodeTest("worker replaces stale pages and attempts every restored tab after
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       import { appendFile } from "node:fs/promises";
@@ -1604,8 +1602,7 @@ bunAsNodeTest("worker reuses startup pages and removes only the exact first-run 
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       import { appendFile } from "node:fs/promises";
@@ -1705,8 +1702,7 @@ bunAsNodeTest("worker leaves Telegram unread when its IndexedDB read fails and a
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       let mode = "capture";
@@ -1797,8 +1793,7 @@ bunAsNodeTest("worker captures current localStorage for a closed known origin", 
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       const storage = {
@@ -1902,8 +1897,7 @@ bunAsNodeTest("worker proves hidden target identity through marker collisions an
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       import { appendFile } from "node:fs/promises";
@@ -2137,8 +2131,7 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       const anchor = { url: () => "about:blank" };
@@ -2283,8 +2276,7 @@ bunAsNodeTest("worker falls back safely when a live page changes origin during c
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       const livePage = {
@@ -2378,8 +2370,7 @@ bunAsNodeTest("worker leaves an attached Telegram page unread when it cannot be 
   try {
     await mkdir(join(root, "node"), { recursive: true });
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
-    await fakePackagedNode(root);
-    await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await stagePackagedWorker(root);
     await writeFile(join(root, "node_modules", "playwright-core", "package.json"), JSON.stringify({ name: "playwright-core", version: "1.58.2", type: "module" }));
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
       const page = { url: () => "https://web.telegram.org/a/", async evaluate() { throw new Error("unavailable"); } };
