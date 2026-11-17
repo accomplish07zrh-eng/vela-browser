@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ScriptRun } from "./scripts.ts";
+import type { BrowserTaskSupervisor, BrowserTaskView } from "./browser-tasks.ts";
 
 export type TaskSchedule =
   | { kind: "manual" }
@@ -16,6 +17,7 @@ export type TaskSchedule =
   | { kind: "interval"; minutes: number };
 
 export interface TaskStep { scriptId: string; inputs: Record<string, unknown> }
+export interface ScheduledSkill { id: string; startUrl?: string; inputs: Record<string, unknown> }
 
 export interface TaskTarget { profileIds?: string[]; groups?: string[]; tags?: string[] }
 
@@ -26,6 +28,8 @@ export interface TaskDefinition {
   target: TaskTarget;
   /** Run in order; each step continues with the profiles that succeeded the step before. */
   steps: TaskStep[];
+  skill?: ScheduledSkill;
+  client?: string;
   concurrency: number;
   /** How many more times a step is tried for the profiles that failed it. */
   retries: number;
@@ -57,6 +61,11 @@ export interface TaskRunRecord {
   note?: string;
   profiles: number;
   steps: TaskStepReport[];
+  browser?: {
+    skill: ScheduledSkill;
+    client: string;
+    runs: Array<{ profileId: string; runId?: string; state?: BrowserTaskView["state"]; error?: string }>;
+  };
 }
 
 export class TaskError extends Error {
@@ -73,7 +82,20 @@ export function normalizeTask(input: unknown, existing?: TaskDefinition, now = D
   const name = typeof raw.name === "string" ? raw.name.trim() : "";
   if (!name || name.length > 80) throw new TaskError("A task needs a name of at most 80 characters");
   const steps = Array.isArray(raw.steps) ? raw.steps : [];
-  if (!steps.length || steps.length > MAX_STEPS) throw new TaskError(`A task runs 1 to ${MAX_STEPS} scripts`);
+  let skill: ScheduledSkill | undefined;
+  if (raw.skill !== undefined) {
+    const value = raw.skill as Record<string, unknown> | null;
+    if (!value || typeof value !== "object" || typeof value.id !== "string" || !/^[0-9a-f]{32}$/.test(value.id)
+      || (value.startUrl !== undefined && typeof value.startUrl !== "string")
+      || (value.inputs !== undefined && (!value.inputs || typeof value.inputs !== "object" || Array.isArray(value.inputs)))) {
+      throw new TaskError("Supply a site skill ID, optional startUrl and JSON inputs");
+    }
+    skill = { id: value.id, ...(typeof value.startUrl === "string" ? { startUrl: value.startUrl } : {}),
+      inputs: (value.inputs ?? {}) as Record<string, unknown> };
+  }
+  if ((!skill && !steps.length) || steps.length > MAX_STEPS || (skill && steps.length)) {
+    throw new TaskError(`Choose a site skill or 1 to ${MAX_STEPS} scripts`);
+  }
   const normalizedSteps = steps.map((step, index) => {
     const value = (step && typeof step === "object" ? step : {}) as Record<string, unknown>;
     if (typeof value.scriptId !== "string" || !value.scriptId) throw new TaskError(`Step ${index + 1} needs a script`);
@@ -104,6 +126,8 @@ export function normalizeTask(input: unknown, existing?: TaskDefinition, now = D
     enabled: raw.enabled !== false,
     target,
     steps: normalizedSteps,
+    ...(skill ? { skill } : {}),
+    ...(existing?.client ? { client: existing.client } : {}),
     concurrency,
     retries,
     useCredentials: raw.useCredentials === true,
@@ -168,7 +192,9 @@ export class TaskStore {
   write(file: TaskFile): void {
     mkdirSync(dirname(this.path), { recursive: true });
     const temp = `${this.path}.tmp`;
-    writeFileSync(temp, JSON.stringify({ tasks: file.tasks, history: file.history.slice(-MAX_HISTORY) }, null, 2), { mode: 0o600 });
+    const recent = new Set(file.history.filter(run => run.outcome !== "running" || !run.browser).slice(-MAX_HISTORY));
+    const history = file.history.filter(run => recent.has(run) || run.outcome === "running" && run.browser);
+    writeFileSync(temp, JSON.stringify({ tasks: file.tasks, history }, null, 2), { mode: 0o600 });
     renameSync(temp, this.path);
   }
 }
@@ -179,6 +205,7 @@ export interface TaskRunnerDeps {
   /** The profiles a target names right now, in a stable order. */
   resolveProfiles(target: TaskTarget): string[];
   scriptName(scriptId: string): Promise<string>;
+  browserTasks?: BrowserTaskSupervisor;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -194,39 +221,55 @@ export class TaskRunner {
   constructor(private readonly deps: TaskRunnerDeps) {}
   private now(): number { return this.deps.now?.() ?? Date.now(); }
 
-  list(): { tasks: Array<TaskDefinition & { nextRunAt: number | null }>; history: TaskRunRecord[]; runningTaskId: string | null } {
+  list(client?: string): { tasks: Array<TaskDefinition & { nextRunAt: number | null }>; history: TaskRunRecord[]; runningTaskId: string | null } {
     const file = this.deps.store.read();
     const now = this.now();
+    const tasks = client === undefined ? file.tasks : file.tasks.filter(task => task.client === client);
+    const allowed = new Set(tasks.map(task => task.id));
     return {
-      tasks: file.tasks.map((task) => ({ ...task, nextRunAt: task.enabled ? nextRunAt(task, now) : null })),
-      history: [...file.history].reverse(),
-      runningTaskId: this.currentId,
+      tasks: tasks.map((task) => ({ ...task, nextRunAt: task.enabled ? nextRunAt(task, now) : null })),
+      history: file.history.filter(run => client === undefined || allowed.has(run.taskId)).reverse(),
+      runningTaskId: client === undefined || (this.currentId && allowed.has(this.currentId)) ? this.currentId : null,
     };
   }
 
-  save(input: unknown): TaskDefinition {
+  save(input: unknown, client?: string): TaskDefinition {
     const file = this.deps.store.read();
     const id = input && typeof input === "object" && typeof (input as { id?: unknown }).id === "string" ? (input as { id: string }).id : undefined;
     const existing = id ? file.tasks.find((task) => task.id === id) : undefined;
-    if (id && !existing) throw new TaskError("This task no longer exists", 404);
+    if (id && (!existing || (client !== undefined && client !== existing.client))) throw new TaskError("This task no longer exists", 404);
     const task = normalizeTask(input, existing, this.now());
+    if (client !== undefined) {
+      if (!task.skill) throw new TaskError("MCP schedules require a saved site skill");
+      task.client = client;
+    }
+    if (task.skill) {
+      if (!this.deps.browserTasks) throw new TaskError("Site skill scheduling is unavailable", 503);
+      this.deps.browserTasks.checkSkill(task.skill.id, task.client ?? "Desktop scheduler", task.skill.startUrl);
+    }
     file.tasks = existing ? file.tasks.map((item) => item.id === task.id ? task : item) : [...file.tasks, task];
     this.deps.store.write(file);
     return task;
   }
 
-  delete(id: string): void {
+  delete(id: string, client?: string): void {
     const file = this.deps.store.read();
-    if (!file.tasks.some((task) => task.id === id)) throw new TaskError("This task no longer exists", 404);
+    if (!file.tasks.some((task) => task.id === id && (client === undefined || task.client === client))) throw new TaskError("This task no longer exists", 404);
     if (this.currentId === id) throw new TaskError("This task is running; stop its script run first", 409);
     file.tasks = file.tasks.filter((task) => task.id !== id);
     this.deps.store.write(file);
   }
 
   /** Starts a task now. Resolves with its record once it finished. */
-  run(id: string, trigger: TaskRunRecord["trigger"] = "manual"): Promise<TaskRunRecord> {
-    const task = this.deps.store.read().tasks.find((item) => item.id === id);
+  run(id: string, trigger: TaskRunRecord["trigger"] = "manual", client?: string): Promise<TaskRunRecord> {
+    const file = this.deps.store.read();
+    const task = file.tasks.find((item) => item.id === id && (client === undefined || item.client === client));
     if (!task) throw new TaskError("This task no longer exists", 404);
+    if (task.skill) {
+      const unfinished = file.history.find(item => item.taskId === task.id && item.outcome === "running" && item.browser);
+      if (unfinished) return Promise.resolve(unfinished);
+      return Promise.resolve(this.dispatchSkill(task, trigger, task.skill));
+    }
     if (this.running) throw new TaskError("Another task is running", 409);
     const run = this.execute(task, trigger).finally(() => { this.running = null; this.currentId = null; });
     this.running = run;
@@ -237,16 +280,20 @@ export class TaskRunner {
   /** Checks every 30 seconds for tasks that are due. */
   start(intervalMs = 30_000): void {
     if (this.timer) return;
+    this.refreshSkillRuns();
     this.timer = setInterval(() => void this.tick(), intervalMs);
     (this.timer as { unref?: () => void }).unref?.();
   }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
   async tick(): Promise<void> {
-    if (this.running) return;
+    this.refreshSkillRuns();
     const now = this.now();
-    for (const task of this.deps.store.read().tasks) {
+    const file = this.deps.store.read();
+    for (const task of file.tasks) {
       if (!task.enabled || task.schedule.kind === "manual") continue;
+      if (!task.skill && this.running) continue;
+      if (task.skill && file.history.some(run => run.taskId === task.id && run.outcome === "running")) continue;
       // Due when its next time after the last run (or after it was saved) has come.
       const due = nextRunAt(task, task.lastRunAt ?? task.updatedAt);
       if (due === null || due > now) continue;
@@ -261,6 +308,58 @@ export class TaskRunner {
     if (index >= 0) file.history[index] = record; else file.history.push(record);
     if (lastRunAt) file.tasks = file.tasks.map((task) => task.id === record.taskId ? { ...task, lastRunAt } : task);
     this.deps.store.write(file);
+  }
+
+  private dispatchSkill(task: TaskDefinition, trigger: TaskRunRecord["trigger"], skill: ScheduledSkill): TaskRunRecord {
+    const client = task.client ?? "Desktop scheduler";
+    const profiles = [...new Set(this.deps.resolveProfiles(task.target))]
+      .filter(id => this.deps.browserTasks?.canUseProfile(id, client));
+    const startedAt = this.now();
+    const record: TaskRunRecord = { id: randomUUID(), taskId: task.id, taskName: task.name, trigger, startedAt,
+      outcome: "running", profiles: profiles.length, steps: [],
+      browser: { skill, client, runs: profiles.map(profileId => ({ profileId })) } };
+    this.record(record, startedAt);
+    this.refreshSkillRuns();
+    return this.deps.store.read().history.find(run => run.id === record.id) ?? record;
+  }
+
+  private refreshSkillRuns() {
+    const service = this.deps.browserTasks;
+    if (!service) return;
+    for (const record of this.deps.store.read().history) {
+      const batch = record.browser;
+      if (!batch || record.outcome !== "running") continue;
+      const before = JSON.stringify(batch.runs);
+      for (const item of batch.runs) {
+        if (item.error && !item.runId) continue;
+        try {
+          const task = item.runId ? service.status(item.runId) : service.start(item.profileId, batch.client, {
+            skillId: batch.skill.id, startUrl: batch.skill.startUrl, argument: batch.skill.inputs,
+            name: record.taskName, idempotencyKey: `schedule:${record.id}`,
+          });
+          item.runId = task.runId;
+          item.state = task.state;
+          item.error = task.blocked?.message ?? task.blocked?.code ?? task.error ?? task.steps.find(step => step.error)?.error;
+        } catch (error) {
+          item.state = "interrupted";
+          item.error = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const pending = batch.runs.some(run => ["queued", "running", "recovering"].includes(run.state ?? "") || !run.state && !run.error);
+      if (pending) {
+        if (JSON.stringify(batch.runs) !== before) this.record(record);
+        continue;
+      }
+      const succeeded = batch.runs.filter(run => run.state === "completed").length;
+      const failures = batch.runs.filter(run => run.state !== "completed" && run.state !== "cancelled")
+        .map(run => ({ profileId: run.profileId, name: run.profileId, error: run.error ?? run.state }));
+      record.steps = [{ scriptId: batch.skill.id, scriptName: record.taskName, attempts: 1, succeeded,
+        failed: failures.length, cancelled: batch.runs.filter(run => run.state === "cancelled").length, failures }];
+      record.finishedAt = this.now();
+      record.outcome = succeeded === 0 ? "failed" : succeeded === record.profiles ? "succeeded" : "partial";
+      this.record(record);
+      this.deps.log?.(`task ${record.taskName}: ${record.outcome} (${succeeded}/${record.profiles})`);
+    }
   }
 
   private async execute(task: TaskDefinition, trigger: TaskRunRecord["trigger"]): Promise<TaskRunRecord> {

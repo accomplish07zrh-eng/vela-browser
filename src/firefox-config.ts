@@ -488,6 +488,9 @@ export function firefoxStartupPrefs(profile: Profile, hostPlatform?: NodeJS.Plat
     ...(os === "macos" && appleSilicon ? {} : { "gfx.blacklist.webgpu": 4 }),
     "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
+    // DirectWrite's legacy family names must reach the shared font list before
+    // Windows pages and workers measure text. Start the native loader promptly.
+    ...(host === "windows" && os === "windows" ? { "gfx.font_loader.delay": 0 } : {}),
     "browser.newtabpage.enabled": true,
     // A fixed cache size (in KB) instead of one sized from free disk; pages cannot read it.
     "browser.cache.disk.smart_size.enabled": false,

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Vela Local API",
-    "version": "0.1.18",
+    "version": "0.1.19",
     "summary": "Vela Local API: an AdsPower-compatible loopback HTTP API served by a running Vela Browser.",
     "description": "Vela Browser serves this API on the loopback interface only (http://127.0.0.1:50400). It has no authentication by design: any process on the same machine can call it. Local calls use the default AI access scope from Vela Browser settings, which initially grants access to all profiles. Never expose the listener beyond loopback with a reverse proxy, port forward, or tunnel. A CDP WebSocket URL returned by a browser start or active operation grants full control of that browser and its logged-in sessions; treat it like a credential.\n\nVela implements the routes listed here. It offers AdsPower V1 compatibility and V2 profile listing and browser control. The Vela extensions include browserCookies, the fp_verdict and fp_captured_at list fields, and the engine and chromium_runtime creation fields.\n\nResponses use HTTP status 200 and the JSON envelope { code, msg, data }. Check code for success (0) or failure (-1). V2 routes and V1 group and user routes require the documented HTTP method. V1 browser-control routes accept other methods for compatibility.\n\nThe x-aliasmode-version-introduced field marks the earliest documented release for each operation.",
     "license": {
@@ -306,6 +306,86 @@
         }
       }
     },
+    "/api/v2/browser-profile/create": {
+      "post": {
+        "operationId": "profileCreateV2",
+        "tags": [
+          "user"
+        ],
+        "summary": "Create a profile (V2)",
+        "description": "Creates a profile in the local store and returns its ID and display number. The engine generates a profile identity. Vela applies the supported fingerprint fields listed in this schema.",
+        "x-aliasmode-version-introduced": "0.1.19",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/V2ProfileCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "AdsPower-compatible response envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/V2ProfileCreateResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/browser-profile/update": {
+      "post": {
+        "operationId": "profileUpdateV2",
+        "tags": [
+          "user"
+        ],
+        "summary": "Update a profile (V2)",
+        "description": "Updates the saved local profile. Cookies are merged into the launch queue and applied at the next start. A running browser keeps its current identity until restarted.",
+        "x-aliasmode-version-introduced": "0.1.19",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/V2ProfileUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "AdsPower-compatible response envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/EmptyDataResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v2/browser-profile/list": {
       "post": {
         "operationId": "profileListV2",
@@ -353,7 +433,7 @@
           "browser"
         ],
         "summary": "Start a profile browser (V2)",
-        "description": "Starts or attaches to a profile through the shared lifecycle queue. Vela applies the saved session when opening a browser. Uses profile_id or profile_no and supports headless and approved launch_args.",
+        "description": "Starts or attaches to a profile through the shared lifecycle queue. Vela applies the saved session when opening a browser. Uses profile_id or profile_no and supports headless and approved launch_args. For a managed Chromium build, the first V2 start installs and verifies the corresponding ChromeDriver on demand. Use the returned webdriver path and ws.selenium debugger address to attach Selenium.",
         "x-aliasmode-version-introduced": "0.1.18",
         "requestBody": {
           "required": true,
@@ -373,7 +453,7 @@
                 "schema": {
                   "oneOf": [
                     {
-                      "$ref": "#/components/schemas/BrowserStartResponse"
+                      "$ref": "#/components/schemas/V2BrowserStartResponse"
                     },
                     {
                       "$ref": "#/components/schemas/Failure"
@@ -393,7 +473,7 @@
           "browser"
         ],
         "summary": "Check a profile browser (V2)",
-        "description": "Reports browser lifecycle status. Supply profile_id or profile_no. A certified Chromium browser includes its DevTools endpoint and debug port.",
+        "description": "Reports browser lifecycle status. Supply profile_id or profile_no. A certified Chromium browser includes its DevTools endpoint and debug port. A cached, verified ChromeDriver is returned when available.",
         "x-aliasmode-version-introduced": "0.1.18",
         "parameters": [
           {
@@ -462,6 +542,59 @@
                   "oneOf": [
                     {
                       "$ref": "#/components/schemas/EmptyDataResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/browser-profile/delete": {
+      "post": {
+        "operationId": "profileDeleteV2",
+        "tags": [
+          "user"
+        ],
+        "summary": "Delete up to 100 browser profiles",
+        "description": "Stop the selected profiles before deleting them. The response reports the deleted count and any profiles whose browsers could not be stopped.",
+        "x-aliasmode-version-introduced": "0.1.19",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "profile_id": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "profile_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "AdsPower response envelope with deletion counts or a validation failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/UserDeleteResponse"
                     },
                     {
                       "$ref": "#/components/schemas/Failure"
@@ -1970,7 +2103,7 @@
             "description": "Present with `Active`. `running` means a certified live browser; the other values describe a transition or unconfirmed teardown."
           },
           "ws": {
-            "$ref": "#/components/schemas/WsEndpoints"
+            "$ref": "#/components/schemas/V2WsEndpoints"
           },
           "debug_port": {
             "type": "string",
@@ -1978,8 +2111,18 @@
           },
           "webdriver": {
             "type": "string",
-            "const": "",
-            "description": "Empty when no WebDriver is supplied."
+            "description": "Absolute path to the verified ChromeDriver on the Vela host. Empty when a matching driver is unavailable."
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "firefox",
+              "webkit"
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "description": "Native MCP automation capabilities reported by the engine."
           }
         },
         "additionalProperties": false
@@ -2124,6 +2267,307 @@
               },
               "data": {
                 "$ref": "#/components/schemas/V2ProfileListData"
+              }
+            }
+          }
+        ]
+      },
+      "V2WsEndpoints": {
+        "type": "object",
+        "required": [
+          "puppeteer",
+          "selenium"
+        ],
+        "properties": {
+          "puppeteer": {
+            "type": "string",
+            "format": "uri",
+            "description": "CDP WebSocket URL (`ws://127.0.0.1:<port>/devtools/browser/<id>`). Grants full control of the browser; treat it as a secret."
+          },
+          "selenium": {
+            "type": "string",
+            "description": "Loopback Chrome DevTools debugger address for Selenium, in 127.0.0.1:port format."
+          }
+        },
+        "additionalProperties": false
+      },
+      "V2ChromiumStartData": {
+        "type": "object",
+        "required": [
+          "ws",
+          "debug_port",
+          "webdriver"
+        ],
+        "properties": {
+          "ws": {
+            "$ref": "#/components/schemas/V2WsEndpoints"
+          },
+          "debug_port": {
+            "type": "string",
+            "description": "Remote debugging port as a decimal string."
+          },
+          "webdriver": {
+            "type": "string",
+            "description": "Absolute path to the verified ChromeDriver on the Vela host. Empty when a matching driver is unavailable."
+          },
+          "warning": {
+            "type": "string",
+            "description": "Optional non-fatal advisory message produced during profile launch."
+          }
+        },
+        "additionalProperties": false
+      },
+      "V2BrowserStartResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Envelope"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "code": {
+                "const": 0
+              },
+              "msg": {
+                "const": "success"
+              },
+              "data": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/V2ChromiumStartData"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "engine",
+                      "capabilities"
+                    ],
+                    "properties": {
+                      "engine": {
+                        "type": "string",
+                        "enum": [
+                          "firefox",
+                          "webkit"
+                        ]
+                      },
+                      "capabilities": {
+                        "type": "object",
+                        "description": "Native MCP automation capabilities reported by the engine."
+                      },
+                      "warning": {
+                        "type": "string",
+                        "description": "Optional non-fatal advisory message produced during profile launch."
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "V2ProfileEditFields": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "group_id": {
+            "type": "string",
+            "description": "Vela group name, or 0 for ungrouped."
+          },
+          "platform": {
+            "type": "string",
+            "description": "Platform domain used as a default startup page."
+          },
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "fakey": {
+            "type": "string"
+          },
+          "remark": {
+            "type": "string"
+          },
+          "tabs": {
+            "type": "array",
+            "maxItems": 30,
+            "items": {
+              "type": "string",
+              "format": "uri",
+              "description": "HTTP(S) URL without credentials"
+            },
+            "description": "Saved startup pages. An empty list clears this setting."
+          },
+          "cookie": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Cookie JSON or Netscape cookie text"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            ]
+          },
+          "ignore_cookie_error": {
+            "type": "string",
+            "enum": [
+              "0",
+              "1"
+            ],
+            "description": "Use 1 to ignore malformed rows of a Netscape cookie file."
+          },
+          "user_proxy_config": {
+            "$ref": "#/components/schemas/ProxyConfig",
+            "description": "HTTP, HTTPS or SOCKS5 endpoint, or proxy_soft no_proxy for a direct connection. Pass this field or proxyid."
+          },
+          "proxyid": {
+            "type": "string",
+            "description": "Local proxy pool node ID or random to choose an enabled node. Pass this field or user_proxy_config."
+          },
+          "fingerprint_config": {
+            "type": "object",
+            "properties": {
+              "screen_resolution": {
+                "type": "string",
+                "description": "WIDTH_HEIGHT, none or random"
+              },
+              "language": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "description": "BCP-47 language tag"
+                },
+                "description": "Vela uses the first language to generate the profile locale."
+              },
+              "language_switch": {
+                "type": "string",
+                "enum": [
+                  "0",
+                  "1"
+                ],
+                "description": "Use 1 for an automatically selected locale."
+              },
+              "automatic_timezone": {
+                "type": "string",
+                "enum": [
+                  "0",
+                  "1"
+                ],
+                "description": "Use 1 for proxy-based timezone and 0 for manual."
+              },
+              "timezone": {
+                "type": "string",
+                "description": "IANA timezone. Empty selects the local setting in manual mode."
+              }
+            },
+            "description": "These fields configure Vela's native fingerprint generator."
+          }
+        }
+      },
+      "V2ProfileCreateRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/V2ProfileEditFields"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "repeat_config": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "enum": [
+                    0,
+                    2,
+                    3,
+                    4
+                  ]
+                },
+                "description": "Allow duplicates (0), or check account (2), Cookie jar (3) and Facebook c_user (4)."
+              },
+              "engine": {
+                "type": "string",
+                "enum": [
+                  "chromium",
+                  "firefox",
+                  "webkit"
+                ],
+                "description": "Vela browser engine. Defaults to Chromium."
+              },
+              "chromium_runtime": {
+                "type": "string",
+                "enum": [
+                  "aliasmode",
+                  "cloakbrowser"
+                ],
+                "description": "Vela Chromium runtime selection."
+              }
+            }
+          }
+        ]
+      },
+      "V2ProfileUpdateRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/V2ProfileEditFields"
+          },
+          {
+            "type": "object",
+            "required": [
+              "profile_id"
+            ],
+            "properties": {
+              "profile_id": {
+                "type": "string",
+                "description": "ID returned from profile creation."
+              }
+            }
+          }
+        ]
+      },
+      "V2ProfileCreateData": {
+        "type": "object",
+        "required": [
+          "profile_id",
+          "profile_no"
+        ],
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "description": "New stable profile ID."
+          },
+          "profile_no": {
+            "type": "string",
+            "description": "Profile number displayed in Vela."
+          }
+        },
+        "additionalProperties": false
+      },
+      "V2ProfileCreateResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Envelope"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "code": {
+                "const": 0
+              },
+              "msg": {
+                "const": "success"
+              },
+              "data": {
+                "$ref": "#/components/schemas/V2ProfileCreateData"
               }
             }
           }

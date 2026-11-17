@@ -52,6 +52,7 @@ import { assertSafeProfileId } from "./profile-id.ts";
 import { batchDpapiKeyChecks, dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
 import { LifecycleAdmissionController } from "./lifecycle-admission.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
+import { managedChromeDriver } from "./chromedriver.ts";
 import { fingerprintAudit, type FingerprintAudit } from "./fingerprint-audit.ts";
 import type { FingerprintSample } from "./diagnose.ts";
 import { claimedScreenArea, watchWindowFit, type ScreenArea } from "./window-fit.ts";
@@ -82,8 +83,12 @@ import {
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
   chromiumComponentsDir,
   chromiumDeviceScale,
+  chromiumRuntimeRevision,
+  chromiumRevisions,
+  DEFAULT_CHROMIUM_REVISION,
   cloakBrowserExecutableSha256,
   ensureAliasmodeChromium,
+  ensurePinnedRuntime,
   ensureCloakBrowser,
   hostDisplayAvail,
   hostDisplayScale,
@@ -327,6 +332,7 @@ const PREFLIGHT_GUIDANCE = {
   chromium155_download: "Vela Chromium could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
   profile_missing: "This profile is not on this computer. Refresh the profile list, then open it again.",
+  profile_handed_off: "This profile was handed off to another computer. Use the destination copy.",
   profile_changed: "This profile's settings changed while it was opening. Open it again.",
   browser_unresponsive: "This profile's browser is still running but does not answer. Close the profile in Vela Browser, then open it again.",
   firefox_unresponsive: "The Firefox browser stopped answering while the profile was opening. Open the profile again.",
@@ -422,7 +428,7 @@ export type CookieSetter = (ws: string, cookies: CookieRecord[]) => Promise<void
  * the next start; the running browser and its identity checks keep the launched values.
  */
 export const LAUNCH_PERSONA_KEYS = [
-  "engine", "chromiumRuntime", "firefox", "webkit", "hardware", "ua", "platformOs", "platform", "proxy", "proxyError",
+  "engine", "chromiumRuntime", "kernelRevision", "firefox", "webkit", "hardware", "ua", "platformOs", "platform", "proxy", "proxyError",
   "timezone", "locale", "screenWidth", "screenHeight", "displayScale", "fingerprintSeed", "extensions",
 ] as const satisfies readonly (keyof LaunchPersona)[];
 
@@ -965,6 +971,15 @@ const RESETTABLE_SESSION_STORES = [
 
 export class Launcher {
   private store: ProfileStore;
+
+  /** The external Selenium client starts its own driver for the certified managed Chromium launch. */
+  async chromeDriverPath(profileId: string, download: boolean): Promise<string | undefined> {
+    const launch = this.store.getLaunch(profileId);
+    if (!launch?.binarySha256 || (launch.engine !== undefined && launch.engine !== "chromium") ||
+      !launch.ws.startsWith("ws://")) return undefined;
+    const path = await managedChromeDriver(launch.binarySha256, this.chromiumRuntimeRoot, this.hostPlatform, this.hostArch, download);
+    return this.store.getLaunch(profileId)?.ws === launch.ws ? path : undefined;
+  }
   private autofill?: AutofillBridge;
   private checkDpapiKey: (key: string) => Promise<boolean | undefined>;
   /** DPAPI answers per encrypted cookie key, so reopening a profile does not respawn PowerShell. */
@@ -1023,6 +1038,7 @@ export class Launcher {
   private skipDefaultWindowLabel: boolean;
   private watchWindowFitFn?: typeof watchWindowFit;
   private windowFits = new Map<string, { stop(): void }>();
+  private nativeStateStops = new Map<string, number>();
   private killPidFn: (pid: number) => Promise<void>;
   private killProcessGroupFn: (processGroupId: number) => Promise<void>;
   private readProcessSnapshotFn?: () => Promise<HostProcessSnapshot | null>;
@@ -1323,8 +1339,9 @@ export class Launcher {
     if (!componentsDir) return;
     const startedAt = Date.now();
     let checked = 0;
-    for (const { id, chromiumRuntime } of this.store.listProfiles()) {
-      if (!chromiumRuntime || this.startsInFlight.has(id) || this.stopsInFlight.has(id) || this.cacheClears.has(id) || this.store.getLaunch(id)) continue;
+    for (const { id, chromiumRuntime, kernelRevision } of this.store.listProfiles()) {
+      if (!chromiumRuntime || (kernelRevision && kernelRevision !== DEFAULT_CHROMIUM_REVISION)
+        || this.startsInFlight.has(id) || this.stopsInFlight.has(id) || this.cacheClears.has(id) || this.store.getLaunch(id)) continue;
       // A start that begins now waits for this, as it does for the cleanup after a stop.
       const sharing: Promise<void> = this.clearCacheDirs(id, ["component_crx_cache"], "Chromium component cleanup")
         .then(() => this.shareComponents(id, componentsDir))
@@ -1344,9 +1361,16 @@ export class Launcher {
   }
 
   /** Validate the deployment pin without reading the configured binary. */
-  private approvedBinarySha256(engine: BinaryKind = "chromium"): string {
+  kernelRevisions(): string[] { return chromiumRevisions(this.hostPlatform, this.hostArch); }
+
+  async prepareKernel(revision: string): Promise<void> {
+    await this.verifyConfiguredBinary(true, "aliasmode", revision);
+  }
+
+  private approvedBinarySha256(engine: BinaryKind = "chromium", revision?: string): string {
     if (engine === "webkit") return WEBKIT_EXECUTABLE_SHA256;
-    if (engine === "aliasmode") return ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
+    if (engine === "aliasmode") return revision ? chromiumRuntimeRevision(revision, this.hostPlatform, this.hostArch).executableSha256
+      : ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
     if (engine === "chromium" && this.downloadsCloakBrowser()) {
       return cloakBrowserExecutableSha256(this.hostPlatform, this.hostArch)!;
     }
@@ -1361,15 +1385,17 @@ export class Launcher {
   }
 
   /** Hash and canonicalize the exact executable before every fresh generation. */
-  private async verifyConfiguredBinary(forceHash = false, engine: BinaryKind = "chromium"): Promise<{ path: string; sha256: string }> {
-    const expected = this.approvedBinarySha256(engine);
+  private async verifyConfiguredBinary(forceHash = false, engine: BinaryKind = "chromium", revision?: string): Promise<{ path: string; sha256: string }> {
+    const expected = this.approvedBinarySha256(engine, revision);
     let binaryPath = engine === "firefox" ? this.firefoxBinaryPath : this.binaryPath;
     if (engine === "webkit") {
       try { binaryPath = await this.ensureWebKitFn(this.chromiumRuntimeRoot); }
       catch (error) { this.log(`WebKit install failed: ${error instanceof Error ? error.message : error}`); throw new BrowserLaunchError("preflight", "webkit_download"); }
     } else if (engine === "aliasmode") {
       try {
-        binaryPath = await this.ensureAliasmodeChromiumFn(this.chromiumRuntimeRoot);
+        binaryPath = revision
+          ? await ensurePinnedRuntime(chromiumRuntimeRevision(revision, this.hostPlatform, this.hostArch), this.chromiumRuntimeRoot, {}, this.hostPlatform)
+          : await this.ensureAliasmodeChromiumFn(this.chromiumRuntimeRoot);
       } catch (error) {
         this.log(`Vela Chromium install failed: ${error instanceof Error ? error.message : String(error)}`);
         throw new BrowserLaunchError("preflight", "chromium155_download");
@@ -1939,6 +1965,7 @@ export class Launcher {
     launchArgs: string[] = [],
     opts: LaunchStartOptions = {},
   ): Promise<LaunchStartResult> {
+    if (this.store.profileHandoff?.(profileId)) throw new BrowserLaunchError("preflight", "profile_handed_off");
     const stopping = this.stopsInFlight.get(profileId);
     const inFlight = this.startsInFlight.get(profileId);
     const requestedHeadless = opts.headless ?? this.headless;
@@ -1998,7 +2025,7 @@ export class Launcher {
     launchArgs: string[],
     opts: LaunchStartOptions = {},
   ): Promise<LaunchStartResult> {
-    const { chromeArgs, startupUrls } = splitLaunchUrls(launchArgs);
+    const { chromeArgs, startupUrls: requestedUrls } = splitLaunchUrls(launchArgs);
     const headless = opts.headless ?? this.headless;
     // Reject unsafe ids and switches before touching the profile directory or
     // opening a proxy connection.
@@ -2006,6 +2033,7 @@ export class Launcher {
     validateForwardedLaunchArgs(chromeArgs);
     let profile = this.store.getProfile(profileId);
     if (!profile) throw new LaunchRefusal("profile_missing", `Unknown profile: ${profileId}`);
+    const startupUrls = requestedUrls.length ? requestedUrls : opts.autoNavigate === false ? [] : profile.startupUrls ?? [];
     if (profile.proxyError) {
       throw new BrowserLaunchError("preflight", "proxy_invalid");
     }
@@ -2025,7 +2053,7 @@ export class Launcher {
       }
       this.assertHostCompatibility(checked);
       if (isContextEngine(profile.engine) && chromeArgs.length) throw new BrowserLaunchError("preflight", profile.engine === "webkit" ? "webkit_arguments" : "firefox_arguments");
-      approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
+      approvedBinarySha256 = this.approvedBinarySha256(binaryKind(checked), checked.kernelRevision);
     } catch (error) {
       return await this.rejectUnsafeExistingLaunch(profileId, "host/persona verification", error);
     }
@@ -2238,7 +2266,7 @@ export class Launcher {
       profileSnapshot = JSON.stringify(profile);
       this.log(`profile ${profileId} timezone set to ${exit.timezone} from its proxy exit`);
     }
-    if (profile.engine === "webkit") return this.startFreshWebKit(profile, startupUrls, opts, pendingSession);
+    if (profile.engine === "webkit") return this.startFreshWebKit(profile, startupUrls, opts, pendingSession, exit);
     if (profile.engine === "firefox") {
       const firefoxProfile = profile;
       const start = () => this.startFreshFirefox(firefoxProfile, startupUrls, opts, pendingSession, exit);
@@ -2262,7 +2290,7 @@ export class Launcher {
     // been canonicalized and matched byte-for-byte against the deployment pin.
     let verifiedBinary: { path: string; sha256: string };
     try {
-      verifiedBinary = await this.verifyConfiguredBinary(false, binaryKind(profile));
+      verifiedBinary = await this.verifyConfiguredBinary(false, binaryKind(profile), profile.kernelRevision);
     } catch (error) {
       if (error instanceof BrowserLaunchError) throw error;
       throw new BrowserLaunchError("binary_verification");
@@ -2376,7 +2404,7 @@ export class Launcher {
       // replacement cannot inherit the approval measured at launch start.
       let spawnVerifiedBinary: { path: string; sha256: string };
       try {
-        spawnVerifiedBinary = await this.verifyConfiguredBinary(true, binaryKind(profile));
+        spawnVerifiedBinary = await this.verifyConfiguredBinary(true, binaryKind(profile), profile.kernelRevision);
       } catch {
         throw new BrowserLaunchError("binary_verification");
       }
@@ -2635,6 +2663,7 @@ export class Launcher {
       this.requireUnchangedProfile(profileId, profileSnapshot, "launch commit");
       const info: LaunchInfo = {
         profileId,
+        ...(exit ? { egressAtLaunch: exit } : {}),
         pid: proc.pid,
         debugPort: port,
         ws,
@@ -2749,7 +2778,7 @@ export class Launcher {
     }
   }
 
-  private async startFreshWebKit(profile: Profile, startupUrls: string[], opts: LaunchStartOptions, pendingSession: string | null): Promise<LaunchStartResult> {
+  private async startFreshWebKit(profile: Profile, startupUrls: string[], opts: LaunchStartOptions, pendingSession: string | null, exit: ExitLocation | null): Promise<LaunchStartResult> {
     const profileId = profile.id, headless = opts.headless ?? this.headless;
     let snapshot = JSON.stringify(profile);
     const binary = await this.verifyConfiguredBinary(true, "webkit");
@@ -2762,7 +2791,7 @@ export class Launcher {
     const owner: FirefoxOwner = { ...reservation, pid: 0, browserPid: 0 };
     const port = Number(new URL(owner.endpoint).port);
     const launch: LaunchInfo = {
-      profileId, engine: "webkit", pid: 0, debugPort: port, ws: webkitEndpoint(owner),
+      profileId, engine: "webkit", pid: 0, debugPort: port, ws: webkitEndpoint(owner), ...(exit ? { egressAtLaunch: exit } : {}),
       startedAt: Date.now(), webkitOwner: owner, ownerBinaryPath,
       binaryPath: binary.path, binarySha256: binary.sha256, userDataDir, headless,
       personaDigest: this.launchPersonaDigest(profile, binary.sha256, headless), persona: launchPersona(profile),
@@ -2877,7 +2906,7 @@ export class Launcher {
     const owner: FirefoxOwner = { ...reservation, pid: 0, browserPid: 0 };
     const port = Number(new URL(owner.endpoint).port);
     const launch: LaunchInfo = {
-      profileId, engine: "firefox", pid: 0, debugPort: port, ws: firefoxEndpoint(owner),
+      profileId, engine: "firefox", pid: 0, debugPort: port, ws: firefoxEndpoint(owner), ...(exit ? { egressAtLaunch: exit } : {}),
       startedAt: Date.now(), firefoxOwner: owner, ownerBinaryPath,
       binaryPath: binary.path, binarySha256: binary.sha256, userDataDir, headless,
       personaDigest: this.launchPersonaDigest(profile, binary.sha256, headless),
@@ -3453,7 +3482,7 @@ export class Launcher {
     // launch generation is dead. Cleaning here covers explicit stops, direct
     // window closes discovered by reconciliation, and failed-start rollback.
     // start() cannot reuse the profile until its lifecycle transition finishes.
-    this.clearPostStopCache(profileId, launch.binaryPath);
+    if (!this.nativeStateStops.has(profileId)) this.clearPostStopCache(profileId, launch.binaryPath);
     return true;
   }
 
@@ -3816,6 +3845,18 @@ export class Launcher {
     return promise;
   }
 
+  /** Flush and close without pruning files needed by a profile migration. */
+  async stopForStateTransfer(profileId: string, expected?: LaunchGeneration): Promise<boolean> {
+    this.nativeStateStops.set(profileId, (this.nativeStateStops.get(profileId) ?? 0) + 1);
+    try {
+      return await this.stop(profileId, expected);
+    } finally {
+      const remaining = this.nativeStateStops.get(profileId)! - 1;
+      if (remaining) this.nativeStateStops.set(profileId, remaining);
+      else this.nativeStateStops.delete(profileId);
+    }
+  }
+
   private launchGenerationMatches(profileId: string, expected: LaunchGeneration): boolean {
     const current = this.store.getLaunch(profileId);
     return current?.debugPort === expected.debugPort && current.startedAt === expected.startedAt;
@@ -4159,8 +4200,9 @@ export class Launcher {
     let profile = this.store.getProfile(profileId);
     if (!profile) throw new Error(`cannot verify survivor ${profileId}: profile is missing`);
     const snapshot = JSON.stringify(profile);
-    this.assertHostCompatibility(launchedProfile(profile, this.store.getLaunch(profileId)));
-    const approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
+    const checked = launchedProfile(profile, this.store.getLaunch(profileId));
+    this.assertHostCompatibility(checked);
+    const approvedBinarySha256 = this.approvedBinarySha256(binaryKind(checked), checked.kernelRevision);
     if (!(await this.active(profileId))) throw new Error(`cannot verify survivor ${profileId}: browser identity/CDP is unavailable`);
 
     const launch = this.store.getLaunch(profileId);
@@ -4207,8 +4249,9 @@ export class Launcher {
       const profile = this.store.getProfile(profileId);
       if (!profile) throw new Error(`cannot verify survivor ${profileId}: profile is missing`);
       const launch = this.store.getLaunch(profileId);
-      this.assertHostCompatibility(launchedProfile(profile, launch));
-      const approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
+      const checked = launchedProfile(profile, launch);
+      this.assertHostCompatibility(checked);
+      const approvedBinarySha256 = this.approvedBinarySha256(binaryKind(checked), checked.kernelRevision);
       if (!launch || `${launch.debugPort}:${launch.startedAt}` !== generation) return null;
       this.assertStoredLaunchPersona(profile, launch, approvedBinarySha256);
       if (
@@ -5870,23 +5913,34 @@ async function openProfileCardTab(ws: string, url: string): Promise<void> {
 
 /**
  * Put an identity bookmark (`<name> · #<serial>` → the card) on the bookmark bar and make
- * the bar visible. Best-effort and self-contained: writes a fresh Bookmarks file (automation
- * profiles carry no user bookmarks) and safely merges the show-bar pref into a VALID
+ * the bar visible. Keeps existing user bookmarks and safely merges the show-bar pref into a VALID
  * Preferences (a corrupt one is left for repairCorruptPrefs). Never throws into a launch.
  */
 async function writeIdentityBookmark(userDataDir: string, name: string, url: string): Promise<void> {
   try {
     const dir = join(userDataDir, "Default");
     mkdirSync(dir, { recursive: true });
-    const bookmarks = {
+    const path = join(dir, "Bookmarks");
+    let bookmarks = {
       roots: {
-        bookmark_bar: { children: [{ name, type: "url", url }], name: "Bookmarks bar", type: "folder" },
+        bookmark_bar: { children: [] as Array<{ name: string; type: string; url?: string }>, name: "Bookmarks bar", type: "folder" },
         other: { children: [], name: "Other bookmarks", type: "folder" },
         synced: { children: [], name: "Mobile bookmarks", type: "folder" },
       },
       version: 1,
     };
-    writeFileSync(join(dir, "Bookmarks"), JSON.stringify(bookmarks));
+    let healthy = true;
+    if (existsSync(path)) {
+      try { bookmarks = JSON.parse(readFileSync(path, "utf8")); }
+      catch { healthy = false; }
+    }
+    if (healthy && Array.isArray(bookmarks?.roots?.bookmark_bar?.children)) {
+      const children = bookmarks.roots.bookmark_bar.children;
+      const card = children.find(item => item?.type === "url" && item?.url === url);
+      if (card) card.name = name;
+      else children.push({ name, type: "url", url });
+      await writeFileAtomic(path, JSON.stringify(bookmarks));
+    }
     const prefsPath = join(dir, "Preferences");
     let prefs: any = {};
     if (existsSync(prefsPath)) {

@@ -721,7 +721,18 @@ export async function convertMobileProfile(id: string): Promise<any> {
   return post(`/ui/api/profiles/${encodeURIComponent(id)}/convert-mobile`);
 }
 
-export type ExportFormat = "csv" | "txt" | "xlsx";
+export async function profileLaunchConcurrency(): Promise<number> {
+  try {
+    const response = await fetch("/ui/api/launch-batch");
+    if (response.ok) {
+      const { size } = await response.json();
+      if (Number.isSafeInteger(size) && size > 0) return size;
+    }
+  } catch { /* the dashboard still bounds requests when the sample is unavailable */ }
+  return 4;
+}
+
+export type ExportFormat = "csv" | "txt" | "xlsx" | "bitwarden";
 export interface ExportProgress { completed: number; total: number; }
 
 // ---- Export selected → download a CSV / .txt / Excel workbook ----------------
@@ -770,7 +781,7 @@ export async function exportProfiles(
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `vela-export.${format}`;
+  a.download = format === "bitwarden" ? "vela-bitwarden.json" : `vela-export.${format}`;
   document.body.appendChild(a);
   a.click();
   a.remove();

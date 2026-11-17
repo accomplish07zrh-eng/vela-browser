@@ -24,12 +24,16 @@ import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import { AUTOMATION_SCOPE_DENIED, type LocalAutomationScope } from "./ai-access.ts";
 import type { ProfileStore } from "./store.ts";
 import type { RemoteCoordinator } from "./remote.ts";
-import type { Profile, ProxySpec } from "./types.ts";
+import type { CookieRecord, Profile, ProxySpec } from "./types.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { attachTimezones, lookupExitLocation } from "./geoip.ts";
 import { normalizeProxySpec, proxyIdentityKey } from "./proxy.ts";
-import { syncFirefoxTimezone } from "./firefox-config.ts";
+import { setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
+import { isSafeProfileId } from "./profile-id.ts";
 import { isValidProfileName } from "./profile-validation.ts";
+import { localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
+import { mergeCookies, parseCookieText, parseStartupUrls, parseStrictResolution, parseStrictTimezone } from "./parse.ts";
+import { createWebKitProfileConfig } from "./webkit-config.ts";
 
 /** Best-effort geoip fetch, injectable for tests; defaults to real ip-api.com. */
 type GeoipFetch = (url: string, init: RequestInit) => Promise<{ json(): Promise<any> }>;
@@ -55,8 +59,9 @@ export interface ProfileRoster {
   updateProfile?(id: string, edits: ProfileEdits): Promise<void>;
 }
 
-/** Fields `user/update` may change: the browser name, saved account credentials and the proxy. */
-export type ProfileEdits = Partial<Pick<Profile, "name" | "username" | "password" | "email" | "emailPassword" | "twofa" | "proxy">>;
+/** Fields the compatibility API can apply to a saved profile. */
+export type ProfileEdits = Partial<Pick<Profile, "name" | "username" | "password" | "email" | "emailPassword" | "twofa" | "proxy"
+  | "group" | "platform" | "remark" | "startupUrls" | "locale" | "timezone" | "timezoneManual" | "screenWidth" | "screenHeight">>;
 
 function normalizeGroup(g: unknown): string {
   const s = String(g ?? "").trim();
@@ -132,7 +137,7 @@ function proxyFromUpdateConfig(px: any): ProxySpec | null {
   return proxy;
 }
 
-function editsFromUpdateBody(body: any): ProfileEdits {
+function editsFromUpdateBody(body: any, includeProxy = true): ProfileEdits {
   const edits: ProfileEdits = {};
   if (typeof body?.name === "string") edits.name = body.name;
   if (typeof body?.username === "string") edits.username = body.username;
@@ -142,22 +147,126 @@ function editsFromUpdateBody(body: any): ProfileEdits {
   else if (typeof body?.emailPassword === "string") edits.emailPassword = body.emailPassword;
   if (typeof body?.fakey === "string") edits.twofa = body.fakey;
   else if (typeof body?.twofa === "string") edits.twofa = body.twofa;
-  if (body?.user_proxy_config && typeof body.user_proxy_config === "object") edits.proxy = proxyFromUpdateConfig(body.user_proxy_config);
+  if (includeProxy && body?.user_proxy_config && typeof body.user_proxy_config === "object") {
+    edits.proxy = proxyFromUpdateConfig(body.user_proxy_config);
+  }
   return edits;
+}
+
+function isBodyObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function v2Settings(body: Record<string, unknown>, store: ProfileStore): ProfileEdits {
+  const edits: ProfileEdits = {};
+  for (const [field, key] of [["group_id", "group"], ["platform", "platform"], ["remark", "remark"]] as const) {
+    const raw = body[field];
+    if (raw === undefined) continue;
+    if (typeof raw !== "string") throw new Error(field + " must be a string");
+    edits[key] = field === "group_id" ? normalizeGroup(raw) : raw.trim();
+  }
+  if (body.tabs !== undefined) edits.startupUrls = parseStartupUrls(body.tabs);
+  if (body.user_proxy_config !== undefined) {
+    if (body.proxyid !== undefined) throw new Error("Choose user_proxy_config or proxyid");
+    const config = body.user_proxy_config;
+    if (!isBodyObject(config)) throw new Error("user_proxy_config must be an object");
+    if (String(config.global_config) === "1" || config.proxy_url) {
+      throw new Error("Use a saved proxyid or supply a complete static user_proxy_config");
+    }
+    edits.proxy = proxyFromUpdateConfig(config);
+  } else if (body.proxyid !== undefined) {
+    if (typeof body.proxyid !== "string" || !body.proxyid.trim()) throw new Error("proxyid must be a pool node ID or random");
+    const id = body.proxyid.trim();
+    const candidates = id === "random" ? store.proxyPool.list().filter(node => !node.disabled && !node.removedFromSource) : [];
+    const node = id === "random" ? candidates[Math.floor(Math.random() * candidates.length)] : store.proxyPool.get(id);
+    if (!node || node.disabled) throw new Error("proxyid is unavailable in the local proxy pool");
+    edits.proxy = node.proxy;
+  }
+  if (body.fingerprint_config !== undefined) {
+    const fp = body.fingerprint_config;
+    if (!isBodyObject(fp)) throw new Error("fingerprint_config must be an object");
+    const resolution = fp.screen_resolution;
+    if (resolution !== undefined && resolution !== "random" && resolution !== "none") {
+      const { width, height } = parseStrictResolution(String(resolution).replaceAll("_", "x"));
+      edits.screenWidth = width;
+      edits.screenHeight = height;
+    }
+    if (String(fp.language_switch) === "1") {
+      edits.locale = undefined;
+    } else if (fp.language !== undefined) {
+      const language = Array.isArray(fp.language) ? fp.language[0] : fp.language;
+      const locale = normalizeProfileLocale(language);
+      if (!locale) throw new Error("fingerprint_config.language must start with a valid locale");
+      edits.locale = locale;
+    }
+    if (String(fp.automatic_timezone) === "1") {
+      edits.timezone = "";
+      edits.timezoneManual = false;
+    } else if (fp.timezone !== undefined || String(fp.automatic_timezone) === "0") {
+      edits.timezone = parseStrictTimezone(fp.timezone ?? "");
+      edits.timezoneManual = true;
+    }
+  }
+  return edits;
+}
+
+function v2Cookies(body: Record<string, unknown>): CookieRecord[] {
+  if (body.cookie === undefined || body.cookie === "" || Array.isArray(body.cookie) && body.cookie.length === 0) return [];
+  if (typeof body.cookie !== "string" && !Array.isArray(body.cookie)) throw new Error("cookie must be JSON or Netscape cookie text");
+  const text = typeof body.cookie === "string" ? body.cookie : JSON.stringify(body.cookie);
+  if (!text.trim() || text.trim() === "[]") return [];
+  if (String(body.ignore_cookie_error) === "1" && !/^[\s]*[\[{]/.test(text)) {
+    return text.split(/\r?\n/).flatMap(line => { try { return parseCookieText(line); } catch { return []; } });
+  }
+  return parseCookieText(text);
+}
+
+function checkRepeatConfig(body: Record<string, unknown>, profile: Profile, store: ProfileStore, scope?: LocalAutomationScope): void {
+  if (body.repeat_config === undefined) return;
+  if (!Array.isArray(body.repeat_config) || !body.repeat_config.every(value => ["0", "2", "3", "4", 0, 2, 3, 4].includes(value))) {
+    throw new Error("repeat_config must contain supported deduplication modes");
+  }
+  const modes = new Set(body.repeat_config.map(Number));
+  if (modes.has(0) || !modes.size) return;
+  const cookieKey = (item: CookieRecord) => JSON.stringify([item.domain, item.path, item.name, item.value, item.partitionKey ?? ""]);
+  const jar = new Set(mergeCookies([], profile.cookies).map(cookieKey));
+  const cUser = (cookies: CookieRecord[]) => cookies.find(cookie => cookie.name === "c_user"
+    && /(^|\.)facebook\.com$/i.test(cookie.domain))?.value;
+  const facebookUser = modes.has(4) ? cUser(profile.cookies) : undefined;
+  for (const candidate of store.listProfiles()) {
+    if (scope && !scope.allowsGroup(candidate.group)) continue;
+    const candidateCookies = modes.has(3) || facebookUser
+      ? mergeCookies(candidate.cookies, store.getPendingCookies(candidate.id)) : [];
+    const sameAccount = modes.has(2) && profile.username && profile.platform === candidate.platform
+      && profile.username === candidate.username && profile.password === candidate.password;
+    const sameJar = modes.has(3) && jar.size && candidateCookies.length === jar.size
+      && candidateCookies.every(cookie => jar.has(cookieKey(cookie)));
+    if (sameAccount || sameJar || facebookUser && facebookUser === cUser(candidateCookies)) {
+      throw new Error("A matching profile already exists");
+    }
+  }
 }
 
 /** A new proxy's exit timezone, as the Edit dialog looks it up. Null when the proxy stays or the user typed a timezone. */
 export async function exitTimezoneForEdit(profile: Profile, edits: ProfileEdits, geoipFetch?: GeoipFetch): Promise<string | null> {
-  if (!edits.proxy || profile.timezoneManual || proxyIdentityKey(edits.proxy) === proxyIdentityKey(profile.proxy)) return null;
-  return (await lookupExitLocation(edits.proxy, geoipFetch))?.timezone ?? null;
+  const proxy = edits.proxy === undefined ? profile.proxy : edits.proxy;
+  if (!proxy || (edits.timezoneManual ?? profile.timezoneManual)
+    || (edits.timezoneManual !== false && proxyIdentityKey(proxy) === proxyIdentityKey(profile.proxy))) return null;
+  return (await lookupExitLocation(proxy, geoipFetch))?.timezone ?? null;
 }
 
 export function profileWithEdits(profile: Profile, edits: ProfileEdits, timezone: string | null = null): Profile {
   const next = { ...profile, ...edits };
   if ("proxy" in edits) delete next.proxyError;
-  if (timezone) {
-    next.timezone = timezone;
-    syncFirefoxTimezone(next);
+  if (edits.timezoneManual === false) delete next.timezoneManual;
+  if (timezone && !next.timezoneManual) next.timezone = timezone;
+  if ("locale" in edits && !edits.locale) next.locale = localeForTimezone(next.timezone);
+  if (timezone || edits.timezone !== undefined) syncFirefoxTimezone(next);
+  if (edits.screenWidth !== undefined && edits.screenHeight !== undefined) {
+    if (next.engine === "firefox") setFirefoxScreen(next, edits.screenWidth, edits.screenHeight);
+    if (next.webkit) {
+      next.webkit = { ...next.webkit, viewport: createWebKitProfileConfig(edits.screenWidth, edits.screenHeight).viewport };
+    }
   }
   return next;
 }
@@ -301,31 +410,53 @@ export async function handleUserApi(
     return ok({ list, page, page_size: pageSize });
   }
 
-  // --- create: AdsPower payload -> aliasmode profile (fingerprint from seed) ---
-  if (pathname === "/api/v1/user/create" && req.method === "POST") {
+  // Generate a native identity for both profile creation APIs.
+  const createV2 = pathname === "/api/v2/browser-profile/create";
+  if ((createV2 || pathname === "/api/v1/user/create") && req.method === "POST") {
     let body: any;
     try {
       body = await req.json();
     } catch {
       return fail("invalid JSON body");
     }
-    const input = inputFromCreateBody(body);
-    if (scope && !scope.allowsGroup(input.group ?? "")) return fail(AUTOMATION_SCOPE_DENIED);
+    if (createV2 && !isBodyObject(body)) return fail("invalid JSON body");
+    if (createV2 && roster) return fail("V2 profile creation requires the local profile store");
     try {
+      const input = inputFromCreateBody(body);
+      if (scope && !scope.allowsGroup(input.group ?? "")) return fail(AUTOMATION_SCOPE_DENIED);
+      if (createV2 && body.name !== undefined && (typeof body.name !== "string" || body.name.length > 100)) {
+        throw new Error("name must be a string of at most 100 characters");
+      }
+      const edits = createV2 ? v2Settings(body, store) : {};
+      const cookies = createV2 ? v2Cookies(body) : [];
+      if (createV2) {
+        input.proxy = edits.proxy ?? null;
+        input.platform = edits.platform ?? input.platform;
+        input.screen = edits.screenWidth !== undefined ? edits.screenWidth + "x" + edits.screenHeight : "";
+      }
       if (remote && input.chromiumRuntime) throw new Error("Vela Chromium is unavailable in legacy Remote mode");
       if (remote) {
         // Hub owns id generation, fingerprint seed, and geoip timezone.
         const { id } = await remote.createProfile(input);
         return ok({ id });
       }
-      const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
+      let profile = buildNewProfile(input, id => !!store.getProfile(id) || createV2 && store.isTrashed(id));
+      if (createV2) profile = profileWithEdits({ ...profile, cookies }, edits);
       // Match the browser clock to the proxy's geo, exactly as /ui/api create and
       // AdsPower's automatic_timezone do. Best-effort: never fail create on geoip.
-      if (profile.proxy) {
-        await attachTimezones([profile], geoipFetch, true).catch(() => {});
+      if (profile.proxy && !profile.timezoneManual) {
+        await attachTimezones([profile], geoipFetch, !createV2 || !edits.locale).catch(() => {});
         syncFirefoxTimezone(profile);
       }
       if (roster?.createProfile) return ok(await roster.createProfile(profile));
+      if (createV2) {
+        return store.runTransaction(() => {
+          checkRepeatConfig(body, profile, store, scope);
+          if (store.getProfile(profile.id) || store.isTrashed(profile.id)) throw new Error("Could not allocate a profile ID. Retry creation.");
+          store.upsertProfile(profile);
+          return ok({ profile_id: profile.id, profile_no: profileDisplayNo(profile.customNo, store.getSerial(profile.id)) });
+        });
+      }
       store.upsertProfile(profile);
       return ok({ id: profile.id });
     } catch (e) {
@@ -334,14 +465,17 @@ export async function handleUserApi(
   }
 
   // --- delete ---
-  if (pathname === "/api/v1/user/delete" && req.method === "POST") {
+  const deleteV2 = pathname === "/api/v2/browser-profile/delete";
+  if ((pathname === "/api/v1/user/delete" || deleteV2) && req.method === "POST") {
     let body: any;
     try {
       body = await req.json();
     } catch {
       return fail("invalid JSON body");
     }
-    const ids = Array.isArray(body?.user_ids) ? body.user_ids.map(String) : [];
+    if (deleteV2 && (!Array.isArray(body?.profile_id) || body.profile_id.length < 1 || body.profile_id.length > 100
+      || !body.profile_id.every(isSafeProfileId))) return fail("profile_id must contain 1 to 100 valid profile IDs");
+    const ids: string[] = deleteV2 ? [...new Set<string>(body.profile_id)] : Array.isArray(body?.user_ids) ? body.user_ids.map(String) : [];
     if (scope && ids.some((id: string) => !scope.allowsProfile(id))) return fail(AUTOMATION_SCOPE_DENIED);
     if (remote) {
       const r = await remote.deleteProfiles(ids); // hub deletes centrally (respects locks)
@@ -369,25 +503,40 @@ export async function handleUserApi(
     return ok({ deleted, locked });
   }
 
-  // --- update: browser name, saved account credentials and proxy ---
-  if (pathname === "/api/v1/user/update" && req.method === "POST") {
+  const updateV2 = pathname === "/api/v2/browser-profile/update";
+  if ((updateV2 || pathname === "/api/v1/user/update") && req.method === "POST") {
     let body: any;
     try {
       body = await req.json();
     } catch {
       return fail("invalid JSON body");
     }
-    const id = typeof body?.user_id === "string" ? body.user_id : "";
-    if (!id) return fail("missing user_id");
+    if (updateV2 && !isBodyObject(body)) return fail("invalid JSON body");
+    if (updateV2 && roster) return fail("V2 profile updates require the local profile store");
+    const field = updateV2 ? "profile_id" : "user_id";
+    const id = typeof body?.[field] === "string" ? body[field] : "";
+    if (!id) return fail("missing " + field);
+    if (updateV2 && !isSafeProfileId(id)) return fail("invalid profile_id");
     if (scope && !scope.allowsProfile(id)) return fail(AUTOMATION_SCOPE_DENIED);
     if (body.name !== undefined && !isValidProfileName(body.name)) return fail("name must be a non-empty string");
+    if (updateV2 && body.name?.length > 100) return fail("name must be at most 100 characters");
     let edits: ProfileEdits;
+    let cookies: CookieRecord[] = [];
     try {
-      edits = editsFromUpdateBody(body);
+      edits = editsFromUpdateBody(body, !updateV2);
+      if (updateV2) {
+        if (scope && body.group_id !== undefined && !scope.allowsGroup(normalizeGroup(body.group_id))) {
+          return fail(AUTOMATION_SCOPE_DENIED);
+        }
+        Object.assign(edits, v2Settings(body, store));
+        cookies = v2Cookies(body);
+      }
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e));
     }
-    if (!Object.keys(edits).length) return fail("nothing to update: send name, account fields or user_proxy_config");
+    if (!Object.keys(edits).length && (!updateV2 || body.cookie === undefined)) {
+      return fail(updateV2 ? "nothing to update" : "nothing to update: send name, account fields or user_proxy_config");
+    }
     if (roster?.updateProfile) {
       try {
         await roster.updateProfile(id, edits);
@@ -419,7 +568,13 @@ export async function handleUserApi(
       const current = store.getProfile(id);
       if (!current) return fail(`no such profile: ${id}`);
       if (scope && !scope.allowsGroup(current.group)) return fail(AUTOMATION_SCOPE_DENIED);
-      store.upsertProfile(profileWithEdits(current, edits, store.getLaunch(id) ? null : timezone));
+      store.runTransaction(() => {
+        if (Object.keys(edits).length) {
+          const timezoneStillApplies = edits.proxy !== undefined || proxyIdentityKey(current.proxy) === proxyIdentityKey(profile.proxy);
+          store.upsertProfile(profileWithEdits(current, edits, store.getLaunch(id) || !timezoneStillApplies ? null : timezone));
+        }
+        if (cookies.length) store.addPendingCookies(id, cookies);
+      });
       return ok({});
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

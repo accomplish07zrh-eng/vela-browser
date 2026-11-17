@@ -55,7 +55,7 @@ async function run() {
   const browserPid = context?._connection?.toImpl?.(context)?._browser?.options?.browserProcess?.process?.pid;
   if (!Number.isSafeInteger(browserPid) || browserPid <= 0) { await context.close(); throw error("runtime_unavailable"); }
   const workbench = new ContextWorkbench(context);
-  const devtools = new BrowserDevtools(context, { engine: "webkit" });
+  const devtools = new BrowserDevtools(context, { engine: "webkit", taskTabs: () => workbench.pages() });
   const plugins = new PluginHost({ context, engine: "webkit", profileId: input.profileId, devtools, log: (msg) => process.stderr.write(`${msg}\n`) });
   // What the user downloads lands in their Downloads folder, not in Playwright's temporary one.
   keepDownloads(context);

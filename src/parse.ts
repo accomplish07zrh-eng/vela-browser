@@ -217,6 +217,18 @@ export function parseCookieText(text: string): CookieRecord[] {
   return cookies;
 }
 
+/** Startup pages are navigated by the browser without interpretation as command-line switches. */
+export function parseStartupUrls(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 30 || !value.every(url => {
+    if (typeof url !== "string" || url.length > 4096 || !/^https?:\/\//i.test(url.trim())) return false;
+    try {
+      const parsed = new URL(url);
+      return (parsed.protocol === "http:" || parsed.protocol === "https:") && !parsed.username && !parsed.password;
+    } catch { return false; }
+  })) throw new Error("tabs must contain up to 30 HTTP or HTTPS URLs");
+  return value.map(url => url.trim());
+}
+
 /** Parse AdsPower's `host:port:user:pass` proxy string. Empty/blank → null. */
 export function parseProxy(type: string, proxy: string): ProxySpec | null {
   return parseProxySpec(type, proxy);
@@ -486,6 +498,16 @@ export function recordToProfile(
   let locale: string | undefined;
   try { locale = normalizeProfileLocale(rec.locale); }
   catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
+  let remark = rec.remark;
+  let startupUrls: string[] | undefined;
+  try {
+    if (rec.remark_json) {
+      const value: unknown = JSON.parse(rec.remark_json);
+      if (typeof value !== "string") throw new Error("remark_json must encode a string");
+      remark = value;
+    }
+    if (rec.startup_urls_json) startupUrls = parseStartupUrls(JSON.parse(rec.startup_urls_json));
+  } catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
   const fpExpected = expectationFromRecord(rec);
   const browser = parseFirefoxExport(rec, validationErrors);
   let chromiumRuntime: ChromiumRuntime | undefined;
@@ -505,6 +527,8 @@ export function recordToProfile(
     name: (rec.name ?? "").trim(),
     group: (rec.group ?? "").trim(),
     platform: (rec.platform ?? "").trim(),
+    ...(remark !== undefined ? { remark } : {}),
+    ...(startupUrls !== undefined ? { startupUrls } : {}),
     // Older account CSV/txt exports often used `email` as the login column.
     // Keep that import behavior while also retaining it in the new email field.
     username: (rec.username ?? rec.email ?? "").trim(),
@@ -779,6 +803,8 @@ function profileFields(p: ProfileExport): Record<string, string> {
     id: p.id,
     group: p.group,
     platform: p.platform ?? "",
+    remark_json: p.remark === undefined ? "" : JSON.stringify(p.remark),
+    startup_urls_json: p.startupUrls === undefined ? "" : JSON.stringify(p.startupUrls),
     name: p.name,
     username: p.username,
     password: p.password,
@@ -826,6 +852,7 @@ const TXT_KEYS = [
   ...RESTORED_KEYS, ...FP_BLOCK_KEYS, "session", "session_source",
 ] as const;
 const FIREFOX_EXPORT_KEYS = ["engine", "firefox_config"] as const;
+const STARTUP_EXPORT_KEYS = ["remark_json", "startup_urls_json"] as const;
 
 /**
  * Columns of the Excel export. Same fields as the .txt block, but with `id`
@@ -845,7 +872,8 @@ export function serializeAdsTxt(profiles: ProfileExport[]): string {
     const f = profileFields(p);
     const keys: readonly string[] = p.engine === "webkit" ? [...TXT_KEYS, "engine", "webkit_config"] : p.engine === "firefox" ? [...TXT_KEYS, ...FIREFOX_EXPORT_KEYS]
       : [...TXT_KEYS, "chromium_runtime", ...(p.hardware ? ["hardware_cores"] : [])];
-    return [...keys.map((k) => `${k}=${f[k]}`), "******************"].join("\n");
+    const extra = STARTUP_EXPORT_KEYS.filter(key => f[key]);
+    return [...[...keys, ...extra].map((k) => `${k}=${f[k]}`), "******************"].join("\n");
   });
   return blocks.join("\n") + (blocks.length ? "\n" : "");
 }
@@ -861,6 +889,7 @@ export function serializeXlsxRows(profiles: ProfileExport[]): { headers: string[
     ...(profiles.some((profile) => profile.engine === "webkit") ? [...(profiles.some((profile) => profile.engine === "firefox") ? [] : ["engine"]), "webkit_config"] : []),
     ...(profiles.some((profile) => profile.engine !== "firefox" && profile.engine !== "webkit") ? ["chromium_runtime"] : []),
     ...(profiles.some((profile) => profile.hardware) ? ["hardware_cores"] : []),
+    ...(profiles.some((profile) => profile.remark !== undefined || profile.startupUrls !== undefined) ? STARTUP_EXPORT_KEYS : []),
   ];
   return {
     headers: [...columns],

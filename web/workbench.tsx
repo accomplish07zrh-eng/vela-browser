@@ -2,7 +2,8 @@ import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, 
 import { Select } from "./select.tsx";
 import { flushSync } from "react-dom";
 import { folderScope, folderTree, type FolderInfo } from "../src/folders.ts";
-import { closeProfile, fetchScriptRun, moveProfiles, openProfile, raiseProfile, updateProfile, type UiProfile, type ScriptRun } from "./api.ts";
+import { closeProfile, fetchScriptRun, moveProfiles, openProfile, profileLaunchConcurrency, raiseProfile, updateProfile, type UiProfile, type ScriptRun } from "./api.ts";
+import { runProfilePool } from "./profile-management.ts";
 import { parsePastedProxy } from "./proxy-input.ts";
 import type { WorkbenchInput, WorkbenchRefreshTier } from "../src/workbench-protocol.ts";
 import { useTranslation } from "./i18n.tsx";
@@ -582,7 +583,8 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     if (busy) return; setBusy(true); setError(null);
     try {
       const failures: string[] = [];
-      for (let i = 0; i < ids.length; i += 3) await Promise.all(ids.slice(i, i + 3).map(async (id) => {
+      const concurrency = kind === "start" ? await profileLaunchConcurrency() : 3;
+      await runProfilePool(ids, concurrency, async (id) => {
         try {
           const result = await (kind === "start" ? openProfile(id) : kind === "stop" ? closeProfile(id) : raiseProfile(id));
           if (!result.ok) throw new Error(result.error || t("Operation failed"));
@@ -592,7 +594,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
           }
         }
         catch (cause) { failures.push(`${profilesRef.current.find((profile) => profile.id === id)?.name ?? id}: ${cause instanceof Error ? cause.message : String(cause)}`); }
-      }));
+      });
       await onRefresh(); if (failures.length) setError(failures.join(" · "));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); }
   }, [busy, onRefresh, stopSync, suspendFollowers, t]);

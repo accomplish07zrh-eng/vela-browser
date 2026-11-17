@@ -6,6 +6,9 @@ import { runInNewContext } from "node:vm";
 import { DevtoolsJournal, captureNativeNetwork } from "./devtools-live.mjs";
 import { TRACE_PREFIX, addTracepoint, observeRuntimeSources, sourceMapData, sourceMapReference, originalPosition, generatedPosition } from "./devtools-sources.mjs";
 import { compareSnapshots, domSnapshot } from "./devtools-dom.mjs";
+import { describeForms, readFormControls } from "./form-inspection.mjs";
+import { draftFormWorkflow, formPageUrl, formWorkflowStages } from "./form-workflow.mjs";
+import { matchVisibleRegion } from "./visual-match.mjs";
 
 const string = { type: "string" };
 const pageId = { type: "string", description: "Stable page id from browser_devtools_pages. Required to choose a page when several are open." };
@@ -27,6 +30,10 @@ const locatorPattern = schema({
 });
 const elementTarget = schema({ ...locatorPattern.properties, within: locatorPattern, near: { ...string, description: "Text that must appear in the within container." } });
 const elementStates = ["visible", "hidden", "attached", "detached"];
+const screenRectangle = schema({
+  x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 },
+  width: { type: "integer", minimum: 4 }, height: { type: "integer", minimum: 4 },
+}, ["x", "y", "width", "height"]);
 const locatorActions = {
   click: (locator, options) => locator.click(options),
   double_click: (locator, options) => locator.dblclick(options),
@@ -89,11 +96,22 @@ export const DEVTOOLS_TOOLS = [
   tool("browser_devtools_anchor", "Capture a portable semantic locator and its complete iframe ancestry from the current DOM. Use the returned anchor with browser_devtools_action after a rerender, frame replacement, or reconnect. Ambiguous replacements require a narrower locator.", {
     pageId, frameId: string, target: elementTarget, timeoutMs,
   }, ["target"]),
+  tool("browser_devtools_form_workflow", "Inspect visible form fields and controls in the selected page or frame without reading filled values. Draft combines reviewed stages into a reusable Vela script and, when possible, a durable task. Submitting stages require an explicit success condition. Use exampleInputs to generate synthetic rehearsal data.", {
+    action: { type: "string", enum: ["inspect", "draft"] }, pageId, frameId: string, selector: string, timeoutMs,
+    name: { ...string, maxLength: 120 }, stages: formWorkflowStages, exampleInputs: { type: "boolean" },
+  }, ["action"]),
+  tool("browser_devtools_visual_match", "Locate a reference image at the same CSS-pixel scale in a visible area, including canvas interfaces. Supply a reference rectangle from this page or a base64 PNG. Returns candidates and ambiguity in viewport coordinates without clicking or saving screenshots.", {
+    pageId, region: screenRectangle, reference: screenRectangle, templatePng: string, timeoutMs,
+    tolerance: { type: "number", minimum: 0, maximum: 0.15, default: 0.04 },
+  }, ["region"]),
   tool("browser_devtools_dom_delta", "Capture a scoped DOM snapshot or compare it with baselineId. Includes hidden nodes, form values, comments, templates and open shadow roots. Read a frozen result by snapshotId and offset to page through changes while the live DOM keeps rendering.", {
     action: { type: "string", enum: ["take", "read", "discard"] },
     pageId, frameId: string, selector: string, baselineId: string, snapshotId: string,
     offset: { type: "integer", minimum: 0 }, limit, timeoutMs,
   }, ["action"]),
+  tool("browser_devtools_observe", "Read a compact view of visible controls, headings, dialogs and alerts in the selected frame. Controls include portable anchors for browser_devtools_action when a locator can be inferred. No form values are collected.", {
+    pageId, frameId: string, selector: string, limit: { type: "integer", minimum: 1, maximum: 40, default: 16 }, timeoutMs,
+  }),
   tool("browser_devtools_action", "Operate a uniquely located element by semantics, selector or a portable anchor. Verify a fresh response, popup, navigation, visible text or an element state. Event observers are registered before the action. Action completion and verification have separate results, with correlated evidence.", {
     pageId, frameId: string, action: { type: "string", enum: Object.keys(locatorActions) }, target: elementTarget, anchor: { type: "object", additionalProperties: true },
     value: { description: "Text for fill, a key for press, or one or more option values for select_option.", oneOf: [string, { type: "array", items: string }] },
@@ -241,10 +259,87 @@ function elementIdentity(element) {
 function stableCandidate(expected, current, candidate) {
   if (expected.tag !== current.tag || expected.type !== current.type) return false;
   if (expected.formLabel && expected.formLabel !== current.formLabel || expected.formName && expected.formName !== current.formName) return false;
-  if (candidate.testId !== undefined) return true;
+  if (candidate.testId !== undefined) return current.testId === candidate.testId;
   return (!expected.name || expected.name === current.name) && (!expected.label || expected.label === current.label)
     && (!expected.text || expected.text === current.text);
 }
+
+/** Serialized to the observed frame, with the same identity reader used to rebind an anchor. */
+function observeElements(root, limit, readIdentity) {
+  const view = root.ownerDocument.defaultView;
+  const short = value => (value || "").replace(/\s+/g, " ").trim().slice(0, 100);
+  const visible = node => node.getClientRects().length > 0 && !node.closest('[aria-hidden="true"],[inert]')
+    && (node.checkVisibility?.({ opacityProperty: true, visibilityProperty: true })
+      ?? (view.getComputedStyle(node).visibility === "visible" && view.getComputedStyle(node).opacity !== "0"));
+  const roles = ["button", "link", "textbox", "combobox", "checkbox", "radio", "switch", "listbox", "option", "tab", "menuitem", "spinbutton", "slider", "searchbox"];
+  const controlSelector = 'button, a[href], input:not([type="hidden"]), select, textarea, summary, [contenteditable="true"], '
+    + roles.map(role => '[role~="' + role + '"]').join(",");
+  const noticeSelector = 'h1,h2,h3,[role="heading"],[role="alert"],[role="status"],[role="dialog"],dialog[open]';
+  const observedSelector = controlSelector + "," + noticeSelector;
+  const editableSelector = 'input,textarea,select,[contenteditable]:not([contenteditable="false"])';
+  const textWithoutValues = node => {
+    if (!node || node.closest(editableSelector)) return "";
+    if (!node.querySelector(editableSelector)) return node.innerText || "";
+    const walker = node.ownerDocument.createTreeWalker(node, 4);
+    let value = "", count = 0;
+    for (let item; value.length < 200 && count++ < 200 && (item = walker.nextNode());) {
+      const parent = item.parentElement;
+      if (parent && !parent.closest(editableSelector) && visible(parent)) value += " " + item.nodeValue;
+    }
+    return value;
+  };
+  const buttons = { button: "button", a: "link", textarea: "textbox", summary: "button" };
+  const inputRoles = { checkbox: "checkbox", radio: "radio", number: "spinbutton", range: "slider", search: "searchbox",
+    button: "button", submit: "button", reset: "button", image: "button" };
+  const controls = [], notices = [];
+  let truncated = false, visited = 0;
+  const roots = [root];
+  scan: for (const scope of roots) {
+    const walker = root.ownerDocument.createTreeWalker(scope, 1);
+    for (let node = scope.nodeType === 1 ? scope : walker.nextNode(); node; node = walker.nextNode()) {
+      if (++visited > 8000 || (truncated && notices.length === 8)) { truncated = true; break scan; }
+      if (node.shadowRoot) roots.push(node.shadowRoot);
+      if (!node.matches(observedSelector) || !visible(node)) continue;
+      if (node.matches(noticeSelector)) {
+        if (notices.length < 8) {
+          const text = short(node.getAttribute("aria-label") || textWithoutValues(node));
+          if (text) notices.push({ role: node.getAttribute("role") || (node.localName === "dialog" ? "dialog" : "heading"), text });
+        }
+      }
+      if (!node.matches(controlSelector)) continue;
+      if (controls.length >= limit) { truncated = true; continue; }
+      const { tag, type, name, testId, label, formLabel, formName } = readIdentity(node);
+      const explicitRole = node.getAttribute("role")?.split(/\s+/).find(role => roles.includes(role));
+      const role = explicitRole || buttons[tag] || (tag === "input" ? (inputRoles[node.type] || "textbox")
+        : tag === "select" ? (node.multiple || node.size > 1 ? "listbox" : "combobox") : "textbox");
+      const editable = node.isContentEditable || ["input", "select", "textarea"].includes(tag);
+      const labelledBy = node.getAttribute("aria-labelledby")?.trim().split(/\s+/)
+        .map(id => textWithoutValues(node.getRootNode().getElementById?.(id))).filter(Boolean).join(" ");
+      const nameText = short(labelledBy || label || (!editable && textWithoutValues(node)) || node.getAttribute("placeholder"));
+      const scoped = formLabel && formLabel.length <= 100 ? { within: { role: "form", name: formLabel } } : {};
+      const candidates = [];
+      if (testId && testId.length <= 100) candidates.push({ ...scoped, testId });
+      if (label && label.length <= 100) candidates.push({ ...scoped, label });
+      if (nameText && (labelledBy || label || !editable)) candidates.push({ ...scoped, role, name: nameText });
+      if (node.id && node.id.length <= 100) candidates.push({ ...scoped, selector: "#" + view.CSS.escape(node.id) });
+      if (name && name.length <= 100) candidates.push({ ...scoped, selector: tag + "[name=" + view.CSS.escape(name) + "]" });
+      const identity = { tag, type,
+        ...(name && name.length <= 100 ? { name } : {}), ...(label && label.length <= 100 ? { label } : {}),
+        ...(!editable && !node.querySelector(editableSelector) && node.textContent?.trim() && node.textContent.length <= 100 ? { text: short(node.textContent) } : {}),
+        ...(formLabel && formLabel.length <= 100 ? { formLabel } : {}), ...(formName && formName.length <= 100 ? { formName } : {}),
+      };
+      const disabled = node.matches(":disabled") || !!node.closest('[aria-disabled="true"]');
+      const required = node.matches(":required") || node.getAttribute("aria-required") === "true";
+      const invalid = node.hasAttribute("aria-invalid") && node.getAttribute("aria-invalid") !== "false";
+      controls.push({ role, name: nameText, ...(disabled ? { disabled } : {}), ...(required ? { required } : {}),
+        ...(invalid ? { invalid } : {}), identity, candidates });
+    }
+  }
+  return { controls, notices, truncated };
+}
+
+const readObservation = new Function("root", "limit",
+  "return (" + observeElements.toString() + ")(root, limit, " + elementIdentity.toString() + ")");
 
 function verifyAction(page, frame, verify) {
   if (verify === undefined) return undefined;
@@ -436,10 +531,12 @@ function chunk(buffer, options, contentType = "") {
 }
 
 export class BrowserDevtools {
-  /** @param {{ engine?: "chromium" | "firefox" | "webkit", maxEvents?: number, maxRequests?: number, maxEventBytes?: number }} [options] */
+  /** @param {{ engine?: "chromium" | "firefox" | "webkit", maxEvents?: number, maxRequests?: number, maxEventBytes?: number, taskTabs?: () => Array<{ page: any, id: string }> }} [options] */
   constructor(context, options = {}) {
     const { engine, maxEvents = 2000, maxRequests = 1000, maxEventBytes = 8 * 1024 * 1024 } = options;
     this.context = context;
+    this.taskTabs = options.taskTabs;
+    this.crashedPages = new WeakSet();
     this.engine = engine ?? context.browser?.()?.browserType?.().name();
     this.mainWorld = engine === "firefox";
     this.id = randomUUID();
@@ -601,7 +698,10 @@ export class BrowserDevtools {
       this.log("console", page, { type: message.type(), text, location });
     });
     this.listen(page, "pageerror", error => this.log("exception", page, { type: "error", name: error.name, text: error.message, stack: error.stack }));
-    this.listen(page, "crash", () => this.log("crash", page, { type: "error", text: "Page renderer crashed" }));
+    this.listen(page, "crash", () => {
+      this.crashedPages.add(page);
+      this.log("crash", page, { type: "error", text: "Page renderer crashed" });
+    });
     this.listen(page, "websocket", socket => {
       this.emitterPages.set(socket, page);
       const socketId = `${this.id}-socket-${++this.counters.socket}`;
@@ -1068,12 +1168,46 @@ export class BrowserDevtools {
       ...outcome, since, until: this.sequence, ...records,
     };
   }
-  async taskTarget({ pageUrl, frameUrl, timeoutMs }) {
-    if (!pageUrl && !frameUrl) return {};
+  async taskTabId(page) {
+    if (this.taskTabs) return this.taskTabs().find(entry => entry.page === page)?.id;
+    const session = await this.cdp(page);
+    const { targetInfo } = await session.send("Target.getTargetInfo");
+    return targetInfo.targetId;
+  }
+  async findTaskTab(id) {
+    if (this.taskTabs) return this.taskTabs().find(entry => entry.id === id)?.page;
+    const tabs = await Promise.allSettled(this.context.pages().map(async page => ({
+      page, id: await this.taskTabId(page).catch(error => { if (!page.isClosed() && !this.crashedPages.has(page)) throw error; }),
+    })));
+    const found = tabs.find(tab => tab.status === "fulfilled" && tab.value.id === id);
+    if (found?.status === "fulfilled") return found.value.page;
+    const failed = tabs.find(tab => tab.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+  }
+  async bindTaskTab({ id, startUrl, allowCreate }) {
+    const page = id ? await this.findTaskTab(id) : undefined;
+    if (page && !page.isClosed() && !this.crashedPages.has(page)) return { id };
+    if (!allowCreate) return { fault: "task_tab_unavailable", error: "The requested browser tab is no longer available" };
+    if (page && this.crashedPages.has(page)) await page.close().catch(() => {});
+    const created = await this.context.newPage();
+    try {
+      const tabId = await this.taskTabId(created);
+      if (!tabId) throw new Error("The task tab did not expose an identity");
+      await created.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      return { id: tabId };
+    } catch (error) {
+      const fault = this.closed || created.isClosed() || this.crashedPages.has(created) ? "task_tab_lost" : "task_navigation_failed";
+      await created.close().catch(() => {});
+      return { fault, error: errorText(error) };
+    }
+  }
+  async taskTarget({ pageUrl, frameUrl, timeoutMs, boundPage }) {
+    if (!pageUrl && !frameUrl && !boundPage) return {};
     const deadline = Date.now() + Math.max(1, (timeoutMs ?? 120_000) - 1000);
     let ambiguous = false;
     do {
-      const pages = this.context.pages().filter(page => !page.isClosed() && (!pageUrl || page.url() === pageUrl));
+      const pages = (boundPage ? [boundPage] : this.context.pages())
+        .filter(page => !page.isClosed() && !this.crashedPages.has(page) && (!pageUrl || page.url() === pageUrl));
       const matches = pages.flatMap(page => (frameUrl ? page.frames().filter(frame => frame.url() === frameUrl && !frame.isDetached()) : [page.mainFrame()])
         .map(frame => ({ page, frame })));
       if (matches.length === 1) {
@@ -1083,18 +1217,32 @@ export class BrowserDevtools {
       }
       ambiguous = matches.length > 1;
       if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
-    } while (!this.closed && Date.now() < deadline);
+    } while (!this.closed && !boundPage?.isClosed() && !this.crashedPages.has(boundPage) && Date.now() < deadline);
     throw new Error(ambiguous ? "More than one browsing context matched the task URLs" : "The task page or frame URL did not become available");
   }
-  async runTaskProgram({ code, argument, screenshots, pageUrl, frameUrl, timeoutMs }) {
+  /** @param {{ code?: string, argument?: any, screenshots?: boolean, pageUrl?: string, frameUrl?: string, timeoutMs?: number, tabId?: string, taskTab?: any }} input */
+  async runTaskProgram({ code, argument, screenshots, pageUrl, frameUrl, timeoutMs, tabId, taskTab }) {
+    if (taskTab) return this.bindTaskTab(taskTab);
     let invoked = false;
+    let boundPage, targetError;
+    if (tabId) {
+      try { boundPage = await this.findTaskTab(tabId); } catch (error) { targetError = error; }
+    }
     const record = await this.captureProgramWork(async () => {
-      const target = await this.taskTarget({ pageUrl, frameUrl, timeoutMs });
+      if (tabId) {
+        if (targetError) throw targetError;
+        if (!boundPage || boundPage.isClosed() || this.crashedPages.has(boundPage)) throw new Error("The task tab was closed or crashed");
+      }
+      const target = await this.taskTarget({ pageUrl, frameUrl, timeoutMs, boundPage });
       invoked = true;
-      return (await this.runProgram({ code, argument, ...target }, { task: !target.frameId })).structuredContent;
-    }, { limit: 30 });
+      return (await this.runProgram({ code, argument, ...target }, { task: !target.frameId, boundTab: !!tabId })).structuredContent;
+    }, { limit: 30, pageId: boundPage && this.pageIds.get(boundPage) });
     const { value, error, network, events, since, until } = record;
     const receipt = { ...(value ?? { completed: false, error }), invoked, network, events, since, until };
+    if (!receipt.completed && tabId) {
+      if (this.closed) receipt.fault = "browser_disconnected";
+      else if (!targetError && (!boundPage || boundPage.isClosed() || this.crashedPages.has(boundPage))) receipt.fault = "task_tab_lost";
+    }
     if (screenshots && invoked) {
       try {
         const page = this.selectPage(value?.pageId);
@@ -1103,6 +1251,26 @@ export class BrowserDevtools {
       } catch (error) { receipt.screenshotError = errorText(error); }
     }
     return receipt;
+  }
+  anchorScope(page, frame) {
+    const frames = [];
+    for (let current = frame; current.parentFrame(); current = current.parentFrame()) {
+      frames.unshift({ name: current.name(), path: urlPath(current.url()) });
+    }
+    return { version: 1, page: { id: this.pageIds.get(page), path: urlPath(page.url()) }, frames };
+  }
+  async compactObservation(args) {
+    const { page, frame } = this.selectFrame(args);
+    const timeout = integer(args.timeoutMs, 5000, 1, 20000), limit = integer(args.limit, 16, 1, 40);
+    const locator = frame.locator(args.selector ?? ":root");
+    const observation = await locator.evaluate(readObservation, limit, { timeout });
+    const scope = this.anchorScope(page, frame);
+    const durableScope = [scope.page, ...scope.frames].every(segment => /^https?:\/\//.test(segment.path) && segment.path.length <= 2048);
+    const url = urlPath(frame.url());
+    return { pageId: this.pageIds.get(page), frameId: this.frameId(frame, page), url: url.startsWith("data:") ? "data:" : url.slice(0, 2048),
+      ...observation, controls: observation.controls.map(({ identity, candidates, ...control }) => ({
+        ...control, ...(candidates.length && durableScope ? { anchor: { ...scope, identity, candidates } } : {}),
+      })) };
   }
   async createAnchor(args) {
     const { page, frame } = this.selectFrame(args);
@@ -1120,11 +1288,7 @@ export class BrowserDevtools {
       ...(identity.name ? [{ ...scope, selector: `[name=${JSON.stringify(identity.name)}]` }] : []),
       ...(identity.text ? [{ ...scope, text: identity.text }] : []),
     ];
-    const frames = [];
-    for (let current = frame; current.parentFrame(); current = current.parentFrame()) {
-      frames.unshift({ name: current.name(), path: urlPath(current.url()) });
-    }
-    return { version: 1, page: { id: this.pageIds.get(page), path: urlPath(page.url()) }, frames, identity, candidates };
+    return { ...this.anchorScope(page, frame), identity, candidates };
   }
   async snapshotDOM(args) {
     if (args.action === "discard") return { discarded: this.domSnapshots.delete(args.snapshotId) };
@@ -1163,14 +1327,16 @@ export class BrowserDevtools {
       const live = [...this.pages.values()].filter(page => !page.isClosed?.());
       const explicit = args.pageId ? this.selectPage(args.pageId) : this.pages.get(anchor.page.id);
       const pages = explicit && !explicit.isClosed?.() && urlPath(explicit.url()) === anchor.page.path
-        ? [explicit] : live.filter(page => urlPath(page.url()) === anchor.page.path);
+        ? [explicit] : args.pageId ? [] : live.filter(page => urlPath(page.url()) === anchor.page.path);
       if (pages.length === 1) {
         const page = pages[0];
         let frame = page.mainFrame();
         for (const segment of anchor.frames) {
           const children = page.frames().filter(candidate => candidate.parentFrame() === frame && !candidate.isDetached?.());
           const exact = children.filter(candidate => urlPath(candidate.url()) === segment.path && (!segment.name || candidate.name() === segment.name));
-          const named = segment.name ? children.filter(candidate => candidate.name() === segment.name) : [];
+          const origin = URL.canParse(segment.path) ? new URL(segment.path).origin : "null";
+          const named = segment.name && origin !== "null" ? children.filter(candidate =>
+            candidate.name() === segment.name && URL.canParse(candidate.url()) && new URL(candidate.url()).origin === origin) : [];
           const matches = exact.length ? exact : named;
           if (matches.length !== 1) {
             if (matches.length > 1) reason = "The anchor matched multiple frames";
@@ -1231,7 +1397,7 @@ export class BrowserDevtools {
       close: () => this.observers.delete(observe),
     };
   }
-  async runProgram(args, { task = false } = {}) {
+  async runProgram(args, { task = false, boundTab = false } = {}) {
     if (typeof args.code !== "string" || !args.code.trim()) throw new Error("code must contain a JavaScript function");
     let page, frame, worker;
     if (args.workerId) {
@@ -1253,8 +1419,9 @@ export class BrowserDevtools {
         const name = shortName.startsWith("browser_devtools_") ? shortName : `browser_devtools_${shortName}`;
         if (!DEVTOOLS_TOOL_NAMES.has(name) || name === "browser_devtools_program") throw new Error(`Unknown program developer operation: ${shortName}`);
         const target = worker && name === "browser_devtools_evaluate" ? { workerId: args.workerId } : frameTarget;
-        const explicitTarget = ["pageId", "frameId", "workerId", "anchor"].some(key => Object.hasOwn(options, key));
-        const reply = await this.call(name, explicitTarget ? options : { ...target, ...options });
+        const explicitTarget = ["pageId", "frameId", "workerId"].some(key => Object.hasOwn(options, key));
+        const defaults = options.anchor ? (boundTab ? { pageId: frameTarget.pageId } : {}) : target;
+        const reply = await this.call(name, explicitTarget ? options : { ...defaults, ...options });
         if (reply.isError) throw new Error(reply.structuredContent?.error || reply.content?.[0]?.text || "Developer operation failed");
         return reply.structuredContent;
       },
@@ -1314,6 +1481,26 @@ export class BrowserDevtools {
     if (name === "browser_devtools_stream") return result(await this.captureStream(args));
     if (name === "browser_devtools_sources") return result(await this.sources(args));
     if (name === "browser_devtools_dom_delta") return result(await this.snapshotDOM(args));
+    if (name === "browser_devtools_form_workflow") {
+      if (args.action === "draft") return result(draftFormWorkflow(args));
+      if (args.action !== "inspect") throw new Error("Choose inspect or draft");
+      const { page, frame } = this.selectFrame(args);
+      const pageUrl = formPageUrl(page.url()), frameUrl = frame === page.mainFrame() ? undefined : formPageUrl(frame.url());
+      const view = await frame.locator(args.selector ?? ":root").evaluate(readFormControls, undefined, {
+        timeout: integer(args.timeoutMs, 5000, 1, 20000),
+      });
+      return result(describeForms(view, {
+        pageId: this.pageIds.get(page), frameId: this.frameId(frame, page),
+        pageUrl: frame === page.mainFrame() || frameUrl ? pageUrl : undefined,
+        frameUrl, frameName: frameUrl ? frame.name() : undefined,
+      }));
+    }
+    if (name === "browser_devtools_visual_match") {
+      const page = this.selectPage(args.pageId);
+      return result({ pageId: this.pageIds.get(page), ...await matchVisibleRegion(page, {
+        ...args, timeout: integer(args.timeoutMs, 5000, 1, 20000),
+      }) });
+    }
     if (name === "browser_devtools_network") return result(this.query([...this.requests.values()].map(e => e.data).filter(e =>
       (!args.failedOnly || e.failure || e.status >= 400) && (!args.resourceType || e.resourceType === args.resourceType)
       && (args.status === undefined || e.status === args.status)), args, this.droppedRequests));
@@ -1385,6 +1572,7 @@ export class BrowserDevtools {
       return reply;
     }
     if (name === "browser_devtools_anchor") return result(await this.createAnchor(args));
+    if (name === "browser_devtools_observe") return result(await this.compactObservation(args));
     if (name === "browser_devtools_action") {
       if (!Object.hasOwn(locatorActions, args.action)) throw new Error("Unknown developer action");
       if ((args.action === "fill" || args.action === "press") && typeof args.value !== "string") throw new Error("This action requires a string value");

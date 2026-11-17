@@ -18,6 +18,8 @@ Each environment uses its persistent context, process, cookies, proxy, and nativ
 | `browser_devtools_element` | Element markup, text, attributes, rectangle and computed CSS |
 | `browser_devtools_page_inspect` | Accessibility tree, paginated DOM, form state, and an index of hidden nodes and data attributes |
 | `browser_devtools_anchor` | Capture a reusable locator with scope and iframe ancestry |
+| `browser_devtools_form_workflow` | Inspect visible form controls and generate a script draft with explicit completion checks |
+| `browser_devtools_visual_match` | Locate a same-scale reference image in a visible viewport region |
 | `browser_devtools_dom_delta` | Preserve a DOM snapshot and page through additions, removals, changes, and sibling ordering |
 | `browser_devtools_action` | Act by role and name, label, text, test ID, selector or anchor, with optional event or state verification |
 | `browser_devtools_program` | Run a custom Playwright and JavaScript program with binary HTTP bodies, correlated traffic and logs, and the developer tools API |
@@ -63,15 +65,71 @@ Use `target.within` to scope repeated controls to a named form, dialog or other 
 
 Use `dom_delta` with `action: "take"` for a baseline, then take a second snapshot with `baselineId`. Its result is frozen while the live page keeps updating. Read further pages by `snapshotId` and `nextOffset`. Discard snapshots when finished.
 
+Use `browser_devtools_observe` for a short list of visible controls, headings, alerts and dialogs in one frame. Set `selector` to narrow the scope and `limit` to choose up to 40 controls. Each actionable control can include a portable `anchor` for `browser_devtools_action`. Resolution checks the element's identity again after rerendering. Duplicate targets need a narrower scope. Observations omit input values and hidden controls.
+
+## Form workflows
+
+Use `browser_devtools_form_workflow` with `action: "inspect"` in an open profile. Pass `pageId`, `frameId` or `selector` to narrow the view. The tool reads control labels and attributes and omits filled values. It recognizes common account fields, confirmation passwords, one-time codes, checkboxes, selects and step buttons. Each form can include a `suggestedStage`. Review unbound or ambiguous controls before adding them to the stage.
+
+Call the same tool with `action: "draft"` and the reviewed `stages`. For a stage that clicks `submit`, supply a `verify` condition with an exact destination URL or a uniquely visible selector. A selector can include expected text. Drafts match pages and frames by origin and path and require a unique tab and frame. Run inputs supply the values. Select `action: "type"` for a field that needs individual key events. `exampleInputs: true` produces separate synthetic values for rehearsal.
+
+Save `script` with `vela_script_save` and use the Scripts page or `vela_script_run` to run it in Chromium or Firefox profiles. Vela shows the draft source in the existing save approval. Use `task.steps` with `vela_browser_task` for durable workflows. A verifier reports an observed receipt as applied and leaves uncertain outcomes for review. Use test values with persisted task arguments. WebKit supports form inspection and native browser programs.
+
+For a fresh numeric code shown in an existing inbox tab, give a later stage `code: { input, pageUrl, selector, digits, timeoutMs }`. The saved script waits for a changed value from that one visible element in the same profile. An explicit run input takes precedence. A draft with inbox polling produces a script, since the comparison with the previous code lives in that run's memory.
+
+For canvas and other visual controls, call `browser_devtools_visual_match` with a viewport `region` and either an on-page `reference` rectangle or a `templatePng`. Use the same CSS-pixel scale. Opaque reference pixels are compared in memory. The result includes viewport coordinates and a unique, ambiguous or missing status. Use a fresh match before acting on a moving page.
+
+For a one-off visual failure, start `vela_browser_replay` explicitly before the operation. The following command exercises form authoring, script execution, delayed code entry and receipt checks with the pinned Windows runtimes.
+
+```powershell
+bun scripts/form-workflow-acceptance.ts --runtime-root D:/VelaBrowser
+```
+
 ## Durable browser tasks
 
-`vela_browser_task` with `operation: "start"` accepts a `profileId`, an optional `idempotencyKey` and `argument`, and ordered `steps` with an `id` and a JavaScript `run` function. It returns a `runId` after storing the plan. The desktop runs the steps after the MCP client disconnects. If the desktop restarts, `operation: "resume"` continues from the saved checkpoint. Resending the same plan and `idempotencyKey` retrieves the same run after a lost start reply.
+`vela_browser_task` with `operation: "start"` accepts a `profileId`, an optional `idempotencyKey` and `argument`, and ordered `steps` with an `id` and a JavaScript `run` function. It returns a `runId` after storing the plan. The desktop runs the steps after the MCP client disconnects. Resending the same plan and `idempotencyKey` retrieves the same run after a lost start reply.
 
-Each function gets the browser program API and an `argument` with `input`, `runId`, `stepId`, a stable `actionKey`, the current `attempt`, and `previous` step receipts keyed by step ID. A step's optional `pageUrl` and `frameUrl` wait for one exact matching browse context at any depth before executing or verifying the step. Use a reusable anchor for controls that may be redrawn. Where a site supports idempotency keys, send `argument.actionKey` with the write.
+Set `startUrl` to enable unattended recovery and give the task a dedicated tab. Choose a safe HTTP(S) GET entry point. To bind an existing tab, also supply its `tabId` from `vela_browser_replay` with `action: "tabs"`. If the browser or tab disappears, the task can reopen it at the next checkpoint's `recoveryUrl` or at `startUrl`. A desktop restart reloads queued work and unfinished checkpoints automatically. Legacy plans without `startUrl` still use `resume` after an interruption.
 
-Add a `verify` function to a step that writes. It can read a receipt endpoint or another authoritative site state and return `{state: "applied", value: receipt}`, `{state: "absent"}`, or `{state: "unknown"}`. An absent result means the effect is absent and the earlier request can no longer commit. After an uncertain write, the task checks this verifier before reissuing the action. An unknown result holds the task in `needs_verification`. Resume can supply a new verifier for that attempt. Completed step values remain available to later steps.
+Each function gets the browser program API and an `argument` with `input`, `runId`, `stepId`, a stable `actionKey`, the current `attempt`, and `previous` step receipts keyed by step ID. In an unattended task, optional `pageUrl` and `frameUrl` wait for an exact address in the bound tab. Steps that need a different page in the same tab can navigate as part of their program. Mark a step `readOnly: true` when repeating it after a browser failure is safe. Where a site supports idempotency keys, send `argument.actionKey` with the write.
 
-`operation: "status"` returns each checkpoint. `pause` and `cancel` take effect at a step boundary. `evidence` returns step and attempt metadata by `sequence`, plus paged result, network, console, events, and optional screenshots. The **Browser tasks** tab on the Scripts page shows the same evidence locally. Set `screenshots: true` in the plan to capture step screenshots.
+Add a `verify` function to a step that writes. It can read a receipt endpoint or another authoritative site state and return `{state: "applied", value: receipt}`, `{state: "absent"}`, or `{state: "unknown"}`. An absent result certifies that the effect is absent and the earlier request can no longer commit. After an uncertain write, the task checks this verifier before continuing. It advances on `applied`, can retry with the original action key on `absent`, and holds the checkpoint in `needs_verification` on `unknown`. Resume can supply a new verifier for that step. Completed step values remain available to later steps.
+
+Use `start_batch` to store up to 100 runs with a shared plan. Each entry in `runs` provides its `profileId` and can override `argument`, `idempotencyKey`, `name`, `startUrl` or `tabId`. Runs in the same profile execute in order. Use distinct keys for multiple runs in a profile. The scheduler adjusts concurrency across profiles to available CPU and memory. To report a sign-in or verification barrier before issuing a write, return `{blocked: {code: "authentication_required", message: "Sign-in required"}}`. This pauses only that profile's queue. Call `resume` once the condition clears.
+
+Use `skill_save` with a completed `runId` to save its plan for reuse. The optional `url` sets the origin and path prefix. Use `skill_find` with the current site URL to get matching skills, then `start` or `start_batch` with a `skillId` and fresh `argument`. The saved skill refers to the completed steps. Each new run uses its own profile, tab, arguments and evidence.
+
+`operation: "status"` returns each checkpoint, the bound tab ID, and any scheduled recovery. `pause` and `cancel` take effect at a step boundary. `evidence` returns step and attempt metadata by `sequence`, plus paged result, network, console, events, and optional screenshots. The **Browser tasks** tab on the Scripts page shows the same evidence locally. Set `screenshots: true` in the plan to capture step screenshots.
+
+Run the Chromium acceptance check with the pinned runtime in an existing Vela checkout.
+
+```powershell
+bun scripts/browser-task-batch-acceptance.ts D:/VelaBrowser
+```
+
+## Scheduled site skills
+
+Call `vela_browser_task` with `operation: "schedule_save"`, a saved `skillId`, a `target` containing environment IDs, groups or tags, and a `schedule`. Daily schedules use local `HH:MM`. Interval schedules use `minutes`. Pass `argument` for fresh JSON inputs. Use `schedule_run` for immediate dispatch and `schedule_list` for the run IDs, status and errors. The desktop restores unfinished dispatches with the same per-profile idempotency key.
+
+The dashboard, managed MCP page tools, scripts and durable browser tasks share one write queue per profile. A separate profile can keep working while a write waits. External raw browser debugging clients can participate through the agent-control `browser.write.begin` and `browser.write.end` operations.
+
+## Kernel upgrades and network identity
+
+Use `vela_browser_kernel` to list verified builds, inspect a profile, upgrade it, or roll back. Windows x64 currently offers Vela Chromium revisions `155.0.8059.85-aliasmode.4` and `155.0.8059.85-aliasmode.5`. Archives and the native Windows engine DLL are verified before the selected build is used. Use `upgrade_batch` with an explicit list of profiles and a revision to roll out to a cohort. The tool stops at the first failed profile and reports completed and pending profiles. A rollback restores the snapshot of the native user-data directory together with the previous build.
+
+Call `vela_browser_network` for the live browser's egress address, timezone and WebRTC observations. Set `refresh: true` to save the session and reconnect when the same drift is observed twice. To sample idle proxied profiles, set `ALIASMODE_EGRESS_RECHECK_SECONDS` on the desktop process. Set `ALIASMODE_REFRESH_EGRESS=1` to enable the same reconnect policy for those samples. An unchanged drift finding triggers one automatic reconnect until a clean sample or a different finding arrives.
+
+## Portable profiles and self-hosted workers
+
+Call `vela_profile_portable` with `operation: "export"`, `profileId`, a `.vela-profile` file name and a passphrase. Copy the encrypted file between the desktops' `portable-profiles` folders and use `restore` at the destination. Native data uses a compatible browser build, operating system and architecture. The archive includes eligible native site files available at export time, up to a 96 MiB payload. The imported profile reports extension IDs that need to be installed on the destination. A handoff keeps the source profile closed.
+
+For remote task execution, run Vela on a second host or start the source checkout there with `bun src/cli.ts serve --worker --state-root <directory> --port 50400`. Put the worker configuration at `worker-nodes.json` in the app state directory. The destination uses a `clients` list with `name`, `token`, and allowed `groups`. The controller uses a `nodes` object keyed by node ID, with a `url`, the matching `token`, and an optional `agents` list. Use a random base64url token from 32 bytes or more. Route `/api/worker/v1/tasks` and `/api/worker/v1/handoff` through HTTPS to the worker's local listener with a loopback backend Host header. The desktop also accepts loopback origins for integration tests.
+
+Call `vela_worker` with `operation: "task"` and the registered `node`. The nested `request` uses `start`, `status`, `resume`, or `cancel`. Start requires a stable `idempotencyKey` and a recovery URL or a saved skill. Use `handoff` with the same key on every retry to initialize a destination profile and keep the source fenced. For workers sharing a host, assign each worker a separate Chromium debug port range with `--debug-port-range 12600-12699` or another available range.
+
+## Native Android devices
+
+Install [Android SDK Platform Tools](https://developer.android.com/tools/adb) and authorize USB or wireless debugging on a device. The desktop can find `adb` on PATH or via `ALIASMODE_ADB_PATH`. Set `ALIASMODE_ANDROID_SERIALS` to a comma-separated device list to restrict access. Use `vela_android` to list authorized serials, launch an installed Android package, observe controls and send input. The screenshot action returns a PNG in memory. Basic ADB text input accepts printable ASCII.
 
 ## Live streams and source tracing
 
@@ -128,12 +186,14 @@ The existing navigation, snapshots, screenshots, input, file upload, arbitrary e
 
 ## Temporary browser tab replay
 
-Use `vela_browser_replay` to review a visual change after it happens. It uses the selected open profile by default. Pass `profileId` to choose another open profile.
+Use `vela_browser_replay` to review a visual change after it happens. It uses the selected open profile by default. Pass `profileId` to choose another open profile, or pass `runId` for the task's bound tab.
 
 1. Call with `{"action":"tabs"}` to list tab IDs for replay.
 2. Call with `{"action":"start","tabId":"<id from tabs>"}` before the operation. You can omit `tabId` when there is only one tab. Capture covers that tab across navigations.
 3. Call with `{"action":"play"}` for the last 60 seconds, or with `{"action":"play","fromSecondsAgo":35,"toSecondsAgo":15}` for a specific interval. The tool returns up to four MCP images with timestamps. Open `playbackUrl` in a separate tab on the computer running Vela to play, pause, or seek within the available clip.
 4. Call with `{"action":"stop"}` to discard the recording and its links.
+
+To capture from the first task step, start replay on an existing tab and pass that `tabId` to `vela_browser_task` when starting the plan.
 
 Replay is off until started. Capture stops after 60 seconds by default. For longer operations, set `durationSeconds` on start, up to 300. Vela keeps JPEG frames in memory, at up to about six frames per second, with a 24 MiB limit per recording and up to four recordings across profiles, including recordings with frames still available after capture stops. One MCP connection owns each profile's recording. Frames expire 60 seconds after capture, and the memory limit can shorten the available interval. Playback links share the original frame expiration times. Closing the tab or the profile, disconnecting MCP, or revoking profile access discards the recording. The player uses the recorded tab's visual content without audio. MCP clients may retain images they receive according to their own settings.
 

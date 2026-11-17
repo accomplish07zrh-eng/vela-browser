@@ -2,7 +2,7 @@ import { webkitPublicFields } from "./browser-capabilities.ts";
 import { createLocalProfile, type NewProfileInput } from "./create.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { callWebKitOwner, type WebKitOwner } from "./webkit-runtime.ts";
-import { pointerAgent, validWorkbenchPointer } from "./workbench.ts";
+import { pointerAgent, validWorkbenchPointer, workbenchGeneration } from "./workbench.ts";
 import type { BrowserReplay } from "./browser-replay.ts";
 import {
   BrowserLaunchError,
@@ -28,6 +28,15 @@ import { existsSync as pathExists } from "node:fs";
 import { allowsGroup, ruleFor, type AiAccessSettings } from "./ai-access.ts";
 import type { AuditLog } from "./audit.ts";
 import { join as joinPath } from "node:path";
+import { randomUUID } from "node:crypto";
+import type { ProfileWriteLease, ProfileWrites } from "./profile-writes.ts";
+import { TaskError, type TaskRunner } from "./tasks.ts";
+import type { KernelUpgrades } from "./kernel-upgrades.ts";
+import type { AndroidDevices } from "./android.ts";
+import type { PortableProfiles } from "./portable-profiles.ts";
+import type { WorkerNodes } from "./worker-nodes.ts";
+import type { NetworkIdentity } from "./network-identity.ts";
+import { DEVTOOLS_TOOLS } from "../agent/devtools.mjs";
 
 export const AGENT_CONTROL_PROTOCOL = "aliasmode-agent-v1";
 export const AGENT_CONTROL_PATH = "/api/agent/v1/connect";
@@ -56,6 +65,7 @@ export interface AgentControlDeps {
   launcher: Launcher;
   store: ProfileStore;
   admission: LifecycleAdmissionController;
+  writes?: ProfileWrites;
   firefoxCall?: (owner: FirefoxOwner, operation: string, payload: Record<string, unknown>) => Promise<unknown>;
   webkitCall?: (owner: WebKitOwner, operation: string, payload: Record<string, unknown>) => Promise<unknown>;
   remote?: RemoteCoordinator | null;
@@ -78,6 +88,12 @@ export interface AgentControlDeps {
   /** Saved scripts and their runner: an AI lists, writes (with approval) and runs them. */
   scripts?: { library: ScriptLibrary; runner: ScriptSupervisor };
   browserTasks?: BrowserTaskSupervisor;
+  taskSchedules?: TaskRunner;
+  kernels?: KernelUpgrades;
+  android?: AndroidDevices;
+  portable?: PortableProfiles;
+  workers?: WorkerNodes;
+  networkIdentity?: NetworkIdentity;
   /** The plugins folder, where a plugin an AI wrote lands once approved. */
   pluginsRoot?: string;
   /** People approve the scripts and plugins an AI asks to save here. */
@@ -98,7 +114,8 @@ export interface AgentControlDeps {
 }
 
 /** Calls that only read: kept out of the record so it stays readable. */
-const UNAUDITED = new Set(["profiles.list", "browser.status", "browserTasks.list", "browserTasks.status", "browserTasks.evidence", "plugins.list", "scripts.list", "scripts.get", "scripts.status", "scripts.log", "proxyPool.list", "workbench.pointer", "firefox.tools.list", "webkit.tools.list", "session.identify", "session.audit", "session.releaseReplay"]);
+const UNAUDITED = new Set(["profiles.list", "browser.status", "browserTasks.list", "browserTasks.status", "browserTasks.evidence", "browserTasks.skill_find", "plugins.list", "scripts.list", "scripts.get", "scripts.status", "scripts.log", "proxyPool.list", "workbench.pointer", "firefox.tools.list", "webkit.tools.list", "session.identify", "session.audit", "session.releaseReplay"]);
+const READ_ONLY_PAGE_TOOLS = new Set(DEVTOOLS_TOOLS.filter(tool => tool.annotations.readOnlyHint).map(tool => tool.name));
 
 function humanizeParam(value: unknown): { enabled: boolean; speed: number; pasteOver: number | null; agent?: string } {
   const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
@@ -214,8 +231,9 @@ function errorResponse(id: number, error: unknown): AgentControlResponse {
       id,
       ok: false,
       error: {
-        code: error.failure === "mode_conflict" ? "mode_conflict" : "browser_launch_failed",
-        message: error.message,
+        code: error.preflightReason === "profile_handed_off" ? "profile_handed_off"
+          : error.failure === "mode_conflict" ? "mode_conflict" : "browser_launch_failed",
+        message: error.preflightReason === "profile_handed_off" ? error.guidance ?? error.message : error.message,
       },
     };
   }
@@ -269,6 +287,7 @@ export class AgentControlSession {
   private readonly inFlight = new Set<Promise<unknown>>();
   private readonly sessionAbort = new AbortController();
   private readonly replayAbort = new AbortController();
+  private readonly writeClaims = new Map<string, { lease: ProfileWriteLease; profileId: string; generation: string }>();
   private cleanup?: Promise<void>;
   /** The AI on the other end, as its MCP client names itself. */
   private client = "unknown";
@@ -364,7 +383,11 @@ export class AgentControlSession {
       return this.track(execute());
     }
     // Capture and its cleanup also run while the AI is waiting for a page action to finish.
-    if (request.method === "browser.replay" || request.method === "session.releaseReplay") return this.track(execute());
+    if (request.method === "browser.replay" || request.method === "session.releaseReplay" || request.method.startsWith("browser.write.")
+      || request.method.startsWith("kernels.") || request.method.startsWith("portable.")
+      || request.method === "worker.call" || request.method === "network.identity") {
+      return this.track(execute());
+    }
     // Page actions of different browsers run side by side, so an AI can drive many windows at
     // once, each with its own pointer and keyboard. One browser still takes one action at a time,
     // and lifecycle requests wait for every action in flight.
@@ -388,6 +411,8 @@ export class AgentControlSession {
     this.replayAbort.abort();
     this.sessionAbort.abort();
     this.cleanup = Promise.all([...this.inFlight, this.queue, ...this.lanes.values()]).then(async () => {
+      for (const claim of this.writeClaims.values()) claim.lease.release();
+      this.writeClaims.clear();
       for (const profileId of [...this.openedByConnection]) {
         await this.closeProfile(profileId, undefined, true).catch((error) => {
           this.deps.log?.(`agent cleanup for ${profileId} remains unconfirmed (${error instanceof Error ? error.message : "failed"})`);
@@ -410,11 +435,60 @@ export class AgentControlSession {
       this.deps.activity?.touch(params.profileId.trim());
     }
     if (method.startsWith("browserTasks.")) return this.browserTask(method.slice("browserTasks.".length), params);
+    if (method.startsWith("kernels.")) {
+      const kernels = this.deps.kernels;
+      if (!kernels) throw agentError("unsupported", "Kernel upgrades require the local desktop");
+      if (method === "kernels.list") return { revisions: kernels.revisions() };
+      if (method === "kernels.upgrade_batch") {
+        const ids = params.profileIds;
+        if (!Array.isArray(ids) || !ids.length || ids.length > 100 || !ids.every(id => typeof id === "string" && id.trim() === id && id)) {
+          throw agentError("invalid_request", "Provide 1 to 100 profile IDs for this rollout");
+        }
+        for (const id of ids) this.guard(id);
+        return kernels.upgradeBatch([...new Set<string>(ids)], stringParam(params, "revision"), this.sessionAbort.signal);
+      }
+      const profileId = stringParam(params, "profileId");
+      if (method === "kernels.status") return kernels.status(profileId);
+      if (method === "kernels.upgrade") return kernels.upgrade(profileId, stringParam(params, "revision"), this.sessionAbort.signal);
+      if (method === "kernels.rollback") return kernels.rollback(profileId, this.sessionAbort.signal);
+      throw agentError("invalid_request", "Unknown kernel operation");
+    }
     switch (method) {
+      case "network.identity":
+        if (!this.deps.networkIdentity) throw agentError("unsupported", "Network identity needs the local desktop");
+        return this.deps.networkIdentity.check(stringParam(params, "profileId"), params.refresh === true, this.sessionAbort.signal);
+      case "android.call":
+        if (!this.deps.android) {
+          if (params.action === "devices") return { devices: [], configured: false };
+          throw agentError("unsupported", "Configure Android SDK Platform Tools or ALIASMODE_ADB_PATH");
+        }
+        return this.deps.android.call(params, this.sessionAbort.signal);
+      case "portable.export": {
+        if (!this.deps.portable) throw agentError("unsupported", "Portable profiles require the local desktop");
+        return this.deps.portable.export(stringParam(params, "profileId"), params.file, params.passphrase, params.handoff === true, this.sessionAbort.signal);
+      }
+      case "portable.restore": {
+        const portable = this.deps.portable;
+        if (!portable) throw agentError("unsupported", "Portable profiles require the local desktop");
+        return portable.restore(portable.read(params.file), params.passphrase, profile => {
+          if (!this.mayUseGroup(profile.group)) throw agentError("not_permitted", "This AI may not restore the profile's group");
+        }, this.sessionAbort.signal);
+      }
+      case "worker.call":
+        if (!this.deps.workers) throw agentError("unsupported", "Worker nodes require the local desktop");
+        return this.deps.workers.call(params, this.client, id => this.guard(id), this.sessionAbort.signal);
       case "session.identify": {
         // Named once, by the MCP client's own name; later calls cannot rename the connection.
         if (this.client === "unknown" && typeof params.name === "string" && params.name.trim()) this.client = params.name.trim().slice(0, 64);
-        return { agent: this.client };
+        return { agent: this.client, ...(this.deps.writes ? { profileWriteLeases: true } : {}) };
+      }
+      case "browser.write.begin":
+        return await this.beginWrite(params);
+      case "browser.write.end": {
+        const token = stringParam(params, "token");
+        const claim = this.writeClaims.get(token);
+        if (claim) { this.writeClaims.delete(token); claim.lease.release(); }
+        return {};
       }
       case "session.audit": {
         // Page actions in Chromium go straight to the browser; the MCP host reports them here.
@@ -481,7 +555,28 @@ export class AgentControlSession {
       case "browser.replay": {
         const replay = this.deps.replay;
         if (!replay) throw agentError("unavailable", "Browser replay is unavailable in this Vela Browser");
-        const profileId = stringParam(params, "profileId");
+        let profileId: string;
+        if (params.runId !== undefined) {
+          const tasks = this.deps.browserTasks;
+          if (!tasks) throw agentError("unsupported", "Task replay needs the local Vela Browser desktop app");
+          const runId = stringParam(params, "runId");
+          const task = tasks.status(runId);
+          profileId = task.profileId;
+          this.guard(profileId);
+          if ((params.profileId !== undefined && params.profileId !== profileId) || params.tabId !== undefined) {
+            throw agentError("invalid_request", "Use runId to select the task's profile and tab");
+          }
+          if (params.action === "start") {
+            const target = tasks.replayTarget(runId, id => {
+              const launch = this.deps.store.getLaunch(id);
+              return launch ? workbenchGeneration(launch) : undefined;
+            });
+            params = { ...params, tabId: target.tabId };
+          } else {
+            if (!task.tabId) throw agentError("task_tab_unavailable", "The task does not have a bound tab");
+            params = { ...params, tabId: task.tabId };
+          }
+        } else profileId = stringParam(params, "profileId");
         return await replay.call(this.replayAbort.signal, profileId, params, () => {
           try { this.guard(profileId); return true; } catch { return false; }
         });
@@ -489,19 +584,11 @@ export class AgentControlSession {
       case "firefox.tools.list":
         return { tools: await this.firefoxCall(stringParam(params, "profileId"), "mcp-list", this.withPlugins({})) };
       case "firefox.tools.call":
-        return await this.firefoxCall(stringParam(params, "profileId"), "mcp-call", this.withPlugins({
-          name: stringParam(params, "name"),
-          ...(params.arguments === undefined ? {} : { arguments: object(params.arguments) }),
-          ...(params.humanize === undefined ? {} : { humanize: humanizeParam(params.humanize) }),
-        }));
+        return await this.nativePageCall("firefox", params);
       case "webkit.tools.list":
         return { tools: await this.webkitCall(stringParam(params, "profileId"), "mcp-list", this.withPlugins({})) };
       case "webkit.tools.call":
-        return await this.webkitCall(stringParam(params, "profileId"), "mcp-call", this.withPlugins({
-          name: stringParam(params, "name"),
-          ...(params.arguments === undefined ? {} : { arguments: object(params.arguments) }),
-          ...(params.humanize === undefined ? {} : { humanize: humanizeParam(params.humanize) }),
-        }));
+        return await this.nativePageCall("webkit", params);
       case "browser.detach":
         return this.detachProfile(stringParam(params, "profileId"));
       case "browser.close":
@@ -514,6 +601,53 @@ export class AgentControlSession {
       default:
         throw agentError("unknown_method", `unknown agent method: ${method}`);
     }
+  }
+
+  private generation(profileId: string): string | undefined {
+    const launch = this.deps.store.getLaunch(profileId);
+    return launch ? workbenchGeneration(launch) : undefined;
+  }
+
+  private async beginWrite(params: Record<string, unknown>) {
+    const writes = this.deps.writes;
+    if (!writes) throw agentError("unsupported", "Profile write leases are unavailable");
+    const profileId = stringParam(params, "profileId");
+    const launch = this.deps.store.getLaunch(profileId);
+    if (!launch || (params.endpoint !== undefined && params.endpoint !== launch.ws)) {
+      throw agentError("browser_changed", "The profile's browser changed before the operation");
+    }
+    const generation = workbenchGeneration(launch);
+    const lease = await writes.acquire(profileId, this.sessionAbort.signal);
+    try {
+      this.sessionAbort.signal.throwIfAborted();
+      this.guard(profileId);
+      if (this.generation(profileId) !== generation) throw agentError("browser_changed", "The profile's browser changed while the operation waited");
+      const token = randomUUID();
+      this.writeClaims.set(token, { lease, profileId, generation });
+      return { token };
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
+  }
+
+  private async nativePageCall(engine: "firefox" | "webkit", params: Record<string, unknown>) {
+    const profileId = stringParam(params, "profileId"), name = stringParam(params, "name");
+    const generation = this.generation(profileId);
+    const input = this.withPlugins({
+      name, ...(params.arguments === undefined ? {} : { arguments: object(params.arguments) }),
+      ...(params.humanize === undefined ? {} : { humanize: humanizeParam(params.humanize) }),
+    });
+    const run = async () => {
+      this.guard(profileId);
+      if (generation !== this.generation(profileId)) throw agentError("browser_changed", "The profile's browser changed while the operation waited");
+      return engine === "firefox" ? this.firefoxCall(profileId, "mcp-call", input) : this.webkitCall(profileId, "mcp-call", input);
+    };
+    if (!this.deps.writes || READ_ONLY_PAGE_TOOLS.has(name)) return run();
+    if (params.writeToken === undefined) return this.deps.writes.run(profileId, run, this.sessionAbort.signal);
+    const claim = this.writeClaims.get(stringParam(params, "writeToken"));
+    if (!claim || claim.profileId !== profileId || claim.generation !== generation) throw agentError("browser_changed", "The profile write lease has expired");
+    return run();
   }
 
   /** An IP's score, or the score of a profile's exit (found from its pool node or by checking its proxy). */
@@ -671,6 +805,26 @@ export class AgentControlSession {
   private browserTask(operation: string, params: Record<string, unknown>) {
     const tasks = this.deps.browserTasks;
     if (!tasks) throw agentError("unsupported", "Browser tasks need the local Vela Browser desktop app");
+    if (operation.startsWith("schedule_")) {
+      const schedules = this.deps.taskSchedules;
+      if (!schedules) throw agentError("unsupported", "Browser task scheduling is unavailable");
+      try {
+        if (operation === "schedule_list") return schedules.list(this.client);
+        if (operation === "schedule_save") {
+          return { schedule: schedules.save({
+            id: params.scheduleId, name: params.name, target: params.target, schedule: params.schedule, enabled: params.enabled,
+            skill: { id: params.skillId, startUrl: params.startUrl, inputs: params.argument },
+          }, this.client) };
+        }
+        const id = stringParam(params, "scheduleId");
+        if (operation === "schedule_run") return schedules.run(id, "manual", this.client);
+        if (operation === "schedule_delete") { schedules.delete(id, this.client); return {}; }
+      } catch (error) {
+        if (error instanceof TaskError) throw agentError(error.status === 404 ? "schedule_not_found" : "invalid_request", error.message);
+        throw error;
+      }
+      throw agentError("invalid_request", "Unknown browser task schedule operation");
+    }
     const number = (key: string, fallback: number, min: number, max = Number.MAX_SAFE_INTEGER) => {
       const value = params[key] ?? fallback;
       if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
@@ -685,11 +839,30 @@ export class AgentControlSession {
       }, number("offset", 0, 0), number("limit", 25, 1, 100));
     }
     if (operation === "start") return { task: tasks.start(stringParam(params, "profileId"), this.client, params) };
+    if (operation === "start_batch") {
+      if (params.unattended === false) throw agentError("invalid_request", "Batch tasks use unattended execution");
+      if (!Array.isArray(params.runs) || params.runs.length < 1 || params.runs.length > 100) {
+        throw agentError("invalid_request", "Provide 1 to 100 runs");
+      }
+      const { runs, ...shared } = params;
+      return { runs: runs.map((value, index) => {
+        try {
+          const item = object(value);
+          const profileId = stringParam(item, "profileId");
+          const { argument = shared.argument, idempotencyKey = shared.idempotencyKey, name = shared.name,
+            startUrl = shared.startUrl, tabId } = item;
+          const task = tasks.start(profileId, this.client, { ...shared, argument, idempotencyKey, name, startUrl, tabId, unattended: true });
+          return { index, ok: true, task };
+        } catch (error) { return { index, ok: false, error: errorResponse(1, error).error }; }
+      }) };
+    }
+    if (operation === "skill_find") return tasks.findSkills(this.client, params.url, number("offset", 0, 0), number("limit", 25, 1, 100));
     const runId = stringParam(params, "runId");
     const task = tasks.status(runId);
     this.guard(task.profileId);
     switch (operation) {
       case "status": return { task };
+      case "skill_save": return { skill: tasks.saveSkill(runId, this.client, params) };
       case "resume": return { task: tasks.resume(runId, this.client, params.verify) };
       case "pause": return tasks.stop(runId, "paused");
       case "cancel": return tasks.stop(runId, "cancelled");

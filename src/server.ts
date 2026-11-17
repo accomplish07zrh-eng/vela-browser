@@ -106,8 +106,12 @@ async function activeResponse(
     return ok({ status: "Active", lifecycle: "running", ...firefoxPublicFields() });
   }
   if (alive && launch?.ws) {
-    return ok({ status: "Active", lifecycle: "running", ws: { puppeteer: launch.ws, selenium: "" },
-      ...(v2 ? { debug_port: String(launch.debugPort), webdriver: "" } : {}) });
+    const connection = v2 ? await v2ChromiumConnection(profileId, launch.ws, launch.debugPort, launcher, false)
+      : { ws: { puppeteer: launch.ws, selenium: "" } };
+    const pending = currentLifecycle(profileId, lifecycle);
+    if (pending) return ok({ status: "Active", lifecycle: pending });
+    if (store.getLaunch(profileId)?.ws === launch.ws) return ok({ status: "Active", lifecycle: "running", ...connection });
+    return store.getLaunch(profileId) ? ok({ status: "Active", lifecycle: "uncertain" }) : ok({ status: "Inactive" });
   }
   // Certification can fail while ownership-safe teardown remains unconfirmed.
   // Keep that durable generation visible without exposing an uncertified CDP URL.
@@ -187,7 +191,15 @@ async function handleV2BrowserControl(
   }
 }
 
-async function startLocalBrowser(profileId: string, launcher: Launcher, store: ProfileStore, launchArgs: string[], headless?: boolean) {
+async function v2ChromiumConnection(profileId: string, ws: string, port: number, launcher: Launcher, download: boolean) {
+  const webdriver = await launcher.chromeDriverPath?.(profileId, download);
+  return {
+    ws: { puppeteer: ws, selenium: Number.isInteger(port) && port >= 1 && port <= 65535 ? "127.0.0.1:" + port : "" },
+    debug_port: String(port), webdriver: webdriver ?? "",
+  };
+}
+
+async function startLocalBrowser(profileId: string, launcher: Launcher, store: ProfileStore, launchArgs: string[], headless?: boolean, v2 = false) {
   if (!store.getProfile(profileId)) return fail("no such profile: " + profileId);
   try {
     const { ws, port } = headless === undefined ? await launcher.start(profileId, launchArgs)
@@ -195,6 +207,7 @@ async function startLocalBrowser(profileId: string, launcher: Launcher, store: P
     const launch = store.getLaunch(profileId);
     if (launch?.engine === "webkit" || ws.startsWith("webkit://")) return ok(webkitPublicFields());
     if (isFirefoxEngine(launch) || ws.startsWith("firefox://")) return ok(firefoxPublicFields());
+    if (v2) return ok(await v2ChromiumConnection(profileId, ws, port, launcher, true));
     return ok({ ws: { puppeteer: ws, selenium: "" }, debug_port: String(port), webdriver: "" });
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
@@ -291,7 +304,7 @@ export async function handleRequest(
   const v2Action = v2BrowserAction(pathname);
   if (v2Action) {
     return handleV2BrowserControl(req, v2Action, number => store.profileIdsByDisplayNo(number), lifecycle, (profileId, options) => {
-      if (v2Action === "start") return startLocalBrowser(profileId, launcher, store, options.launchArgs, options.headless);
+      if (v2Action === "start") return startLocalBrowser(profileId, launcher, store, options.launchArgs, options.headless, true);
       if (v2Action === "stop") return stopLocalBrowser(profileId, launcher, store);
       return activeResponse(profileId, launcher, store, lifecycle, true);
     });
@@ -407,9 +420,13 @@ export async function handleRemoteBrowserControl(
     return handleV2BrowserControl(req, v2Action, resolveProfileNo, lifecycle, async (profileId, { launchArgs, headless }) => {
       if (v2Action === "start") {
         const opened = await coord.open(profileId, launchArgs, false, headless === undefined ? {} : { headless });
-        return opened.ok ? ok({ ws: { puppeteer: opened.ws, selenium: "" }, debug_port: String(opened.port), webdriver: "",
-          ...(opened.warning ? { warning: opened.warning } : {}) })
-          : fail(opened.lockedBy ? "in use by " + opened.lockedBy : opened.error ?? "open failed");
+        if (!opened.ok || !opened.ws || opened.port === undefined) {
+          return fail(opened.lockedBy ? "in use by " + opened.lockedBy : opened.error ?? "open failed");
+        }
+        if (opened.ws.startsWith("firefox://")) return ok({ ...firefoxPublicFields(), ...(opened.warning ? { warning: opened.warning } : {}) });
+        if (opened.ws.startsWith("webkit://")) return ok({ ...webkitPublicFields(), ...(opened.warning ? { warning: opened.warning } : {}) });
+        return ok({ ...await v2ChromiumConnection(profileId, opened.ws, opened.port, launcher, true),
+          ...(opened.warning ? { warning: opened.warning } : {}) });
       }
       if (v2Action === "stop") return await coord.close(profileId) ? ok() : fail("browser teardown unconfirmed: " + profileId);
       return activeResponse(profileId, launcher, store, { ...lifecycle, remote: coord }, true);

@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromiumFingerprint } from "./agent/chromium-fingerprint.mjs";
@@ -1217,6 +1218,34 @@ export function fingerprintDocument(expression) {
   </script>`;
 }
 
+async function measureNetwork(context, payload) {
+  const page = await context.newPage();
+  try {
+    let egress = null;
+    for (const url of payload.egressUrls) {
+      try {
+        const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: payload.timeoutMs });
+        if (!response?.ok()) continue;
+        const body = await response.text();
+        let ips = [body.trim()];
+        try {
+          const json = JSON.parse(body);
+          ips = [json?.ip, json?.query];
+        } catch {}
+        if (ips.some(ip => typeof ip === "string" && isIP(ip.trim()))) {
+          egress = body;
+          break;
+        }
+      } catch {}
+    }
+    const timezone = await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => undefined);
+    const webrtcIps = egress ? await page.evaluate(payload.webrtcScript).catch(() => []) : [];
+    return { fingerprint: { timezone }, webrtcIps, egress, login: null };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 export async function operatePersistentContext(browser, context, operation, payload, options = {}) {
   const timeout = Math.max(1, Math.min(Number(payload.connectTimeoutMs) || 30_000, 120_000));
   if (operation === "session-capture") {
@@ -1257,6 +1286,7 @@ export async function operatePersistentContext(browser, context, operation, payl
     return { injected: missing.length > 0 };
   }
   if (operation === "diagnostics") {
+    if (payload.networkOnly) return measureNetwork(context, payload);
     const page = await context.newPage();
     try {
       await page.goto("https://example.com", { waitUntil: "domcontentloaded", timeout: payload.timeoutMs }).catch(() => {});
@@ -1441,6 +1471,7 @@ async function operate(chromium, operation, payload) {
       return { injected: missing.length > 0 };
     }
     if (operation === "diagnostics") {
+      if (payload.networkOnly) return measureNetwork(context, payload);
       const page = await context.newPage();
       try {
         await page.goto("https://example.com", { waitUntil: "domcontentloaded", timeout: payload.timeoutMs }).catch(() => {});

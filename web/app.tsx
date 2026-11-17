@@ -21,7 +21,7 @@ import "./shell.css";
 import "./profile-management.css";
 import { ProfileDetailDrawer } from "./profile-detail.tsx";
 import { SavedProfileViews, ProfileTemplateBar, ProfileBatchOptions, ProfileCreationDialog, ProfileCreationReceipt, ProfileCreateSummary } from "./profile-management-controls.tsx";
-import { batchProfileNames, matchesProfileFilters, runProfileCreation, type BatchCreateItem, type ProfileFilters, type ProfileStatusFilter, type ProfileEngineFilter } from "./profile-management.ts";
+import { batchProfileNames, matchesProfileFilters, runProfileCreation, runProfilePool, type BatchCreateItem, type ProfileFilters, type ProfileStatusFilter, type ProfileEngineFilter } from "./profile-management.ts";
 import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
@@ -105,14 +105,8 @@ import {
   moveGroup,
   deleteGroup,
   fetchTotp,
+  profileLaunchConcurrency,
 } from "./api.ts";
-
-/** Run async tasks with bounded concurrency (so "Open 50" isn't 50 at once). */
-async function runPool<T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let i = 0;
-  const worker = async () => { while (i < items.length) await fn(items[i++]!); };
-  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
-}
 
 const CSV_TEMPLATE =
   "name,group,platform,proxy,username,password,email,emailpassword,twofa\n" +
@@ -941,6 +935,17 @@ function FingerprintSettings({
 }
 
 type DesktopInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+// The dashboard uses a new loopback port on each desktop launch. Cookies follow the host.
+const DISMISSED_UPDATE_COOKIE = "aliasmode.shell.dismissedUpdateVersion";
+
+function readDismissedUpdateVersion(): string | null {
+  try {
+    const prefix = DISMISSED_UPDATE_COOKIE + "=";
+    const cookie = document.cookie.split(";").map(part => part.trim()).find(part => part.startsWith(prefix));
+    return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
+  } catch { return null; }
+}
+
 type DesktopUpdateStatus =
   | { state: "upToDate"; currentVersion: string }
   | { state: "available"; currentVersion: string; version: string; highlights: string[] };
@@ -1190,6 +1195,7 @@ function App() {
   const [healthSources, setHealthSources] = useState<HealthSource[]>([]);
   const [appVersion, setAppVersion] = useState("");
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateStatus | null>(null);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(readDismissedUpdateVersion);
   const [desktopUpdateResult, setDesktopUpdateResult] = useState<DesktopUpdateResult | null>(null);
   const [desktopUpdateResultDismissed, setDesktopUpdateResultDismissed] = useState(false);
   const [desktopUpdateChecking, setDesktopUpdateChecking] = useState(false);
@@ -2425,7 +2431,7 @@ function App() {
     setActionErr(null);
     setBusy((b) => { const n = { ...b }; ids.forEach((id) => (n[id] = true)); return n; });
     const issues: string[] = [];
-    await runPool(ids, batch, async (id) => {
+    await runProfilePool(ids, batch, async (id) => {
       try {
         const r = await op(id);
         if (r?.ok === false) issues.push(`${id}: ${r.error || "action failed"}`);
@@ -2439,11 +2445,8 @@ function App() {
     await load();
     if (issues.length > 0) setActionErr(issues.join("; "));
   };
-  // Browsers start in batches as large as the free memory holds, so a big selection does not stall the computer.
   const openSelected = async () => {
-    let batch = 4;
-    try { const response = await fetch("/ui/api/launch-batch"); if (response.ok) batch = Math.max(1, Number((await response.json()).size) || 4); } catch { /* the usual four */ }
-    await bulkRun(openProfile, (p) => !p.running && !p.mobilePersona, batch);
+    await bulkRun(openProfile, (p) => !p.running && !p.mobilePersona, await profileLaunchConcurrency());
   };
   const closeSelected = () => bulkRun(closeProfile, (p) => p.running);
   const convertSelectedMobile = async () => {
@@ -2457,7 +2460,7 @@ function App() {
     setActionErr(null);
     setBusy((b) => { const n = { ...b }; ids.forEach((id) => (n[id] = true)); return n; });
     const failed: string[] = [];
-    await runPool(ids, 4, async (id) => {
+    await runProfilePool(ids, 4, async (id) => {
       try {
         const r = await convertMobileProfile(id);
         if (!r.ok) failed.push(`${id}: ${r.error || "conversion failed"}`);
@@ -2992,7 +2995,7 @@ function App() {
           </button>
         </div>
       )}
-      {desktopUpdate?.state === "available" && (
+      {desktopUpdate?.state === "available" && (desktopUpdateInstalling || desktopUpdate.version !== dismissedUpdateVersion) && (
         <div className="update-banner">
           <Icon name="import" />
           <div className="update-copy">
@@ -3004,6 +3007,23 @@ function App() {
           <button className="btn primary" type="button" disabled={desktopUpdateChecking || desktopUpdateInstalling} onClick={() => void installDesktopUpdate()}>
             {desktopUpdateInstalling ? t("Updating…") : t("Update now")}
           </button>
+          {!desktopUpdateInstalling && (
+            <button
+              className="update-result-dismiss"
+              type="button"
+              aria-label={t("Dismiss update notice")}
+              title={t("Dismiss update notice")}
+              onClick={() => {
+                const version = desktopUpdate.version;
+                setDismissedUpdateVersion(version);
+                try {
+                  document.cookie = DISMISSED_UPDATE_COOKIE + "=" + encodeURIComponent(version) + "; Path=/; SameSite=Lax; Max-Age=31536000";
+                } catch { /* The current window still applies the dismissal. */ }
+              }}
+            >
+              <Icon name="close" className="sm" />
+            </button>
+          )}
         </div>
       )}
 
@@ -3115,6 +3135,7 @@ function App() {
             {exportOpen && selected.size > 0 && !exportProgress && (
               <div className="exportmenu popover below-left" onMouseLeave={() => setExportOpen(false)}>
                 <button className="pop-item" onClick={() => exportSelected("csv")}><Icon name="file" className="sm" />{t("Export as CSV (credentials)")}</button>
+                <button className="pop-item" onClick={() => exportSelected("bitwarden")}><Icon name="file" className="sm" />{t("Export Bitwarden JSON (credentials)")}</button>
                 <button className="pop-item" onClick={() => exportSelected("txt")}><Icon name="file" className="sm" />{t("Export as .txt (full profile)")}</button>
                 <button className="pop-item" onClick={() => exportSelected("xlsx")}><Icon name="file" className="sm" />{t("Export as Excel (full profile)")}</button>
               </div>

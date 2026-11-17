@@ -85,7 +85,8 @@ export class BrowserReplay {
       try {
         const tabs = await source.adapter.tabs();
         if (!source.current() || owner.aborted || !allowed()) throw new Error("The browser session changed");
-        return { profileId, tabs: tabs.map(({ id, ...tab }) => ({ tabId: id, ...tab })) };
+        return { profileId, tabs: tabs.filter(tab => args.tabId === undefined || tab.id === args.tabId)
+          .map(({ id, ...tab }) => ({ tabId: id, ...tab })) };
       } finally { await source.adapter.dispose(); }
     }
     if (args.action === "start") {
@@ -95,7 +96,7 @@ export class BrowserReplay {
       return await this.start(owner, profileId, args.tabId, seconds * 1000, allowed);
     }
     if (args.action === "stop") {
-      this.discardFor(owner, profileId);
+      if (args.tabId === undefined || this.captures.get(profileId)?.tabId === args.tabId) this.discardFor(owner, profileId);
       return { profileId, active: false };
     }
     if (args.action !== "play") throw new Error("Choose replay action tabs, start, play or stop");
@@ -274,7 +275,8 @@ export class BrowserReplay {
     if (from <= to) throw new Error("fromSecondsAgo must be greater than toSecondsAgo");
     if (!Number.isInteger(frameCount)) throw new Error("frameCount must be an integer");
     const capture = this.captures.get(profileId);
-    if (!capture || capture.owner !== owner || !capture.tabId || !this.available(capture)) throw new Error("Start a replay for this profile on this MCP connection first");
+    if (!capture || capture.owner !== owner || !capture.tabId || !this.available(capture)
+      || (args.tabId !== undefined && args.tabId !== capture.tabId)) throw new Error("Start a replay for this tab on this MCP connection first");
     const now = this.clock();
     this.prune(capture, now);
     const frames = capture.frames.filter(frame => frame.at >= now - from * 1000 && frame.at <= now - to * 1000);

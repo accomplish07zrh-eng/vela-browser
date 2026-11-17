@@ -1,5 +1,5 @@
 /** A plain CDP connection. Unlike Playwright's connectOverCDP it attaches to no tab by itself. */
-async function openCdp(endpoint, timeout) {
+export async function openCdp(endpoint, timeout) {
   const deadline = Date.now() + timeout;
   const url = /^https?:/.test(endpoint)
     ? (await (await fetch(new URL("/json/version", endpoint), { signal: AbortSignal.timeout(timeout) })).json()).webSocketDebuggerUrl

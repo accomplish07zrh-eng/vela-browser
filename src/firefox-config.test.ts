@@ -147,7 +147,10 @@ test("a profile of another OS gets that OS's stock fonts and Windows colours; a 
   const macos = { ...profile(5, { "navigator.platform": "MacIntel" }), platformOs: "macos" as const };
   const linux = profile(5, { "navigator.platform": "Linux x86_64" });
   const crossOs = (prefs: Record<string, JsonValue>) => Object.keys(prefs).filter((key) => /^(font\.|ui\.)/.test(key));
+  expect(firefoxStartupPrefs(windows, "win32", "x64")["gfx.font_loader.delay"]).toBe(0);
+  expect(firefoxStartupPrefs(linux, "win32", "x64")).not.toHaveProperty("gfx.font_loader.delay");
   const onLinux = firefoxStartupPrefs(windows, "linux", "x64");
+  expect(onLinux).not.toHaveProperty("gfx.font_loader.delay");
   expect(onLinux).toMatchObject({
     "font.name-list.serif.x-western": "Times New Roman", "font.name-list.sans-serif.x-western": "Arial",
     "font.name-list.monospace.x-western": "Consolas", "font.name-list.cursive.x-western": "Comic Sans MS",

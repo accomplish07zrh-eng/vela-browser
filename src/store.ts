@@ -133,6 +133,7 @@ export class ProfileStore {
       "webkit_owner_json TEXT",
       "owner_binary_path TEXT",
       "persona_json TEXT",
+      "egress_at_launch TEXT",
     ]) {
       try {
         this.db.exec(`ALTER TABLE launches ADD COLUMN ${column}`);
@@ -184,6 +185,9 @@ export class ProfileStore {
       "firefox_config_json TEXT NOT NULL DEFAULT ''",
       "webkit_config_json TEXT NOT NULL DEFAULT ''",
       "chromium_runtime TEXT NOT NULL DEFAULT ''",
+      "kernel_revision TEXT NOT NULL DEFAULT ''",
+      "handoff_digest TEXT NOT NULL DEFAULT ''",
+      "portable_digest TEXT NOT NULL DEFAULT ''",
       "hardware_json TEXT NOT NULL DEFAULT ''",
       "timezone_manual INTEGER NOT NULL DEFAULT 0",
       "display_scale REAL NOT NULL DEFAULT 0",
@@ -239,6 +243,9 @@ export class ProfileStore {
       this.db.exec(`ALTER TABLE profiles ADD COLUMN custom_no TEXT NOT NULL DEFAULT ''`);
     } catch {
       /* column already exists */
+    }
+    for (const column of ["remark TEXT NOT NULL DEFAULT ''", "startup_urls_json TEXT NOT NULL DEFAULT '[]'"]) {
+      try { this.db.exec(`ALTER TABLE profiles ADD COLUMN ${column}`); } catch { /* column already exists */ }
     }
     // Migrations for the full-fidelity identity export. platform_os makes the
     // desktop platform an explicit stored value instead of one inferred from
@@ -434,16 +441,17 @@ export class ProfileStore {
       .query(
         `INSERT INTO profiles
            (id, engine, chromium_runtime, hardware_json, firefox_config_json, webkit_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, timezone_manual, locale,
-            screen_width, screen_height, fingerprint_seed, platform_os, fp_observed_json, fp_expected_json, fp_verdict_json, cookies_json, seeded, created_at)
+            screen_width, screen_height, fingerprint_seed, platform_os, fp_observed_json, fp_expected_json, fp_verdict_json, cookies_json, seeded, created_at, remark, startup_urls_json)
          -- fp_verdict_json is literal '': a verdict is a COMPUTED fact, written
          -- only by saveObservedFingerprint from a real measurement. If a caller
          -- could supply one, an import could hand itself a "verified" badge and
          -- the badge would mean nothing.
-         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$webkit,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$tzManual,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
+         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$webkit,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$tzManual,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created,COALESCE($remark,''),COALESCE($startupUrls,'[]'))
          ON CONFLICT(id) DO UPDATE SET
            engine=$engine, firefox_config_json=$firefox, webkit_config_json=$webkit, hardware_json=$hardware, timezone_manual=$tzManual,
            acc_id=$acc, name=$name, "group"=$group, platform=$platform, username=$user, password=$pass,
            email=$email, email_password=$emailPass, twofa=$twofa,
+           remark=COALESCE($remark,remark), startup_urls_json=COALESCE($startupUrls,startup_urls_json),
            -- An unrelated edit to a quarantined profile must preserve the raw
            -- legacy proxy for operator recovery. A valid replacement or an
            -- explicit clear removes the quarantine and writes the new value.
@@ -493,6 +501,8 @@ export class ProfileStore {
         $name: p.name,
         $group: p.group,
         $platform: p.platform ?? "",
+        $remark: p.remark ?? null,
+        $startupUrls: p.startupUrls === undefined ? null : JSON.stringify(p.startupUrls),
         $user: p.username,
         $pass: this.sealField(p.password ?? ""),
         $email: p.email ?? "",
@@ -529,6 +539,37 @@ export class ProfileStore {
   /** Pins the display scale a Chromium 155 profile's pages draw at. */
   setDisplayScale(id: string, scale: number): void {
     this.db.query("UPDATE profiles SET display_scale = ? WHERE id = ?").run(scale, id);
+  }
+
+  setKernelRevision(id: string, revision?: string): void {
+    this.db.query("UPDATE profiles SET kernel_revision = ? WHERE id = ?").run(revision ?? "", id);
+  }
+
+  setProfileHandoff(id: string, digest: string): void {
+    this.db.query("UPDATE profiles SET handoff_digest = ? WHERE id = ?").run(digest, id);
+  }
+
+  profileHandoff(id: string): string | undefined {
+    return this.db.query<{ handoff_digest: string }, [string]>("SELECT handoff_digest FROM profiles WHERE id = ?").get(id)?.handoff_digest || undefined;
+  }
+
+  setPortableProfileDigest(id: string, digest: string): void {
+    this.db.query("UPDATE profiles SET portable_digest = ? WHERE id = ?").run(digest, id);
+  }
+
+  portableProfileDigest(id: string): string | undefined {
+    return this.db.query<{ portable_digest: string }, [string]>("SELECT portable_digest FROM profiles WHERE id = ?").get(id)?.portable_digest || undefined;
+  }
+
+  commitPortableProfile(profile: Profile, session: string | undefined, digest: string): void {
+    this.transaction(() => {
+      const sessions = new Map<string, string>();
+      if (session && profile.engine !== "firefox") sessions.set(profile.id, session);
+      this.upsertProfiles([profile], sessions);
+      if (session && profile.engine === "firefox") this.saveSessionBundle(profile.id, session);
+      if (profile.kernelRevision) this.setKernelRevision(profile.id, profile.kernelRevision);
+      this.setPortableProfileDigest(profile.id, digest);
+    })();
   }
 
   /** Explicit edits and authoritative restores may clear stored hardware; the engine then chooses. */
@@ -1128,9 +1169,9 @@ export class ProfileStore {
            (profile_id, pid, debug_port, ws, started_at, relay_port, session_base_version,
             binary_path, user_data_dir, binary_sha256, persona_digest, headless,
             search_bootstrap_revision, process_group_id, root_start_time,
-            engine, firefox_owner_json, webkit_owner_json, owner_binary_path, persona_json)
+            engine, firefox_owner_json, webkit_owner_json, owner_binary_path, persona_json, egress_at_launch)
          VALUES ($id,$pid,$port,$ws,$at,$relay,$base,$binary,$data,$binary_sha,$persona,$headless,$search_bootstrap,$pgid,$root_start,
-                 $engine,$firefox_owner,$webkit_owner,$owner_binary,$persona_json)
+                 $engine,$firefox_owner,$webkit_owner,$owner_binary,$persona_json,$egress)
          ON CONFLICT(profile_id) DO UPDATE SET
            pid=$pid, debug_port=$port, ws=$ws, started_at=$at, relay_port=$relay,
            session_base_version=$base, binary_path=$binary, user_data_dir=$data,
@@ -1138,7 +1179,7 @@ export class ProfileStore {
            search_bootstrap_revision=$search_bootstrap,
            process_group_id=$pgid, root_start_time=$root_start,
            engine=$engine, firefox_owner_json=$firefox_owner, webkit_owner_json=$webkit_owner, owner_binary_path=$owner_binary,
-           persona_json=$persona_json`,
+           persona_json=$persona_json, egress_at_launch=$egress`,
       )
       .run({
         $id: info.profileId,
@@ -1161,6 +1202,7 @@ export class ProfileStore {
         $webkit_owner: info.webkitOwner === undefined ? null : JSON.stringify(info.webkitOwner),
         $owner_binary: firefox.ownerBinaryPath ?? null,
         $persona_json: info.persona ? JSON.stringify(info.persona) : null,
+        $egress: info.egressAtLaunch ? JSON.stringify(info.egressAtLaunch) : null,
       });
     // Mirror the launch time onto the profile so the AdsPower user/list facade
     // can report last_open_time (the launches row is deleted on stop).
@@ -1242,6 +1284,7 @@ function rowToProfile(row: any, open: (value: string | null | undefined) => stri
     id: row.id,
     engine: browser.engine,
     ...(row.chromium_runtime ? { chromiumRuntime: normalizeChromiumRuntime(row.chromium_runtime, browser.engine) } : {}),
+    ...(row.kernel_revision ? { kernelRevision: row.kernel_revision } : {}),
     ...(row.hardware_json ? { hardware: normalizeProfileHardware(JSON.parse(row.hardware_json)) } : {}),
     ...(browser.firefox ? { firefox: browser.firefox } : {}),
     ...(browser.webkit ? { webkit: browser.webkit } : {}),
@@ -1249,6 +1292,8 @@ function rowToProfile(row: any, open: (value: string | null | undefined) => stri
     name: row.name ?? "",
     group: row.group ?? "",
     platform: row.platform ?? "",
+    ...(row.remark ? { remark: row.remark } : {}),
+    ...(row.startup_urls_json && row.startup_urls_json !== "[]" ? { startupUrls: safeParse<string[]>(row.startup_urls_json, []) } : {}),
     username: row.username ?? "",
     password: open(row.password),
     email: row.email ?? "",
@@ -1315,6 +1360,7 @@ function rowToLaunch(row: any): LaunchInfo {
   const firefoxOwner = readStoredFirefoxOwner(row.firefox_owner_json);
   return {
     profileId: row.profile_id,
+    ...(row.egress_at_launch ? { egressAtLaunch: safeParse(row.egress_at_launch, undefined) } : {}),
     pid: row.pid,
     debugPort: row.debug_port,
     ws: row.ws,

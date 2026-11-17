@@ -10,6 +10,7 @@
  */
 
 import { BrowserLaunchError, defaultSetCookies, launchIdentityChanged, type Launcher } from "./launcher.ts";
+import { serializeBitwarden } from "./bitwarden-export.ts";
 import { taskbarModeSupported } from "./taskbar.ts";
 import type { ProfileStore } from "./store.ts";
 import type { AutomationHealthStatus } from "./remote-types.ts";
@@ -1475,14 +1476,14 @@ export async function handleUiRequest(
     if (ids.some((id) => !isSafeProfileId(id))) {
       return Response.json({ ok: false, error: PROFILE_ID_ERROR }, { status: 400 });
     }
-    if (body.format !== "txt" && body.format !== "xlsx" && body.format !== "csv") {
-      return Response.json({ ok: false, error: "format must be csv, txt, or xlsx" }, { status: 400 });
+    if (body.format !== "txt" && body.format !== "xlsx" && body.format !== "csv" && body.format !== "bitwarden") {
+      return Response.json({ ok: false, error: "format must be csv, txt, xlsx, or bitwarden" }, { status: 400 });
     }
     const format = body.format;
     // .txt and .xlsx are the full-fidelity forms: they carry cookies and the
     // user-agent, so they need the profile's secrets. .csv is the trimmed
     // credential view.
-    const full = format !== "csv";
+    const full = format === "txt" || format === "xlsx";
 
     try {
       // Collect the export rows from whichever store owns the profile. The
@@ -1516,6 +1517,9 @@ export async function handleUiRequest(
       };
 
       const buildExportFile = async (profiles: ProfileExport[]): Promise<{ mime: string; bytes: Uint8Array }> => {
+        if (format === "bitwarden") {
+          return { mime: "application/json; charset=utf-8", bytes: new TextEncoder().encode(serializeBitwarden(profiles)) };
+        }
         if (format === "xlsx") {
           const { headers, rows } = serializeXlsxRows(profiles);
           return {
@@ -1534,7 +1538,7 @@ export async function handleUiRequest(
         return new Response(bytes as unknown as BodyInit, {
           headers: {
             "content-type": mime,
-            "content-disposition": `attachment; filename=vela-export.${format}`,
+            "content-disposition": format === "bitwarden" ? "attachment; filename=vela-bitwarden.json" : `attachment; filename=vela-export.${format}`,
             "cache-control": "no-store",
           },
         });

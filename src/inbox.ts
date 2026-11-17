@@ -110,6 +110,8 @@ function mergeExisting(existing: Profile, incoming: SourcedImport): Profile {
   if (present.has("name")) out.name = p.name;
   if (present.has("group")) out.group = p.group;
   if (present.has("platform")) out.platform = p.platform ?? "";
+  if (p.remark !== undefined) out.remark = p.remark;
+  if (p.startupUrls !== undefined) out.startupUrls = p.startupUrls;
   if (present.has("username")) out.username = p.username;
   if (present.has("password")) out.password = p.password;
   if (present.has("email")) out.email = p.email ?? "";
