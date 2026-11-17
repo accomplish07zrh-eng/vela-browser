@@ -49,7 +49,8 @@ import { clearKernelWorkDir, ensureKernel, KernelSupervisor, type InstalledKerne
 import { KernelDnsSelector, type KernelDnsEnvironment } from "./kernel-config.ts";
 import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "./search-provider.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
-import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
+import { batchDpapiKeyChecks, dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
+import { LifecycleAdmissionController } from "./lifecycle-admission.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import { fingerprintAudit, type FingerprintAudit } from "./fingerprint-audit.ts";
 import type { FingerprintSample } from "./diagnose.ts";
@@ -965,7 +966,7 @@ const RESETTABLE_SESSION_STORES = [
 export class Launcher {
   private store: ProfileStore;
   private autofill?: AutofillBridge;
-  private dpapiKeysReadable: (keys: string[]) => Promise<boolean[] | null>;
+  private checkDpapiKey: (key: string) => Promise<boolean | undefined>;
   /** DPAPI answers per encrypted cookie key, so reopening a profile does not respawn PowerShell. */
   private readonly cookieKeyReadable = new Map<string, boolean>();
   private binaryPath: string;
@@ -1071,6 +1072,10 @@ export class Launcher {
    */
   private startsInFlight = new Map<string, Promise<LaunchStartResult>>();
   private startModesInFlight = new Map<string, boolean>();
+  private firefoxStarted = false;
+  private readonly firefoxColdStarts = new LifecycleAdmissionController({
+    startBudget: () => this.firefoxStarted ? Infinity : 2,
+  });
   /** Launch generations retained after a rejected start, keyed to that rejection. */
   private failedStartGenerations = new WeakMap<object, LaunchGeneration>();
   /**
@@ -1086,7 +1091,7 @@ export class Launcher {
 
   constructor(opts: LauncherOptions) {
     this.store = opts.store;
-    this.dpapiKeysReadable = opts.dpapiKeysReadable ?? ((keys) => dpapiKeysReadable(keys, 15_000));
+    this.checkDpapiKey = batchDpapiKeyChecks(opts.dpapiKeysReadable ?? ((keys) => dpapiKeysReadable(keys, 15_000)));
     this.autofill = opts.autofill;
     this.binaryPath = opts.binaryPath ?? defaultBinaryPath();
     this.unsafeDisableIdentityGates = opts.unsafeDisableIdentityGates ?? false;
@@ -2235,7 +2240,16 @@ export class Launcher {
     }
     if (profile.engine === "webkit") return this.startFreshWebKit(profile, startupUrls, opts, pendingSession);
     if (profile.engine === "firefox") {
-      return this.startFreshFirefox(profile, startupUrls, opts, pendingSession, exit);
+      const firefoxProfile = profile;
+      const start = () => this.startFreshFirefox(firefoxProfile, startupUrls, opts, pendingSession, exit);
+      if (this.hostPlatform !== "win32" || this.firefoxStarted) return start();
+      // On Windows the first Firefox processes and their GPU/Node initialization contend for
+      // the same disk and CPU. Give the first two rooms to start, then release the rest.
+      return this.firefoxColdStarts.run({ kind: "start", profileIds: [profileId] }, async () => {
+        const opened = await start();
+        this.firefoxStarted = true;
+        return opened;
+      });
     }
     const webRtcIp = this.chromiumWebRtcIp(profile) ? this.webRtcExitIp(profile, exit) : undefined;
     // Without the fonts of its OS, the browser shows this computer's fonts in place of them.
@@ -3332,7 +3346,7 @@ export class Launcher {
     if (!key) return true;
     const cached = this.cookieKeyReadable.get(key);
     if (cached !== undefined) return cached;
-    const readable = (await this.dpapiKeysReadable([key]))?.[0];
+    const readable = await this.checkDpapiKey(key);
     if (readable === undefined) return true;
     this.cookieKeyReadable.set(key, readable);
     return readable;

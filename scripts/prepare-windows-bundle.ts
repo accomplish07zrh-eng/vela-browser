@@ -232,6 +232,7 @@ export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
     "devtools-live.mjs",
     "devtools-sources.mjs",
     "devtools-dom.mjs",
+    "chromium-fingerprint.mjs",
     "guides.mjs",
     "plugins.mjs",
     "downloads.mjs",

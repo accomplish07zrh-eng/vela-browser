@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.17",
+  "aliasModeVersion": "0.1.18",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -247,6 +247,71 @@
             "minLength": 1
           }
         },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_browser_replay",
+      "description": "Record a browser tab in memory and replay up to the previous 60 seconds. Use tabs to find a tabId, start before the action, play to get timestamped images and a local playback link, or stop to erase the recording. Play accepts a time range in seconds ago. Recording starts on request, stops taking frames after durationSeconds, and expires frame by frame.",
+      "annotations": {
+        "title": "Replay a Vela Browser tab",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "tabs",
+              "start",
+              "play",
+              "stop"
+            ]
+          },
+          "profileId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Defaults to the selected open profile."
+          },
+          "tabId": {
+            "type": "string",
+            "description": "For start. Use the tabId from tabs when multiple tabs are open."
+          },
+          "durationSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300,
+            "default": 60,
+            "description": "For start. How long to capture before stopping automatically. Each frame expires 60 seconds after capture."
+          },
+          "fromSecondsAgo": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 60,
+            "default": 60,
+            "description": "Older end of the range for play."
+          },
+          "toSecondsAgo": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 60,
+            "default": 0,
+            "description": "Newer end of the range for play."
+          },
+          "frameCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "default": 4,
+            "description": "Maximum number of images for play. Set to 0 for the playback link alone."
+          }
+        },
+        "required": [
+          "action"
+        ],
         "additionalProperties": false
       }
     },

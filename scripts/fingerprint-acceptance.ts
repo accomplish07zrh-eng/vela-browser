@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { parseArgs } from "node:util";
 import { ProfileStore } from "../src/store.ts";
 import { Launcher } from "../src/launcher.ts";
 import { buildNewProfile } from "../src/create.ts";
@@ -13,15 +14,33 @@ import { runPlaywrightWorker } from "../src/playwright-runtime.ts";
 import { compareAttestation } from "../src/fingerprint-attestation.ts";
 import { fingerprintDocument } from "../playwright-worker.mjs";
 import type { ProfileEngine, ObservedFingerprint } from "../src/types.ts";
+import { ALIASMODE_CHROMIUM_EXECUTABLE_SHA256, aliasmodeChromiumExecutable } from "../src/aliasmode-chromium.ts";
+import { WEBKIT_EXECUTABLE_SHA256 } from "../src/webkit-install.ts";
 
+const { values } = parseArgs({ options: {
+  "runtime-root": { type: "string", default: "." },
+  engine: { type: "string", multiple: true, default: ["chromium", "firefox", "webkit"] },
+} });
+const engines = [...new Set(values.engine)].map((engine): ProfileEngine => {
+  if (engine === "chromium" || engine === "firefox" || engine === "webkit") return engine;
+  throw new Error("Unknown engine " + engine);
+});
+const runtimeRoot = resolve(values["runtime-root"]);
+const firefoxMetadata = engines.includes("firefox")
+  ? JSON.parse(readFileSync(join(runtimeRoot, "src-tauri/generated/browser.json"), "utf8")).firefox : undefined;
+const firefox = firefoxMetadata ? join(runtimeRoot, "src-tauri/resources/firefox", firefoxMetadata.executable) : "";
+const chromium = aliasmodeChromiumExecutable(join(runtimeRoot, "reports/runtimes/chromium"));
+const webkit = join(runtimeRoot, "reports/webkit-native-2388/Playwright.exe");
+const binaries = { chromium, firefox, webkit };
+const expected = { chromium: ALIASMODE_CHROMIUM_EXECUTABLE_SHA256, firefox: firefoxMetadata?.sha256, webkit: WEBKIT_EXECUTABLE_SHA256 };
+for (const engine of engines) {
+  const executable = binaries[engine];
+  assert.ok(existsSync(executable), "Pinned runtime is missing at " + executable);
+  assert.equal(createHash("sha256").update(readFileSync(executable)).digest("hex"), expected[engine], "Pinned " + engine + " executable hash");
+}
+mkdirSync(resolve("reports"), { recursive: true });
 const root = mkdtempSync(resolve("reports/fingerprint-acceptance-"));
 const store = new ProfileStore(join(root, "profiles.sqlite"));
-const firefox = resolve("src-tauri/resources/firefox/aliasmode.exe");
-const firefoxMetadata = JSON.parse(readFileSync("src-tauri/generated/browser.json", "utf8")).firefox;
-const chromium = resolve("reports/runtimes/chromium/chromium-155.0.8059.85-aliasmode.5/chrome.exe");
-const webkit = resolve("reports/webkit-native-2388/Playwright.exe");
-for (const file of [firefox, chromium, webkit]) assert.ok(existsSync(file), `Pinned runtime is missing: ${file}`);
-assert.equal(createHash("sha256").update(readFileSync(firefox)).digest("hex"), firefoxMetadata.sha256);
 const report: { root: string; generatedAt: string; checks: { name: string; pass: boolean; details?: unknown }[]; engines: Record<string, any>; fatal?: string } = { root, generatedAt: new Date().toISOString(), checks: [], engines: {} };
 const probe = fingerprintProbe.toString();
 const fixture = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
@@ -34,7 +53,7 @@ const fixture = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
 const origin = `http://127.0.0.1:${fixture.port}`;
 const launcher = new Launcher({
   store, dataRoot: join(root, "profiles"), chromiumRuntimeRoot: join(root, "runtimes"), headless: true,
-  firefoxBinaryPath: firefox, expectedFirefoxBinarySha256: firefoxMetadata.sha256,
+  ...(firefoxMetadata ? { firefoxBinaryPath: firefox, expectedFirefoxBinarySha256: firefoxMetadata.sha256 } : {}),
   ensureAliasmodeChromium: async () => chromium, ensureWebKit: async () => webkit,
   log: (message) => console.log(message),
 });
@@ -44,7 +63,7 @@ const check = (name: string, pass: boolean, details?: unknown) => {
   console.log(`${pass ? "PASS" : "FAIL"} ${name}`);
 };
 try {
-  for (const engine of ["chromium", "firefox", "webkit"] as ProfileEngine[]) {
+  for (const engine of engines) {
     const profiles = ["a", "b"].map((name) => buildNewProfile({ engine, name: `Fingerprint ${engine} ${name}`, screen: "1280x800", ...(engine === "webkit" ? {} : { platformOs: "windows" }), ...(engine === "chromium" ? { chromiumRuntime: "aliasmode" } : {}) }, () => false));
     for (const profile of profiles) { store.upsertProfile(profile); ids.push(profile.id); }
     const captures: ObservedFingerprint[][] = [[], []];

@@ -287,7 +287,7 @@ F12 底下那条暗河，它也看得见：\
 - **拟人输入与批量动作**：指针按缓动曲线移动，长距偶有过冲修正，落点散在控件内部并用滚轮翻页；键入带韵律与标点停顿，各环境习惯持久不同（`vela_humanize` 可调速或关闭）。`browser_batch` 可在单次调用内连续执行多步页面动作并跳过冗余快照。
 - **开发者工具**：`browser_devtools_*` 覆盖控制台与异常堆栈、网络请求与原始响应字节、WebSocket 帧、DOM 与计算样式、存储与 Cookie（默认仅返回当前页会附带的 Cookie，整套环境需显式请求）、经由环境自身网络发出的 `fetch` 以及 Chromium 原生 CDP；详见证 [`docs/mcp-devtools.md`](docs/mcp-devtools.md)。
 - **AI 查池与换代理审批**：提供 `vela_proxy_pool_list`、`vela_proxy_pool_check` 与 `vela_browser_set_proxy`，只接受池内 `nodeId`、永不接受 AI 传入的原始代理或订阅链接，也不返回任何密码、UUID 或订阅 URL。因换出口会改变网站看到的 IP，默认每次弹出最外层审批卡（60 秒未答自动拒绝），可在「代理 → 代理池 → AI 换代理」中设为每次询问、池内节点直接放行或一律拒绝。
-- **脚本台与本地接口**：内置脚本页支持 JavaScript（`.js` / `.mjs`）与 Python（`.py`）Playwright 脚本及公共脚本库，可单环境顺序或批量并发执行，JS 脚本可通过 `devtools.call(...)` 调取运行期控制台与网络记录；另提供兼容 AdsPower `/api/v1` 风格的本地 HTTP 接口。
+- **脚本台与本地接口**。内置公共脚本库支持 JavaScript（`.js` / `.mjs`）和 Python（`.py`）Playwright 脚本，可对所选环境顺序或并发执行。JS 脚本可通过 `devtools.call(...)` 读取运行期控制台和网络记录。本地 HTTP API 支持 AdsPower V1 及 V2 的环境列表和浏览器启停查询。[接口契约](docs/public/local-api.openapi.json)
 
 </details>
 

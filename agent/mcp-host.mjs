@@ -213,6 +213,25 @@ const ALIAS_TOOLS = [
     },
   },
 {
+    name: "vela_browser_replay",
+    description: "Record a browser tab in memory and replay up to the previous 60 seconds. Use tabs to find a tabId, start before the action, play to get timestamped images and a local playback link, or stop to erase the recording. Play accepts a time range in seconds ago. Recording starts on request, stops taking frames after durationSeconds, and expires frame by frame.",
+    annotations: toolAnnotations("Replay a Vela Browser tab"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["tabs", "start", "play", "stop"] },
+        profileId: { ...PROFILE_ID, description: "Defaults to the selected open profile." },
+        tabId: { type: "string", description: "For start. Use the tabId from tabs when multiple tabs are open." },
+        durationSeconds: { type: "integer", minimum: 1, maximum: 300, default: 60, description: "For start. How long to capture before stopping automatically. Each frame expires 60 seconds after capture." },
+        fromSecondsAgo: { type: "number", minimum: 0, maximum: 60, default: 60, description: "Older end of the range for play." },
+        toSecondsAgo: { type: "number", minimum: 0, maximum: 60, default: 0, description: "Newer end of the range for play." },
+        frameCount: { type: "integer", minimum: 0, maximum: 4, default: 4, description: "Maximum number of images for play. Set to 0 for the playback link alone." },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "browser_close",
     description: "Safely capture and close the selected Vela Browser browser.",
     annotations: toolAnnotations("Close the selected Vela Browser browser", { destructive: true }),
@@ -541,6 +560,7 @@ export async function createVelaBrowserMcp(options = {}) {
   const sessions = new Map();
   const newProxy = options.createPlaywright ?? (() => options.playwright ?? new PlaywrightToolProxy(VERSION));
   let closing;
+  let usedReplay = false;
 
   // Plugins are read by Vela Browser; an older app without them simply lists none.
   const enabledPlugins = () => runtime.call("plugins.list", {})
@@ -851,6 +871,15 @@ export async function createVelaBrowserMcp(options = {}) {
         const { ws: _ws, firefoxOwner: _firefoxOwner, ...safeStatus } = safeBrowserResult(status);
         return toolResult({ ...safeStatus, selected: profileId === selectedProfileId });
       }
+      if (name === "vela_browser_replay") {
+        const profileId = args.profileId || selectedProfileId;
+        if (!profileId) throw new Error("select an open Vela Browser browser first");
+        if (args.action === "start") usedReplay = true;
+        const { samples = [], ...replay } = await runtime.call("browser.replay", { ...args, profileId });
+        const result = toolResult(samples.length ? { ...replay, samples: samples.map(({ data, ...time }) => time) } : replay);
+        result.content.push(...samples.map(({ data }) => ({ type: "image", mimeType: "image/jpeg", data })));
+        return result;
+      }
       if (name === "vela_humanize") {
         if (typeof args.enabled === "boolean") humanize.enabled = args.enabled;
         if (typeof args.speed === "number") humanize.speed = Math.min(2.5, Math.max(0.4, args.speed));
@@ -930,6 +959,7 @@ export async function createVelaBrowserMcp(options = {}) {
     if (closing) return closing;
     closing = (async () => {
       diagnose("close started");
+      if (usedReplay) void runtime.call("session.releaseReplay").catch(() => {});
       for (const profileId of [...sessions.keys()]) await detachSession(profileId);
       await playwright.detach();
       diagnose("playwright detached");

@@ -20,7 +20,7 @@
  *   user/update -> code === 0 (name, credentials and user_proxy_config are each optional)
  */
 
-import type { Launcher } from "./launcher.ts";
+import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import { AUTOMATION_SCOPE_DENIED, type LocalAutomationScope } from "./ai-access.ts";
 import type { ProfileStore } from "./store.ts";
 import type { RemoteCoordinator } from "./remote.ts";
@@ -66,6 +66,15 @@ function normalizeGroup(g: unknown): string {
 function intParam(raw: string | null, fallback: number): number {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+async function userRecords(store: ProfileStore, roster: ProfileRoster | null, scope?: LocalAutomationScope) {
+  // A remote roster has no local measurement or timestamps.
+  const rows = roster
+    ? (await roster.listProfiles()).map((p, i) => ({ ...p, createdAt: 0, lastOpenAt: 0, serial: i + 1,
+        customNo: "", fpVerdict: "", fpCapturedAt: "" }))
+    : store.listUserRecords();
+  return scope ? rows.filter(row => scope.allowsGroup(row.group)) : rows;
 }
 
 /** AdsPower account/proxy/fingerprint fields → aliasmode NewProfileInput. */
@@ -206,17 +215,50 @@ export async function handleUserApi(
     return ok({ group_id: name });
   }
 
+  if (pathname === "/api/v2/browser-profile/list" && req.method === "POST") {
+    const value: unknown = await req.json().catch(() => null);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return fail("invalid JSON body");
+    const body = value as Record<string, unknown>;
+    const ids = body.profile_id ?? [];
+    const numbers = body.profile_no ?? [];
+    if (!Array.isArray(ids) || !ids.every(id => typeof id === "string" && id.trim())) return fail("profile_id must be a list of IDs");
+    if (!Array.isArray(numbers) || !numbers.every(no => (typeof no === "string" && no.trim()) || Number.isSafeInteger(no))) {
+      return fail("profile_no must be a list of profile numbers");
+    }
+    const page = Number(body.page ?? 1);
+    const limit = Number(body.limit ?? 1);
+    if (!Number.isSafeInteger(page) || page < 1) return fail("page must be a positive integer");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) return fail("limit must be between 1 and 100");
+    const sort = body.sort_type ?? "profile_no";
+    const order = body.sort_order ?? "desc";
+    if (sort !== "profile_no" && sort !== "created_time" && sort !== "last_open_time") return fail("invalid sort_type");
+    if (order !== "asc" && order !== "desc") return fail("invalid sort_order");
+    const byNumber = new Intl.Collator("en", { numeric: true });
+    const selectedIds = new Set(ids.map(id => id.trim()));
+    const selectedNumbers = new Set(numbers.map(no => String(no).trim()));
+    const group = typeof body.group_id === "string" && body.group_id.trim() ? normalizeGroup(body.group_id) : null;
+    const rows = (await userRecords(store, roster, scope))
+      .map(row => ({ ...row, number: profileDisplayNo(row.customNo, row.serial)! }))
+      .filter(row => (group === null || normalizeGroup(row.group) === group)
+        && (!selectedIds.size || selectedIds.has(row.id)) && (!selectedNumbers.size || selectedNumbers.has(row.number)));
+    rows.sort((a, b) => {
+      const comparison = sort === "profile_no" ? byNumber.compare(a.number, b.number)
+        : sort === "created_time" ? a.createdAt - b.createdAt : a.lastOpenAt - b.lastOpenAt;
+      return (order === "asc" ? 1 : -1) * (comparison || a.serial - b.serial);
+    });
+    const list = rows.slice((page - 1) * limit, page * limit).map(row => ({
+      profile_id: row.id, profile_no: row.number, name: row.name,
+      group_id: normalizeGroup(row.group) || "0", group_name: normalizeGroup(row.group),
+      created_time: String(Math.floor(row.createdAt / 1000)), last_open_time: String(Math.floor(row.lastOpenAt / 1000)),
+    }));
+    return ok({ list, page, limit });
+  }
+
   // --- list profiles (optionally by group), AdsPower envelope ---
   if (pathname === "/api/v1/user/list" && req.method === "GET") {
     const page = intParam(searchParams.get("page"), 1);
     const pageSize = intParam(searchParams.get("page_size"), 100);
-    // Remote/Cloud: map the roster (no timestamps → 0). Standalone: the local store.
-    let rows = roster
-      // A roster carries no local measurement, so its rows report no
-      // verdict rather than a misleading empty-means-verified one.
-      ? (await roster.listProfiles()).map((p, i) => ({ id: p.id, name: p.name, group: p.group, createdAt: 0, lastOpenAt: 0, serial: i + 1, fpVerdict: "", fpCapturedAt: "" }))
-      : store.listUserRecords();
-    if (scope) rows = rows.filter((row) => scope.allowsGroup(row.group));
+    let rows = await userRecords(store, roster, scope);
 
     const groupId = searchParams.get("group_id");
     if (groupId != null) {

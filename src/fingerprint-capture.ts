@@ -10,6 +10,7 @@
  */
 
 import { runPlaywrightWorker, type PlaywrightWorkerOptions } from "./playwright-runtime.ts";
+import { chromiumFingerprint } from "../agent/chromium-fingerprint.mjs";
 import { fingerprintProbe, type FingerprintSample } from "./diagnose.ts";
 import { compareAttestation, observedFromSample, VERDICT_FIELDS } from "./fingerprint-attestation.ts";
 import type { FingerprintVerdict, ObservedFingerprint, Profile } from "./types.ts";
@@ -22,11 +23,18 @@ export async function captureFingerprint(
   opts: PlaywrightWorkerOptions = {},
 ): Promise<FingerprintSample | null> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS;
+  const fingerprintScript = `(${fingerprintProbe.toString()})()`;
+  // Chromium already has a secured local CDP endpoint. Reuse its raw probe in
+  // the manager and avoid starting a Node process just to make the same calls.
+  if (!opts.spawn && !opts.runtimeRoot && !opts.background
+    && /^ws:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\/devtools\/browser\//.test(ws)) {
+    return chromiumFingerprint(ws, fingerprintScript, timeoutMs);
+  }
   return runPlaywrightWorker<FingerprintSample>("page", {
     endpoint: ws,
     kind: "fingerprint",
     temporary: true,
-    fingerprintScript: `(${fingerprintProbe.toString()})()`,
+    fingerprintScript,
     connectTimeoutMs: timeoutMs,
   }, { ...opts, timeoutMs: timeoutMs + 10_000 });
 }

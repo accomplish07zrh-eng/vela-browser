@@ -126,6 +126,17 @@ Plugins add their own tools next to these, in every engine; see [plugins.md](plu
 
 The existing navigation, snapshots, screenshots, input, file upload, arbitrary evaluation/run-code, tracing and lifecycle tools remain available. Lifecycle actions still go through Vela so session persistence, profile ownership and idle cooling continue to work.
 
+## Temporary browser tab replay
+
+Use `vela_browser_replay` to review a visual change after it happens. It uses the selected open profile by default. Pass `profileId` to choose another open profile.
+
+1. Call with `{"action":"tabs"}` to list tab IDs for replay.
+2. Call with `{"action":"start","tabId":"<id from tabs>"}` before the operation. You can omit `tabId` when there is only one tab. Capture covers that tab across navigations.
+3. Call with `{"action":"play"}` for the last 60 seconds, or with `{"action":"play","fromSecondsAgo":35,"toSecondsAgo":15}` for a specific interval. The tool returns up to four MCP images with timestamps. Open `playbackUrl` in a separate tab on the computer running Vela to play, pause, or seek within the available clip.
+4. Call with `{"action":"stop"}` to discard the recording and its links.
+
+Replay is off until started. Capture stops after 60 seconds by default. For longer operations, set `durationSeconds` on start, up to 300. Vela keeps JPEG frames in memory, at up to about six frames per second, with a 24 MiB limit per recording and up to four recordings across profiles, including recordings with frames still available after capture stops. One MCP connection owns each profile's recording. Frames expire 60 seconds after capture, and the memory limit can shorten the available interval. Playback links share the original frame expiration times. Closing the tab or the profile, disconnecting MCP, or revoking profile access discards the recording. The player uses the recorded tab's visual content without audio. MCP clients may retain images they receive according to their own settings.
+
 ## Proxies from the pool
 
 Three tools let an AI work with the proxy pool the user set up in Vela Browser (Proxies → Proxy pool). They never return credentials or subscription links, and they accept only proxies already in the pool: an AI cannot add a proxy or a subscription, so a page cannot talk it into routing a profile through an address of its choosing.

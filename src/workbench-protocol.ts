@@ -17,7 +17,7 @@ export function workbenchFrameWidth(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
   return Math.min(2560, Math.max(160, Math.ceil(value / 64) * 64));
 }
-export interface WorkbenchStreamOptions { maxWidth?: number; quality: number; minInterval: number }
+export interface WorkbenchStreamOptions { maxWidth?: number; maxHeight?: number; quality: number; minInterval: number }
 export type WorkbenchInput =
   | { kind: "pointer"; event: "move" | "down" | "up"; x: number; y: number; button: "left" | "middle" | "right"; buttons: number; clicks: number; modifiers: number }
   | { kind: "wheel"; x: number; y: number; dx: number; dy: number; modifiers: number }
