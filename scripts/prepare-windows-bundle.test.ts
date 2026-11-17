@@ -102,6 +102,7 @@ function workspace(): string {
     "devtools-live.mjs",
     "devtools-sources.mjs",
     "devtools-dom.mjs",
+    "chromium-fingerprint.mjs",
     "guides.mjs",
     "plugins.mjs",
     "downloads.mjs",
@@ -179,6 +180,7 @@ test("Windows bundle preparation packages owned Firefox with verified hashes and
     expect(JSON.parse(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "node_modules", "playwright", "package.json"), "utf8")).version).toBe("1.58.0-alpha-2026-01-16");
     expect(JSON.parse(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "node_modules", "zod", "package.json"), "utf8")).version).toBe("1.0.0");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "agent", "mcp-host.mjs"), "utf8")).toBe("mcp-host.mjs");
+    expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "agent", "chromium-fingerprint.mjs"), "utf8")).toBe("chromium-fingerprint.mjs");
     expect(readFileSync(join(cwd, "src-tauri", "binaries", "aliasmode-sidecar-x86_64-pc-windows-msvc.exe"), "utf8")).toBe("sidecar");
     expect(JSON.parse(readFileSync(join(cwd, "src-tauri", "generated", "browser.json"), "utf8"))).toEqual(metadata);
     expect(readFileSync(join(cwd, "src-tauri", "generated", "VERSION.txt"), "utf8")).toBe(`${ALIASMODE_VERSION}\n`);

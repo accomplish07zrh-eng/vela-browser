@@ -3,6 +3,7 @@ import { createLocalProfile, type NewProfileInput } from "./create.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { callWebKitOwner, type WebKitOwner } from "./webkit-runtime.ts";
 import { pointerAgent, validWorkbenchPointer } from "./workbench.ts";
+import type { BrowserReplay } from "./browser-replay.ts";
 import {
   BrowserLaunchError,
   type BrowserOpenOptions,
@@ -73,6 +74,7 @@ export interface AgentControlDeps {
   proxyTimezoneFetch?: import("./geoip.ts").FetchLike;
   /** The AI's human-like pointer, drawn over the browser's card on the workbench. */
   pointer?: (profileId: string, pointer: import("./workbench.ts").WorkbenchPointer) => void;
+  replay?: BrowserReplay;
   /** Saved scripts and their runner: an AI lists, writes (with approval) and runs them. */
   scripts?: { library: ScriptLibrary; runner: ScriptSupervisor };
   browserTasks?: BrowserTaskSupervisor;
@@ -96,7 +98,7 @@ export interface AgentControlDeps {
 }
 
 /** Calls that only read: kept out of the record so it stays readable. */
-const UNAUDITED = new Set(["profiles.list", "browser.status", "browserTasks.list", "browserTasks.status", "browserTasks.evidence", "plugins.list", "scripts.list", "scripts.get", "scripts.status", "scripts.log", "proxyPool.list", "workbench.pointer", "firefox.tools.list", "webkit.tools.list", "session.identify", "session.audit"]);
+const UNAUDITED = new Set(["profiles.list", "browser.status", "browserTasks.list", "browserTasks.status", "browserTasks.evidence", "plugins.list", "scripts.list", "scripts.get", "scripts.status", "scripts.log", "proxyPool.list", "workbench.pointer", "firefox.tools.list", "webkit.tools.list", "session.identify", "session.audit", "session.releaseReplay"]);
 
 function humanizeParam(value: unknown): { enabled: boolean; speed: number; pasteOver: number | null; agent?: string } {
   const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
@@ -266,6 +268,7 @@ export class AgentControlSession {
   private readonly lanes = new Map<string, Promise<void>>();
   private readonly inFlight = new Set<Promise<unknown>>();
   private readonly sessionAbort = new AbortController();
+  private readonly replayAbort = new AbortController();
   private cleanup?: Promise<void>;
   /** The AI on the other end, as its MCP client names itself. */
   private client = "unknown";
@@ -302,7 +305,8 @@ export class AgentControlSession {
   private audit(method: string, params: Record<string, unknown>, ok: boolean, error?: unknown): void {
     const audit = this.deps.audit;
     // Reads are left out, except when one was refused: a refusal is worth seeing.
-    if (!audit || (UNAUDITED.has(method) && !(error instanceof AgentControlError && error.code === "not_permitted"))) return;
+    const replayRead = method === "browser.replay" && (params.action === "tabs" || params.action === "play");
+    if (!audit || ((UNAUDITED.has(method) || replayRead) && !(error instanceof AgentControlError && error.code === "not_permitted"))) return;
     const profileId = typeof params.profileId === "string" ? params.profileId : undefined;
     const action = method === "firefox.tools.call" || method === "webkit.tools.call" ? `page.${typeof params.name === "string" ? params.name : "tool"}` : method;
     const args = params.arguments && typeof params.arguments === "object" ? params.arguments as Record<string, unknown> : {};
@@ -359,6 +363,8 @@ export class AgentControlSession {
     if (request.method.startsWith("browserTasks.") || ["scripts.save", "plugins.save", "profiles.setProxy"].includes(request.method)) {
       return this.track(execute());
     }
+    // Capture and its cleanup also run while the AI is waiting for a page action to finish.
+    if (request.method === "browser.replay" || request.method === "session.releaseReplay") return this.track(execute());
     // Page actions of different browsers run side by side, so an AI can drive many windows at
     // once, each with its own pointer and keyboard. One browser still takes one action at a time,
     // and lifecycle requests wait for every action in flight.
@@ -379,6 +385,7 @@ export class AgentControlSession {
   disconnect(): Promise<void> {
     if (this.cleanup) return this.cleanup;
     this.closed = true;
+    this.replayAbort.abort();
     this.sessionAbort.abort();
     this.cleanup = Promise.all([...this.inFlight, this.queue, ...this.lanes.values()]).then(async () => {
       for (const profileId of [...this.openedByConnection]) {
@@ -421,6 +428,9 @@ export class AgentControlSession {
         });
         return {};
       }
+      case "session.releaseReplay":
+        this.replayAbort.abort();
+        return {};
       case "profiles.list":
         return { profiles: await this.listProfiles() };
       case "profiles.replaceProxies":
@@ -467,6 +477,14 @@ export class AgentControlSession {
         if (!validWorkbenchPointer(pointer)) throw agentError("invalid_request", "Invalid pointer");
         this.deps.pointer?.(stringParam(params, "profileId"), pointer);
         return {};
+      }
+      case "browser.replay": {
+        const replay = this.deps.replay;
+        if (!replay) throw agentError("unavailable", "Browser replay is unavailable in this Vela Browser");
+        const profileId = stringParam(params, "profileId");
+        return await replay.call(this.replayAbort.signal, profileId, params, () => {
+          try { this.guard(profileId); return true; } catch { return false; }
+        });
       }
       case "firefox.tools.list":
         return { tools: await this.firefoxCall(stringParam(params, "profileId"), "mcp-list", this.withPlugins({})) };
@@ -1013,6 +1031,7 @@ export class AgentControlSession {
     }
     this.openedEndpoints.delete(profileId);
     this.attachedExisting.add(profileId);
+    this.deps.replay?.discardFor(this.replayAbort.signal, profileId);
     return { profileId, detached: true };
   }
 
@@ -1066,6 +1085,7 @@ export class AgentControlSession {
         }
         if (!closed) throw agentError("close_unconfirmed", `browser teardown is unconfirmed: ${profileId}`);
 
+        this.deps.replay?.discardFor(this.replayAbort.signal, profileId);
         this.openedByConnection.delete(profileId);
         this.openedEndpoints.delete(profileId);
         this.attachedExisting.delete(profileId);

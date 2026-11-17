@@ -170,7 +170,8 @@ async function run() {
       // Reading the workbench never waits behind, or holds up, the actions in the queue: a live
       // frame request may wait for the page to paint.
       const concurrent = value.operation === "status"
-        || (value.operation === "workbench" && ["tabs", "viewport", "frame"].includes(value.payload.action));
+        || (value.operation === "workbench" && (["tabs", "viewport", "frame"].includes(value.payload.action)
+          || (value.payload.replayId && value.payload.action === "stop-stream")));
       const pending = concurrent ? operate(value.operation, value.payload) : queue.then(() => operate(value.operation, value.payload));
       if (!concurrent) queue = pending.catch(() => {});
       const result = await pending;

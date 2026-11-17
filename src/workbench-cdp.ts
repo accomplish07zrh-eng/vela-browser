@@ -103,7 +103,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
     this.live = live;
     await this.send("Page.startScreencast", {
       format: "jpeg", quality: options.quality, everyNthFrame: 1,
-      ...(options.maxWidth ? { maxWidth: options.maxWidth, maxHeight: options.maxWidth * 4 } : {}),
+      ...(options.maxWidth ? { maxWidth: options.maxWidth, maxHeight: options.maxHeight ?? options.maxWidth * 4 } : {}),
     }, session);
     return async () => { if (this.live === live) await this.stopStream(); };
   }

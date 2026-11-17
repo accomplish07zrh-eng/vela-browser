@@ -1055,9 +1055,9 @@ export async function handleUiRequest(
   // How many browsers to start at once, from the memory free right now.
   if (pathname === "/ui/api/launch-batch" && req.method === "GET") {
     const { launchBatchSize, readMemory } = await import("./cooling.ts");
-    const { cpus } = await import("node:os");
+    const { availableParallelism } = await import("node:os");
     const sample = readMemory();
-    return noStoreJson({ ok: true, size: launchBatchSize(sample, cpus().length), availableMb: Math.round(sample.available / 1048576), totalMb: Math.round(sample.total / 1048576) });
+    return noStoreJson({ ok: true, size: launchBatchSize(sample, availableParallelism()), availableMb: Math.round(sample.available / 1048576), totalMb: Math.round(sample.total / 1048576) });
   }
 
   // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.

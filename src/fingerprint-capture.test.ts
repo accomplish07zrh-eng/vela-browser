@@ -15,7 +15,7 @@ function profile(overrides: Partial<Profile> = {}): Profile {
   };
 }
 
-test("capture entrypoint runs the Node worker in its own tab only and persists exportable observations", async () => {
+test.each(["manager", "worker"])("the %s fingerprint capture uses its own tab and persists exportable observations", async mode => {
   const root = await mkdtemp(join(tmpdir(), "aliasmode-fingerprint-worker-"));
   const store = new ProfileStore(":memory:");
   const events: string[] = [];
@@ -56,10 +56,13 @@ test("capture entrypoint runs the Node worker in its own tab only and persists e
   });
   try {
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
+    await mkdir(join(root, "agent"));
     await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "..", "playwright-worker.mjs")).text());
+    await writeFile(join(root, "agent", "chromium-fingerprint.mjs"),
+      await Bun.file(join(import.meta.dir, "..", "agent", "chromium-fingerprint.mjs")).text());
     await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"),
       `export const chromium = { async connectOverCDP() { throw new Error("Playwright attaches to every tab"); } };\n`);
-    const options = {
+    const options = mode === "manager" ? { timeoutMs: 5_000 } : {
       runtimeRoot: root,
       timeoutMs: 5_000,
       spawn: (argv: string[]) => Bun.spawn(["node", ...argv.slice(1)], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }),

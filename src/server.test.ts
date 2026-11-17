@@ -25,6 +25,66 @@ ua=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/143.0.0.0 Safari/537.36
 resolution=1680*1050
 ******************`;
 
+test("AdsPower V2 resolves the displayed profile number before joining the V1 lifecycle lane", async () => {
+  const store = new ProfileStore(":memory:");
+  const [first] = parseExport(SAMPLE).profiles;
+  store.upsertProfile({ ...first!, customNo: "42" });
+  const admission = new LifecycleAdmissionController({ limit: 2 });
+  const lifecycle = { admission };
+  const launched = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let stopped = false;
+  const launcher = {
+    async start(id: string) {
+      expect(id).toBe(first!.id);
+      launched.resolve();
+      await release.promise;
+      return { ws: "ws://127.0.0.1:9222/devtools/browser/unit", port: 9222 };
+    },
+    async captureLocalSession() {},
+    async stop() { stopped = true; return true; },
+  } as unknown as Launcher;
+  const v1 = new Request("http://localhost/api/v1/browser/start?user_id=" + first!.id);
+  const start = dispatchWithLifecycleAdmission(v1, admission, () => handleRequest(v1, launcher, store, lifecycle));
+  try {
+    await launched.promise;
+    const active = await handleRequest(new Request("http://localhost/api/v2/browser-profile/active?profile_no=42"), launcher, store, lifecycle);
+    expect((await active.json()).data).toEqual({ status: "Active", lifecycle: "starting" });
+    const v2 = new Request("http://localhost/api/v2/browser-profile/stop", {
+      method: "POST", body: JSON.stringify({ profile_no: "42" }),
+    });
+    const stop = handleRequest(v2, launcher, store, lifecycle);
+    await Bun.sleep(10);
+    expect(admission.stats().byKind.stop.queued).toBe(1);
+    expect(stopped).toBe(false);
+    release.resolve();
+    expect((await (await start).json()).code).toBe(0);
+    expect((await (await stop).json()).code).toBe(0);
+    expect(stopped).toBe(true);
+  } finally {
+    release.resolve();
+    await start;
+    store.close();
+  }
+});
+
+test("AdsPower V2 rejects ambiguous profile numbers and applies the automation scope to IDs", async () => {
+  const store = new ProfileStore(":memory:");
+  const [first] = parseExport(SAMPLE).profiles;
+  store.upsertProfile({ ...first!, customNo: "42" });
+  store.upsertProfile({ ...first!, id: "second", customNo: "42" });
+  try {
+    const launcher = {} as Launcher;
+    const byNo = new Request("http://localhost/api/v2/browser-profile/active?profile_no=42");
+    const result = await handleRequest(byNo, launcher, store);
+    expect(await result.json()).toMatchObject({ code: -1, msg: expect.stringContaining("ambiguous") });
+    const byId = new Request("http://localhost/api/v2/browser-profile/active?profile_id=" + first!.id + "&profile_no=42");
+    expect((await (await handleRequest(byId, launcher, store)).json()).data).toEqual({ status: "Inactive" });
+    const scope = { allowsProfile: () => false, allowsGroup: () => false };
+    expect((await (await handleRequest(byId, launcher, store, { automationScope: scope })).json()).code).toBe(-1);
+  } finally { store.close(); }
+});
+
 interface Harness {
   store: ProfileStore;
   launcher: Launcher;

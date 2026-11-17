@@ -1,6 +1,6 @@
 {
   "name": "vela-browser",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Local-first browser profile manager and anti-detect browser",
   "module": "src/cli.ts",
   "type": "module",

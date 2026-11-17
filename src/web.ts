@@ -7,8 +7,9 @@
  */
 
 import { join } from "node:path";
+import { availableParallelism } from "node:os";
 import { TaskbarMode, taskbarModeSupported } from "./taskbar.ts";
-import { ActivityLog, COOLING_DEFAULTS, CoolingMonitor } from "./cooling.ts";
+import { ActivityLog, COOLING_DEFAULTS, CoolingMonitor, launchBatchSize, readMemory } from "./cooling.ts";
 import { drainPoolTasks } from "./proxy-pool-api.ts";
 import { SubscriptionScheduler } from "./subscription-scheduler.ts";
 import index from "../web/index.html";
@@ -41,6 +42,8 @@ import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
 import { WorkbenchHub, WORKBENCH_PATH, WORKBENCH_PROTOCOL, validWorkbenchAuthorization, type WorkbenchConnection } from "./workbench.ts";
+import { BROWSER_REPLAY_PATH, BrowserReplay } from "./browser-replay.ts";
+import { browserReplayView } from "./browser-replay-view.ts";
 
 import {
   handleUserApi,
@@ -234,11 +237,28 @@ function loopbackHostGuard(req: Request, boundHostname: string): Response | null
   return Response.json({ ok: false, error: "Forbidden host header" }, { status: 403 });
 }
 
+function lifecycleAdmission(options?: LifecycleAdmissionOptions): LifecycleAdmissionController {
+  const processors = availableParallelism();
+  let sampledAt = -Infinity;
+  let budget = 1;
+  return new LifecycleAdmissionController({
+    startBudget() {
+      const now = performance.now();
+      if (now - sampledAt >= 1000) {
+        budget = launchBatchSize(readMemory(), processors);
+        sampledAt = now;
+      }
+      return budget;
+    },
+    ...options,
+  });
+}
+
 export function serveAutomationApi(opts: Omit<DashboardServerOptions, "hostname">) {
   const { port = 50400 } = opts;
   const hostname = "127.0.0.1";
   const log = opts.log ?? ((m) => console.log(`[aliasmode] ${m}`));
-  const admission = opts.lifecycleAdmission ?? new LifecycleAdmissionController(opts.lifecycleAdmissionOptions);
+  const admission = opts.lifecycleAdmission ?? lifecycleAdmission(opts.lifecycleAdmissionOptions);
   const lifecycle = { admission };
   try {
     const server = Bun.serve({
@@ -277,7 +297,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const { launcher, store, port = 50400, hostname = "127.0.0.1" } = opts;
   const runtimeMode = "local" as const;
   const log = opts.log ?? ((m) => console.log(`[aliasmode] ${m}`));
-  const admission = opts.lifecycleAdmission ?? new LifecycleAdmissionController(opts.lifecycleAdmissionOptions);
+  const admission = opts.lifecycleAdmission ?? lifecycleAdmission(opts.lifecycleAdmissionOptions);
   const lifecycle = { admission };
   const agentNonce = opts.agentNonce;
   // Desktop only: keep environment windows out of the Windows taskbar when the user asked for it.
@@ -299,6 +319,12 @@ export function serveDashboard(opts: DashboardServerOptions) {
       return true;
     },
   }) : undefined;
+  const replay: BrowserReplay | undefined = workbenchHub && !opts.remote
+    ? new BrowserReplay(id => workbenchHub.replaySource(id), (): string => {
+        const host = hostname === "::1" ? "[::1]" : hostname === "localhost" ? "localhost" : "127.0.0.1";
+        return "http://" + host + ":" + server.port;
+      })
+    : undefined;
   // Proxy changes an AI asks for wait here for a person on the dashboard (unless the user allowed them).
   const proxyApprovals = new ProxyApprovalQueue();
   const aiProxyPolicy = (): AiProxyPolicy => {
@@ -479,6 +505,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
         ...(opts.paths && !opts.remote ? { plugins: () => scanPlugins(pluginsDirectory(opts.paths!.root), opts.appConfig?.read().disabledPlugins ?? []).specs } : {}),
         // The AI's pointer in a Chromium browser, drawn over that browser's card.
         pointer: (profileId, pointer) => workbenchHub?.pointer(profileId, pointer),
+        replay,
         proxyApprovals,
         aiProxyPolicy,
         ...(scripts ? { scripts: { library: scripts.library, runner: scripts.runner } } : {}),
@@ -561,6 +588,12 @@ export function serveDashboard(opts: DashboardServerOptions) {
       const deniedHost = loopbackHostGuard(req, hostname);
       if (deniedHost) return deniedHost;
       const reqUrl = new URL(req.url);
+      if (reqUrl.pathname === BROWSER_REPLAY_PATH || reqUrl.pathname.startsWith(BROWSER_REPLAY_PATH + "/")) {
+        if (!replay || !isAllowedLoopbackHostHeader(req.headers.get("host")) || !isLoopbackAddress(server.requestIP(req)?.address)) {
+          return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
+        }
+        return browserReplayView(req, reqUrl.pathname, replay);
+      }
       if (reqUrl.pathname === WORKBENCH_PATH) {
         if (!isLoopbackAddress(server.requestIP(req)?.address) || !agentNonce || !validWorkbenchAuthorization(req, agentNonce)) {
           return Response.json({ ok: false, error: "Workbench authorization failed" }, { status: 403 });
@@ -643,6 +676,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const stopServer = server.stop.bind(server);
   return Object.assign(server, {
     async stop(closeActiveConnections?: boolean) {
+      replay?.close();
       cooling?.stop();
       clearInterval(backupTimer); clearTimeout(firstBackup);
       mobileView?.stop();

@@ -26,6 +26,8 @@ export interface LifecycleAdmissionStats {
 export interface LifecycleAdmissionOptions {
   limit?: number;
   queueWaitMs?: number;
+  /** Current start budget from host headroom. Stop and cleanup keep their own slots. */
+  startBudget?: () => number;
 }
 
 export interface LifecycleAdmissionRequest {
@@ -57,6 +59,7 @@ interface QueuedOperation {
 export class LifecycleAdmissionController {
   readonly limit: number;
   readonly queueWaitMs: number;
+  private readonly startBudget?: () => number;
   private nextId = 1;
   private queue: QueuedOperation[] = [];
   private running = new Map<number, QueuedOperation>();
@@ -69,6 +72,7 @@ export class LifecycleAdmissionController {
     if (!Number.isInteger(queueWaitMs) || queueWaitMs < 1) throw new RangeError("lifecycle queue wait must be a positive integer");
     this.limit = limit;
     this.queueWaitMs = queueWaitMs;
+    this.startBudget = options.startBudget;
   }
 
   run<T>(request: LifecycleAdmissionRequest, handler: () => T | Promise<T>): Promise<T> {
@@ -162,10 +166,13 @@ export class LifecycleAdmissionController {
   }
 
   private nextEligibleIndex(): number {
+    if (!this.queue.length) return -1;
     let best = -1;
     let bestPriority = -1;
     const blockedProfiles = new Set(this.runningProfiles);
-    const startLimit = this.limit > 1 ? this.limit - 1 : 1;
+    const reservedLimit = Math.max(1, this.limit - 1);
+    const budget = this.startBudget?.() ?? reservedLimit;
+    const startLimit = Number.isFinite(budget) ? Math.max(1, Math.min(reservedLimit, Math.floor(budget))) : reservedLimit;
     const runningStarts = [...this.running.values()].filter((operation) => operation.kind === "start").length;
     for (let index = 0; index < this.queue.length; index++) {
       const operation = this.queue[index]!;

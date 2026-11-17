@@ -13,6 +13,18 @@ index 2fd11d94dfe68bec9747b207a6b713e47156d60d..d147a880367f5a9473d28468e2ffc410
      const currentCookies = await this.cookies();
      await this.doClearCookies();
      const matches = (cookie, prop, value) => {
+@@ -329,8 +333,10 @@ class BrowserContext extends import_instrumentation.SdkObject {
+     const pageOrError = await progress.race(page.waitForInitializedOrError());
+     if (pageOrError instanceof Error)
+       throw pageOrError;
+-    await page.mainFrame().waitForLoadState(progress, "load");
++    // A Vela Firefox owner can control the initialized page even if restored sites are still loading.
++    if (this._browser.options.name !== "firefox" || globalThis[Symbol.for("aliasmode.firefoxOwnerStartup")] !== true)
++      await page.mainFrame().waitForLoadState(progress, "load");
+     return page;
+   }
+   async _loadDefaultContext(progress) {
+     const defaultPage = await this._loadDefaultContextAsIs(progress);
 diff --git a/lib/server/chromium/chromium.js b/lib/server/chromium/chromium.js
 index adff861ecad0049a45b2fe91b36802a73c3a4d82..91b9483930c4a0d4612a13c3e8e56766e930188d 100644
 --- a/lib/server/chromium/chromium.js

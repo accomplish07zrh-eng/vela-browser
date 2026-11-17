@@ -32,7 +32,11 @@ export async function startScreencast(page, { width, height, quality, minInterva
   const listener = (frame) => { if (!stopped) onFrame(frame.buffer); };
   impl.on("screencastframe", listener);
   try { await screencast._startScreencast(token, { width, height, quality }); }
-  catch (error) { impl.off("screencastframe", listener); throw error; }
+  catch (error) {
+    impl.off("screencastframe", listener);
+    await Promise.resolve(screencast._stopScreencast(token)).catch(() => {});
+    throw error;
+  }
   return () => {
     stopped = true;
     impl.off("screencastframe", listener);
@@ -48,30 +52,40 @@ export async function startScreencast(page, { width, height, quality, minInterva
 export class LiveFrames {
   constructor(start = startScreencast) {
     this.start = start; this.page = null; this.key = ""; this.stopStream = null; this.seq = 0;
-    this.latest = null; this.waiters = new Set(); this.viewport = null; this.measured = 0; this.idle = null;
+    this.latest = null; this.waiters = new Set(); this.viewport = null; this.measured = 0; this.idle = null; this.generation = 0;
   }
   /**
    * @param {any} page
-   * @param {{ maxWidth?: number, quality?: number, since?: number, wait?: number, minInterval?: number }} [options]
+   * @param {{ maxWidth?: number, maxHeight?: number, quality?: number, since?: number, wait?: number, minInterval?: number, consume?: boolean }} [options]
    */
   async next(page, options = {}) {
-    const { maxWidth, quality = 70, since = 0, wait = 1500, minInterval = 0 } = options;
+    const { maxWidth, maxHeight, quality = 70, since = 0, wait = 1500, minInterval = 0, consume = false } = options;
+    let generation = this.generation;
     if (!this.viewport || this.page !== page || Date.now() - this.measured > 2000) {
-      this.viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+      const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+      if (generation !== this.generation) return { unchanged: true, seq: this.seq, ...viewport };
+      this.viewport = viewport;
       this.measured = Date.now();
     }
     const view = this.viewport;
-    const width = Math.max(2, Math.min(view.width, Math.round(maxWidth || view.width))) & ~1;
-    const height = Math.max(2, Math.round(view.height * width / Math.max(1, view.width))) & ~1;
+    const scale = Math.min(1, (maxWidth || view.width) / Math.max(1, view.width), (maxHeight || view.height) / Math.max(1, view.height));
+    const width = Math.max(2, Math.round(view.width * scale)) & ~1;
+    const height = Math.max(2, Math.round(view.height * scale)) & ~1;
     const key = `${width}x${height}:${quality}:${minInterval}`;
     if (this.page !== page || this.key !== key || !this.stopStream) {
       this.stop();
       this.page = page; this.key = key;
-      this.stopStream = await this.start(page, { width, height, quality, minInterval }, (buffer) => this.push(buffer));
+      generation = this.generation;
+      const stop = await this.start(page, { width, height, quality, minInterval }, (buffer) => {
+        if (generation === this.generation) this.push(buffer);
+      });
+      if (generation !== this.generation) { stop(); return { unchanged: true, seq: this.seq, ...view }; }
+      this.stopStream = stop;
     }
     clearTimeout(this.idle);
     this.idle = setTimeout(() => this.stop(), Math.max(4000, wait * 3));
     if (this.latest && this.latest.seq > since) return this.withPointer(this.latest);
+    if (consume) this.latest = null;
     if (this.pointers?.length) return this.withPointer({ unchanged: true, seq: this.seq, ...this.viewport });
     return await new Promise((resolve) => {
       const waiter = { resolve };
@@ -108,6 +122,7 @@ export class LiveFrames {
     return { ...answer, pointer };
   }
   stop() {
+    this.generation++;
     clearTimeout(this.idle); this.idle = null;
     const stop = this.stopStream; this.stopStream = null; this.page = null; this.key = ""; this.latest = null;
     try { stop?.(); } catch {}
@@ -131,7 +146,14 @@ export class FirefoxWorkbench {
       const page = await this.context.newPage();
       return this.pages().find((entry) => entry.page === page).id;
     }
-    if (payload.action === "stop-stream") { this.live.stop(); return null; }
+    if (payload.action === "stop-stream") {
+      if (!payload.replayId) this.live.stop();
+      else if (this.replay?.id === payload.replayId) {
+        this.replay.frames.stop();
+        this.replay = undefined;
+      }
+      return null;
+    }
     const target = pages.find((entry) => entry.id === payload.targetId);
     if (!target) throw new Error("Tab no longer exists");
     const page = target.page;
@@ -145,14 +167,23 @@ export class FirefoxWorkbench {
     if (payload.action === "frame") {
       if (payload.stream === true) {
         const number = (value, low, high, fallback) => typeof value === "number" && Number.isFinite(value) ? Math.min(high, Math.max(low, value)) : fallback;
-        return this.live.next(page, {
-          maxWidth: number(payload.maxWidth, 160, 2560, undefined), quality: number(payload.quality, 30, 95, 70),
+        if (payload.replayId && this.replay?.id !== payload.replayId) {
+          this.replay?.frames.stop();
+          this.replay = { id: payload.replayId, frames: new LiveFrames() };
+        }
+        const frames = payload.replayId ? this.replay.frames : this.live;
+        return frames.next(page, {
+          maxWidth: number(payload.maxWidth, 160, 2560, undefined), maxHeight: number(payload.maxHeight, 160, 2560, undefined),
+          quality: number(payload.quality, 30, 95, 70), consume: !!payload.replayId,
           since: number(payload.since, 0, Number.MAX_SAFE_INTEGER, 0), wait: number(payload.wait, 0, 2500, 1500),
           minInterval: number(payload.minInterval, 0, 2000, 0),
         });
       }
       const size = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-      const bytes = await page.screenshot({ type: "jpeg", quality: payload.focused ? 85 : 65, scale: "css", timeout: 2000 });
+      const bytes = await page.screenshot({
+        type: "jpeg", quality: payload.replayId ? 50 : payload.focused ? 85 : 65, scale: "css", timeout: 2000,
+        ...(payload.replayId ? { caret: "initial" } : {}),
+      });
       return { data: bytes.toString("base64"), ...size };
     }
     if (payload.action !== "input") throw new Error("Invalid workbench operation");

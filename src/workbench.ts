@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ActivityLog } from "./cooling.ts";
 import type { Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
@@ -25,12 +25,15 @@ export function workbenchGeneration(launch: LaunchInfo): string {
 
 class ContextAdapter implements WorkbenchAdapter {
   private target = "";
-  constructor(private owner: NonNullable<LaunchInfo["firefoxOwner"]>, private call = callFirefoxOwner) {}
+  constructor(private owner: NonNullable<LaunchInfo["firefoxOwner"]>, private call = callFirefoxOwner, private replayId?: string) {}
   private run<T>(action: string, payload: object = {}): Promise<T> {
-    return this.call<T>(this.owner, "workbench", { action, targetId: this.target, ...payload }, { timeoutMs: 3500 });
+    return this.call<T>(this.owner, "workbench", { action, targetId: this.target, replayId: this.replayId, ...payload }, { timeoutMs: 3500 });
   }
   tabs(): Promise<WorkbenchTab[]> { return this.run("tabs"); }
-  async select(targetId: string): Promise<void> { await this.run("select", { targetId }); this.target = targetId; }
+  async select(targetId: string): Promise<void> {
+    if (!this.replayId) await this.run("select", { targetId });
+    this.target = targetId;
+  }
   newTab(): Promise<string> { return this.run("new"); }
   closeTab(targetId: string): Promise<void> { return this.run("close", { targetId }); }
   frame(focused: boolean): Promise<WorkbenchFrame> { return this.run("frame", { focused }); }
@@ -42,14 +45,20 @@ class ContextAdapter implements WorkbenchAdapter {
     // The owner's humanizer reports its pointer with the frames, for the card to draw.
     const pointers = (answer: any) => { for (const pointer of Array.isArray(answer?.pointer) ? answer.pointer : []) if (validWorkbenchPointer(pointer)) onPointer?.(pointer); };
     // The first answer must be a frame, or the caller falls back to polling.
-    const first = await this.call<any>(this.owner, "workbench", { action: "frame", targetId, stream: true, since, wait: 1000, ...options }, { timeoutMs: 3500 });
-    if (!first?.data) throw new Error("No live frames for this tab");
+    let first: any;
+    try {
+      first = await this.run<any>("frame", { targetId, stream: true, since, wait: 1000, ...options });
+      if (!first?.data) throw new Error("No live frames for this tab");
+    } catch (error) {
+      if (this.replayId) await this.run("stop-stream").catch(() => {});
+      throw error;
+    }
     since = first.seq; onFrame({ data: first.data, width: first.width, height: first.height }); pointers(first);
     void (async () => {
       while (active && this.target === targetId) {
         const started = Date.now();
         try {
-          const next = await this.call<any>(this.owner, "workbench", { action: "frame", targetId, stream: true, since, wait: 1500, ...options }, { timeoutMs: 3500 });
+          const next = await this.run<any>("frame", { targetId, stream: true, since, wait: 1500, ...options });
           if (!active) break;
           pointers(next);
           if (next?.data && next.seq > since) { since = next.seq; onFrame({ data: next.data, width: next.width, height: next.height }); }
@@ -62,7 +71,9 @@ class ContextAdapter implements WorkbenchAdapter {
   }
   viewport(): Promise<{ width: number; height: number }> { return this.run("viewport"); }
   async input(input: WorkbenchInput): Promise<void> { await this.run("input", { input }); }
-  dispose(): void { /* The owner and its persistent context belong to the launcher. */ }
+  async dispose(): Promise<void> {
+    if (this.replayId) await this.run("stop-stream").catch(() => {});
+  }
 }
 
 /** `agent` names the AI moving it ("Claude Code"), for the label drawn beside the pointer. */
@@ -107,12 +118,24 @@ export class WorkbenchHub {
   // Polled frames are scaled to their card, so more of them can be in flight at once.
   acquireFrame(): boolean { if (this.captures >= 6) return false; this.captures++; return true; }
   releaseFrame(): void { this.captures--; }
-  async connect(id: string): Promise<WorkbenchConnection> {
+  private async openAdapter(id: string, replayId?: string): Promise<{ launch: LaunchInfo; adapter: WorkbenchAdapter }> {
     if (!this.options.store.getProfile(id) || !await this.allowed(id) || !await this.options.launcher.certifiedActive(id)) throw new Error("Environment is unavailable");
     const launch = this.options.store.getLaunch(id);
     if (!launch || (launch.engine === "firefox" && !launch.firefoxOwner) || (launch?.engine === "webkit" && !launch.webkitOwner)) throw new Error("Environment is unavailable");
-    const adapter = this.options.adapter?.(launch) ?? (launch.engine === "webkit" ? new ContextAdapter(launch.webkitOwner!, callWebKitOwner) : launch.engine === "firefox" ? new ContextAdapter(launch.firefoxOwner!) : new CdpWorkbench(launch.ws));
+    const adapter = this.options.adapter?.(launch) ?? (launch.engine === "webkit" ? new ContextAdapter(launch.webkitOwner!, callWebKitOwner, replayId) : launch.engine === "firefox" ? new ContextAdapter(launch.firefoxOwner!, callFirefoxOwner, replayId) : new CdpWorkbench(launch.ws));
+    return { launch, adapter };
+  }
+  async connect(id: string): Promise<WorkbenchConnection> {
+    const { launch, adapter } = await this.openAdapter(id);
     return new WorkbenchConnection(this, launch, adapter);
+  }
+  async replaySource(id: string): Promise<{ adapter: WorkbenchAdapter; current(): boolean }> {
+    const { launch, adapter } = await this.openAdapter(id, randomUUID());
+    const generation = workbenchGeneration(launch);
+    return { adapter, current: () => {
+      const running = this.options.store.getLaunch(id);
+      return !!running && workbenchGeneration(running) === generation;
+    } };
   }
   allowed(id: string): boolean | Promise<boolean> { return this.options.canControl?.(id) ?? true; }
 

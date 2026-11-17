@@ -2419,7 +2419,8 @@ function App() {
 
   // ---- Bulk open / close (bounded concurrency) ----
   const bulkRun = async (op: (id: string) => Promise<any>, pick: (p: UiProfile) => boolean, batch = 4) => {
-    const ids = [...selected].filter((id) => { const p = profiles.find((x) => x.id === id); return p && pick(p); });
+    const eligible = new Set(profiles.filter(pick).map(p => p.id));
+    const ids = [...selected].filter(id => eligible.has(id) && !busy[id]);
     if (!ids.length) return;
     setActionErr(null);
     setBusy((b) => { const n = { ...b }; ids.forEach((id) => (n[id] = true)); return n; });
@@ -2431,10 +2432,11 @@ function App() {
         else if (r?.warning) issues.push(`${id}: ${actionWarning(r)}`);
       } catch (error) {
         issues.push(`${id}: ${String(error)}`);
+      } finally {
+        setBusy(current => { const next = { ...current }; delete next[id]; return next; });
       }
     });
     await load();
-    setBusy((b) => { const n = { ...b }; ids.forEach((id) => delete n[id]); return n; });
     if (issues.length > 0) setActionErr(issues.join("; "));
   };
   // Browsers start in batches as large as the free memory holds, so a big selection does not stall the computer.

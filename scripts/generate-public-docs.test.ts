@@ -33,6 +33,10 @@ const DOCUMENTED_ROUTES = [
   "get /api/v1/browser/start",
   "get /api/v1/browser/stop",
   "get /api/v1/browser/active",
+  "post /api/v2/browser-profile/list",
+  "post /api/v2/browser-profile/start",
+  "get /api/v2/browser-profile/active",
+  "post /api/v2/browser-profile/stop",
   "post /api/v2/browser-profile/delete-cache",
   "get /api/v1/browser/cookies",
   "get /api/v1/group/list",
@@ -67,15 +71,15 @@ function documentedDataKeys(op: any): string[] {
   return Object.keys(schema(dataRef).properties ?? {});
 }
 
-test("OpenAPI document is 3.1 and lists exactly the 13 public loopback routes", () => {
+test("OpenAPI document is 3.1 and lists the public loopback routes", () => {
   expect(openapi.openapi.startsWith("3.1")).toBe(true);
   expect(openapi.servers[0].url).toBe("http://127.0.0.1:50400");
   const ops = operations();
   expect(ops.map((o) => `${o.method} ${o.path}`).sort()).toEqual([...DOCUMENTED_ROUTES].sort());
-  expect(new Set(ops.map((o) => o.op.operationId)).size).toBe(13);
+  expect(new Set(ops.map((o) => o.op.operationId)).size).toBe(DOCUMENTED_ROUTES.length);
   for (const { path, op } of ops) {
     expect(path).not.toMatch(/\/ui\/api|\/api\/agent\/|\/api\/xactions\//);
-    expect(op["x-aliasmode-version-introduced"]).toBe("0.1.0-beta.42");
+    expect(op["x-aliasmode-version-introduced"]).toBe(op.operationId.endsWith("V2") ? "0.1.18" : "0.1.0-beta.42");
   }
 });
 
@@ -131,6 +135,12 @@ test("every documented operation is recognised by the real handlers with the doc
   expect((await call("browserStart", get(`/api/v1/browser/start?user_id=${id}&launch_args=${launchArgs}`))).data.debug_port).toBe("9222");
   expect((await call("browserActive", get(`/api/v1/browser/active?user_id=${id}`))).data.status).toBe("Inactive");
   expect((await call("browserStop", get(`/api/v1/browser/stop?user_id=${id}`))).code).toBe(0);
+  const profileNo = String(store.getSerial(id));
+  expect((await call("profileListV2", post("/api/v2/browser-profile/list", { profile_no: [profileNo] }))).data.list[0])
+    .toMatchObject({ profile_id: id, profile_no: profileNo });
+  expect((await call("browserStartV2", post("/api/v2/browser-profile/start", { profile_no: profileNo, headless: "1" }))).data.debug_port).toBe("9222");
+  expect((await call("browserActiveV2", get(`/api/v2/browser-profile/active?profile_no=${profileNo}`))).data.status).toBe("Inactive");
+  expect((await call("browserStopV2", post("/api/v2/browser-profile/stop", { profile_id: id }))).code).toBe(0);
   expect((await call("browserProfileDeleteCache", post("/api/v2/browser-profile/delete-cache", { profile_id: [id], type: ["image_file"] }))).code).toBe(0);
   expect((await call("browserCookies", get(`/api/v1/browser/cookies?user_id=${id}`))).msg).toBe(`profile not running: ${id}`);
   expect((await call("groupList", get("/api/v1/group/list?page=1&page_size=100"))).data.list).toEqual([{ group_id: "research", group_name: "research" }]);
@@ -164,14 +174,14 @@ test("MCP catalogs list the expected tools", () => {
   expect(current.status).toBe("source");
   expect(current.playwrightToolAvailability).toBe("listed-before-selection");
   const proxyPoolTools = ["vela_proxy_pool_list", "vela_proxy_pool_check", "vela_ip_score", "vela_browser_set_proxy"];
-  const scriptPluginTools = [
+  const automationTools = [
     "vela_guide", "vela_profile_update", "vela_scripts_list", "vela_script_read",
     "vela_script_save", "vela_script_run", "vela_script_run_status", "vela_script_stop",
-    "vela_plugins_list", "vela_plugin_save", "vela_browser_task",
+    "vela_plugins_list", "vela_plugin_save", "vela_browser_task", "vela_browser_replay",
   ];
-  expect(current.aliasModeTools.length).toBe(10 + proxyPoolTools.length + scriptPluginTools.length + DEVTOOLS_TOOLS.length);
+  expect(current.aliasModeTools.length).toBe(10 + proxyPoolTools.length + automationTools.length + DEVTOOLS_TOOLS.length);
   for (const tool of DEVTOOLS_TOOLS) expect(current.aliasModeTools.some((item: any) => item.name === tool.name)).toBe(true);
-  for (const name of [...proxyPoolTools, ...scriptPluginTools]) expect(current.aliasModeTools.some((item: any) => item.name === name)).toBe(true);
+  for (const name of [...proxyPoolTools, ...automationTools]) expect(current.aliasModeTools.some((item: any) => item.name === name)).toBe(true);
   expect(current.aliasModeTools.map((tool: any) => tool.name)).not.toContain("aliasmode_profiles_replace_proxies");
   expect(current.aliasModeTools.map((tool: any) => tool.name)).not.toContain("aliasmode_profile_update");
   for (const catalog of [current, released]) {

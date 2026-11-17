@@ -6,8 +6,6 @@ import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs";
-import { createHumanizer } from "./agent/humanize.mjs";
 import { BrowserDevtools, DEVTOOLS_TOOLS, DEVTOOLS_TOOL_NAMES } from "./agent/devtools.mjs";
 import { PluginHost, isPluginTool, pluginTools } from "./agent/plugins.mjs";
 import { keepDownloads } from "./agent/downloads.mjs";
@@ -245,6 +243,7 @@ export function firefoxLaunchOptions(input) {
     }),
     ...(input.headless === undefined ? {} : { headless: input.headless }),
     ...(input.args ? { args: input.args } : {}),
+    ...(input.timeoutMs === undefined ? {} : { timeout: input.timeoutMs }),
   };
 }
 
@@ -267,6 +266,7 @@ async function launchOwner(input) {
   // Native page-world execution is part of the default developer tools. The engine
   // keeps ordinary automation in its original isolated world until an mw: call is made.
   camouEnvironment({ ...input.config, allowMainWorld: true }, input.prefs);
+  globalThis[Symbol.for("aliasmode.firefoxOwnerStartup")] = true;
   process.env.ALIASMODE_FIREFOX_SESSION_GENERATION = input.sessionGeneration ?? input.owner.generation;
   let runtime;
   try { runtime = await import(pathToFileURL(join(ROOT, "node_modules", "playwright-core", "index.mjs")).href); } catch { throw typed("runtime_unavailable"); }
@@ -409,6 +409,7 @@ async function run() {
   };
   const initializeOfficial = async () => {
     if (official) return official;
+    const { connectOfficial, nonClosingContext } = await import("./agent/playwright-proxy.mjs");
     official = await connectOfficial("aliasmode-firefox-owner", async () => nonClosingContext(context));
     await updateNetworkDetail();
     return official;
@@ -465,13 +466,16 @@ async function run() {
       if (DEVTOOLS_TOOL_NAMES.has(payload.name)) return devtools.call(payload.name, payload.arguments ?? {}).catch(error => ({ isError: true, content: [{ type: "text", text: error.message }] }));
       if (!bridge.tools.some((tool) => tool.name === payload.name && !/pdf/i.test(tool.name))) throw typed("invalid_request");
       const callOfficial = (tool, args) => bridge.client.callTool({ name: tool, arguments: args ?? {} });
-      humanizer ??= createHumanizer({
-        context,
-        profileId: input.profileId,
-        // Its pointer reaches Vela Browser with the workbench frames, to be drawn over the card.
-        onPointer: (event) => workbench.live.pointer({ ...event, agent: pointerAgent }),
-        callOfficial: (tool, args) => official ? official.client.callTool({ name: tool, arguments: args ?? {} }) : callOfficial(tool, args),
-      });
+      if (!humanizer) {
+        const { createHumanizer } = await import("./agent/humanize.mjs");
+        humanizer = createHumanizer({
+          context,
+          profileId: input.profileId,
+          // Its pointer reaches Vela Browser with the workbench frames, to be drawn over the card.
+          onPointer: (event) => workbench.live.pointer({ ...event, agent: pointerAgent }),
+          callOfficial: (tool, args) => official ? official.client.callTool({ name: tool, arguments: args ?? {} }) : callOfficial(tool, args),
+        });
+      }
       pointerAgent = typeof payload.humanize?.agent === "string" ? payload.humanize.agent : undefined;
       humanizer.configure(payload.humanize ?? { enabled: true, speed: 1, pasteOver: null });
       return humanizer.call(payload.name, payload.arguments ?? {});
@@ -499,7 +503,8 @@ async function run() {
         // Workbench frame reads must not wait behind a slow, human-paced AI gesture, or the
         // viewport would freeze while the AI types.
         const concurrent = requestValue.operation === "status"
-          || (requestValue.operation === "workbench" && ["tabs", "viewport", "frame"].includes(requestValue.payload?.action));
+          || (requestValue.operation === "workbench" && (["tabs", "viewport", "frame"].includes(requestValue.payload?.action)
+            || (requestValue.payload?.replayId && requestValue.payload?.action === "stop-stream")));
         const runOperation = concurrent
           ? operation(requestValue.operation, requestValue.payload)
           : queue.then(() => operation(requestValue.operation, requestValue.payload));

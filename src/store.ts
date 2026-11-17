@@ -1060,12 +1060,13 @@ export class ProfileStore {
     createdAt: number;
     lastOpenAt: number;
     serial: number;
+    customNo: string;
     fpVerdict: string;
     fpCapturedAt: string;
   }> {
     return this.db
       .query<any, []>(
-        `SELECT id, name, "group" AS grp, created_at AS c, last_open_at AS l, rowid AS s,
+        `SELECT id, name, "group" AS grp, created_at AS c, last_open_at AS l, rowid AS s, custom_no AS no,
                 fp_verdict_json AS fpv, fp_observed_json AS fpo
            FROM profiles WHERE trashed_at = 0 ORDER BY rowid`,
       )
@@ -1077,6 +1078,7 @@ export class ProfileStore {
         createdAt: r.c ?? 0,
         lastOpenAt: r.l ?? 0,
         serial: r.s,
+        customNo: r.no ?? "",
         fpVerdict: safeParse<{ verdict?: string }>(r.fpv, {}).verdict ?? "",
         fpCapturedAt: safeParse<{ capturedAt?: string }>(r.fpo, {}).capturedAt ?? "",
       }));
@@ -1088,6 +1090,14 @@ export class ProfileStore {
       .query<{ s: number }, [string]>(`SELECT rowid AS s FROM profiles WHERE id = ?`)
       .get(profileId);
     return row ? row.s : null;
+  }
+
+  /** Resolves the number shown in the roster, including collisions between custom and generated numbers. */
+  profileIdsByDisplayNo(profileNo: string): string[] {
+    return this.db.query<{ id: string }, [string]>(
+      `SELECT id FROM profiles WHERE trashed_at = 0
+         AND COALESCE(NULLIF(TRIM(custom_no), ''), CAST(rowid AS TEXT)) = ? LIMIT 2`,
+    ).all(profileNo).map(row => row.id);
   }
 
   /**

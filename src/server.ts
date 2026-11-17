@@ -18,6 +18,7 @@ import type { CloudBrowserLifecycle } from "./cloud-browser.ts";
 import type { ProfileStore } from "./store.ts";
 import type { RemoteCoordinator } from "./remote.ts";
 import {
+  LifecycleAdmissionError,
   normalizeProfileIds,
   type LifecycleAdmissionController,
   type LifecycleState,
@@ -86,6 +87,7 @@ async function activeResponse(
   launcher: Launcher,
   store: ProfileStore,
   lifecycle?: BrowserLifecycleContext,
+  v2 = false,
 ): Promise<Response> {
   const beforeState = currentLifecycle(profileId, lifecycle);
   if (beforeState) return ok({ status: "Active", lifecycle: beforeState });
@@ -104,7 +106,8 @@ async function activeResponse(
     return ok({ status: "Active", lifecycle: "running", ...firefoxPublicFields() });
   }
   if (alive && launch?.ws) {
-    return ok({ status: "Active", lifecycle: "running", ws: { puppeteer: launch.ws, selenium: "" } });
+    return ok({ status: "Active", lifecycle: "running", ws: { puppeteer: launch.ws, selenium: "" },
+      ...(v2 ? { debug_port: String(launch.debugPort), webdriver: "" } : {}) });
   }
   // Certification can fail while ownership-safe teardown remains unconfirmed.
   // Keep that durable generation visible without exposing an uncertified CDP URL.
@@ -120,6 +123,90 @@ function parseLaunchArgs(raw: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+type V2BrowserAction = "start" | "stop" | "active";
+interface V2BrowserOptions { launchArgs: string[]; headless?: boolean }
+
+function v2BrowserAction(pathname: string): V2BrowserAction | undefined {
+  if (pathname === "/api/v2/browser-profile/start") return "start";
+  if (pathname === "/api/v2/browser-profile/stop") return "stop";
+  if (pathname === "/api/v2/browser-profile/active") return "active";
+}
+
+async function handleV2BrowserControl(
+  req: Request,
+  action: V2BrowserAction,
+  resolveProfileNo: (number: string) => string[] | Promise<string[]>,
+  lifecycle: BrowserLifecycleContext | undefined,
+  run: (profileId: string, options: V2BrowserOptions) => Promise<Response>,
+): Promise<Response> {
+  const requiredMethod = action === "active" ? "GET" : "POST";
+  if (req.method !== requiredMethod) return fail("expected " + requiredMethod);
+  const body: unknown = action === "active"
+    ? Object.fromEntries(new URL(req.url).searchParams)
+    : await req.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return fail("invalid JSON body");
+  const params = body as Record<string, unknown>;
+  const { profile_id, profile_no } = params;
+  let profileId = typeof profile_id === "string" ? profile_id.trim() : "";
+  if (profile_id != null && typeof profile_id !== "string") return fail("profile_id must be a string");
+  if (!profileId) {
+    const number = typeof profile_no === "string" ? profile_no.trim()
+      : Number.isSafeInteger(profile_no) ? String(profile_no) : "";
+    if (!number) return fail("provide profile_id or profile_no");
+    let matches: string[];
+    try { matches = await resolveProfileNo(number); }
+    catch { return fail("Could not resolve profile_no"); }
+    if (matches.length !== 1) return fail("profile_no is unavailable or ambiguous. Use profile_id");
+    profileId = matches[0]!;
+  }
+  if (!isSafeProfileId(profileId)) return fail("invalid profile_id");
+  const options: V2BrowserOptions = { launchArgs: [] };
+  if (action === "start") {
+    if (params.headless === "1" || params.headless === 1) options.headless = true;
+    else if (params.headless === "0" || params.headless === 0) options.headless = false;
+    else if (params.headless !== undefined) return fail("headless must be 0 or 1");
+    if (params.launch_args !== undefined) {
+      if (!Array.isArray(params.launch_args) || !params.launch_args.every(arg => typeof arg === "string")) {
+        return fail("launch_args must be a list of strings");
+      }
+      options.launchArgs = params.launch_args;
+    }
+  }
+  const allowed = () => lifecycle?.automationScope?.allowsProfile(profileId) ?? true;
+  if (!allowed()) return fail(AUTOMATION_SCOPE_DENIED);
+  const dispatch = () => allowed() ? run(profileId, options) : Promise.resolve(fail(AUTOMATION_SCOPE_DENIED));
+  try {
+    if (action === "active" || !lifecycle?.admission) return await dispatch();
+    // Use the resolved profile ID so v1, v2 and dashboard requests share the same lifecycle lane.
+    return await lifecycle.admission.run({ kind: action, profileIds: [profileId], signal: req.signal }, dispatch);
+  } catch (error) {
+    if (error instanceof LifecycleAdmissionError) return fail(error.message + ". Request was not dispatched");
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function startLocalBrowser(profileId: string, launcher: Launcher, store: ProfileStore, launchArgs: string[], headless?: boolean) {
+  if (!store.getProfile(profileId)) return fail("no such profile: " + profileId);
+  try {
+    const { ws, port } = headless === undefined ? await launcher.start(profileId, launchArgs)
+      : await launcher.start(profileId, launchArgs, { headless });
+    const launch = store.getLaunch(profileId);
+    if (launch?.engine === "webkit" || ws.startsWith("webkit://")) return ok(webkitPublicFields());
+    if (isFirefoxEngine(launch) || ws.startsWith("firefox://")) return ok(firefoxPublicFields());
+    return ok({ ws: { puppeteer: ws, selenium: "" }, debug_port: String(port), webdriver: "" });
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function stopLocalBrowser(profileId: string, launcher: Launcher, store: ProfileStore): Promise<Response> {
+  const launch = store.getLaunch(profileId);
+  if (isFirefoxEngine(launch)) {
+    if (isFirefoxLaunch(launch)) await captureFirefoxSession(store, profileId, launch.firefoxOwner);
+  } else await launcher.captureLocalSession(profileId);
+  return await launcher.stop(profileId, launch ?? undefined) ? ok() : fail("browser teardown unconfirmed: " + profileId);
 }
 
 function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
@@ -201,6 +288,14 @@ export async function handleRequest(
 ): Promise<Response> {
   const url = new URL(req.url);
   const { pathname, searchParams } = url;
+  const v2Action = v2BrowserAction(pathname);
+  if (v2Action) {
+    return handleV2BrowserControl(req, v2Action, number => store.profileIdsByDisplayNo(number), lifecycle, (profileId, options) => {
+      if (v2Action === "start") return startLocalBrowser(profileId, launcher, store, options.launchArgs, options.headless);
+      if (v2Action === "stop") return stopLocalBrowser(profileId, launcher, store);
+      return activeResponse(profileId, launcher, store, lifecycle, true);
+    });
+  }
   const userId = searchParams.get("user_id") ?? "";
   const scope = lifecycle?.automationScope;
   if (scope && userId && (isAdsPowerBrowserControl(pathname) || pathname === "/api/v1/browser/cookies") && !scope.allowsProfile(userId)) {
@@ -224,31 +319,12 @@ export async function handleRequest(
 
   if (pathname === "/api/v1/browser/start") {
     if (!userId) return fail("missing user_id");
-    if (!store.getProfile(userId)) return fail(`no such profile: ${userId}`);
-    try {
-      const launchArgs = parseLaunchArgs(searchParams.get("launch_args"));
-      const { ws, port } = await launcher.start(userId, launchArgs);
-      if (store.getLaunch(userId)?.engine === "webkit" || ws.startsWith("webkit://")) return ok(webkitPublicFields());
-      if (isFirefoxEngine(store.getLaunch(userId)) || ws.startsWith("firefox://")) return ok(firefoxPublicFields());
-      return ok({
-        ws: { puppeteer: ws, selenium: "" },
-        debug_port: String(port),
-        webdriver: "",
-      });
-    } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
-    }
+    return startLocalBrowser(userId, launcher, store, parseLaunchArgs(searchParams.get("launch_args")));
   }
 
   if (pathname === "/api/v1/browser/stop") {
     if (!userId) return fail("missing user_id");
-    const launch = store.getLaunch(userId);
-    if (isFirefoxEngine(launch)) {
-      if (isFirefoxLaunch(launch)) await captureFirefoxSession(store, userId, launch.firefoxOwner);
-    } else await launcher.captureLocalSession(userId);
-    return (await launcher.stop(userId, launch ?? undefined))
-      ? ok()
-      : fail(`browser teardown unconfirmed: ${userId}`);
+    return stopLocalBrowser(userId, launcher, store);
   }
 
   // Cookie harvest is an Vela Browser extension to the AdsPower API. The browser
@@ -307,7 +383,7 @@ export async function handleRequest(
  * `status` and `delete-cache` are intentionally excluded (safe to pass through).
  */
 export function isAdsPowerBrowserControl(pathname: string): boolean {
-  return /^\/api\/v1\/browser\/(start|stop|active)$/.test(pathname);
+  return !!v2BrowserAction(pathname) || /^\/api\/v1\/browser\/(start|stop|active)$/.test(pathname);
 }
 
 /**
@@ -324,6 +400,21 @@ export async function handleRemoteBrowserControl(
   lifecycle?: BrowserLifecycleContext,
 ): Promise<Response> {
   const { pathname, searchParams } = new URL(req.url);
+  const v2Action = v2BrowserAction(pathname);
+  if (v2Action) {
+    const resolveProfileNo = async (number: string) => (await coord.listProfiles())
+      .filter((_, index) => String(index + 1) === number).map(profile => profile.id);
+    return handleV2BrowserControl(req, v2Action, resolveProfileNo, lifecycle, async (profileId, { launchArgs, headless }) => {
+      if (v2Action === "start") {
+        const opened = await coord.open(profileId, launchArgs, false, headless === undefined ? {} : { headless });
+        return opened.ok ? ok({ ws: { puppeteer: opened.ws, selenium: "" }, debug_port: String(opened.port), webdriver: "",
+          ...(opened.warning ? { warning: opened.warning } : {}) })
+          : fail(opened.lockedBy ? "in use by " + opened.lockedBy : opened.error ?? "open failed");
+      }
+      if (v2Action === "stop") return await coord.close(profileId) ? ok() : fail("browser teardown unconfirmed: " + profileId);
+      return activeResponse(profileId, launcher, store, { ...lifecycle, remote: coord }, true);
+    });
+  }
   const userId = searchParams.get("user_id") ?? "";
   if (!userId) return fail("missing user_id");
 

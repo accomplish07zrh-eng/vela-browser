@@ -42,3 +42,31 @@ export async function dpapiKeysReadable(keys: string[], timeoutMs = 60_000): Pro
     return null;
   }
 }
+
+/** Coalesce checks from concurrent reopens into one PowerShell process. */
+export function batchDpapiKeyChecks(check: (keys: string[]) => Promise<boolean[] | null>) {
+  let pending = new Map<string, Array<(readable: boolean | undefined) => void>>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const flush = async () => {
+    clearTimeout(timer);
+    timer = undefined;
+    const batch = pending;
+    pending = new Map();
+    const keys = [...batch.keys()];
+    let readable: boolean[] | null;
+    try { readable = await check(keys); } catch { readable = null; }
+    for (const [index, key] of keys.entries()) {
+      const result = readable?.length === keys.length ? readable[index] : undefined;
+      for (const resolve of batch.get(key)!) resolve(result);
+    }
+  };
+
+  return (key: string): Promise<boolean | undefined> => new Promise(resolve => {
+    const waiters = pending.get(key);
+    if (waiters) waiters.push(resolve);
+    else pending.set(key, [resolve]);
+    if (pending.size >= 64) void flush();
+    else timer ??= setTimeout(() => void flush(), 20);
+  });
+}

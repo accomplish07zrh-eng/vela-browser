@@ -113,6 +113,23 @@ test("a limit of one still admits a start", async () => {
   expect(started).toBe(true);
 });
 
+test("the live start budget applies to queued launches and leaves stop capacity", async () => {
+  let budget = 1;
+  const admission = new LifecycleAdmissionController({ limit: 4, startBudget: () => budget });
+  const first = deferred(), second = deferred(), third = deferred();
+  const starts = [first, second, third].map((gate, index) =>
+    admission.run({ kind: "start", profileIds: ["budget-" + index] }, () => gate.promise));
+  expect(admission.stats().byKind.start).toEqual({ inFlight: 1, queued: 2 });
+  await admission.run({ kind: "stop", profileIds: ["different"] }, () => {});
+  budget = 2;
+  first.resolve();
+  await starts[0];
+  expect(admission.stats().byKind.start).toEqual({ inFlight: 2, queued: 0 });
+  second.resolve();
+  third.resolve();
+  await Promise.all(starts);
+});
+
 test("queued work is priority ordered and FIFO within each priority", async () => {
   const admission = new LifecycleAdmissionController({ limit: 1 });
   const blocker = deferred();
