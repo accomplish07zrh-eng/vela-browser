@@ -214,7 +214,7 @@ const ALIAS_TOOLS = [
   },
 {
     name: "vela_browser_replay",
-    description: "Record a browser tab in memory and replay up to the previous 60 seconds. Use tabs to find a tabId, start before the action, play to get timestamped images and a local playback link, or stop to erase the recording. Play accepts a time range in seconds ago. Recording starts on request, stops taking frames after durationSeconds, and expires frame by frame.",
+    description: "Record a browser tab in memory and replay up to the previous 60 seconds. Use tabs to find a tabId, or use runId for a task's bound tab. Start before the action, play to get timestamped images and a local playback link, or stop to erase the recording. Play accepts a time range in seconds ago. Recording starts on request, stops taking frames after durationSeconds, and expires frame by frame.",
     annotations: toolAnnotations("Replay a Vela Browser tab"),
     inputSchema: {
       type: "object",
@@ -222,6 +222,7 @@ const ALIAS_TOOLS = [
         action: { type: "string", enum: ["tabs", "start", "play", "stop"] },
         profileId: { ...PROFILE_ID, description: "Defaults to the selected open profile." },
         tabId: { type: "string", description: "For start. Use the tabId from tabs when multiple tabs are open." },
+        runId: { type: "string", description: "Use a durable task's bound profile and tab instead of profileId and tabId." },
         durationSeconds: { type: "integer", minimum: 1, maximum: 300, default: 60, description: "For start. How long to capture before stopping automatically. Each frame expires 60 seconds after capture." },
         fromSecondsAgo: { type: "number", minimum: 0, maximum: 60, default: 60, description: "Older end of the range for play." },
         toSecondsAgo: { type: "number", minimum: 0, maximum: 60, default: 0, description: "Newer end of the range for play." },
@@ -407,20 +408,90 @@ const ALIAS_TOOLS = [
     inputSchema: { type: "object", properties: { logOffset: { type: "integer", minimum: 0 } }, additionalProperties: false },
   },
   {
+    name: "vela_browser_network",
+    description: "Measure a live profile's proxy egress, timezone and public WebRTC candidates against its launch identity. Set refresh to reconnect after the same observed drift is confirmed twice.",
+    annotations: toolAnnotations("Check browser network identity", { destructive: true, openWorld: true }),
+    inputSchema: { type: "object", properties: { profileId: PROFILE_ID, refresh: { type: "boolean" } }, required: ["profileId"], additionalProperties: false },
+  },
+  {
+    name: "vela_worker",
+    description: "Dispatch durable browser tasks to configured self-hosted Vela workers or hand off an encrypted profile. Retry a handoff with the same idempotency key. The source stays closed after handing off.",
+    annotations: toolAnnotations("Use a self-hosted Vela worker", { destructive: true, openWorld: true }),
+    inputSchema: { type: "object", properties: {
+      operation: { type: "string", enum: ["list", "task", "handoff"] },
+      node: { type: "string" }, profileId: PROFILE_ID, idempotencyKey: { type: "string" },
+      request: { type: "object", description: "A worker task request with operation start, status, resume, or cancel.", additionalProperties: true },
+    }, required: ["operation"], additionalProperties: false },
+  },
+  {
+    name: "vela_profile_portable",
+    description: "Create or restore an encrypted portable profile in the desktop portable-profiles folder. Export can preserve native site storage, bookmarks and extension state. Handoff keeps the source closed for adoption on another computer.",
+    annotations: toolAnnotations("Transfer an encrypted Vela profile", { destructive: true }),
+    inputSchema: { type: "object", properties: {
+      operation: { type: "string", enum: ["export", "restore"] }, profileId: PROFILE_ID,
+      file: { type: "string", description: "A .vela-profile file name in the desktop portable-profiles folder." },
+      passphrase: { type: "string", minLength: 12 }, handoff: { type: "boolean" },
+    }, required: ["operation", "passphrase"], additionalProperties: false },
+  },
+  {
+    name: "vela_android",
+    description: "Use native Android apps on an authorized ADB device. List serials, launch an installed package, inspect visible controls, send input, or capture a PNG in memory.",
+    annotations: toolAnnotations("Manage an Android device", { destructive: true }),
+    inputSchema: { type: "object", properties: {
+      action: { type: "string", enum: ["devices", "launch", "observe", "screenshot", "tap", "swipe", "key", "text"] },
+      serial: { type: "string" }, package: { type: "string" }, text: { type: "string" },
+      key: { type: "string", enum: ["back", "home", "enter", "delete", "recent"] },
+      x: { type: "integer", minimum: 0 }, y: { type: "integer", minimum: 0 },
+      toX: { type: "integer", minimum: 0 }, toY: { type: "integer", minimum: 0 },
+    }, required: ["action"], additionalProperties: false },
+  },
+  {
+    name: "vela_browser_kernel",
+    description: "List verified Vela Chromium builds, inspect a profile's pin, or switch and test its kernel. upgrade_batch rolls out to an explicit cohort and stops on the first failure. Rollback restores the prior version and its native snapshot.",
+    annotations: toolAnnotations("Manage a Vela Chromium kernel", { destructive: true }),
+    inputSchema: { type: "object", properties: {
+      operation: { type: "string", enum: ["list", "status", "upgrade", "upgrade_batch", "rollback"] },
+      profileId: PROFILE_ID, profileIds: { type: "array", minItems: 1, maxItems: 100, items: PROFILE_ID }, revision: { type: "string" },
+    }, required: ["operation"], additionalProperties: false },
+  },
+  {
     name: "vela_browser_task",
-    description: "Run durable JavaScript steps in a Vela Browser profile, independently of this connection. Start returns a runId immediately. Supply a stable idempotencyKey to recover a lost start reply. On resume, an uncertain step's verifier returns {state: 'applied' | 'absent' | 'unknown', value}; absent means the original write cannot still commit. See status and evidence for the action and verification receipts.",
+    description: "Run durable JavaScript steps independently of this MCP connection. Set startUrl to bind a task tab, queue by profile, and automatically recover from browser loss. start_batch shares a plan across 1–100 runs. Supply stable idempotency keys. Verifiers return {state: 'applied' | 'absent' | 'unknown', value}; absent certifies the original write cannot still commit. Return {blocked: {code, message}} before issuing a write to suspend that profile's queue. Use skill_save on a completed run and skill_find with the site's URL to reuse it via skillId.",
     annotations: toolAnnotations("Manage a durable browser task", { destructive: true, openWorld: true }),
     inputSchema: {
       type: "object",
       properties: {
-        operation: { type: "string", enum: ["start", "list", "status", "resume", "pause", "cancel", "evidence"] },
+        operation: { type: "string", enum: ["start", "start_batch", "list", "status", "resume", "pause", "cancel", "evidence", "skill_save", "skill_find",
+          "schedule_save", "schedule_list", "schedule_run", "schedule_delete"] },
         profileId: PROFILE_ID, name: { type: "string" }, runId: { type: "string" }, idempotencyKey: { type: "string" },
         screenshots: { type: "boolean" }, argument: {},
+        unattended: { type: "boolean", description: "Enable queued, checkpointed recovery. Requires startUrl." },
+        startUrl: { type: "string", description: "Safe HTTP(S) GET entry point for a new or rebuilt task tab. Supplying it enables unattended execution." },
+        tabId: { type: "string", description: "Optionally bind an existing tab from vela_browser_replay tabs. Still provide startUrl for recovery." },
+        runs: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", properties: {
+          profileId: PROFILE_ID, name: { type: "string" }, argument: {}, idempotencyKey: { type: "string" },
+          startUrl: { type: "string" }, tabId: { type: "string" },
+        }, required: ["profileId"], additionalProperties: false } },
         steps: { type: "array", items: { type: "object", properties: {
           id: { type: "string" }, run: { type: "string" }, verify: { type: "string" }, timeoutMs: { type: "integer", minimum: 1 },
-          pageUrl: { type: "string", description: "Wait for a uniquely matching page with this exact URL before running the step." },
+          pageUrl: { type: "string", description: "Wait for this exact URL in the bound tab before executing the step." },
           frameUrl: { type: "string", description: "Wait for a uniquely matching iframe with this exact URL at any depth." },
+          readOnly: { type: "boolean", description: "Certify the step has no site write so it can be retried after losing its browser." },
+          recoveryUrl: { type: "string", description: "Optional safe HTTP(S) GET entry point when rebuilding the tab at this checkpoint." },
         }, required: ["id", "run"], additionalProperties: false } },
+        skillId: { type: "string", description: "Use a completed site's saved plan in start or start_batch. Supply this run's argument." },
+        scheduleId: { type: "string", description: "A saved schedule ID for editing, dispatch or deletion." },
+        enabled: { type: "boolean", description: "Enable automatic dispatch of a saved skill schedule." },
+        target: { type: "object", properties: {
+          profileIds: { type: "array", items: PROFILE_ID }, groups: { type: "array", items: { type: "string" } },
+          tags: { type: "array", items: { type: "string" } },
+        }, additionalProperties: false },
+        schedule: { type: "object", properties: {
+          kind: { type: "string", enum: ["manual", "daily", "interval"] }, time: { type: "string", description: "Daily local time HH:MM." },
+          days: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 } },
+          minutes: { type: "integer", minimum: 1 },
+        }, required: ["kind"], additionalProperties: false },
+        url: { type: "string", description: "For skill_find, a page URL. For skill_save, the site and path prefix to match, defaulting to the task's startUrl." },
         verify: { type: "string", description: "Replacement verification function for the uncertain step during this resume." },
         sequence: { type: "integer", minimum: 1 }, part: { type: "string", enum: ["summary", "network", "events", "logs", "screenshot", "value"] },
         offset: { type: "integer", minimum: 0 }, bytes: { type: "integer", minimum: 1, maximum: 1048576 },
@@ -720,8 +791,12 @@ export async function createVelaBrowserMcp(options = {}) {
 
   // Vela Browser applies its per-AI group permissions and keeps its record under this client's name.
   let identified;
+  let profileWriteLeases = false;
   // An older Vela Browser, or a runtime that refuses the call, simply keeps the connection unnamed.
-  const identify = () => identified ??= (async () => { try { await runtime.call("session.identify", { name: agent() }); } catch { /* unnamed */ } })();
+  const identify = () => identified ??= (async () => {
+    try { profileWriteLeases = (await runtime.call("session.identify", { name: agent() }))?.profileWriteLeases === true; }
+    catch { /* unnamed */ }
+  })();
   /** Page actions in Chromium reach the browser directly, so they are reported for the record. */
   const reportAction = (profileId, tool, args, result, error) => {
     const detail = tool === "browser_navigate" && typeof args?.url === "string" ? args.url
@@ -756,9 +831,29 @@ export async function createVelaBrowserMcp(options = {}) {
       if (name === "vela_script_read") return toolResult(await runtime.call("scripts.get", { scriptId: args.scriptId }));
       if (name === "vela_script_save") return toolResult(await runtime.call("scripts.save", { ...args, client: agent() }));
       if (name === "vela_script_run") return toolResult(await runtime.call("scripts.run", args));
+      if (name === "vela_browser_network") return toolResult(await runtime.call("network.identity", args));
+      if (name === "vela_worker") return toolResult(await runtime.call("worker.call", args));
+      if (name === "vela_profile_portable") {
+        const { operation, ...params } = args;
+        if (!["export", "restore"].includes(operation)) throw new Error("Choose a portable profile operation");
+        return toolResult(await runtime.call(`portable.${operation}`, params));
+      }
+      if (name === "vela_android") {
+        const { data, mimeType, ...response } = await runtime.call("android.call", args);
+        const result = toolResult(response);
+        if (typeof data === "string" && mimeType === "image/png") result.content.push({ type: "image", mimeType, data });
+        return result;
+      }
+      if (name === "vela_browser_kernel") {
+        const { operation, ...params } = args;
+        if (!["list", "status", "upgrade", "upgrade_batch", "rollback"].includes(operation)) throw new Error("Choose a kernel operation");
+        return toolResult(await runtime.call(`kernels.${operation}`, params));
+      }
       if (name === "vela_browser_task") {
         const { operation, ...params } = args;
-        if (!["start", "list", "status", "resume", "pause", "cancel", "evidence"].includes(operation)) throw new Error("Choose a browser task operation");
+        if (!["start", "start_batch", "list", "status", "resume", "pause", "cancel", "evidence", "skill_save", "skill_find",
+          "schedule_save", "schedule_list", "schedule_run", "schedule_delete"].includes(operation)) throw new Error("Choose a browser task operation");
+        if (operation === "start" && params.profileId === undefined && selectedProfileId) params.profileId = selectedProfileId;
         return toolResult(await runtime.call(`browserTasks.${operation}`, params));
       }
       if (name === "vela_script_stop") return toolResult(await runtime.call("scripts.stop"));
@@ -872,8 +967,8 @@ export async function createVelaBrowserMcp(options = {}) {
         return toolResult({ ...safeStatus, selected: profileId === selectedProfileId });
       }
       if (name === "vela_browser_replay") {
-        const profileId = args.profileId || selectedProfileId;
-        if (!profileId) throw new Error("select an open Vela Browser browser first");
+        const profileId = args.profileId || (args.runId ? undefined : selectedProfileId);
+        if (!profileId && !args.runId) throw new Error("select an open Vela Browser browser or provide a task runId");
         if (args.action === "start") usedReplay = true;
         const { samples = [], ...replay } = await runtime.call("browser.replay", { ...args, profileId });
         const result = toolResult(samples.length ? { ...replay, samples: samples.map(({ data, ...time }) => time) } : replay);
@@ -900,8 +995,10 @@ export async function createVelaBrowserMcp(options = {}) {
         if (target === selectedProfileId) await publishTools().catch(() => {});
       }
       const known = (tool) => toolsFor(session).some((entry) => entry.name === tool);
+      let writeToken;
       const actOne = (tool, toolArguments) => session.engine !== "chromium"
-        ? runtime.call(`${session.engine}.tools.call`, { profileId: target, name: tool, arguments: toolArguments, humanize: { ...humanize, agent: agent() } })
+        ? runtime.call(`${session.engine}.tools.call`, { profileId: target, name: tool, arguments: toolArguments,
+          humanize: { ...humanize, agent: agent() }, ...(writeToken ? { writeToken } : {}) })
         : session.humanizer ? session.humanizer.call(tool, toolArguments) : session.proxy.callTool(tool, toolArguments);
       let act;
       if (name === "browser_batch") {
@@ -937,7 +1034,16 @@ export async function createVelaBrowserMcp(options = {}) {
         if (!known(name)) throw new Error(`unknown Vela Browser tool: ${name}`);
         act = () => actOne(name, toolArgs);
       }
-      const run = session.lane.then(act);
+      const tools = toolsFor(session);
+      const readOnly = tool => !isPluginTool(tool) && tools.some(entry => entry.name === tool && entry.annotations?.readOnlyHint === true);
+      const writes = name === "browser_batch" ? toolArgs.steps.some(step => !readOnly(step.tool)) : !readOnly(name);
+      const run = session.lane.then(async () => {
+        if (!profileWriteLeases || !writes) return act();
+        const claim = await runtime.call("browser.write.begin", { profileId: target, ...(session.ws ? { endpoint: session.ws } : {}) });
+        writeToken = claim.token;
+        try { return await act(); }
+        finally { await runtime.call("browser.write.end", { token: writeToken }).catch(() => {}); }
+      });
       session.lane = run.then(() => undefined, () => undefined);
       if (session.engine !== "chromium") return await run;
       try {

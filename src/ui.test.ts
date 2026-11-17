@@ -2098,6 +2098,32 @@ test("local-mode streamed export reports progress after each profile", async () 
   s.close();
 });
 
+test("Bitwarden export includes site credentials and excludes browser data and recovery credentials", async () => {
+  const s = store();
+  const profile = s.getProfile("k1d0cd11")!;
+  s.upsertProfile({ ...profile, group: "Logins", platform: "x.com", username: "site-user", password: "site-password",
+    twofa: "JBSWY3DPEHPK3PXP", email: "recovery@example.invalid", emailPassword: "private-inbox-password" });
+  try {
+    const response = await handleUiRequest(
+      new Request("http://x/ui/api/profiles/export", {
+        method: "POST", body: JSON.stringify({ ids: [profile.id], format: "bitwarden" }),
+      }),
+      { captureLocalSession() { throw new Error("Vault export accessed the session"); } } as any, s,
+    );
+    expect(response!.status).toBe(200);
+    expect(response!.headers.get("content-disposition")).toContain("vela-bitwarden.json");
+    expect(response!.headers.get("cache-control")).toBe("no-store");
+    const text = await response!.text();
+    const vault = JSON.parse(text);
+    expect(vault.encrypted).toBe(false);
+    expect(vault.folders[0].name).toBe("Logins");
+    expect(vault.items[0]).toMatchObject({ folderId: vault.folders[0].id, type: 1, login: {
+      uris: [{ match: null, uri: "https://x.com" }], username: "site-user", password: "site-password", totp: "JBSWY3DPEHPK3PXP",
+    } });
+    expect(text).not.toMatch(/recovery@example|private-inbox-password|auth_token|PROXYPASS/);
+  } finally { s.close(); }
+});
+
 test("export as xlsx returns a workbook carrying the full identity", async () => {
   const s = store();
   const res = await handleUiRequest(

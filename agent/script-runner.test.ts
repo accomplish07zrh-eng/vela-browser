@@ -16,7 +16,7 @@ function nodeRuntime(root: string): string {
   const runner = join(root, "agent", "script-runner.mjs");
   mkdirSync(join(root, "agent"), { recursive: true });
   cpSync(nodeRunner, runner);
-  for (const file of ["devtools.mjs", "devtools-live.mjs", "devtools-sources.mjs", "devtools-dom.mjs"]) {
+  for (const file of ["devtools.mjs", "devtools-live.mjs", "devtools-sources.mjs", "devtools-dom.mjs", "form-inspection.mjs", "form-workflow.mjs", "visual-match.mjs"]) {
     cpSync(join(ROOT, file), join(root, "agent", file));
   }
   const playwright = join(root, "node_modules", "playwright-core");

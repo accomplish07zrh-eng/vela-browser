@@ -1,7 +1,7 @@
 import { normalizeProfileEngine } from "./firefox-config.ts";
 import { normalizeProfileHardware } from "./fingerprint.ts";
 import type { CookieRecord, Profile } from "./types.ts";
-import { MAX_CUSTOM_NO_LENGTH, MAX_SCREEN_DIMENSION, MIN_SCREEN_HEIGHT, MIN_SCREEN_WIDTH } from "./parse.ts";
+import { MAX_CUSTOM_NO_LENGTH, MAX_SCREEN_DIMENSION, MIN_SCREEN_HEIGHT, MIN_SCREEN_WIDTH, parseStartupUrls } from "./parse.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { normalizeProfileLocale } from "./profile-locale.ts";
 
@@ -63,6 +63,11 @@ export function assertValidProfile(value: unknown): asserts value is Profile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("profile must be an object");
   const profile = value as Record<string, unknown>;
   normalizeProfileEngine(profile.engine, profile.firefox, profile.webkit);
+  if (profile.kernelRevision !== undefined && (profile.chromiumRuntime !== "aliasmode"
+    || profile.engine === "firefox" || profile.engine === "webkit" || typeof profile.kernelRevision !== "string"
+    || !/^\d+\.\d+\.\d+\.\d+-aliasmode\.\d+$/.test(profile.kernelRevision))) {
+    throw new Error("Invalid Vela Chromium kernel revision");
+  }
   if (profile.engine === "webkit") {
     if (profile.hardware !== undefined) throw new Error("WebKit does not support hardware fingerprint overrides");
     if (Array.isArray(profile.extensions) && profile.extensions.length) throw new Error("WebKit does not support Chrome extensions");
@@ -84,6 +89,8 @@ export function assertValidProfile(value: unknown): asserts value is Profile {
   if (profile.platform !== undefined && typeof profile.platform !== "string") {
     throw new Error("profile platform must be a string");
   }
+  if (profile.remark !== undefined && typeof profile.remark !== "string") throw new Error("profile remark must be a string");
+  if (profile.startupUrls !== undefined) parseStartupUrls(profile.startupUrls);
   if (profile.proxy !== null && (typeof profile.proxy !== "object" || Array.isArray(profile.proxy))) {
     throw new Error("profile proxy must be an object or null");
   }

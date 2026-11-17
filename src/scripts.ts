@@ -9,6 +9,7 @@ import { CloudClient } from "./cloud-client.ts";
 import type { ScriptInput, ScriptLanguage, ScriptRecord, ScriptSummary, PublishedScript, PublishScriptInput, PublishedScriptsQuery, ListPublishedScriptsResponse } from "../contracts/cloud-v1.ts";
 import { resolvePlaywrightRuntime, type PlaywrightRuntimeLayout } from "./playwright-runtime.ts";
 import { PYTHON_RUNTIME_FAILED, type PythonRuntime } from "./python-runtime.ts";
+import type { ProfileWriteLease } from "./profile-writes.ts";
 
 export class ScriptError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
@@ -440,6 +441,7 @@ export class ScriptSupervisor {
         const session = new AgentControlSession(this.options, signal);
         let owned = false;
         let endpoint: string | undefined;
+        let lease: ProfileWriteLease | undefined;
         const call = async (method: string) => {
           const response = await session.enqueue(JSON.stringify({
             protocol: AGENT_CONTROL_PROTOCOL, id: 1, method,
@@ -458,6 +460,8 @@ export class ScriptSupervisor {
           }
           signal.throwIfAborted();
           this.options.library.assertScope(run.scope);
+          lease = await this.options.writes?.acquire(item.id, signal);
+          signal.throwIfAborted();
           item.status = "running";
           const opened = await call("browser.open") as { ws?: string; engine?: string; ownedByConnection: boolean };
           owned = opened.ownedByConnection;
@@ -504,7 +508,7 @@ export class ScriptSupervisor {
               await call("browser.detach").catch(() => {});
             }
           }
-          await session.disconnect();
+          try { await session.disconnect(); } finally { lease?.release(); }
           try {
             this.options.report?.({
               scriptName: run.view.scriptName, profileId: item.id, profileName: this.options.store.getProfile(item.id)?.name ?? item.name,

@@ -1,5 +1,7 @@
 /** Runs inside the existing Firefox or WebKit owner. It never creates or closes a browser context. */
 
+import { randomUUID } from "node:crypto";
+
 /**
  * Live frames through the screencast Playwright itself uses for videos and traces. It runs in the
  * browser's own compositor, so the page sees nothing: no script, no screenshot, no focus change.
@@ -132,10 +134,10 @@ export class LiveFrames {
 }
 
 export class FirefoxWorkbench {
-  constructor(context) { this.context = context; this.ids = new WeakMap(); this.nextId = 0; this.selected = undefined; this.live = new LiveFrames(); }
+  constructor(context) { this.context = context; this.ids = new WeakMap(); this.selected = undefined; this.live = new LiveFrames(); }
   pages() {
     return this.context.pages().map((page) => {
-      if (!this.ids.has(page)) this.ids.set(page, `viewport-${++this.nextId}`);
+      if (!this.ids.has(page)) this.ids.set(page, `viewport-${randomUUID()}`);
       return { page, id: this.ids.get(page) };
     });
   }

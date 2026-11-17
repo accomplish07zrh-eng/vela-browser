@@ -33,10 +33,13 @@ const DOCUMENTED_ROUTES = [
   "get /api/v1/browser/start",
   "get /api/v1/browser/stop",
   "get /api/v1/browser/active",
+  "post /api/v2/browser-profile/create",
+  "post /api/v2/browser-profile/update",
   "post /api/v2/browser-profile/list",
   "post /api/v2/browser-profile/start",
   "get /api/v2/browser-profile/active",
   "post /api/v2/browser-profile/stop",
+  "post /api/v2/browser-profile/delete",
   "post /api/v2/browser-profile/delete-cache",
   "get /api/v1/browser/cookies",
   "get /api/v1/group/list",
@@ -67,8 +70,9 @@ function schema(ref: string): any {
 function documentedDataKeys(op: any): string[] {
   let response = op.responses["200"].content["application/json"].schema;
   if (response.oneOf) response = response.oneOf[0];
-  const dataRef = schema(response.$ref).allOf.find((part: any) => part.properties?.data).properties.data.$ref;
-  return Object.keys(schema(dataRef).properties ?? {});
+  const data = schema(response.$ref).allOf.find((part: any) => part.properties?.data).properties.data;
+  const keys = (part: any) => Object.keys((part.$ref ? schema(part.$ref) : part).properties ?? {});
+  return data.oneOf ? data.oneOf.flatMap(keys) : keys(data);
 }
 
 test("OpenAPI document is 3.1 and lists the public loopback routes", () => {
@@ -79,7 +83,9 @@ test("OpenAPI document is 3.1 and lists the public loopback routes", () => {
   expect(new Set(ops.map((o) => o.op.operationId)).size).toBe(DOCUMENTED_ROUTES.length);
   for (const { path, op } of ops) {
     expect(path).not.toMatch(/\/ui\/api|\/api\/agent\/|\/api\/xactions\//);
-    expect(op["x-aliasmode-version-introduced"]).toBe(op.operationId.endsWith("V2") ? "0.1.18" : "0.1.0-beta.42");
+    const introduced = ["profileCreateV2", "profileUpdateV2", "profileDeleteV2"].includes(op.operationId) ? "0.1.19"
+      : op.operationId.endsWith("V2") ? "0.1.18" : "0.1.0-beta.42";
+    expect(op["x-aliasmode-version-introduced"]).toBe(introduced);
   }
 });
 
@@ -148,6 +154,14 @@ test("every documented operation is recognised by the real handlers with the doc
   expect((await call("userList", get(`/api/v1/user/list?page=1&page_size=100&user_sort=${sort}`))).data.list[0].user_id).toBe(id);
   expect((await call("userUpdate", post("/api/v1/user/update", { user_id: id, name: "research-01-renamed", username: "example_user" }))).code).toBe(0);
   expect((await call("userDelete", post("/api/v1/user/delete", { user_ids: [id] }))).data).toEqual({ deleted: 1, locked: [] });
+  const migrated = await call("profileCreateV2", post("/api/v2/browser-profile/create", { name: "V2 migration", group_id: "research" }));
+  expect(migrated.code).toBe(0);
+  expect((await call("profileUpdateV2", post("/api/v2/browser-profile/update", {
+    profile_id: migrated.data.profile_id, remark: "Updated",
+  }))).code).toBe(0);
+  expect((await call("profileDeleteV2", post("/api/v2/browser-profile/delete", {
+    profile_id: [migrated.data.profile_id, migrated.data.profile_id],
+  }))).data).toEqual({ deleted: 1, locked: [] });
 });
 
 test("undocumented paths are rejected by both handlers", async () => {
@@ -178,6 +192,7 @@ test("MCP catalogs list the expected tools", () => {
     "vela_guide", "vela_profile_update", "vela_scripts_list", "vela_script_read",
     "vela_script_save", "vela_script_run", "vela_script_run_status", "vela_script_stop",
     "vela_plugins_list", "vela_plugin_save", "vela_browser_task", "vela_browser_replay",
+    "vela_browser_kernel", "vela_browser_network", "vela_worker", "vela_profile_portable", "vela_android",
   ];
   expect(current.aliasModeTools.length).toBe(10 + proxyPoolTools.length + automationTools.length + DEVTOOLS_TOOLS.length);
   for (const tool of DEVTOOLS_TOOLS) expect(current.aliasModeTools.some((item: any) => item.name === tool.name)).toBe(true);

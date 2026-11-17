@@ -22,6 +22,9 @@ Vela Browser keeps many browser profiles, each with its own fingerprint, proxy, 
 
 - \`browser_click\`, \`browser_type\`, \`browser_navigate\` and the other actions already return the new page snapshot. Take \`browser_snapshot\` only to look before the first action.
 - For page structure, use \`browser_devtools_page_inspect\`. It includes the accessibility and DOM trees, form states, hidden content and open shadow roots. \`browser_devtools_pages\` lists deeply nested frames with their own ids.
+- For reusable forms, call \`browser_devtools_form_workflow\` with \`action: "inspect"\`, review its suggested stages, and draft with completion checks. Save the resulting script with \`vela_script_save\`.
+- For a short view of visible controls and alerts, call \`browser_devtools_observe\`. Pass a returned anchor to \`browser_devtools_action\` to resolve the element again after it changes.
+- For unattended work, use \`vela_browser_task\` with \`startUrl\` and a receipt verifier for each write. Use \`start_batch\` for several profiles and \`skill_save\` to reuse a completed plan on the same site. To capture the task's last minute, explicitly start \`vela_browser_replay\` with its \`runId\`.
 - Use \`browser_devtools_action\` to act by role, label, text, test id or selector. Supply a verification condition when you need to confirm visible text, element state or the expected URL after the action.
 - For custom browser automation use \`browser_devtools_program\`: run Playwright code, capture the operation's HTTP, WebSocket and console records with \`devtools.capture\`, and decode captured bodies in code with \`devtools.bytes\`.
 - Several steps in a row (fill email, fill password, press Sign in) go as one \`browser_batch\` call: up to 25 steps, in order, stopping at the first failure.
@@ -173,6 +176,9 @@ Vela Browser 里有很多浏览器环境，每个都有自己的指纹、代理�
 
 - \`browser_click\`、\`browser_type\`、\`browser_navigate\` 这些操作本身就会返回新的页面快照。只有在第一步操作之前想先看看页面，才需要单独调用 \`browser_snapshot\`。
 - 要看页面结构，调用 \`browser_devtools_page_inspect\`。结果默认带无障碍树、DOM 树、表单状态、隐藏内容和开放式 Shadow DOM。用 \`browser_devtools_pages\` 获取深层 iframe 的 ID。
+- 要复用表单流程，用 \`browser_devtools_form_workflow\` 识别字段，核对步骤并添加成功条件，再用 \`vela_script_save\` 保存生成的脚本。
+- 用 \`browser_devtools_observe\` 获取可见控件和提示。把返回的定位锚点交给 \`browser_devtools_action\`，页面重新渲染后工具会重新寻找该控件。
+- 无人值守任务用 \`vela_browser_task\`，填写 \`startUrl\`，并给写入步骤提供回执核对函数。多个环境用 \`start_batch\`，跑通后可用 \`skill_save\` 在同一站点复用流程。需要查看任务最近一分钟时，主动用 \`runId\` 开启 \`vela_browser_replay\`。
 - 用 \`browser_devtools_action\` 按角色、标签、文字、测试 ID 或选择器操作元素。需要确认结果时，随操作传入预期文字、元素状态或网址。
 - 自定义浏览器流程用 \`browser_devtools_program\`。脚本可调 Playwright，给操作加 \`devtools.capture\` 捕获请求、WebSocket 和日志，并用 \`devtools.bytes\` 直接解包捕获的响应。
 - 连续几步（填邮箱、填密码、点登录）合成一次 \`browser_batch\`：最多 25 步，按顺序执行，遇到失败就停。

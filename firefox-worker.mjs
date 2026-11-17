@@ -314,7 +314,7 @@ async function run() {
   context.on?.("page", observePage);
   const hasPages = trackFirefoxPages(context);
   const workbench = new FirefoxWorkbench(context);
-  const devtools = new BrowserDevtools(context, { engine: "firefox" });
+  const devtools = new BrowserDevtools(context, { engine: "firefox", taskTabs: () => workbench.pages() });
   const plugins = new PluginHost({ context, engine: "firefox", profileId: input.profileId, devtools, log: (msg) => process.stderr.write(`${msg}\n`) });
   // What the user downloads lands in their Downloads folder, not in Playwright's temporary one.
   keepDownloads(context);

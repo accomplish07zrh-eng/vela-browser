@@ -113,6 +113,89 @@ test("unknown verification never repeats the action, and an authoritative absenc
   await service.shutdown();
 }));
 
+test("the queue responds to capacity and isolates a blocked profile without overtaking it", async () => fixture(async root => {
+  let capacity = 0;
+  const calls: string[] = [];
+  const service = new BrowserTaskSupervisor({
+    root, capacity: () => capacity, authorize() {},
+    async open(profileId) {
+      return {
+        async bindTab() { return { generation: "first", id: profileId }; },
+        async program({ code, tabId }) {
+          expect(tabId).toBe(profileId);
+          calls.push(code);
+          if (code === "login") return { completed: true, value: { blocked: { code: "authentication_required" } } };
+          return { completed: true, value: code };
+        },
+        async close() {},
+      };
+    },
+  });
+  const start = (profileId: string, run: string) => service.start(profileId, "test", { startUrl: "https://example.test", steps: [{ id: "step", run }] });
+  const first = start("one", "login");
+  const following = start("one", "following");
+  const other = start("two", "other");
+  expect([first.state, following.state, other.state]).toEqual(["queued", "queued", "queued"]);
+  expect(calls).toEqual([]);
+  capacity = 2;
+  service.startRecovery();
+  await until(() => service.status(other.runId).state === "completed");
+  expect(service.status(first.runId)).toMatchObject({ state: "blocked", blocked: { code: "authentication_required" } });
+  expect(service.status(following.runId).state).toBe("queued");
+  expect(calls).toEqual(["login", "other"]);
+  service.stop(first.runId, "cancelled");
+  await until(() => service.status(following.runId).state === "completed");
+  expect(calls).toEqual(["login", "other", "following"]);
+  await service.shutdown();
+}));
+
+test("a desktop restart rebuilds the task tab at its checkpoint and saves a reusable site skill", async () => fixture(async root => {
+  let writes = 0, generation = "old";
+  const entered = Promise.withResolvers<void>(), lost = Promise.withResolvers<void>();
+  const targets: string[] = [];
+  const options = { root, authorize() {}, async open(): Promise<BrowserTaskConnection> {
+    return {
+      async bindTab(target) { targets.push(target.startUrl); return { id: "tab-" + generation, generation }; },
+      async program({ code, tabId, argument }) {
+        expect(tabId).toBe("tab-" + generation);
+        if (code === "commit") { writes++; entered.resolve(); await lost.promise; return { completed: false }; }
+        if (code === "receipt") return { completed: true, value: { state: "applied", value: "confirmed" } };
+        if (code === "next") expect((argument as { previous: Record<string, unknown> }).previous.commit).toBe("confirmed");
+        return { completed: true };
+      },
+      async close() {},
+    };
+  } };
+  const first = new BrowserTaskSupervisor(options);
+  const startUrl = "https://example.test/app", recoveryUrl = startUrl + "/receipt";
+  const { runId } = first.start("one", "test", {
+    startUrl, argument: { private: "original-argument" }, steps: [
+      { id: "commit", run: "commit", verify: "receipt", recoveryUrl },
+      { id: "next", run: "next", readOnly: true },
+    ],
+  });
+  await entered.promise;
+  const shutdown = first.shutdown();
+  lost.resolve();
+  await shutdown;
+  expect(first.status(runId).state).toBe("queued");
+  expect(first.status(runId).steps[0]?.state).toBe("uncertain");
+  generation = "new";
+  const second = new BrowserTaskSupervisor(options);
+  second.startRecovery();
+  await until(() => second.status(runId).state === "completed");
+  expect(targets).toEqual([startUrl, recoveryUrl]);
+  expect(writes).toBe(1);
+  const skill = second.saveSkill(runId, "test", {});
+  await second.shutdown();
+  const restored = new BrowserTaskSupervisor(options);
+  expect(restored.findSkills("test", recoveryUrl, 0, 10).skills).toEqual([skill]);
+  expect(restored.findSkills("test", startUrl + "-other", 0, 10).skills).toEqual([]);
+  expect(restored.findSkills("test", "https://www.example.test/app", 0, 10).skills).toEqual([]);
+  expect(JSON.stringify(skill)).not.toContain("original-argument");
+  await restored.shutdown();
+}));
+
 test.skipIf(process.env.GITHUB_ACTIONS !== "true" || process.platform !== "linux")(
   "Chromium integration rebinds cross-origin frames, captures live stream bytes and verifies a lost save once",
   async () => {

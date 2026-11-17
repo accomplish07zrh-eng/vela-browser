@@ -85,6 +85,40 @@ test("AdsPower V2 rejects ambiguous profile numbers and applies the automation s
   } finally { store.close(); }
 });
 
+test("V2 start prepares a driver while active reads only a cached driver", async () => {
+  const store = new ProfileStore(":memory:");
+  const [profile] = parseExport(SAMPLE).profiles;
+  const id = profile!.id;
+  store.upsertProfile(profile!);
+  const ws = "ws://127.0.0.1:9222/devtools/browser/unit";
+  const lookups: boolean[] = [];
+  const launcher = {
+    async start() {
+      store.recordLaunch({ profileId: id, pid: 1234, debugPort: 9222, startedAt: Date.now(), ws });
+      return { ws, port: 9222 };
+    },
+    certifiedActive: async () => true,
+    async chromeDriverPath(profileId: string, download: boolean) {
+      expect(profileId).toBe(id);
+      lookups.push(download);
+      return "C:\\pinned\\chromedriver.exe";
+    },
+  } as unknown as Launcher;
+  const post = (path: string) => new Request("http://localhost" + path, {
+    method: "POST", body: JSON.stringify({ profile_id: id }),
+  });
+  try {
+    const start = await handleRequest(post("/api/v2/browser-profile/start"), launcher, store);
+    const active = await handleRequest(new Request("http://localhost/api/v2/browser-profile/active?profile_id=" + id), launcher, store);
+    const fields = { ws: { puppeteer: ws, selenium: "127.0.0.1:9222" }, debug_port: "9222", webdriver: "C:\\pinned\\chromedriver.exe" };
+    expect((await start.json()).data).toEqual(fields);
+    expect((await active.json()).data).toEqual({ status: "Active", lifecycle: "running", ...fields });
+    const legacy = await handleRequest(new Request("http://localhost/api/v1/browser/start?user_id=" + id), launcher, store);
+    expect((await legacy.json()).data).toEqual({ ws: { puppeteer: ws, selenium: "" }, debug_port: "9222", webdriver: "" });
+    expect(lookups).toEqual([true, false]);
+  } finally { store.close(); }
+});
+
 interface Harness {
   store: ProfileStore;
   launcher: Launcher;

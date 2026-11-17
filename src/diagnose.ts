@@ -529,12 +529,22 @@ function loginProbe(): LoginInfo {
 async function webrtcProbe(): Promise<string[]> {
   return new Promise<string[]>((resolve) => {
     const ips = new Set<string>();
+    let pc: RTCPeerConnection | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      pc?.close();
+      resolve([...ips]);
+    };
     try {
-      const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
       pc.createDataChannel("x");
       pc.onicecandidate = (e) => {
         if (!e.candidate) {
-          resolve([...ips]);
+          finish();
           return;
         }
         const cand = e.candidate;
@@ -551,10 +561,11 @@ async function webrtcProbe(): Promise<string[]> {
         const m = s.match(/(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}(?::[0-9a-f]{1,4}){2,7})/i);
         if (m) ips.add(m[0]);
       };
-      pc.createOffer().then((o) => pc.setLocalDescription(o));
-      setTimeout(() => resolve([...ips]), 3000);
+      const connection = pc;
+      timer = setTimeout(finish, 3000);
+      connection.createOffer().then(offer => connection.setLocalDescription(offer)).catch(finish);
     } catch {
-      resolve([]);
+      finish();
     }
   });
 }
@@ -581,6 +592,7 @@ async function diagnosePageEgress(page: any, timeoutMs: number): Promise<EgressI
 export interface DiagnoseProfileOptions {
   timeoutMs?: number;
   collectLogin?: boolean;
+  networkOnly?: boolean;
 }
 
 /** Connect over CDP and collect one profile's full sample. */
@@ -598,6 +610,7 @@ export async function diagnoseOverCDP(
   }>("diagnostics", {
     endpoint: ws,
     timeoutMs,
+    networkOnly: opts.networkOnly === true,
     collectLogin: opts.collectLogin !== false,
     fingerprintScript: `(${fingerprintProbe.toString()})()`,
     webrtcScript: `(${webrtcProbe.toString()})()`,

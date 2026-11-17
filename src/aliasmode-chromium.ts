@@ -19,6 +19,8 @@ import { trackRuntimeDownload } from "./runtime-download.ts";
 // A new build changes the version, the release tag, and each target's two SHA-256 values and archive size.
 const OWN_VERSION = "155.0.8059.85";
 const OWN_RELEASE = "aliasmode.5";
+export const DEFAULT_CHROMIUM_REVISION = `${OWN_VERSION}-${OWN_RELEASE}`;
+const PREVIOUS_WINDOWS_REVISION = `${OWN_VERSION}-aliasmode.4`;
 const OWN_RELEASE_URL = `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${OWN_VERSION}-${OWN_RELEASE}`;
 const WINDOWS_BUILD = {
   root: `aliasmode-chromium-${OWN_VERSION}-windows-x64`,
@@ -72,6 +74,7 @@ function chromiumBuild(platform: NodeJS.Platform): typeof WINDOWS_BUILD {
 }
 const BUILD = chromiumBuild(process.platform);
 export const ALIASMODE_CHROMIUM_ARCHIVE_URL = BUILD.url;
+export const ALIASMODE_CHROMIUM_VERSION = OWN_VERSION;
 export const ALIASMODE_CHROMIUM_ARCHIVE_SHA256 = BUILD.archiveSha256;
 export const ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 = BUILD.executableSha256;
 /** The pinned Windows build can draw pages at the display's own scale; an earlier build must get scale 1. */
@@ -87,7 +90,7 @@ export const ALIASMODE_CHROMIUM_KEEP_ALIVE = WINDOWS_BUILD.keepAlive;
 export interface PinnedRuntime {
   label: string;
   /** The profiles that wait for it, as the dashboard matches a download to its rows. */
-  runtime: "aliasmode" | "cloakbrowser" | "webkit";
+  runtime?: "aliasmode" | "cloakbrowser" | "webkit";
   dir: string;
   url: string;
   archiveSha256: string;
@@ -97,6 +100,7 @@ export interface PinnedRuntime {
   archiveRoot: string;
   executable: string;
   executableSha256: string;
+  core?: { path: string; sha256: string };
 }
 
 function chromium155(platform: NodeJS.Platform): PinnedRuntime {
@@ -111,6 +115,26 @@ function chromium155(platform: NodeJS.Platform): PinnedRuntime {
     archiveRoot: build.root,
     executable: build.executable,
     executableSha256: build.executableSha256,
+  };
+}
+
+export function chromiumRevisions(platform: NodeJS.Platform = process.platform, arch: string = process.arch): string[] {
+  if (!supportsChromium155Host(platform, arch)) return [];
+  return platform === "win32" ? [DEFAULT_CHROMIUM_REVISION, PREVIOUS_WINDOWS_REVISION] : [DEFAULT_CHROMIUM_REVISION];
+}
+
+export function chromiumRuntimeRevision(revision: string, platform: NodeJS.Platform, arch: string): PinnedRuntime {
+  if (!chromiumRevisions(platform, arch).includes(revision)) throw new Error("This Vela Chromium revision is unavailable on this host");
+  const spec = chromium155(platform);
+  if (platform !== "win32") return spec;
+  if (revision === DEFAULT_CHROMIUM_REVISION) {
+    return { ...spec, core: { path: "chrome.dll", sha256: "b56dd6b32cdfeb295142ef7ad13d2fa14504645f968760fa8c7029a824595e95" } };
+  }
+  return {
+    ...spec, dir: "chromium-" + revision, label: "Vela Chromium " + revision,
+    url: spec.url.replace(DEFAULT_CHROMIUM_REVISION, revision),
+    archiveSha256: "cfea275e4b7f3274b701e64c0483b46cbf6cd12ead9a6cfda6ff77b2680e7a23", size: 203519527,
+    core: { path: "chrome.dll", sha256: "a8cdf152a1748f5d21d5c9ef20f8f591041fa91a026ec7f1d3a1968175031be4" },
   };
 }
 
@@ -268,10 +292,11 @@ async function run(command: string[]): Promise<void> {
  * proxy that inspects TLS works. A download that gets under 1 KB/s for a minute stops,
  * and the next attempt continues it.
  */
-async function curlDownload(url: string, output: string, platform: NodeJS.Platform): Promise<void> {
+async function curlDownload(url: string, output: string, platform: NodeJS.Platform, bounded?: number): Promise<void> {
   const child = Bun.spawn([
     platform === "win32" ? windowsSystemTool("curl.exe") : "curl", "--fail", "--location", "--silent", "--show-error",
     "--continue-at", "-", "--connect-timeout", "30", "--speed-limit", "1024", "--speed-time", "60",
+    ...(bounded === undefined ? [] : ["--max-time", "20", "--max-filesize", String(bounded)]),
     "--output", output, url,
   ], { stdout: "ignore", stderr: "ignore" });
   const code = await child.exited;
@@ -379,7 +404,9 @@ export function aliasmodeChromiumArchive(platform: NodeJS.Platform): { url: stri
 function extractCommand(url: string, file: string, directory: string, platform: NodeJS.Platform): string[] {
   if (url.endsWith(".tar.gz")) return ["tar", "-xzf", file, "-C", directory];
   if (url.endsWith(".tar.zst")) return ["tar", "--zstd", "-xf", file, "-C", directory];
-  return platform === "darwin" ? ["ditto", "-x", "-k", file, directory] : [windowsSystemTool("tar.exe"), "-xf", file, "-C", directory];
+  if (platform === "darwin") return ["ditto", "-x", "-k", file, directory];
+  if (platform === "win32") return [windowsSystemTool("tar.exe"), "-xf", file, "-C", directory];
+  return ["unzip", "-q", file, "-d", directory];
 }
 
 /** The download in progress keeps this name across attempts and app runs, so it can continue. */
@@ -414,8 +441,8 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
   const hashFile = deps.hashFile ?? sha256File;
   const target = join(root, spec.dir);
   const executable = join(target, spec.executable);
-  if (existsSync(executable) && await hashFile(executable) === spec.executableSha256) {
-    await prepareWindowsAccess(target, deps, platform);
+  if (existsSync(executable) && await hashFile(executable) === spec.executableSha256 && await verifyRuntimeCore(spec, target, hashFile)) {
+    if (spec.runtime) await prepareWindowsAccess(target, deps, platform);
     return executable;
   }
 
@@ -425,12 +452,11 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
     if (entry.startsWith(tempPrefix)) rmSync(join(root, entry), { recursive: true, force: true });
   }
   const partial = join(root, partialName(spec));
-  await trackRuntimeDownload(spec.runtime, partial, spec.size, () => downloadWithRetry(
-    spec.url,
-    partial,
-    deps.download ?? ((url, output) => curlDownload(url, output, platform)),
-    deps.sleep ?? Bun.sleep,
-  ));
+  const download = deps.download ?? ((url, output) => curlDownload(url, output, platform, spec.runtime ? undefined : spec.size));
+  if (spec.runtime) {
+    await trackRuntimeDownload(spec.runtime, partial, spec.size, () =>
+      downloadWithRetry(spec.url, partial, download, deps.sleep ?? Bun.sleep));
+  } else await download(spec.url, partial);
   if (await hashFile(partial) !== spec.archiveSha256) {
     rmSync(partial, { force: true });
     throw new Error(`${spec.label} archive did not match its pinned SHA-256`);
@@ -446,13 +472,31 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
     if (await hashFile(join(runtime, spec.executable)) !== spec.executableSha256) {
       throw new Error(`${spec.label} archive contained an unexpected executable`);
     }
+    if (!await verifyRuntimeCore(spec, runtime, hashFile)) throw new Error(`${spec.label} archive contained an unexpected native core`);
     rmSync(target, { recursive: true, force: true });
     await renameWhenUnlocked(runtime, target);
-    await prepareWindowsAccess(target, deps, platform);
+    if (spec.runtime) await prepareWindowsAccess(target, deps, platform);
     return executable;
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
+}
+
+const verifiedCores = new Map<string, string>();
+async function verifyRuntimeCore(spec: PinnedRuntime, runtime: string, hash: typeof sha256File): Promise<boolean> {
+  if (!spec.core) return true;
+  const path = join(runtime, spec.core.path);
+  try {
+    const stamp = () => {
+      const info = statSync(path);
+      return [spec.core!.sha256, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(":");
+    };
+    const before = stamp();
+    if (verifiedCores.get(path) === before) return true;
+    if (await hash(path) !== spec.core.sha256 || stamp() !== before) return false;
+    verifiedCores.set(path, before);
+    return true;
+  } catch { return false; }
 }
 
 const installing = new Map<string, Promise<string>>();
@@ -499,7 +543,8 @@ export function pruneBrowserRuntimes(root: string, inUse: readonly string[], pla
   } catch {
     return;
   }
-  const pins = [chromium155(platform), ...(cloakBrowser(platform, arch) ? [cloakBrowser(platform, arch)!] : [])];
+  const pins = [chromium155(platform), ...chromiumRevisions(platform, arch).map(revision => chromiumRuntimeRevision(revision, platform, arch)),
+    ...(cloakBrowser(platform, arch) ? [cloakBrowser(platform, arch)!] : [])];
   const keep = new Set(pins.flatMap((spec) => [spec.dir, partialName(spec)]));
   for (const entry of entries) {
     if (!/^\.?(chromium|cloakbrowser)-/.test(entry) || keep.has(entry)) continue;

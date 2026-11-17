@@ -14,13 +14,14 @@
  *   bun cli.ts install-browser     # download, verify, and pin CloakBrowser
  *   bun cli.ts install-browser --engine firefox --archive <owned-build.zip>
  *   bun cli.ts import [file|dir]   # default: import the inbox
- *   bun cli.ts serve   [--port 50400] [--headless]
+ *   bun cli.ts serve   [--port 50400] [--headless] [--worker]
  *   bun cli.ts list
  *
  * Common flags: --db <path>  --state-root <dir>  --data-root <dir>  --port <n>
  */
 
 import { parseExport, decodeText, splitRecords } from "./parse.ts";
+import { randomBytes } from "node:crypto";
 import { ProfileStore } from "./store.ts";
 import { Launcher, readSnapshotChildBounded } from "./launcher.ts";
 import { linuxChromiumSandboxBlocked } from "./aliasmode-chromium.ts";
@@ -346,6 +347,12 @@ function makeLauncher(
   dnsEnvironment?: () => import("./kernel-config.ts").KernelDnsEnvironment,
 ): Launcher {
   const unsafeCanary = has(rest, "unsafe-disable-identity-gates");
+  const debugPorts = flag(rest, "debug-port-range");
+  const range = debugPorts?.match(/^(\d{4,5})-(\d{4,5})$/);
+  const portRange = range ? { start: Number(range[1]), end: Number(range[2]) } : undefined;
+  if (has(rest, "debug-port-range") && (!portRange || portRange.start < 1024 || portRange.end > 65535 || portRange.start > portRange.end)) {
+    throw new Error("Use --debug-port-range START-END with ports between 1024 and 65535");
+  }
   const autofill = new AutofillBridge(store);
   autofill.listen();
   return new Launcher({
@@ -355,6 +362,7 @@ function makeLauncher(
     ...(chromiumRuntimeRoot ? { chromiumRuntimeRoot } : {}),
     ...(dnsEnvironment ? { dnsEnvironment } : {}),
     headless: has(rest, "headless"),
+    ...(portRange ? { portRange } : {}),
     // Explicit canary-only escape hatch for constrained test hosts where a
     // full browser identity probe cannot complete. Never enable in production.
     unsafeDisableIdentityGates: unsafeCanary,
@@ -1690,9 +1698,10 @@ async function main() {
     }
     case "serve": {
       const store = new ProfileStore(dbPath);
+      const workerMode = has(rest, "worker");
       const launcher = makeLauncher(
         store,
-        rest,
+        workerMode && !has(rest, "headless") ? [...rest, "--headless"] : rest,
         false,
         profileDataRoot,
         undefined,
@@ -1711,6 +1720,7 @@ async function main() {
         lifecycleAdmission,
         appConfig,
         paths,
+        agentNonce: workerMode ? randomBytes(32).toString("hex") : undefined,
       });
       break;
     }

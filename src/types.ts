@@ -95,6 +95,7 @@ export interface Profile {
   engine?: ProfileEngine;
   /** Chromium runtime fixed at creation: "aliasmode" is the Chromium 155 beta. */
   chromiumRuntime?: ChromiumRuntime;
+  kernelRevision?: string;
   /** Stored hardware of a CloakBrowser profile. Profiles made before it existed have none and keep the engine default. */
   hardware?: ProfileHardware;
   /**
@@ -112,6 +113,9 @@ export interface Profile {
    * Optional so existing Profile literals/fixtures stay valid; treated as "".
    */
   platform?: string;
+  /** Profile notes and initial tabs exposed by the AdsPower-compatible management API. */
+  remark?: string;
+  startupUrls?: string[];
   username: string;
   password: string;
   /** Recovery/contact email associated with the account; empty when none. */
@@ -246,12 +250,13 @@ export interface FingerprintVerdict {
 
 /** Profile fields a running browser took at launch (see LAUNCH_PERSONA_KEYS in launcher.ts). */
 export type LaunchPersona = Partial<Pick<Profile,
-  | "engine" | "chromiumRuntime" | "firefox" | "webkit" | "hardware" | "ua" | "platformOs" | "platform" | "proxy" | "proxyError"
+  | "engine" | "chromiumRuntime" | "kernelRevision" | "firefox" | "webkit" | "hardware" | "ua" | "platformOs" | "platform" | "proxy" | "proxyError"
   | "timezone" | "locale" | "screenWidth" | "screenHeight" | "displayScale" | "fingerprintSeed" | "extensions">>;
 
 /** Internal launch ownership. Only Chromium's control address is public CDP. */
 export interface LaunchInfo {
   profileId: string;
+  egressAtLaunch?: import("./geoip.ts").ExitLocation;
   engine?: ProfileEngine;
   /** Private Firefox owner authentication; never export this record to clients. */
   firefoxOwner?: import("./firefox-runtime.ts").FirefoxOwner;

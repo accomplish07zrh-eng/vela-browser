@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { ProfileStore } from "./store.ts";
 import type { Launcher } from "./launcher.ts";
-import { parseExport } from "./parse.ts";
+import { parseExport, serializeAdsTxt } from "./parse.ts";
 import { handleUserApi } from "./adspower-users.ts";
 
 const SAMPLE = `id=k1d0cd11
@@ -39,6 +39,66 @@ const post = (path: string, body: unknown) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+
+test("V2 create and update preserve launch settings, stage cookies, and return the displayed number", async () => {
+  const { store, launcher } = setup();
+  const v2 = (op: string, body: unknown) => handleUserApi(post("/api/v2/browser-profile/" + op, body), launcher, store, null, geoip)
+    .then(reply => reply!.json());
+  try {
+    const [proxy] = store.proxyPool.importText("https://1.2.3.4:8080").added;
+    const fields = {
+      name: "Migrated", group_id: "g", platform: "example.com", username: "account", password: "secret",
+      remark: "Migration\nnote", tabs: ["https://example.com/dashboard"], proxyid: proxy!.id,
+      cookie: JSON.stringify([{ name: "session", domain: ".example.com", path: "/", value: "first" }]),
+      fingerprint_config: { screen_resolution: "1920_1080", automatic_timezone: "0", timezone: "Europe/Paris",
+        language_switch: "0", language: ["fr-FR", "fr"] },
+    };
+    const created = await v2("create", fields);
+    expect(created.code).toBe(0);
+    const id = created.data.profile_id as string;
+    expect(created.data.profile_no).toBe(String(store.getSerial(id)));
+    expect(store.getProfile(id)).toMatchObject({
+      remark: fields.remark, platform: fields.platform, startupUrls: fields.tabs, proxy: proxy!.proxy,
+      screenWidth: 1920, screenHeight: 1080, timezone: "Europe/Paris", timezoneManual: true, locale: "fr-FR",
+      cookies: [{ name: "session", value: "first" }],
+    });
+    const exported = parseExport(serializeAdsTxt([store.getProfile(id)!])).profiles[0];
+    expect(exported).toMatchObject({ remark: fields.remark, startupUrls: fields.tabs });
+    const duplicate = await v2("create", { ...fields, repeat_config: [2, 3] });
+    expect(duplicate).toMatchObject({ code: -1, msg: "A matching profile already exists" });
+
+    expect((await v2("update", {
+      profile_id: id, remark: "", tabs: [], fingerprint_config: { automatic_timezone: "1", language_switch: "1" },
+      cookie: "bad row\n.example.com\tTRUE\t/\tFALSE\t0\tsession\tsecond",
+      ignore_cookie_error: "1",
+    })).code).toBe(0);
+    const saved = store.getProfile(id)!;
+    expect([saved.remark, saved.startupUrls, saved.timezoneManual]).toEqual([undefined, undefined, undefined]);
+    expect(saved).toMatchObject({ username: "account", timezone: "America/New_York", locale: "en-US" });
+    expect(store.getPendingCookies(id)).toMatchObject([{ name: "session", value: "second" }]);
+  } finally { store.close(); }
+});
+
+test("V2 update validates all supplied fields and respects folder scope before saving", async () => {
+  const { store, launcher } = setup();
+  const id = "k1d0cd11";
+  const scope = { allowsGroup: (group: string) => group === "g", allowsProfile: (value: string) => id === value };
+  try {
+    for (const fields of [
+      { group_id: "private" },
+      { tabs: ["file:///private.txt"] },
+      { cookie: "malformed cookies" },
+      { proxyid: "missing" },
+    ]) {
+      const response = await handleUserApi(post("/api/v2/browser-profile/update", {
+        profile_id: id, name: "should not save", ...fields,
+      }), launcher, store, null, geoip, null, scope);
+      expect((await response!.json()).code).toBe(-1);
+      expect(store.getProfile(id)?.name).toBe("acct");
+      expect(store.getPendingCookies(id)).toEqual([]);
+    }
+  } finally { store.close(); }
+});
 
 test("group/list returns distinct labels as id==name", async () => {
   const { store, launcher } = setup();

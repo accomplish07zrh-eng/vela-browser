@@ -1,5 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ActivityLog } from "./cooling.ts";
+import type { ProfileWriteLease, ProfileWrites } from "./profile-writes.ts";
 import type { Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { LaunchInfo } from "./types.ts";
@@ -114,6 +115,7 @@ export class WorkbenchHub {
     adapter?: (launch: LaunchInfo) => WorkbenchAdapter;
     /** Input and focus here count as the user working in that browser, so it is never cooled meanwhile. */
     activity?: ActivityLog;
+    writes?: ProfileWrites;
   }) {}
   // Polled frames are scaled to their card, so more of them can be in flight at once.
   acquireFrame(): boolean { if (this.captures >= 6) return false; this.captures++; return true; }
@@ -179,6 +181,7 @@ export class WorkbenchConnection {
   private pointer?: Extract<WorkbenchInput, { kind: "pointer" }>;
   private tabsSignature = "";
   private releaseFocus?: () => void;
+  private inputLease?: ProfileWriteLease;
   /** Device-pixel width of the card, so frames arrive at the size they are shown. */
   private frameWidth?: number;
   private streamKey = "";
@@ -285,26 +288,43 @@ export class WorkbenchConnection {
     }
     if (message.action === "input") {
       if ((!this.visible && !this.following) || message.targetId !== this.targetId || !validWorkbenchInput(message.input)) return;
+      const writes = this.hub.options.writes;
+      this.inputLease ??= writes?.tryAcquire(this.profileId);
+      if (writes && !this.inputLease) return;
       const input: WorkbenchInput = message.input;
       this.hub.options.activity?.touch(this.profileId);
       if (input.kind === "key") { if (input.event === "down") this.keys.set(input.code, input); else this.keys.delete(input.code); }
       if (input.kind === "pointer") this.pointer = input.buttons ? input : undefined;
       const recorded = this.recording?.steps.length;
       if (this.recording) await this.record(input);
-      await this.adapter.input(input);
+      try { await this.adapter.input(input); }
+      catch (error) { await this.releaseInput(); throw error; }
+      finally {
+        if (!this.keys.size && !this.pointer) {
+          this.inputLease?.release();
+          this.inputLease = undefined;
+        }
+      }
       if (this.recording && this.recording.steps.length !== recorded) this.send({ type: "recording", on: true, steps: this.recording.steps.length });
       return;
     }
     if (!["refresh", "select", "new", "close"].includes(message.action)) return;
     if (message.action !== "refresh") { await this.releaseInput(); this.hub.options.activity?.touch(this.profileId); }
-    if (message.action === "new") { const id = await this.adapter.newTab(); await this.adapter.select(id); this.targetId = id; }
-    if (message.action === "select") {
-      if (typeof message.targetId !== "string") return;
-      await this.adapter.select(message.targetId); this.targetId = message.targetId;
-    }
-    if (message.action === "close") {
-      if (typeof message.targetId !== "string") return;
-      await this.adapter.closeTab(message.targetId);
+    const writes = message.action !== "refresh" ? this.hub.options.writes : undefined;
+    const lease = writes?.tryAcquire(this.profileId);
+    if (writes && !lease) return;
+    try {
+      if (message.action === "new") { const id = await this.adapter.newTab(); await this.adapter.select(id); this.targetId = id; }
+      if (message.action === "select") {
+        if (typeof message.targetId !== "string") return;
+        await this.adapter.select(message.targetId); this.targetId = message.targetId;
+      }
+      if (message.action === "close") {
+        if (typeof message.targetId !== "string") return;
+        await this.adapter.closeTab(message.targetId);
+      }
+    } finally {
+      lease?.release();
     }
     const tabs = await this.adapter.tabs();
     if (!tabs.length) { this.targetId = ""; this.send({ type: "tabs", tabs, targetId: "" }); return; }
@@ -403,6 +423,8 @@ export class WorkbenchConnection {
     this.keys.clear();
     if (this.pointer) await this.adapter.input({ ...this.pointer, event: "up", buttons: 0 }).catch(() => {});
     this.pointer = undefined;
+    this.inputLease?.release();
+    this.inputLease = undefined;
   }
   async dispose(): Promise<void> {
     if (this.disposed) return;

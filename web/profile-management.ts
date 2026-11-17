@@ -17,6 +17,15 @@ export interface ProfileTemplate { id: string; name: string; settings: ProfileTe
 export const MAX_SAVED_PROFILE_ITEMS = 24;
 export const MAX_BATCH_CREATE = 100;
 
+/** Each freed slot can take its next profile independently of the other slots. */
+export async function runProfilePool<T>(items: readonly T[], concurrency: number, run: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await run(items[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+}
+
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown, max = 256) => typeof value === "string" ? value.slice(0, max) : "";
 

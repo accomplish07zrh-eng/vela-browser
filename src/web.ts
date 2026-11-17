@@ -7,7 +7,7 @@
  */
 
 import { join } from "node:path";
-import { availableParallelism } from "node:os";
+import { availableParallelism, cpus } from "node:os";
 import { TaskbarMode, taskbarModeSupported } from "./taskbar.ts";
 import { ActivityLog, COOLING_DEFAULTS, CoolingMonitor, launchBatchSize, readMemory } from "./cooling.ts";
 import { drainPoolTasks } from "./proxy-pool-api.ts";
@@ -31,6 +31,12 @@ import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { TaskRunner, TaskStore } from "./tasks.ts";
 import { BrowserTaskError, BrowserTaskSupervisor, type BrowserTaskConnection } from "./browser-tasks.ts";
+import { ProfileWrites } from "./profile-writes.ts";
+import { KernelUpgrades } from "./kernel-upgrades.ts";
+import { AndroidDevices } from "./android.ts";
+import { MAX_PORTABLE_BYTES, PortableProfiles } from "./portable-profiles.ts";
+import { WORKER_PATH, WorkerNodes } from "./worker-nodes.ts";
+import { NetworkIdentity } from "./network-identity.ts";
 import { AuditLog } from "./audit.ts";
 import { backupSessions, SnapshotStore } from "./snapshots.ts";
 import { setTunBypass } from "./egress-binding.ts";
@@ -41,7 +47,7 @@ import { IpScoreCache } from "./ip-score.ts";
 import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { pluginsDirectory, scanPlugins } from "./plugins.ts";
-import { WorkbenchHub, WORKBENCH_PATH, WORKBENCH_PROTOCOL, validWorkbenchAuthorization, type WorkbenchConnection } from "./workbench.ts";
+import { WorkbenchHub, WORKBENCH_PATH, WORKBENCH_PROTOCOL, validWorkbenchAuthorization, workbenchGeneration, type WorkbenchConnection } from "./workbench.ts";
 import { BROWSER_REPLAY_PATH, BrowserReplay } from "./browser-replay.ts";
 import { browserReplayView } from "./browser-replay-view.ts";
 
@@ -254,6 +260,27 @@ function lifecycleAdmission(options?: LifecycleAdmissionOptions): LifecycleAdmis
   });
 }
 
+function browserTaskCapacity() {
+  const processors = availableParallelism();
+  const cpuTimes = () => cpus().reduce((sample, { times }) => ({
+    idle: sample.idle + times.idle,
+    total: sample.total + times.user + times.nice + times.sys + times.idle + times.irq,
+  }), { idle: 0, total: 0 });
+  let previous = cpuTimes(), sampledAt = -Infinity, capacity = 1;
+  return () => {
+    const now = performance.now();
+    if (now - sampledAt < 1000) return capacity;
+    const cpu = cpuTimes(), memory = readMemory(), elapsed = cpu.total - previous.total;
+    const idleRatio = elapsed > 0 ? (cpu.idle - previous.idle) / elapsed : 1;
+    const cpuBudget = Math.max(1, Math.floor(processors * idleRatio));
+    capacity = memory.available < Math.min(768 * 1024 * 1024, memory.total * 0.1)
+      ? 0 : launchBatchSize(memory, cpuBudget);
+    previous = cpu;
+    sampledAt = now;
+    return capacity;
+  };
+}
+
 export function serveAutomationApi(opts: Omit<DashboardServerOptions, "hostname">) {
   const { port = 50400 } = opts;
   const hostname = "127.0.0.1";
@@ -308,8 +335,19 @@ export function serveDashboard(opts: DashboardServerOptions) {
   }) : undefined;
   taskbarMode?.start();
   const activity = new ActivityLog();
+  const writes = new ProfileWrites();
+  const networkIdentity = agentNonce && !opts.remote ? new NetworkIdentity({ launcher, store, writes, admission, log }) : undefined;
+  networkIdentity?.start(Number(process.env.ALIASMODE_EGRESS_RECHECK_SECONDS ?? 0) * 1000, process.env.ALIASMODE_REFRESH_EGRESS === "1");
+  const adb = agentNonce && !opts.remote ? process.env.ALIASMODE_ADB_PATH || Bun.which("adb") : undefined;
+  const android = adb ? new AndroidDevices(writes, adb,
+    process.env.ALIASMODE_ANDROID_SERIALS ? new Set(process.env.ALIASMODE_ANDROID_SERIALS.split(",").map(value => value.trim()).filter(Boolean)) : undefined)
+    : undefined;
+  const kernels = agentNonce && opts.paths && !opts.remote
+    ? new KernelUpgrades({ root: join(opts.paths.root, "kernel-upgrades"), launcher, store, admission, writes, log })
+    : undefined;
+  kernels?.recover();
   const workbenchHub = agentNonce ? new WorkbenchHub({
-    launcher, store, activity,
+    launcher, store, activity, writes,
     canControl: async (id) => {
 
       if (opts.remote) {
@@ -364,7 +402,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const scripts = library && agentNonce ? {
     library, nonce: agentNonce, python,
     runner: new ScriptSupervisor({
-      root: opts.paths!.root, library, launcher, store, admission, python,
+      root: opts.paths!.root, library, launcher, store, admission, python, writes,
       remote: opts.remote,   log,
       report: (entry) => audit?.record({
         actor: { kind: "script", name: entry.scriptName }, action: "script.run", ok: entry.ok,
@@ -374,17 +412,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
       }),
     }),
   } : undefined;
-  // Saved scripts in order over chosen profiles, by hand or on a schedule; one run at a time.
-  const tasks = scripts && opts.paths && !opts.remote ? new TaskRunner({
-    store: new TaskStore(join(opts.paths.root, "tasks.json")),
-    runner: scripts.runner,
-    resolveProfiles: (target) => store.listProfiles().filter((profile) => target.profileIds?.includes(profile.id)
-      || target.groups?.includes(profile.group || "")
-      || (profile.tags ?? []).some((tag) => target.tags?.includes(tag))).map((profile) => profile.id),
-    scriptName: async (id) => (await scripts.library.get(id)).name,
-    log,
-  }) : undefined;
-  tasks?.start();
+  let tasks: TaskRunner | undefined;
   // Phone mode of the phone app: browser windows narrowed to a phone's width, and their old sizes.
   const phoneWindows = new PhoneWindows();
   // Watching from a phone: its own read-only listener, started only when turned on in Settings.
@@ -458,12 +486,16 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const aiAccess = () => opts.appConfig?.read().aiAccess;
   const browserTasks = agentNonce && opts.paths && !opts.remote ? new BrowserTaskSupervisor({
     root: join(opts.paths.root, "browser-tasks"),
-    authorize(profileId, client) {
+    capacity: browserTaskCapacity(),
+    writes,
+    authorize(profileId, client, savedGroup) {
       const profile = store.getProfile(profileId);
-      if (!profile) throw new BrowserTaskError("no_such_profile", "The browser task profile was not found", 404);
-      if (!allowsGroup(ruleFor(aiAccess(), client), profile.group ?? "", store.listFolders())) {
+      if (!profile && savedGroup === undefined) throw new BrowserTaskError("no_such_profile", "The browser task profile was not found", 404);
+      const group = profile ? profile.group ?? "" : savedGroup!;
+      if (!allowsGroup(ruleFor(aiAccess(), client), group, store.listFolders())) {
         throw new BrowserTaskError("not_permitted", "This AI may not use the profile's group", 403);
       }
+      return group;
     },
     async open(profileId, client) {
       const session = new AgentControlSession({ launcher, store, admission, aiAccess, activity, log });
@@ -475,13 +507,41 @@ export function serveDashboard(opts: DashboardServerOptions) {
       try {
         await call("session.identify", { name: client });
         const opened = await call("browser.open", { profileId });
-        const endpoint = store.getLaunch(profileId)?.ws;
-        if (!endpoint) throw new BrowserTaskError("browser_not_running", "The task browser did not expose its control endpoint");
+        const launch = store.getLaunch(profileId);
+        if (!launch?.ws) throw new BrowserTaskError("browser_not_running", "The task browser did not expose its control endpoint");
+        const endpoint = launch.ws, generation = workbenchGeneration(launch);
         if (opened.ownedByConnection) await call("browser.detach", { profileId });
+        const current = () => {
+          const active = store.getLaunch(profileId);
+          return !!active && workbenchGeneration(active) === generation;
+        };
+        const run = async <T>(input: object, timeoutMs: number): Promise<T> => {
+          if (!current()) throw new BrowserTaskError("browser_changed", "The task browser closed or restarted");
+          try {
+            return await runPlaywrightWorker<T>("devtools-program", { ...input, endpoint }, { timeoutMs });
+          } catch (error) {
+            if (!current() || !(await launcher.certifiedActive(profileId).catch(() => false))) {
+              throw new BrowserTaskError("browser_disconnected", "The task browser disconnected while executing a program");
+            }
+            throw error;
+          }
+        };
         const connection: BrowserTaskConnection = {
           async program(input) {
-            if (store.getLaunch(profileId)?.ws !== endpoint) throw new BrowserTaskError("browser_changed", "The task browser closed or restarted");
-            return await runPlaywrightWorker("devtools-program", { ...input, endpoint }, { timeoutMs: input.timeoutMs });
+            const receipt = await run<Awaited<ReturnType<BrowserTaskConnection["program"]>>>(input, input.timeoutMs);
+            if (input.tabId && !receipt.completed && !receipt.fault
+              && (!current() || !(await launcher.certifiedActive(profileId).catch(() => false)))) {
+              return { ...receipt, fault: "browser_disconnected" };
+            }
+            return receipt;
+          },
+          async bindTab(target, previous) {
+            const id = previous ? (!previous.lost && previous.generation === generation ? previous.id : undefined) : target.tabId;
+            const binding = await run<{ id?: string; fault?: string; error?: string }>({
+              taskTab: { id, startUrl: target.startUrl, allowCreate: !!previous || !id },
+            }, 65_000);
+            if (!binding.id) throw new BrowserTaskError(binding.fault ?? "operation_failed", binding.error ?? "The task tab could not be bound");
+            return { id: binding.id, generation };
           },
           close: () => session.disconnect(),
         };
@@ -494,6 +554,25 @@ export function serveDashboard(opts: DashboardServerOptions) {
     hold: (profileId) => activity.hold(profileId),
     log,
   }) : undefined;
+  const portable = browserTasks && opts.paths
+    ? new PortableProfiles({ root: join(opts.paths.root, "portable-profiles"), store, launcher, writes, admission })
+    : undefined;
+  const workers = browserTasks && opts.paths && portable
+    ? new WorkerNodes({ config: join(opts.paths.root, "worker-nodes.json"), store, tasks: browserTasks, portable })
+    : undefined;
+  if (scripts && opts.paths && !opts.remote) {
+    tasks = new TaskRunner({
+      store: new TaskStore(join(opts.paths.root, "tasks.json")),
+      runner: scripts.runner,
+      browserTasks,
+      resolveProfiles: target => store.listProfiles().filter(profile => target.profileIds?.includes(profile.id)
+        || target.groups?.includes(profile.group || "")
+        || (profile.tags ?? []).some(tag => target.tags?.includes(tag))).map(profile => profile.id),
+      scriptName: async id => (await scripts.library.get(id)).name,
+      log,
+    });
+    tasks.start();
+  }
   const agentHub = agentNonce
     ? new AgentControlHub({
         launcher,
@@ -501,6 +580,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
         admission,
         remote: opts.remote,
         activity,
+        writes,
         // Plugins are code on this computer; a remotely coordinated runtime offers none.
         ...(opts.paths && !opts.remote ? { plugins: () => scanPlugins(pluginsDirectory(opts.paths!.root), opts.appConfig?.read().disabledPlugins ?? []).specs } : {}),
         // The AI's pointer in a Chromium browser, drawn over that browser's card.
@@ -510,6 +590,12 @@ export function serveDashboard(opts: DashboardServerOptions) {
         aiProxyPolicy,
         ...(scripts ? { scripts: { library: scripts.library, runner: scripts.runner } } : {}),
         browserTasks,
+        taskSchedules: tasks,
+        kernels,
+        android,
+        portable,
+        workers,
+        networkIdentity,
         ...(opts.paths && !opts.remote ? { pluginsRoot: pluginsDirectory(opts.paths.root) } : {}),
         codeApprovals,
         aiCodePolicy,
@@ -524,7 +610,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const cooling = agentNonce && opts.appConfig && !opts.remote ? new CoolingMonitor({
     settings: () => { try { return opts.appConfig!.read().cooling ?? COOLING_DEFAULTS; } catch { return COOLING_DEFAULTS; } },
     running: () => store.listLaunches().map((launch) => ({ profileId: launch.profileId, startedAt: launch.startedAt ?? 0 })),
-    busy: (id) => activity.held(id) || !!agentHub?.holds(id)
+    busy: (id) => writes.busy(id) || activity.held(id) || !!agentHub?.holds(id)
       || !!scripts?.runner.status()?.profiles.some((profile) => profile.id === id && !finished.has(profile.status)),
     lastActive: (id) => activity.lastActive(id),
     cool: async (id) => {
@@ -551,6 +637,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const server = Bun.serve<AgentSocketData>({
     port,
     hostname,
+    ...(workers ? { maxRequestBodySize: MAX_PORTABLE_BYTES } : {}),
     // Queue wait plus a complete remote restore can legitimately hold a lifecycle
     // response for several minutes while the shared transition cap does its job.
     idleTimeout: 240,
@@ -588,6 +675,10 @@ export function serveDashboard(opts: DashboardServerOptions) {
       const deniedHost = loopbackHostGuard(req, hostname);
       if (deniedHost) return deniedHost;
       const reqUrl = new URL(req.url);
+      if (reqUrl.pathname === WORKER_PATH + "/tasks" || reqUrl.pathname === WORKER_PATH + "/handoff") {
+        if (!workers) return new Response(null, { status: 404 });
+        return workers.serve(req, reqUrl.pathname);
+      }
       if (reqUrl.pathname === BROWSER_REPLAY_PATH || reqUrl.pathname.startsWith(BROWSER_REPLAY_PATH + "/")) {
         if (!replay || !isAllowedLoopbackHostHeader(req.headers.get("host")) || !isLoopbackAddress(server.requestIP(req)?.address)) {
           return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
@@ -672,17 +763,21 @@ export function serveDashboard(opts: DashboardServerOptions) {
     },
   });
   void agentHub?.cleanupTemporaryProfiles();
+  browserTasks?.startRecovery();
   log(`dashboard + API on http://${hostname}:${server.port}  (UI at /, Vela Local API under /api; AdsPower-compatible)`);
   const stopServer = server.stop.bind(server);
   return Object.assign(server, {
     async stop(closeActiveConnections?: boolean) {
       replay?.close();
       cooling?.stop();
+      tasks?.stop();
+      networkIdentity?.stop();
       clearInterval(backupTimer); clearTimeout(firstBackup);
       mobileView?.stop();
       taskbarMode?.stop();
       shutdownController.abort();
       await Promise.allSettled([
+        browserTasks?.shutdown() ?? Promise.resolve(),
         subscriptionScheduler?.stop() ?? Promise.resolve(),
         drainPoolTasks(store),
       ]);

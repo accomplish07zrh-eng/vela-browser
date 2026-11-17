@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   EMPTY_PROFILE_FILTERS, MAX_SAVED_PROFILE_ITEMS, batchProfileNames, managementStorageKey,
-  matchesProfileFilters, parseManagementItems, profileTemplateSettings, runProfileCreation, serializeManagementItems,
+  matchesProfileFilters, parseManagementItems, profileTemplateSettings, runProfileCreation, runProfilePool, serializeManagementItems,
   type BatchCreateItem,
 } from "./profile-management.ts";
 import type { UiProfile } from "./api.ts";
@@ -11,6 +11,24 @@ const profile = (set: Partial<UiProfile> = {}): UiProfile => ({
   proxy: null, timezone: "UTC", cookieCount: 0, seeded: false, screen: "1920x1080", has2fa: false, running: false, ...set,
 });
 const queue = (names = ["A", "B", "C"]): BatchCreateItem[] => names.map((name) => ({ input: { name, engine: "firefox" }, state: "queued" }));
+
+test("a freed browser slot admits the next profile while another launch is still pending", async () => {
+  const slow = Promise.withResolvers<void>();
+  const third = Promise.withResolvers<void>();
+  const launched: string[] = [];
+  const all = runProfilePool(["slow", "fast", "next"], 2, async id => {
+    launched.push(id);
+    if (id === "slow") await slow.promise;
+    if (id === "next") third.resolve();
+  });
+  try {
+    await third.promise;
+    expect(launched).toEqual(["slow", "fast", "next"]);
+  } finally {
+    slow.resolve();
+    await all;
+  }
+});
 
 test("profile filters intersect status, engine, exact tag, and the searchable identity", () => {
   const filters = { ...EMPTY_PROFILE_FILTERS, query: " north ", engine: "firefox" as const, status: "running" as const, tag: "Review" };

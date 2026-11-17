@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.18",
+  "aliasModeVersion": "0.1.19",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -252,7 +252,7 @@
     },
     {
       "name": "vela_browser_replay",
-      "description": "Record a browser tab in memory and replay up to the previous 60 seconds. Use tabs to find a tabId, start before the action, play to get timestamped images and a local playback link, or stop to erase the recording. Play accepts a time range in seconds ago. Recording starts on request, stops taking frames after durationSeconds, and expires frame by frame.",
+      "description": "Record a browser tab in memory and replay up to the previous 60 seconds. Use tabs to find a tabId, or use runId for a task's bound tab. Start before the action, play to get timestamped images and a local playback link, or stop to erase the recording. Play accepts a time range in seconds ago. Recording starts on request, stops taking frames after durationSeconds, and expires frame by frame.",
       "annotations": {
         "title": "Replay a Vela Browser tab",
         "readOnlyHint": false,
@@ -279,6 +279,10 @@
           "tabId": {
             "type": "string",
             "description": "For start. Use the tabId from tabs when multiple tabs are open."
+          },
+          "runId": {
+            "type": "string",
+            "description": "Use a durable task's bound profile and tab instead of profileId and tabId."
           },
           "durationSeconds": {
             "type": "integer",
@@ -747,8 +751,230 @@
       }
     },
     {
+      "name": "vela_browser_network",
+      "description": "Measure a live profile's proxy egress, timezone and public WebRTC candidates against its launch identity. Set refresh to reconnect after the same observed drift is confirmed twice.",
+      "annotations": {
+        "title": "Check browser network identity",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "refresh": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profileId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_worker",
+      "description": "Dispatch durable browser tasks to configured self-hosted Vela workers or hand off an encrypted profile. Retry a handoff with the same idempotency key. The source stays closed after handing off.",
+      "annotations": {
+        "title": "Use a self-hosted Vela worker",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "list",
+              "task",
+              "handoff"
+            ]
+          },
+          "node": {
+            "type": "string"
+          },
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "request": {
+            "type": "object",
+            "description": "A worker task request with operation start, status, resume, or cancel.",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_profile_portable",
+      "description": "Create or restore an encrypted portable profile in the desktop portable-profiles folder. Export can preserve native site storage, bookmarks and extension state. Handoff keeps the source closed for adoption on another computer.",
+      "annotations": {
+        "title": "Transfer an encrypted Vela profile",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "export",
+              "restore"
+            ]
+          },
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "description": "A .vela-profile file name in the desktop portable-profiles folder."
+          },
+          "passphrase": {
+            "type": "string",
+            "minLength": 12
+          },
+          "handoff": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation",
+          "passphrase"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_android",
+      "description": "Use native Android apps on an authorized ADB device. List serials, launch an installed package, inspect visible controls, send input, or capture a PNG in memory.",
+      "annotations": {
+        "title": "Manage an Android device",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "devices",
+              "launch",
+              "observe",
+              "screenshot",
+              "tap",
+              "swipe",
+              "key",
+              "text"
+            ]
+          },
+          "serial": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "enum": [
+              "back",
+              "home",
+              "enter",
+              "delete",
+              "recent"
+            ]
+          },
+          "x": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "toX": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "toY": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "vela_browser_kernel",
+      "description": "List verified Vela Chromium builds, inspect a profile's pin, or switch and test its kernel. upgrade_batch rolls out to an explicit cohort and stops on the first failure. Rollback restores the prior version and its native snapshot.",
+      "annotations": {
+        "title": "Manage a Vela Chromium kernel",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "list",
+              "status",
+              "upgrade",
+              "upgrade_batch",
+              "rollback"
+            ]
+          },
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "profileIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "vela_browser_task",
-      "description": "Run durable JavaScript steps in a Vela Browser profile, independently of this connection. Start returns a runId immediately. Supply a stable idempotencyKey to recover a lost start reply. On resume, an uncertain step's verifier returns {state: 'applied' | 'absent' | 'unknown', value}; absent means the original write cannot still commit. See status and evidence for the action and verification receipts.",
+      "description": "Run durable JavaScript steps independently of this MCP connection. Set startUrl to bind a task tab, queue by profile, and automatically recover from browser loss. start_batch shares a plan across 1–100 runs. Supply stable idempotency keys. Verifiers return {state: 'applied' | 'absent' | 'unknown', value}; absent certifies the original write cannot still commit. Return {blocked: {code, message}} before issuing a write to suspend that profile's queue. Use skill_save on a completed run and skill_find with the site's URL to reuse it via skillId.",
       "annotations": {
         "title": "Manage a durable browser task",
         "readOnlyHint": false,
@@ -762,12 +988,19 @@
             "type": "string",
             "enum": [
               "start",
+              "start_batch",
               "list",
               "status",
               "resume",
               "pause",
               "cancel",
-              "evidence"
+              "evidence",
+              "skill_save",
+              "skill_find",
+              "schedule_save",
+              "schedule_list",
+              "schedule_run",
+              "schedule_delete"
             ]
           },
           "profileId": {
@@ -787,6 +1020,49 @@
             "type": "boolean"
           },
           "argument": {},
+          "unattended": {
+            "type": "boolean",
+            "description": "Enable queued, checkpointed recovery. Requires startUrl."
+          },
+          "startUrl": {
+            "type": "string",
+            "description": "Safe HTTP(S) GET entry point for a new or rebuilt task tab. Supplying it enables unattended execution."
+          },
+          "tabId": {
+            "type": "string",
+            "description": "Optionally bind an existing tab from vela_browser_replay tabs. Still provide startUrl for recovery."
+          },
+          "runs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "properties": {
+                "profileId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "name": {
+                  "type": "string"
+                },
+                "argument": {},
+                "idempotencyKey": {
+                  "type": "string"
+                },
+                "startUrl": {
+                  "type": "string"
+                },
+                "tabId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "profileId"
+              ],
+              "additionalProperties": false
+            }
+          },
           "steps": {
             "type": "array",
             "items": {
@@ -807,11 +1083,19 @@
                 },
                 "pageUrl": {
                   "type": "string",
-                  "description": "Wait for a uniquely matching page with this exact URL before running the step."
+                  "description": "Wait for this exact URL in the bound tab before executing the step."
                 },
                 "frameUrl": {
                   "type": "string",
                   "description": "Wait for a uniquely matching iframe with this exact URL at any depth."
+                },
+                "readOnly": {
+                  "type": "boolean",
+                  "description": "Certify the step has no site write so it can be retried after losing its browser."
+                },
+                "recoveryUrl": {
+                  "type": "string",
+                  "description": "Optional safe HTTP(S) GET entry point when rebuilding the tab at this checkpoint."
                 }
               },
               "required": [
@@ -820,6 +1104,80 @@
               ],
               "additionalProperties": false
             }
+          },
+          "skillId": {
+            "type": "string",
+            "description": "Use a completed site's saved plan in start or start_batch. Supply this run's argument."
+          },
+          "scheduleId": {
+            "type": "string",
+            "description": "A saved schedule ID for editing, dispatch or deletion."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable automatic dispatch of a saved skill schedule."
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "profileIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "schedule": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manual",
+                  "daily",
+                  "interval"
+                ]
+              },
+              "time": {
+                "type": "string",
+                "description": "Daily local time HH:MM."
+              },
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 6
+                }
+              },
+              "minutes": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          "url": {
+            "type": "string",
+            "description": "For skill_find, a page URL. For skill_save, the site and path prefix to match, defaulting to the task's startUrl."
           },
           "verify": {
             "type": "string",
@@ -1613,6 +1971,293 @@
       }
     },
     {
+      "name": "browser_devtools_form_workflow",
+      "description": "Inspect visible form fields and controls in the selected page or frame without reading filled values. Draft combines reviewed stages into a reusable Vela script and, when possible, a durable task. Submitting stages require an explicit success condition. Use exampleInputs to generate synthetic rehearsal data.",
+      "annotations": {
+        "title": "Browser form workflow",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "inspect",
+              "draft"
+            ]
+          },
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000,
+            "default": 5000
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "stages": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "pageUrl": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "frameUrl": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "frameName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "fields": {
+                  "type": "array",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "input": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "selector": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      },
+                      "action": {
+                        "type": "string",
+                        "enum": [
+                          "fill",
+                          "type",
+                          "select",
+                          "check"
+                        ]
+                      },
+                      "required": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "input",
+                      "selector",
+                      "action"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "submit": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "verify": {
+                  "type": "object",
+                  "properties": {
+                    "pageUrl": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    },
+                    "selector": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "code": {
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "pageUrl": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    },
+                    "selector": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "digits": {
+                      "type": "integer",
+                      "minimum": 4,
+                      "maximum": 10
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "minimum": 1000,
+                      "maximum": 120000
+                    }
+                  },
+                  "required": [
+                    "input",
+                    "pageUrl",
+                    "selector"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "pageUrl",
+                "fields"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "exampleInputs": {
+            "type": "boolean"
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_visual_match",
+      "description": "Locate a reference image at the same CSS-pixel scale in a visible area, including canvas interfaces. Supply a reference rectangle from this page or a base64 PNG. Returns candidates and ambiguity in viewport coordinates without clicking or saving screenshots.",
+      "annotations": {
+        "title": "Browser visual match",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "region": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "y": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 4
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 4
+              }
+            },
+            "required": [
+              "x",
+              "y",
+              "width",
+              "height"
+            ],
+            "additionalProperties": false
+          },
+          "reference": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "y": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 4
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 4
+              }
+            },
+            "required": [
+              "x",
+              "y",
+              "width",
+              "height"
+            ],
+            "additionalProperties": false
+          },
+          "templatePng": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000,
+            "default": 5000
+          },
+          "tolerance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.15,
+            "default": 0.04
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
+        "required": [
+          "region"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "browser_devtools_dom_delta",
       "description": "Capture a scoped DOM snapshot or compare it with baselineId. Includes hidden nodes, form values, comments, templates and open shadow roots. Read a frozen result by snapshotId and offset to page through changes while the live DOM keeps rendering.",
       "annotations": {
@@ -1672,6 +2317,48 @@
         "required": [
           "action"
         ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_observe",
+      "description": "Read a compact view of visible controls, headings, dialogs and alerts in the selected frame. Controls include portable anchors for browser_devtools_action when a locator can be inferred. No form values are collected.",
+      "annotations": {
+        "title": "Browser observe",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "frameId": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 40,
+            "default": 16
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000,
+            "default": 5000
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
         "additionalProperties": false
       }
     },

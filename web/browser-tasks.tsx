@@ -3,7 +3,8 @@ import { changeBrowserTask, fetchBrowserTaskEvidence, fetchBrowserTasks, type Br
 import { useTranslation } from "./i18n.tsx";
 import { Select } from "./select.tsx";
 
-const LABELS = { running: "Running", completed: "Completed", cancelled: "Cancelled", paused: "Paused",
+const LABELS = { queued: "Waiting in queue", running: "Running", recovering: "Recovering browser task", blocked: "Profile blocked",
+  completed: "Completed", cancelled: "Cancelled", paused: "Paused",
   interrupted: "Interrupted", needs_verification: "Needs verification", uncertain: "Needs verification", pending: "Pending" } as const;
 const PARTS = { value: "Result", logs: "Console", network: "Network traffic", events: "Developer events", screenshot: "Screenshot" } as const;
 type EvidencePart = keyof typeof PARTS;
@@ -66,6 +67,7 @@ export function BrowserTasksPanel() {
   };
 
   const screenshot = part === "screenshot" && detail && typeof detail === "object" && "base64" in detail ? String(detail.base64) : null;
+  const canPause = task && ["queued", "running", "recovering"].includes(task.state);
   return <section aria-label={t("Browser tasks")}>
     {error && <div className="modal-err" role="alert">{error}</div>}
     {loading ? <p role="status">{t("Loading…")}</p> : !task ? <p>{t("No browser tasks yet")}</p> :
@@ -81,12 +83,14 @@ export function BrowserTasksPanel() {
           <header className="script-detail-head">
             <div className="script-detail-title"><h2>{task.name}</h2><span>{t(LABELS[task.state])} · <code>{task.runId}</code></span></div>
             {!["completed", "cancelled"].includes(task.state) && <div className="script-actions">
-              {task.state === "running" ? <button className="btn ghost" type="button" disabled={busy} onClick={() => void change("pause")}>{t("Pause task")}</button>
+              {canPause ? <button className="btn ghost" type="button" disabled={busy || !!task.stopRequested} onClick={() => void change("pause")}>{t("Pause task")}</button>
                 : <button className="btn ghost" type="button" disabled={busy} onClick={() => void change("resume")}>{t("Resume task")}</button>}
               <button className="btn ghost danger" type="button" disabled={busy} onClick={() => void change("cancel")}>{t("Cancel task")}</button>
             </div>}
           </header>
-          {task.error && <p className="modal-err">{task.error}</p>}
+          {(task.blocked || task.error) && <p className="modal-err">{task.blocked?.message || task.error || task.blocked?.code}</p>}
+          {task.retryAt && <p role="status">{t("Retry at {time}", { time: new Date(task.retryAt).toLocaleTimeString() })}</p>}
+          {!!task.recoveries && <small>{t("Recovery attempts {count}", { count: task.recoveries })}</small>}
           <ol className="browser-task-steps">
             {task.steps.map(step => <li key={step.id}>
               <button className="btn ghost xs" type="button" disabled={!step.evidence} onClick={() => step.evidence && setSequence(step.evidence)}>{step.id}</button>

@@ -116,7 +116,7 @@ test("Firefox launches one saved persona and retains ownership across manager re
   // The launch adds the per-profile seed, voices, devices and window label; the saved identity stays as it was.
   expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL));
   expect(f.config()).toMatchObject({ "aliasmode:windowLabel": LABEL, "voices:blockIfNotDefined": true, "mediaDevices:enabled": true });
-  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile));
+  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile, f.options.hostPlatform, f.options.hostArch));
   expect(f.store.getProfile(f.profile.id)!.firefox!.config).not.toHaveProperty("audio:seed");
   // The engine shows the label in the native title, so no page script rewrites document.title.
   expect(f.labeled()).toBe(0);

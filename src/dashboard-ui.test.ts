@@ -59,6 +59,9 @@ test("dashboard shows curated desktop update notes and live progress", () => {
   expect(app).toContain('t("{downloaded} of {total} MB"');
   expect(app).toContain('disabled={desktopUpdateChecking || desktopUpdateInstalling}');
   expect(app).toContain('className="update-banner"');
+  expect(app).toContain('aria-label={t("Dismiss update notice")}');
+  expect(app).toContain("(desktopUpdateInstalling || desktopUpdate.version !== dismissedUpdateVersion)");
+  expect(app).toContain("document.cookie = DISMISSED_UPDATE_COOKIE");
   expect(styles).toContain(".update-banner");
   expect(styles).toContain(".update-highlights");
   expect(styles).toContain(".update-progress progress");
