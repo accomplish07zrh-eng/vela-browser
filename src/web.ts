@@ -9,7 +9,7 @@
 import { join } from "node:path";
 import { availableParallelism, cpus } from "node:os";
 import { TaskbarMode, taskbarModeSupported } from "./taskbar.ts";
-import { ActivityLog, COOLING_DEFAULTS, CoolingMonitor, launchBatchSize, readMemory } from "./cooling.ts";
+import { ActivityLog, COOLING_DEFAULTS, CoolingMonitor, HostWorkBudget } from "./cooling.ts";
 import { drainPoolTasks } from "./proxy-pool-api.ts";
 import { SubscriptionScheduler } from "./subscription-scheduler.ts";
 import index from "../web/index.html";
@@ -31,6 +31,7 @@ import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { TaskRunner, TaskStore } from "./tasks.ts";
 import { BrowserTaskError, BrowserTaskSupervisor, type BrowserTaskConnection } from "./browser-tasks.ts";
+import { AgentCredentials } from "./agent-credentials.ts";
 import { ProfileWrites } from "./profile-writes.ts";
 import { KernelUpgrades } from "./kernel-upgrades.ts";
 import { AndroidDevices } from "./android.ts";
@@ -100,6 +101,8 @@ export interface DashboardServerOptions {
   health?: UiHealthMetadata | null;
   /** Desktop-generated nonce used by the installed agent adapter. */
   agentNonce?: string;
+  /** Direct TLS listener for a dedicated Worker host. */
+  workerTls?: Bun.TLSOptions;
 }
 
 type AgentSocketData = {
@@ -243,19 +246,9 @@ function loopbackHostGuard(req: Request, boundHostname: string): Response | null
   return Response.json({ ok: false, error: "Forbidden host header" }, { status: 403 });
 }
 
-function lifecycleAdmission(options?: LifecycleAdmissionOptions): LifecycleAdmissionController {
-  const processors = availableParallelism();
-  let sampledAt = -Infinity;
-  let budget = 1;
+export function lifecycleAdmission(options?: LifecycleAdmissionOptions): LifecycleAdmissionController {
   return new LifecycleAdmissionController({
-    startBudget() {
-      const now = performance.now();
-      if (now - sampledAt >= 1000) {
-        budget = launchBatchSize(readMemory(), processors);
-        sampledAt = now;
-      }
-      return budget;
-    },
+    hostWork: new HostWorkBudget(availableParallelism()),
     ...options,
   });
 }
@@ -270,11 +263,9 @@ function browserTaskCapacity() {
   return () => {
     const now = performance.now();
     if (now - sampledAt < 1000) return capacity;
-    const cpu = cpuTimes(), memory = readMemory(), elapsed = cpu.total - previous.total;
+    const cpu = cpuTimes(), elapsed = cpu.total - previous.total;
     const idleRatio = elapsed > 0 ? (cpu.idle - previous.idle) / elapsed : 1;
-    const cpuBudget = Math.max(1, Math.floor(processors * idleRatio));
-    capacity = memory.available < Math.min(768 * 1024 * 1024, memory.total * 0.1)
-      ? 0 : launchBatchSize(memory, cpuBudget);
+    capacity = Math.max(1, Math.min(8, Math.floor(processors * idleRatio)));
     previous = cpu;
     sampledAt = now;
     return capacity;
@@ -327,6 +318,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const admission = opts.lifecycleAdmission ?? lifecycleAdmission(opts.lifecycleAdmissionOptions);
   const lifecycle = { admission };
   const agentNonce = opts.agentNonce;
+  if (opts.workerTls && (!agentNonce || !opts.paths || opts.remote)) throw new Error("Direct TLS requires a local Worker");
   // Desktop only: keep environment windows out of the Windows taskbar when the user asked for it.
   const taskbarMode = agentNonce && opts.appConfig && taskbarModeSupported() ? new TaskbarMode({
     store,
@@ -371,7 +363,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   // IP scores from many services, shared by the dashboard and AIs, kept half a day per IP.
   const ipScores = new IpScoreCache(opts.paths && !opts.remote ? join(opts.paths.root, "ip-scores.json") : undefined);
   // What AIs, scripts and tasks did, kept for six months next to the profiles.
-  const audit = opts.paths && !opts.remote ? new AuditLog(join(opts.paths.root, "audit")) : undefined;
+  const audit = opts.paths && !opts.remote ? new AuditLog(join(opts.paths.root, "audit"), Date.now, undefined, log) : undefined;
   // Snapshots before fingerprint and proxy changes, and a daily backup of sign-ins that changed.
   const snapshots = opts.paths && !opts.remote ? new SnapshotStore(join(opts.paths.root, "snapshots"), () => store.secretBox()) : undefined;
   if (snapshots) store.attachSnapshots(snapshots);
@@ -484,21 +476,33 @@ export function serveDashboard(opts: DashboardServerOptions) {
     try { return opts.appConfig?.read().aiCodeChanges ?? "ask"; } catch { return "ask"; }
   };
   const aiAccess = () => opts.appConfig?.read().aiAccess;
+  const agentCredentials = agentNonce && opts.paths && !opts.remote
+    ? new AgentCredentials(join(opts.paths.root, "agent-credentials.json")) : undefined;
+  const authorizeTask = (profileId: string, client: string, savedGroup?: string, actor?: import("./browser-tasks.ts").BrowserTaskActor) => {
+    const profile = store.getProfile(profileId);
+    if (!profile && savedGroup === undefined) throw new BrowserTaskError("no_such_profile", "The browser task profile was not found", 404);
+    const group = profile?.group ?? savedGroup ?? "";
+    if (actor?.scope.startsWith("worker")) {
+      if (!workers?.allows(actor, group)) throw new BrowserTaskError("not_permitted", "Worker permission for the profile was revoked", 403);
+      return group;
+    }
+    if ((actor?.scope === "local-auth" && !agentCredentials?.has(client)) ||
+      (actor?.scope === "local" && agentCredentials?.has(client)) ||
+      !allowsGroup(ruleFor(aiAccess(), client), group, store.listFolders())) {
+      throw new BrowserTaskError("not_permitted", "This AI may not use the profile's group", 403);
+    }
+    return group;
+  };
   const browserTasks = agentNonce && opts.paths && !opts.remote ? new BrowserTaskSupervisor({
     root: join(opts.paths.root, "browser-tasks"),
     capacity: browserTaskCapacity(),
+    hostWork: admission.hostWork,
     writes,
-    authorize(profileId, client, savedGroup) {
-      const profile = store.getProfile(profileId);
-      if (!profile && savedGroup === undefined) throw new BrowserTaskError("no_such_profile", "The browser task profile was not found", 404);
-      const group = profile ? profile.group ?? "" : savedGroup!;
-      if (!allowsGroup(ruleFor(aiAccess(), client), group, store.listFolders())) {
-        throw new BrowserTaskError("not_permitted", "This AI may not use the profile's group", 403);
-      }
-      return group;
-    },
-    async open(profileId, client) {
-      const session = new AgentControlSession({ launcher, store, admission, aiAccess, activity, log });
+    authorize: authorizeTask,
+    async open(profileId, client, signal, hostPermit, actor) {
+      const session = new AgentControlSession({ launcher, store, admission, activity, log,
+        validateProfile: id => { authorizeTask(id, client, undefined, actor); },
+      }, signal, hostPermit);
       const call = async (method: string, params: Record<string, unknown>) => {
         const response = await session.enqueue(JSON.stringify({ protocol: AGENT_CONTROL_PROTOCOL, id: 1, method, params }));
         if (!response.ok) throw new BrowserTaskError(response.error?.code ?? "operation_failed", response.error?.message ?? "Browser task could not open its profile");
@@ -552,13 +556,17 @@ export function serveDashboard(opts: DashboardServerOptions) {
       }
     },
     hold: (profileId) => activity.hold(profileId),
+    record: ({ runId, profileId, client, stepId, sequence, phase, ok }) => audit?.record({
+      actor: { kind: "task", name: client }, profileId, action: "browserTask." + phase, ok,
+      task: { runId, stepId, sequence },
+    }),
     log,
   }) : undefined;
   const portable = browserTasks && opts.paths
     ? new PortableProfiles({ root: join(opts.paths.root, "portable-profiles"), store, launcher, writes, admission })
     : undefined;
   const workers = browserTasks && opts.paths && portable
-    ? new WorkerNodes({ config: join(opts.paths.root, "worker-nodes.json"), store, tasks: browserTasks, portable })
+    ? new WorkerNodes({ config: join(opts.paths.root, "worker-nodes.json"), store, tasks: browserTasks, portable, capacity: () => admission.capacity() })
     : undefined;
   if (scripts && opts.paths && !opts.remote) {
     tasks = new TaskRunner({
@@ -600,6 +608,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
         codeApprovals,
         aiCodePolicy,
         aiAccess,
+        agentCredentials,
         ipScores,
         ...(audit ? { audit } : {}),
         log,
@@ -637,6 +646,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const server = Bun.serve<AgentSocketData>({
     port,
     hostname,
+    ...(opts.workerTls ? { tls: opts.workerTls } : {}),
     ...(workers ? { maxRequestBodySize: MAX_PORTABLE_BYTES } : {}),
     // Queue wait plus a complete remote restore can legitimately hold a lifecycle
     // response for several minutes while the shared transition cap does its job.
@@ -644,7 +654,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
     // Development mode watches the app folder for hot reload. On Windows that
     // watcher leaks kernel memory on every database write until the host stalls.
     development: false,
-    routes: { "/": index },
+    ...(opts.workerTls ? {} : { routes: { "/": index } }),
     websocket: {
       maxPayloadLength: AGENT_CONTROL_MAX_MESSAGE_BYTES,
       open(socket) {
@@ -679,6 +689,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
         if (!workers) return new Response(null, { status: 404 });
         return workers.serve(req, reqUrl.pathname);
       }
+      if (opts.workerTls) return new Response(null, { status: 404 });
       if (reqUrl.pathname === BROWSER_REPLAY_PATH || reqUrl.pathname.startsWith(BROWSER_REPLAY_PATH + "/")) {
         if (!replay || !isAllowedLoopbackHostHeader(req.headers.get("host")) || !isLoopbackAddress(server.requestIP(req)?.address)) {
           return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
@@ -716,7 +727,14 @@ export function serveDashboard(opts: DashboardServerOptions) {
         if (!validAgentAuthorization(req.headers.get("authorization"), agentNonce)) {
           return Response.json({ ok: false, error: "agent authorization failed" }, { status: 401 });
         }
-        const session = agentHub.connect();
+        const token = req.headers.get("x-vela-agent-token");
+        let name: string | undefined;
+        if (token !== null) {
+          try { name = agentCredentials?.resolve(token); }
+          catch { return Response.json({ ok: false, error: "Agent credentials are unavailable" }, { status: 503 }); }
+          if (!name) return Response.json({ ok: false, error: "Agent credential rejected" }, { status: 401 });
+        }
+        const session = agentHub.connect(token !== null && name ? { token, name } : undefined);
         const upgraded = server.upgrade(req, {
           data: { session },
         });
@@ -739,6 +757,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
           taskbarMode,
           cooling,
           activity,
+          admission,
           paths: opts.paths,
 
 
@@ -764,7 +783,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
   });
   void agentHub?.cleanupTemporaryProfiles();
   browserTasks?.startRecovery();
-  log(`dashboard + API on http://${hostname}:${server.port}  (UI at /, Vela Local API under /api; AdsPower-compatible)`);
+  if (opts.workerTls) log(`Worker HTTPS API on https://${hostname}:${server.port}`);
+  else log(`dashboard + API on http://${hostname}:${server.port}  (UI at /, Vela Local API under /api; AdsPower-compatible)`);
   const stopServer = server.stop.bind(server);
   return Object.assign(server, {
     async stop(closeActiveConnections?: boolean) {

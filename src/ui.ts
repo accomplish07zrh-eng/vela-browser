@@ -530,6 +530,7 @@ export interface UiRuntimeOptions {
   /** Desktop: cools idle browsers when memory runs short. */
   cooling?: import("./cooling.ts").CoolingMonitor;
   activity?: import("./cooling.ts").ActivityLog;
+  admission?: import("./lifecycle-admission.ts").LifecycleAdmissionController;
   paths?: StatePaths;
 
 
@@ -630,8 +631,10 @@ export async function handleUiRequest(
               return noStoreJson({ ok: true, ...tasks.stop(body.runId, body.operation === "pause" ? "paused" : "cancelled") });
             }
             if (typeof body?.runId === "string" && body.operation === "resume") {
-              const task = tasks.status(body.runId);
-              return noStoreJson({ ok: true, task: tasks.resume(task.runId, task.client) });
+              return noStoreJson({ ok: true, task: tasks.resume(body.runId, undefined, body.verify, body.expectedAttempt) });
+            }
+            if (typeof body?.runId === "string" && body.operation === "delegate") {
+              return noStoreJson({ ok: true, task: tasks.setDelegates(body.runId, body.delegates) });
             }
           }
           return noStoreJson({ ok: false, error: "Unknown browser task operation" }, 404);
@@ -996,7 +999,7 @@ export async function handleUiRequest(
       const { auditCsv } = await import("./audit.ts");
       return new Response("\ufeff" + auditCsv(entries), { headers: { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store", "Content-Disposition": "attachment; filename=\"vela-activity.csv\"" } });
     }
-    return noStoreJson({ ok: true, entries, actors: options.audit.actors() });
+    return noStoreJson({ ok: true, entries, actors: options.audit.actors(), status: options.audit.status() });
   }
 
   // Going around this computer's TUN proxy client, and the test that proves it works.
@@ -1055,10 +1058,27 @@ export async function handleUiRequest(
 
   // How many browsers to start at once, from the memory free right now.
   if (pathname === "/ui/api/launch-batch" && req.method === "GET") {
+    if (options.admission) {
+      const { size, host, byKind } = options.admission.capacity();
+      return noStoreJson({ ok: true, size, memoryPaused: host?.paused ?? false, queued: byKind.start.queued,
+        starting: byKind.start.inFlight, availableMb: host && Math.round(host.available / 1048576),
+        totalMb: host && Math.round(host.total / 1048576) });
+    }
     const { launchBatchSize, readMemory } = await import("./cooling.ts");
     const { availableParallelism } = await import("node:os");
     const sample = readMemory();
     return noStoreJson({ ok: true, size: launchBatchSize(sample, availableParallelism()), availableMb: Math.round(sample.available / 1048576), totalMb: Math.round(sample.total / 1048576) });
+  }
+
+  const cancelStart = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/cancel-start$/);
+  if (cancelStart && req.method === "POST" && options.admission) {
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    try {
+      const id = decodeURIComponent(cancelStart[1]!);
+      if (!isSafeProfileId(id)) return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400);
+      return noStoreJson({ ok: true, cancelled: options.admission.cancelStarts(id) });
+    } catch { return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400); }
   }
 
   // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.

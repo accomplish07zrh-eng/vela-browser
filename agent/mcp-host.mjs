@@ -415,12 +415,12 @@ const ALIAS_TOOLS = [
   },
   {
     name: "vela_worker",
-    description: "Dispatch durable browser tasks to configured self-hosted Vela workers or hand off an encrypted profile. Retry a handoff with the same idempotency key. The source stays closed after handing off.",
+    description: "Check a self-hosted Worker’s memory and task queue, dispatch durable browser tasks, or hand off an encrypted profile. Retry a handoff with the same node and idempotency key. The source stays closed after handing off.",
     annotations: toolAnnotations("Use a self-hosted Vela worker", { destructive: true, openWorld: true }),
     inputSchema: { type: "object", properties: {
-      operation: { type: "string", enum: ["list", "task", "handoff"] },
+      operation: { type: "string", enum: ["list", "health", "task", "handoff"] },
       node: { type: "string" }, profileId: PROFILE_ID, idempotencyKey: { type: "string" },
-      request: { type: "object", description: "A worker task request with operation start, status, resume, or cancel.", additionalProperties: true },
+      request: { type: "object", description: "A Worker task request with operation start, status, resume, pause, cancel, delegate, or evidence.", additionalProperties: true },
     }, required: ["operation"], additionalProperties: false },
   },
   {
@@ -447,11 +447,12 @@ const ALIAS_TOOLS = [
   },
   {
     name: "vela_browser_kernel",
-    description: "List verified Vela Chromium builds, inspect a profile's pin, or switch and test its kernel. upgrade_batch rolls out to an explicit cohort and stops on the first failure. Rollback restores the prior version and its native snapshot.",
+    description: "List verified Vela Chromium builds, inspect a profile's pin, or switch and test its kernel. Use canaryCount to test a subset and receive pending profiles. Rollout stops on the first failure. Rollback restores the prior version and its native snapshot.",
     annotations: toolAnnotations("Manage a Vela Chromium kernel", { destructive: true }),
     inputSchema: { type: "object", properties: {
       operation: { type: "string", enum: ["list", "status", "upgrade", "upgrade_batch", "rollback"] },
       profileId: PROFILE_ID, profileIds: { type: "array", minItems: 1, maxItems: 100, items: PROFILE_ID }, revision: { type: "string" },
+      canaryCount: { type: "integer", minimum: 1, maximum: 100 },
     }, required: ["operation"], additionalProperties: false },
   },
   {
@@ -461,7 +462,7 @@ const ALIAS_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        operation: { type: "string", enum: ["start", "start_batch", "list", "status", "resume", "pause", "cancel", "evidence", "skill_save", "skill_find",
+        operation: { type: "string", enum: ["start", "start_batch", "list", "status", "resume", "pause", "cancel", "evidence", "delegate", "skill_save", "skill_find",
           "schedule_save", "schedule_list", "schedule_run", "schedule_delete"] },
         profileId: PROFILE_ID, name: { type: "string" }, runId: { type: "string" }, idempotencyKey: { type: "string" },
         screenshots: { type: "boolean" }, argument: {},
@@ -472,7 +473,7 @@ const ALIAS_TOOLS = [
           profileId: PROFILE_ID, name: { type: "string" }, argument: {}, idempotencyKey: { type: "string" },
           startUrl: { type: "string" }, tabId: { type: "string" },
         }, required: ["profileId"], additionalProperties: false } },
-        steps: { type: "array", items: { type: "object", properties: {
+        steps: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", properties: {
           id: { type: "string" }, run: { type: "string" }, verify: { type: "string" }, timeoutMs: { type: "integer", minimum: 1 },
           pageUrl: { type: "string", description: "Wait for this exact URL in the bound tab before executing the step." },
           frameUrl: { type: "string", description: "Wait for a uniquely matching iframe with this exact URL at any depth." },
@@ -493,6 +494,8 @@ const ALIAS_TOOLS = [
         }, required: ["kind"], additionalProperties: false },
         url: { type: "string", description: "For skill_find, a page URL. For skill_save, the site and path prefix to match, defaulting to the task's startUrl." },
         verify: { type: "string", description: "Replacement verification function for the uncertain step during this resume." },
+        expectedAttempt: { type: "string", description: "Copy the uncertain step's expectedAttempt from task status to bind the replacement verifier to that checkpoint." },
+        delegates: { type: "array", maxItems: 32, items: { type: "string" }, description: "Replace the task's current list of authorized Agent delegates." },
         sequence: { type: "integer", minimum: 1 }, part: { type: "string", enum: ["summary", "network", "events", "logs", "screenshot", "value"] },
         offset: { type: "integer", minimum: 0 }, bytes: { type: "integer", minimum: 1, maximum: 1048576 },
         limit: { type: "integer", minimum: 1, maximum: 100 },
@@ -851,7 +854,7 @@ export async function createVelaBrowserMcp(options = {}) {
       }
       if (name === "vela_browser_task") {
         const { operation, ...params } = args;
-        if (!["start", "start_batch", "list", "status", "resume", "pause", "cancel", "evidence", "skill_save", "skill_find",
+        if (!["start", "start_batch", "list", "status", "resume", "pause", "cancel", "evidence", "delegate", "skill_save", "skill_find",
           "schedule_save", "schedule_list", "schedule_run", "schedule_delete"].includes(operation)) throw new Error("Choose a browser task operation");
         if (operation === "start" && params.profileId === undefined && selectedProfileId) params.profileId = selectedProfileId;
         return toolResult(await runtime.call(`browserTasks.${operation}`, params));

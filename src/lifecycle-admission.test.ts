@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { HostWorkBudget } from "./cooling.ts";
 import {
   LifecycleAdmissionController,
   LifecycleAdmissionError,
@@ -147,6 +148,37 @@ test("queued work is priority ordered and FIFO within each priority", async () =
   await first;
   await Promise.all(jobs);
   expect(order).toEqual(["t1", "t2", "c1", "s1", "s2"]);
+});
+
+test("memory pressure parks a startup, allows teardown, and wakes once memory recovers", async () => {
+  const mib = 1024 ** 2;
+  let available = 923 * mib, now = 0;
+  const hostWork = new HostWorkBudget(8, () => ({ total: 32 * 1024 * mib, available }), () => now);
+  const admission = new LifecycleAdmissionController({ hostWork, queueWaitMs: 3000 });
+  const order: string[] = [];
+  const queued = admission.run({ kind: "start", profileIds: ["one"] }, () => { order.push("start"); });
+  await admission.run({ kind: "stop", profileIds: ["one"] }, () => { order.push("stop"); });
+  expect(order).toEqual(["stop"]);
+  expect(admission.capacity()).toMatchObject({ size: 0, host: { paused: true } });
+  available = 2200 * mib; now += 1000;
+  await queued;
+  expect(order).toEqual(["stop", "start"]);
+  expect(hostWork.status().inUse).toBe(0);
+});
+
+test("a task and a direct launch share one slot; an Agent start reuses its reservation", async () => {
+  const mib = 1024 ** 2;
+  const hostWork = new HostWorkBudget(4, () => ({ total: 32 * 1024 * mib, available: 2100 * mib }));
+  const admission = new LifecycleAdmissionController({ hostWork, queueWaitMs: 3000 });
+  const permit = hostWork.acquire()!;
+  expect(permit).toBeDefined();
+  const queued = admission.run({ kind: "start", profileIds: ["direct"] }, () => { throw new Error("Cancelled work must not dispatch"); });
+  let called = false;
+  await admission.run({ kind: "start", profileIds: ["task"], hostPermit: permit }, () => { called = true; });
+  expect(called).toBe(true);
+  expect(admission.cancelStarts("direct")).toBe(1);
+  await expect(queued).rejects.toMatchObject({ reason: "cancelled" });
+  permit.release();
 });
 
 test("same-profile FIFO is preserved while unrelated higher-priority work overtakes", async () => {

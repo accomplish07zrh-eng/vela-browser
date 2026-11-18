@@ -401,11 +401,12 @@ function PythonRuntimeNote({ status, onDownload }: { status: PythonRuntimeStatus
   return <p className="formnote">{t("Python scripts need the Python runtime ({size}). It downloads once, before the first Python script runs.", { size })} <button className="btn" type="button" onClick={onDownload}>{t("Download now")}</button></p>;
 }
 
-export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => void; initialScriptId?: string }) {
+export function ScriptsPage({ onViewRun, initialScriptId, taskReceipt }: { onViewRun: () => void; initialScriptId?: string;
+  taskReceipt?: { runId: string; sequence: number } }) {
   const { t } = useTranslation();
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [script, setScript] = useState<ScriptRecord | null>(null);
-  const [tab, setTab] = useState<ScriptsTab>("mine");
+  const [tab, setTab] = useState<ScriptsTab>(taskReceipt ? "browser-tasks" : "mine");
   const [guideOpen, setGuideOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -541,7 +542,7 @@ export function ScriptsPage({ onViewRun, initialScriptId }: { onViewRun: () => v
       </div>
       {guideOpen && <ScriptGuideDrawer onClose={() => setGuideOpen(false)} />}
       {error && <div className="modal-err" role="alert">{error}</div>}
-      {tab === "browser-tasks" ? <BrowserTasksPanel /> : tab === "tasks" ? <TasksPanel /> : tab === "library" ? <PublicLibrary onImported={imported} /> : <>
+      {tab === "browser-tasks" ? <BrowserTasksPanel receipt={taskReceipt} /> : tab === "tasks" ? <TasksPanel /> : tab === "library" ? <PublicLibrary onImported={imported} /> : <>
         {currentRun && <button className="scripts-run-note" type="button" onClick={onViewRun}>{t("{scriptName}: {status}. View run", { scriptName: currentRun.scriptName, status: currentRun.status })}</button>}
         <PythonRuntimeNote status={python} onDownload={downloadPython} />
         {scripts.length === 0 ? <ScriptsWelcome busy={busy} onImport={() => importRef.current?.click()} onLibrary={() => setTab("library")} /> : <div className="scripts-layout">

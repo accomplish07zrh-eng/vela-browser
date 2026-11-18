@@ -356,6 +356,10 @@ export async function clearPendingCookies(id: string): Promise<{ ok: boolean; re
 export const openProfile = (id: string, force = false) =>
   post(`/ui/api/profiles/${encodeURIComponent(id)}/open${force ? "?force=1" : ""}`);
 export const closeProfile = (id: string) => post(`/ui/api/profiles/${encodeURIComponent(id)}/close`);
+export async function cancelProfileStart(id: string): Promise<void> {
+  const path = `/ui/api/profiles/${encodeURIComponent(id)}/cancel-start`;
+  await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+}
 /** Close and open again, so saved proxy and fingerprint changes apply. */
 export async function restartProfile(id: string): Promise<any> {
   const closed = await closeProfile(id);
@@ -721,15 +725,15 @@ export async function convertMobileProfile(id: string): Promise<any> {
   return post(`/ui/api/profiles/${encodeURIComponent(id)}/convert-mobile`);
 }
 
-export async function profileLaunchConcurrency(): Promise<number> {
+export async function profileLaunchStatus(): Promise<{ size: number; memoryPaused?: boolean; queued?: number; starting?: number }> {
   try {
     const response = await fetch("/ui/api/launch-batch");
     if (response.ok) {
-      const { size } = await response.json();
-      if (Number.isSafeInteger(size) && size > 0) return size;
+      const status = await response.json();
+      if (Number.isSafeInteger(status.size) && status.size >= 0) return status;
     }
   } catch { /* the dashboard still bounds requests when the sample is unavailable */ }
-  return 4;
+  return { size: 4 };
 }
 
 export type ExportFormat = "csv" | "txt" | "xlsx" | "bitwarden";
@@ -952,8 +956,13 @@ export async function fetchBrowserTasks(offset: number): Promise<{ tasks: Browse
   return await scriptRequest(`${BROWSER_TASKS}?offset=${offset}`);
 }
 
-export async function changeBrowserTask(runId: string, operation: "pause" | "cancel" | "resume"): Promise<void> {
-  await scriptRequest(BROWSER_TASKS, { method: "POST", body: JSON.stringify({ runId, operation }) });
+export async function fetchBrowserTask(runId: string): Promise<BrowserTaskView> {
+  return (await scriptRequest(`${BROWSER_TASKS}?runId=${encodeURIComponent(runId)}`)).task;
+}
+
+export async function changeBrowserTask(runId: string, operation: "pause" | "cancel" | "resume" | "delegate",
+  input?: { verify?: string; expectedAttempt?: string; delegates?: string[] }): Promise<void> {
+  await scriptRequest(BROWSER_TASKS, { method: "POST", body: JSON.stringify({ runId, operation, ...input }) });
 }
 
 export async function fetchBrowserTaskEvidence(runId: string, sequence: number, part: string, signal?: AbortSignal): Promise<unknown> {

@@ -20,6 +20,10 @@ type Change = {
   headless: boolean;
 };
 
+interface RolloutOptions {
+  canaryCount?: number;
+}
+
 export class KernelUpgrades {
   private readonly root: string;
   constructor(private readonly options: {
@@ -84,17 +88,25 @@ export class KernelUpgrades {
     }, signal);
   }
 
-  async upgradeBatch(profileIds: string[], revision: string, signal?: AbortSignal) {
-    for (const profileId of profileIds) this.profile(profileId);
+  async upgradeBatch(profileIds: string[], revision: string, signal?: AbortSignal, options: RolloutOptions = {}) {
+    const ids = [...new Set(profileIds)];
+    const canaryCount = options.canaryCount ?? 0;
+    if (!Number.isInteger(canaryCount) || canaryCount < 0 || canaryCount > ids.length) throw new Error("Invalid kernel canary size");
+    for (const profileId of ids) this.profile(profileId);
     if (!this.revisions().some(entry => entry.revision === revision)) throw new Error("This kernel revision is unavailable on this host");
-    const completed: Array<{ profileId: string; change: ReturnType<KernelUpgrades["status"]> }> = [];
-    for (const profileId of profileIds) {
+    const completed: Array<{ profileId: string; change: ReturnType<KernelUpgrades["status"]>; canary?: true }> = [];
+    for (const [index, profileId] of ids.entries()) {
       try {
         signal?.throwIfAborted();
-        completed.push({ profileId, change: await this.upgrade(profileId, revision, signal) });
+        const change = await this.upgrade(profileId, revision, signal);
+        completed.push({ profileId, change, ...(index < canaryCount ? { canary: true as const } : {}) });
       } catch (error) {
         return { completed, failure: { profileId, message: error instanceof Error ? error.message : String(error) },
-          pending: profileIds.slice(completed.length + 1) };
+          pending: ids.slice(index + 1) };
+      }
+      // The Agent can advance with the returned pending IDs after checking its own fixture.
+      if (canaryCount && completed.length === canaryCount && canaryCount < ids.length) {
+        return { completed, awaitingVerification: true, pending: ids.slice(canaryCount) };
       }
     }
     return { completed, pending: [] };
@@ -164,10 +176,13 @@ export class KernelUpgrades {
     if (change.data && existsSync(staging)) await rename(staging, live);
     if (change.data && !existsSync(live)) throw new Error("The staged profile restoration is unavailable");
     store.setKernelRevision(profileId, change.previous);
+    if (change.wasOpen) {
+      await launcher.start(profileId, [], { headless: change.headless });
+      if (!await launcher.certifiedActive(profileId)) throw new Error("The restored kernel could not be certified");
+    }
     change.state = "restored";
     this.save(change);
     await this.remove(restoreRoot, dirname(live)).catch(() => {});
-    if (change.wasOpen) await launcher.start(profileId, [], { headless: change.headless });
   }
 
   private path(profileId: string) {

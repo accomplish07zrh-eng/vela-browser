@@ -22,6 +22,7 @@
 
 import { parseExport, decodeText, splitRecords } from "./parse.ts";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { ProfileStore } from "./store.ts";
 import { Launcher, readSnapshotChildBounded } from "./launcher.ts";
 import { linuxChromiumSandboxBlocked } from "./aliasmode-chromium.ts";
@@ -31,8 +32,8 @@ import {
   runPlaywrightWorker,
   verifyPlaywrightRuntime,
 } from "./playwright-runtime.ts";
-import { serveDashboard, serveDesktopAutomationApi } from "./web.ts";
-import { LifecycleAdmissionController, type LifecycleAdmissionOptions } from "./lifecycle-admission.ts";
+import { lifecycleAdmission as createLifecycleAdmission, serveDashboard, serveDesktopAutomationApi } from "./web.ts";
+import type { LifecycleAdmissionOptions } from "./lifecycle-admission.ts";
 import { RemoteCoordinator } from "./remote.ts";
 import {
   playwrightTransportAttribution,
@@ -1571,7 +1572,7 @@ async function main() {
     ? lifecycleAdmissionOptionsFromEnv()
     : undefined;
   const lifecycleAdmission = lifecycleAdmissionOptions
-    ? new LifecycleAdmissionController(lifecycleAdmissionOptions)
+    ? createLifecycleAdmission(lifecycleAdmissionOptions)
     : undefined;
 
   switch (cmd) {
@@ -1697,8 +1698,13 @@ async function main() {
       break;
     }
     case "serve": {
-      const store = new ProfileStore(dbPath);
       const workerMode = has(rest, "worker");
+      const cert = flag(rest, "tls-cert"), key = flag(rest, "tls-key"), workerHost = flag(rest, "worker-host");
+      if ((cert || key || workerHost) && (!workerMode || !cert || !key)) {
+        throw new Error("Use --worker with both --tls-cert and --tls-key to bind a Worker HTTPS listener");
+      }
+      const workerTls = cert && key ? { cert: readFileSync(resolve(cert)), key: readFileSync(resolve(key)) } : undefined;
+      const store = new ProfileStore(dbPath);
       const launcher = makeLauncher(
         store,
         workerMode && !has(rest, "headless") ? [...rest, "--headless"] : rest,
@@ -1717,6 +1723,7 @@ async function main() {
         launcher,
         store,
         port: Number(flag(rest, "port") ?? 50400),
+        ...(workerTls ? { workerTls, hostname: workerHost ?? "127.0.0.1" } : {}),
         lifecycleAdmission,
         appConfig,
         paths,

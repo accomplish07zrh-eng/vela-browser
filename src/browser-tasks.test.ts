@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BrowserTaskSupervisor, type BrowserTaskConnection } from "./browser-tasks.ts";
+import { ProfileWrites } from "./profile-writes.ts";
+import { HostWorkBudget } from "./cooling.ts";
 
 async function until(predicate: () => boolean) {
   for (let i = 0; i < 200; i++) {
@@ -42,17 +44,83 @@ test("a lost reply leaves an uncertain step; restarting reconciles the receipt e
   await first.shutdown();
 
   const second = new BrowserTaskSupervisor(options);
-  const recovered = second.start("profile", "new-connection", plan);
+  expect(() => second.start("profile", "another-agent", plan)).toThrow("different Agent");
+  const recovered = second.start("profile", "test-agent", plan);
   expect(recovered.steps[0]?.state).toBe("uncertain");
-  second.resume(task.runId, "new-connection");
-  second.resume(task.runId, "new-connection");
+  expect(() => second.resume(task.runId, "another-agent")).toThrow("different Agent");
+  second.setDelegates(task.runId, ["another-agent"], "test-agent");
+  second.resume(task.runId, "another-agent");
+  second.resume(task.runId, "another-agent");
   await until(() => second.status(task.runId).state === "completed");
   expect(second.status(task.runId).steps.map(step => step.attempts)).toEqual([1, 1]);
+  expect(second.status(task.runId).client).toBe("test-agent");
   expect(submissions).toBe(1);
   expect(second.evidence(task.runId, 2, "summary", 0, 100)).toMatchObject({ phase: "verify", stepId: "submit", completed: true });
   const chunk = second.evidence(task.runId, 3, "network", 0, 100);
   expect(Buffer.from((chunk as { base64: string }).base64, "base64").toString()).toContain("r1");
   await second.shutdown();
+}));
+
+test("tasks stay queued under memory pressure or while waiting for a profile write lease", async () => fixture(async root => {
+  const writes = new ProfileWrites();
+  const mib = 1024 ** 2;
+  let available = 923 * mib, now = 0;
+  const hostWork = new HostWorkBudget(8, () => ({ total: 32 * 1024 * mib, available }), () => now);
+  const existing = writes.tryAcquire("one")!;
+  const order: string[] = [];
+  const service = new BrowserTaskSupervisor({ root, writes, hostWork, capacity: () => 1, authorize() {},
+    async open(profileId, _client, _signal, permit) {
+      expect(hostWork.canStart(permit)).toBe(true);
+      return {
+        async bindTab() { return { id: profileId, generation: "one" }; },
+        async program({ code }) { order.push(code); return { completed: true }; },
+        async close() {},
+      };
+    },
+  });
+  try {
+    const start = (id: string, run: string) => service.start(id, "test", { startUrl: "https://fixture.test", steps: [{ id: run, run }] });
+    const first = start("one", "first"), second = start("one", "second"), unrelated = start("two", "other");
+    await Bun.sleep(20);
+    expect(service.queueStatus()).toEqual({ running: 0, waiting: 3 });
+    available = 2200 * mib; now += 1000;
+    await until(() => service.status(unrelated.runId).state === "completed");
+    expect(order).toEqual(["other"]);
+    expect(service.status(first.runId).state).toBe("queued");
+    existing.release();
+    await until(() => service.status(second.runId).state === "completed");
+    expect(order).toEqual(["other", "first", "second"]);
+    expect(hostWork.status().inUse).toBe(0);
+  } finally { existing.release(); await service.shutdown(); }
+}));
+
+test("receipt expiry preserves the checkpoint result needed by later steps", async () => fixture(async root => {
+  const options = { root, authorize() {}, async open(): Promise<BrowserTaskConnection> {
+    return {
+      async program({ code, argument }) {
+        if (code === "first") return { completed: true, value: "checkpoint" };
+        if (code === "uncertain") return { completed: false };
+        expect((argument as { previous: Record<string, unknown> }).previous.first).toBe("checkpoint");
+        return { completed: true, value: { state: "applied" } };
+      },
+      async close() {},
+    };
+  } };
+  const first = new BrowserTaskSupervisor(options);
+  const { runId } = first.start("one", "test", { steps: [{ id: "first", run: "first" }, { id: "uncertain", run: "uncertain" }] });
+  await until(() => first.status(runId).state === "needs_verification");
+  await first.shutdown();
+  const old = new Date(0);
+  utimesSync(join(root, runId, "evidence-1.json"), old, old);
+  const reopened = new BrowserTaskSupervisor(options);
+  try {
+    expect(() => reopened.evidence(runId, 1, "summary", 0, 100)).toThrow("expired");
+    expect(reopened.status(runId).firstEvidence).toBe(2);
+    expect(() => reopened.resume(runId, "test", "verify", "uncertain:0:0")).toThrow("checkpoint changed");
+    reopened.resume(runId, "test", "verify", "uncertain:1:2");
+    await until(() => reopened.status(runId).state === "completed");
+    expect(reopened.status(runId).steps[1]).toMatchObject({ attempts: 1, verification: "applied" });
+  } finally { await reopened.shutdown(); }
 }));
 
 test("pause settles the current command, keeps its result and never starts the next command before resume", async () => fixture(async root => {

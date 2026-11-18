@@ -1006,10 +1006,7 @@ export class Launcher {
   private firefoxRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
   private unsafeDisableIdentityGates: boolean;
   private verifiedBinaryCache?: { key: string; path: string; sha256: string };
-  private binaryVerificationInFlight?: {
-    key: string;
-    promise: Promise<{ key: string; path: string; sha256: string }>;
-  };
+  private readonly binaryVerificationInFlight = new Map<string, Promise<{ key: string; path: string; sha256: string }>>();
   private dataRoot: string;
   private headless: boolean;
   private portRange: { start: number; end: number };
@@ -1421,12 +1418,15 @@ export class Launcher {
     }
     if (!stat.isFile()) throw new Error(`${engine} binary is not a regular file`);
 
-    const key = [expected, path, stat.dev, stat.ino, stat.size, stat.mtimeMs].join(":");
+    const key = [expected, path, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
     if (!forceHash && this.verifiedBinaryCache?.key === key) return this.verifiedBinaryCache;
-    if (!forceHash && this.binaryVerificationInFlight?.key === key) return this.binaryVerificationInFlight.promise;
+    // Forced checks can share a hash currently being read for the exact same file.
+    // They cannot reuse a cached result or an earlier preflight check.
+    const flightKey = (forceHash ? "spawn:" : "preflight:") + key;
+    const inFlight = this.binaryVerificationInFlight.get(flightKey);
+    if (inFlight) return inFlight;
 
-    let promise!: Promise<{ key: string; path: string; sha256: string }>;
-    promise = sha256File(path)
+    const promise = sha256File(path)
       .then((actual) => {
         // Detect an updater replacing the executable while it is being read.
         // The forced pre-spawn pass below also closes the longer preflight
@@ -1442,7 +1442,7 @@ export class Launcher {
             (error instanceof Error ? error.message : String(error)),
           );
         }
-        const finalKey = [expected, finalPath, finalStat.dev, finalStat.ino, finalStat.size, finalStat.mtimeMs].join(":");
+        const finalKey = [expected, finalPath, finalStat.dev, finalStat.ino, finalStat.size, finalStat.mtimeMs, finalStat.ctimeMs].join(":");
         if (finalPath !== path || finalKey !== key || !finalStat.isFile()) {
           throw new Error("approved CloakBrowser binary changed while it was being verified; refusing to launch");
         }
@@ -1456,9 +1456,9 @@ export class Launcher {
         return verified;
       })
       .finally(() => {
-        if (this.binaryVerificationInFlight?.promise === promise) this.binaryVerificationInFlight = undefined;
+        this.binaryVerificationInFlight.delete(flightKey);
       });
-    if (!forceHash) this.binaryVerificationInFlight = { key, promise };
+    this.binaryVerificationInFlight.set(flightKey, promise);
     return promise;
   }
 
@@ -1952,6 +1952,8 @@ export class Launcher {
       : undefined;
   }
 
+  starting(profileId: string): boolean { return this.startsInFlight.has(profileId); }
+
   /**
    * Start (or return the already-running) browser for `profileId`.
    * Returns the CDP ws endpoint and debug port, AdsPower-style.
@@ -2273,11 +2275,9 @@ export class Launcher {
       if (this.hostPlatform !== "win32" || this.firefoxStarted) return start();
       // On Windows the first Firefox processes and their GPU/Node initialization contend for
       // the same disk and CPU. Give the first two rooms to start, then release the rest.
-      return this.firefoxColdStarts.run({ kind: "start", profileIds: [profileId] }, async () => {
-        const opened = await start();
-        this.firefoxStarted = true;
-        return opened;
-      });
+      return this.firefoxColdStarts.run({ kind: "start", profileIds: [profileId],
+        onDispatch: elapsed => this.log(`${profileId}: Firefox warmup queue ${elapsed.toFixed(1)}ms`),
+      }, start);
     }
     const webRtcIp = this.chromiumWebRtcIp(profile) ? this.webRtcExitIp(profile, exit) : undefined;
     // Without the fonts of its OS, the browser shows this computer's fonts in place of them.
@@ -2977,10 +2977,12 @@ export class Launcher {
       }, {
         reservation,
         onSpawn: (spawned) => {
+          this.log(`${profileId}: launch stage browser spawned`);
           launch.firefoxOwner = { ...owner, ...spawned };
           this.store.recordLaunch(launch);
         },
         onReady: (ready) => {
+          this.log(`${profileId}: launch stage CDP ready`);
           launch.firefoxOwner = ready;
           launch.pid = ready.browserPid;
           launch.ws = firefoxEndpoint(ready);
@@ -2995,6 +2997,12 @@ export class Launcher {
       launch.pid = running.browserPid;
       launch.ws = firefoxEndpoint(running);
       this.store.recordLaunch(launch);
+      // Initial contention ends when the owner serves page operations. A slow
+      // restore or fingerprint read should not keep other owners waiting.
+      if (!this.firefoxStarted) {
+        this.firefoxStarted = true;
+        this.firefoxColdStarts.wake();
+      }
       profile = this.requireUnchangedProfile(profileId, snapshot, "Firefox startup");
       let startupStatus = await this.contextStatus(launch);
       const restoreDeadline = Date.now() + 3_000;

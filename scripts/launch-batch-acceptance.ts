@@ -2,20 +2,19 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statfsSync, writeFileSync } from "node:fs";
-import { availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openCdp } from "../agent/chromium-fingerprint.mjs";
 import { aliasmodeChromiumExecutable, ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 } from "../src/aliasmode-chromium.ts";
 import { sha256File } from "../src/browser-install.ts";
-import { launchBatchSize, readMemory } from "../src/cooling.ts";
+import { HostWorkBudget, readMemory } from "../src/cooling.ts";
+import { availableParallelism } from "node:os";
 import { buildNewProfile } from "../src/create.ts";
 import { captureFingerprint } from "../src/fingerprint-capture.ts";
-import { callFirefoxOwner, closeFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner } from "../src/firefox-runtime.ts";
 import { Launcher } from "../src/launcher.ts";
-import { LifecycleAdmissionController } from "../src/lifecycle-admission.ts";
 import { runPlaywrightWorker } from "../src/playwright-runtime.ts";
 import { ProfileStore } from "../src/store.ts";
+import { LifecycleAdmissionController } from "../src/lifecycle-admission.ts";
 import { serveAutomationApi } from "../src/web.ts";
 
 const { values } = parseArgs({ options: {
@@ -28,6 +27,8 @@ const { values } = parseArgs({ options: {
   "soak-seconds": { type: "string", default: "0" },
   "sample-seconds": { type: "string", default: "60" },
   "adspower-url": { type: "string" },
+  "first-action": { type: "boolean" },
+  visible: { type: "boolean" },
   report: { type: "string", default: "reports/launch-batch-acceptance.json" },
 } });
 const count = Number(values.profiles);
@@ -42,7 +43,9 @@ if (adsOrigin) {
   assert.equal(engine, "chromium", "AdsPower comparison uses its Chrome kernel");
 }
 assert.ok(engine === "chromium" || engine === "firefox", "engine must be chromium or firefox");
-const concurrency = values.concurrency ? Number(values.concurrency) : launchBatchSize(readMemory(), availableParallelism());
+const hostWork = new HostWorkBudget(availableParallelism());
+const admission = new LifecycleAdmissionController({ hostWork });
+const concurrency = values.concurrency ? Number(values.concurrency) : Math.max(1, hostWork.status().limit);
 assert.ok(Number.isInteger(count) && count > 0 && count <= 100, "profiles must be an integer between 1 and 100");
 assert.ok(Number.isInteger(concurrency) && concurrency > 0, "concurrency must be a positive integer");
 assert.ok(Number.isSafeInteger(soakSeconds) && soakSeconds >= 0 && Number.isSafeInteger(sampleSeconds) && sampleSeconds >= 1, "Use whole-second soak and sample intervals");
@@ -59,22 +62,12 @@ mkdirSync(dirname(output), { recursive: true });
 const directory = realpathSync(dirname(output));
 const dataRoot = mkdtempSync(join(directory, "launch-batch-qa-"));
 const store = new ProfileStore(":memory:");
-interface Timing { spawned?: number; connected?: number; fingerprintMs?: number }
+interface Timing { spawned?: number; connected?: number; fingerprintMs?: number; serverQueueMs?: number; firstActionMs?: number; warmupQueueMs?: number }
 const events = new Map<string, Timing>();
 const launcher = new Launcher({
-  store, dataRoot, headless: true,
+  store, dataRoot, headless: !values.visible,
   ensureAliasmodeChromium: async () => chromium,
   ...(firefox ? { firefoxBinaryPath: executable, expectedFirefoxBinarySha256: binarySha256 } : {}),
-  firefoxRuntime: {
-    reserve: reserveFirefoxOwner, call: callFirefoxOwner, close: closeFirefoxOwner,
-    async start(input, callbacks) {
-      const timing = events.get(input.profileId);
-      if (timing) timing.spawned = performance.now();
-      const owner = await startFirefoxOwner(input, callbacks);
-      if (timing) timing.connected = performance.now();
-      return owner;
-    },
-  },
   async captureFingerprint(ws) {
     const launch = store.listLaunches().find(launch => launch.debugPort === Number(new URL(ws).port));
     const timing = launch && events.get(launch.profileId);
@@ -83,6 +76,8 @@ const launcher = new Launcher({
     finally { if (timing) timing.fingerprintMs = Math.round(performance.now() - from); }
   },
   log(line) {
+    const warmup = /^(\S+): Firefox warmup queue ([\d.]+)ms$/.exec(line);
+    if (warmup && events.has(warmup[1]!)) events.get(warmup[1]!)!.warmupQueueMs = Number(warmup[2]);
     const stage = /^(\S+): launch stage (browser spawned|CDP ready)$/.exec(line);
     if (stage) {
       const key = stage[2] === "browser spawned" ? "spawned" : "connected";
@@ -91,11 +86,9 @@ const launcher = new Launcher({
     }
   },
 });
-const processors = availableParallelism();
-const admission = new LifecycleAdmissionController({ startBudget: () => launchBatchSize(readMemory(), processors) });
 const server = !adsOrigin ? serveAutomationApi({ store, launcher, port: 0, lifecycleAdmission: admission, log: () => {} }) : undefined;
 let seedSession = true;
-const site = engine === "firefox" || soakSeconds > 0 ? Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(req) {
+const site = values["first-action"] || engine === "firefox" || soakSeconds > 0 ? Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(req) {
   const profile = new URL(req.url).pathname.slice(1);
   return new Response("<!doctype html><title>Local session fixture</title>", { headers: {
     "Content-Type": "text/html", "Cache-Control": "no-store",
@@ -132,7 +125,7 @@ async function startProfile(index: number, id: string, label: string) {
   if (adsOrigin) {
     externalRunning.add(id);
     const data = await adsRequest<{ ws: { puppeteer: string } }>("start", {
-      profile_id: id, headless: "1", last_opened_tabs: "1", proxy_detection: "0", delete_cache: "0",
+      profile_id: id, headless: values.visible ? "0" : "1", last_opened_tabs: "1", proxy_detection: "0", delete_cache: "0",
     });
     const endpoint = new URL(data.ws?.puppeteer);
     assert.ok(endpoint.protocol === "ws:" && ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname), "AdsPower must return a loopback CDP endpoint");
@@ -142,10 +135,22 @@ async function startProfile(index: number, id: string, label: string) {
   const params = new URLSearchParams({ user_id: id });
   if (site && label === "fresh") params.set("launch_args", JSON.stringify([site.url.origin + "/" + index]));
   const response = await fetch(base + "/api/v1/browser/start?" + params);
+  const queue = response.headers.get("server-timing")?.match(/vela_queue;dur=([\d.]+)/)?.[1];
+  if (queue && events.has(id)) events.get(id)!.serverQueueMs = Number(queue);
   const result = await response.json() as { code: number; msg: string; data: { engine?: string; ws?: { puppeteer?: string } } };
   if (result.code !== 0) throw new Error(result.msg);
   const ready = engine === "firefox" ? result.data?.engine === "firefox" : !!result.data?.ws?.puppeteer;
   if (!ready) throw new Error("Browser connection missing");
+}
+
+async function firstAction(id: string) {
+  const endpoint = adsOrigin ? endpoints.get(id) : store.getLaunch(id)?.ws;
+  assert.ok(endpoint, "First action requires an attached browser");
+  const receipt = await runPlaywrightWorker<{ completed: boolean; value?: string; error?: string }>("devtools-program", {
+    endpoint, code: "async ({ context }) => { const page = context.pages().find(p => p.url().startsWith('http://127.0.0.1:')); return page && await page.title(); }",
+  }, { timeoutMs: 15_000 });
+  assert.equal(receipt.completed, true, receipt.error);
+  assert.equal(receipt.value, "Local session fixture");
 }
 
 async function stopProfile(id: string) {
@@ -233,7 +238,7 @@ async function residentSoak(indices: number[]) {
       assert.ok(launch && launch.pid > 0 && await launcher.certifiedActive(id), "Recycle only a browser of this fixture");
       await launcher.captureLocalSession(id);
       assert.ok(await launcher.stop(id, launch));
-      await launcher.start(id, [], { headless: true });
+      await startProfile(indices[0]!, id, "reopen");
     }
     await checkCookie(indices[0]!, id);
     recoveryMs = ms(performance.now() - recovering);
@@ -286,7 +291,8 @@ try {
       peakOpen = Math.max(peakOpen, adsOrigin ? endpoints.size : store.listLaunches().length);
     }, 150);
     const loaded: Array<{ index: number; ok: boolean; error?: string; queueMs: number; totalMs: number;
-      requestMs: number; toSpawnMs?: number; spawnToControlMs?: number; controlToReadyMs?: number; fingerprintMs?: number }> = [];
+      requestMs: number; serverQueueMs?: number; toSpawnMs?: number; spawnToControlMs?: number; controlToReadyMs?: number;
+      apiToFirstActionMs?: number; firstActionMs?: number; fingerprintMs?: number; warmupQueueMs?: number }> = [];
     let next = 0;
     try {
       const settled = await Promise.allSettled(Array.from({ length: Math.min(concurrency, count) }, async () => {
@@ -312,14 +318,21 @@ try {
             await startProfile(index, id, label);
           } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
           const ready = performance.now();
+          if (error === undefined && values["first-action"]) {
+            try { await firstAction(id); entry.firstActionMs = performance.now(); }
+            catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+          }
           loaded.push({
             index, ok: error === undefined, ...(error ? { error } : {}),
             queueMs: ms(dispatched - start), totalMs: ms(ready - start), requestMs: ms(ready - dispatched),
-            ...(entry.spawned !== undefined ? { toSpawnMs: ms(entry.spawned - dispatched) } : {}),
+            ...(entry.serverQueueMs !== undefined ? { serverQueueMs: entry.serverQueueMs } : {}),
+            ...(entry.warmupQueueMs !== undefined ? { warmupQueueMs: entry.warmupQueueMs } : {}),
+            ...(entry.spawned !== undefined ? { toSpawnMs: ms(Math.max(0, entry.spawned - dispatched - (entry.serverQueueMs ?? 0) - (entry.warmupQueueMs ?? 0))) } : {}),
             ...(entry.connected !== undefined && entry.spawned !== undefined ? {
               spawnToControlMs: ms(entry.connected - entry.spawned), controlToReadyMs: ms(ready - entry.connected),
             } : {}),
             ...(entry.fingerprintMs === undefined ? {} : { fingerprintMs: entry.fingerprintMs }),
+            ...(entry.firstActionMs === undefined ? {} : { apiToFirstActionMs: ms(entry.firstActionMs - ready), firstActionMs: ms(entry.firstActionMs - start) }),
           });
           if (loaded.length % 10 === 0) console.log(`${engine} ${label} ${loaded.length}/${count} ready or failed`);
           if (closeAfterReady) {
@@ -333,11 +346,16 @@ try {
     } finally { clearInterval(monitor); }
     const successful = loaded.filter(item => item.ok);
     const elapsed = successful.map(item => item.totalMs).sort((a, b) => a - b);
-    const requests = successful.map(item => item.requestMs).sort((a, b) => a - b);
+    const p95 = (key: keyof (typeof loaded)[number]) => {
+      const samples = successful.flatMap(item => typeof item[key] === "number" ? [item[key] as number] : []).sort((a, b) => a - b);
+      return samples[Math.ceil(samples.length * 0.95) - 1] ?? null;
+    };
     const run = {
       label, wallMs: ms(performance.now() - start), firstReadyMs: elapsed[0] ?? null,
       p95ReadyMs: elapsed[Math.ceil(elapsed.length * 0.95) - 1] ?? null,
-      p95RequestMs: requests[Math.ceil(requests.length * 0.95) - 1] ?? null,
+      p95RequestMs: p95("requestMs"), p95ClientQueueMs: p95("queueMs"), p95ServerQueueMs: p95("serverQueueMs"),
+      p95ToSpawnMs: p95("toSpawnMs"), p95WarmupQueueMs: p95("warmupQueueMs"),
+      p95SpawnToControlMs: p95("spawnToControlMs"), p95FirstActionMs: p95("firstActionMs"),
       peakConcurrent, peakOpen, startFreeMiB: mib(startFree), minFreeMiB: mib(minimumFree),
       ...(startDiskFree !== undefined && minimumDiskFree !== undefined ? {
         startDiskFreeMiB: mib(startDiskFree), minDiskFreeMiB: mib(minimumDiskFree),
@@ -389,7 +407,7 @@ try {
   store.close();
   writeFileSync(output, JSON.stringify({ platform: process.platform, engine,
     ...(adsOrigin ? { backend: "adspower", browserVersion: adsVersion, requestSpacingMs: 1000 } : { backend: "vela", binarySha256 }),
-    profiles: count, concurrency, closeAfterReady, generatedAt: new Date().toISOString(), runs, cleanupErrors }, null, 2) + "\n");
+    profiles: count, concurrency, closeAfterReady, headless: !values.visible, generatedAt: new Date().toISOString(), runs, cleanupErrors }, null, 2) + "\n");
   if (cleanupErrors.length) {
     for (const error of cleanupErrors) console.error(error);
     process.exitCode = 1;

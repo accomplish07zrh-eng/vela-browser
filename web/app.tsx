@@ -105,7 +105,8 @@ import {
   moveGroup,
   deleteGroup,
   fetchTotp,
-  profileLaunchConcurrency,
+  profileLaunchStatus,
+  cancelProfileStart,
 } from "./api.ts";
 
 const CSV_TEMPLATE =
@@ -1188,6 +1189,7 @@ function App() {
   const [scriptRunOpen, setScriptRunOpen] = useState(false);
   const [workbenchLocate, setWorkbenchLocate] = useState({ id: "", revision: 0 });
   const [searchScriptId, setSearchScriptId] = useState<string>();
+  const [taskReceipt, setTaskReceipt] = useState<{ runId: string; sequence: number }>();
   const [scriptRunProfiles, setScriptRunProfiles] = useState<UiProfile[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [createProxyOpen, setCreateProxyOpen] = useState(false);
@@ -1233,6 +1235,17 @@ function App() {
   const [tableScrolled, setTableScrolled] = useState(false);
   const [theme, setTheme] = useState<ThemeChoice>(readTheme);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [launchingBatch, setLaunchingBatch] = useState(false);
+  const [launchPressure, setLaunchPressure] = useState(false);
+  const batchStart = useRef<{ cancelled: boolean; pending: Set<string> } | null>(null);
+  useEffect(() => {
+    if (!launchingBatch) return;
+    let active = true;
+    const check = () => { void profileLaunchStatus().then(status => { if (active) setLaunchPressure(status.memoryPaused === true); }); };
+    check();
+    const timer = setInterval(check, 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, [launchingBatch]);
   const [runtimeDownloads, setRuntimeDownloads] = useState<RuntimeDownload[]>([]);
   // Two error slots so an auto-refresh can't silently wipe why an action failed:
   // actionErr is sticky (Open/Close/move/import), connErr tracks load() only.
@@ -2424,7 +2437,8 @@ function App() {
   };
 
   // ---- Bulk open / close (bounded concurrency) ----
-  const bulkRun = async (op: (id: string) => Promise<any>, pick: (p: UiProfile) => boolean, batch = 4) => {
+  const bulkRun = async (op: (id: string) => Promise<any>, pick: (p: UiProfile) => boolean, batch = 4,
+    start?: { cancelled: boolean; pending: Set<string> }) => {
     const eligible = new Set(profiles.filter(pick).map(p => p.id));
     const ids = [...selected].filter(id => eligible.has(id) && !busy[id]);
     if (!ids.length) return;
@@ -2433,12 +2447,15 @@ function App() {
     const issues: string[] = [];
     await runProfilePool(ids, batch, async (id) => {
       try {
+        if (start?.cancelled) return;
+        start?.pending.add(id);
         const r = await op(id);
-        if (r?.ok === false) issues.push(`${id}: ${r.error || "action failed"}`);
+        if (r?.ok === false && !start?.cancelled) issues.push(`${id}: ${r.error || "action failed"}`);
         else if (r?.warning) issues.push(`${id}: ${actionWarning(r)}`);
       } catch (error) {
-        issues.push(`${id}: ${String(error)}`);
+        if (!start?.cancelled) issues.push(`${id}: ${String(error)}`);
       } finally {
+        start?.pending.delete(id);
         setBusy(current => { const next = { ...current }; delete next[id]; return next; });
       }
     });
@@ -2446,7 +2463,23 @@ function App() {
     if (issues.length > 0) setActionErr(issues.join("; "));
   };
   const openSelected = async () => {
-    await bulkRun(openProfile, (p) => !p.running && !p.mobilePersona, await profileLaunchConcurrency());
+    if (batchStart.current) return;
+    const start = { cancelled: false, pending: new Set<string>() };
+    batchStart.current = start;
+    setLaunchPressure(false);
+    setLaunchingBatch(true);
+    try {
+      await bulkRun(openProfile, (p) => !p.running && !p.mobilePersona, Math.max(1, (await profileLaunchStatus()).size), start);
+    } finally {
+      batchStart.current = null;
+      setLaunchingBatch(false);
+    }
+  };
+  const cancelBatchStart = () => {
+    const batch = batchStart.current;
+    if (!batch) return;
+    batch.cancelled = true;
+    void Promise.allSettled([...batch.pending].map(cancelProfileStart));
   };
   const closeSelected = () => bulkRun(closeProfile, (p) => p.running);
   const convertSelectedMobile = async () => {
@@ -3098,9 +3131,11 @@ function App() {
             {t("{count} selected", { count: selected.size })}
           </span>
           <button type="button" className="btn ghost" aria-label={t("Clear selection")} onClick={() => setSelected(new Set())}>{t("Clear selection")}</button>
-          <button className="btn primary tip" data-tip={t("Open selected browsers")} disabled={!selected.size} onClick={openSelected}>
+          <button className="btn primary tip" data-tip={t("Open selected browsers")} disabled={!selected.size || launchingBatch} onClick={openSelected}>
             <Icon name="play" className="sm" />{t("Open")}
           </button>
+          {launchingBatch && <><span role="status">{t(launchPressure ? "Waiting for available memory" : "Starting browsers…")}</span>
+            <button type="button" className="btn ghost" onClick={cancelBatchStart}>{t("Cancel pending starts")}</button></>}
           <button className="btn solid-danger tip" data-tip={t("Close selected browsers")} disabled={!selected.size} onClick={closeSelected}>
             <Icon name="power" className="sm" />{t("Close")}
           </button>
@@ -3444,7 +3479,8 @@ function App() {
         </footer>
       </div>
       ) : view === "workbench" ? null : view === "scripts" ? (
-      <ScriptsPage onViewRun={() => setScriptRunOpen(true)} initialScriptId={searchScriptId} />
+      <ScriptsPage key={taskReceipt ? taskReceipt.runId + ":" + taskReceipt.sequence : "scripts"}
+        onViewRun={() => setScriptRunOpen(true)} initialScriptId={searchScriptId} taskReceipt={taskReceipt} />
       ) : view === "extensions" ? (
       <div className="workspace">
         <div className="settingspage">
@@ -3777,7 +3813,7 @@ function App() {
           {settingsTab === "ai" && (
             <>
               <AiAccessCard flash={flash} />
-              <ActivityCard flash={flash} />
+              <ActivityCard flash={flash} onReceipt={receipt => { setTaskReceipt(receipt); setView("scripts"); }} />
             </>
           )}
 

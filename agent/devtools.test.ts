@@ -482,6 +482,33 @@ test("semantic actions require an explicit ambiguous match and report verificati
   expect(clicks).toEqual([1]);
 });
 
+test("compact controls act and verify in one call and expire on same-URL navigation", async () => {
+  const { call, context, observer } = setup();
+  const frame = context.page.frame as any;
+  const identity = { tag: "button", name: "", type: "", testId: "", label: "", text: "Save" };
+  let matches = 1, clicks = 0;
+  frame.locator = () => ({ evaluate: async () => ({ headings: ["Draft"], controls: [
+    { role: "button", name: "Save", identity, candidates: [{ role: "button", name: "Save" }] },
+  ] }) });
+  frame.getByRole = () => ({ count: async () => matches, evaluate: async () => identity, click: async () => { clicks++; } });
+  frame.getByText = () => ({ filter: () => ({ first: () => ({ waitFor: async () => {} }) }) });
+  try {
+    const original = await call("observe", { compact: true });
+    const ref = original.controls[0].ref;
+    expect(ref).toBeTruthy();
+    expect(original.controls[0].anchor).toBeUndefined();
+    matches = 2;
+    await expect(call("action", { action: "click", ref })).rejects.toThrow("unique element");
+    matches = 1;
+    const reply = await call("action", { action: "click", ref, verify: { text: "Saved" }, observe: true });
+    expect(reply).toMatchObject({ actionCompleted: true, verification: { passed: true }, observation: { headings: ["Draft"] } });
+    expect(reply.observation.controls[0].ref).not.toBe(ref);
+    context.page.emit("framenavigated", frame);
+    await expect(call("action", { action: "click", ref })).rejects.toThrow("unique element");
+    expect(clicks).toBe(1);
+  } finally { observer.dispose(); }
+});
+
 test("unusual rendered glyphs attach a screenshot of the inspected viewport region", async () => {
   const { context, observer } = setup();
   const page = context.page as any;

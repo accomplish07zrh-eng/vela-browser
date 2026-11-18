@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ProfileWriteLease, ProfileWrites } from "./profile-writes.ts";
+import type { HostWorkBudget, HostWorkPermit } from "./cooling.ts";
+import { agentKey } from "./ai-access.ts";
 
 type StepState = "pending" | "uncertain" | "completed";
 type RunState = "queued" | "running" | "recovering" | "blocked" | "paused" | "interrupted" | "needs_verification" | "completed" | "cancelled";
@@ -11,16 +13,33 @@ type Step = { id: string; run: string; verify?: string; readOnly?: true; timeout
 type TaskTarget = { startUrl: string; tabId?: string };
 type TaskTab = { id: string; generation: string; lost?: true };
 type Definition = { profileId: string; name: string; argument?: unknown; screenshots: boolean; steps: Step[]; target?: TaskTarget };
-type Checkpoint = { id: string; state: StepState; attempts: number; evidence?: number; error?: string };
+type Checkpoint = { id: string; state: StepState; attempts: number; evidence?: number; error?: string;
+  result?: { value?: unknown }; verification?: "applied" | "absent" | "unknown" };
 type TaskBlock = { code: string; message?: string };
 type SiteSkill = { id: string; sourceRunId: string; name: string; origin: string; path: string; createdAt: string; sourceGroup?: string };
 type QueueState = { order: number; recoveries: number; consecutiveRecoveries: number; retryAt?: number; verifier?: { stepId: string; code: string } };
 type BrowserTask = {
   version: 1; runId: string; client: string; definition: Definition; state: RunState;
+  owner?: BrowserTaskActor; delegates?: string[]; firstEvidence?: number;
   createdAt: string; updatedAt: string; steps: Checkpoint[]; evidenceCount: number; error?: string;
   stopRequested?: "paused" | "cancelled";
   queue?: QueueState; tab?: TaskTab; blocked?: TaskBlock;
 };
+export interface BrowserTaskActor { name: string; scope: string }
+type TaskClient = string | BrowserTaskActor;
+function taskActor(client: TaskClient): BrowserTaskActor {
+  return typeof client === "string" ? { scope: "local", name: client } : client;
+}
+function ownerOf(task: BrowserTask): BrowserTaskActor {
+  return task.owner ?? (task.client.startsWith("worker:")
+    ? { scope: "worker-legacy:" + task.client.slice(7), name: task.client }
+    : taskActor(task.client));
+}
+const actorKey = (actor: BrowserTaskActor) => JSON.stringify([actor.scope, agentKey(actor.name)]);
+const EVIDENCE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_EVIDENCE_BYTES = 128 * 1024 * 1024;
+const MAX_RECEIPT_BYTES = 2 * 1024 * 1024;
+const MAX_TASK_STEPS = 100;
 type BrowserProgram = {
   code: string; argument: unknown; screenshots: boolean; timeoutMs: number; pageUrl?: string; frameUrl?: string;
   tabId?: string;
@@ -84,10 +103,10 @@ function atomicJson(path: string, value: unknown) {
 }
 
 function taskDefinition(profileId: string, params: Record<string, unknown>): Definition {
-  if (!Array.isArray(params.steps) || !params.steps.length) badRequest("Provide an ordered array of steps");
+  if (!Array.isArray(params.steps) || !params.steps.length || params.steps.length > MAX_TASK_STEPS) badRequest("Provide 1 to 100 ordered steps");
   const seen = new Set<string>();
   const steps = params.steps.map((step: Step) => {
-    if (!step || typeof step.id !== "string" || !step.id.trim() || seen.has(step.id)
+    if (!step || typeof step.id !== "string" || !step.id.trim() || step.id.length > 120 || seen.has(step.id)
       || typeof step.run !== "string" || !step.run.trim() || (step.verify !== undefined && (typeof step.verify !== "string" || !step.verify.trim()))
       || (step.timeoutMs !== undefined && (!Number.isSafeInteger(step.timeoutMs) || step.timeoutMs < 1 || step.timeoutMs > 2 ** 31 - 1))) {
       badRequest("Each step needs a unique id, a JavaScript function in run, and an optional verifier and positive timeoutMs");
@@ -121,8 +140,12 @@ function taskDefinition(profileId: string, params: Record<string, unknown>): Def
 function view(task: BrowserTask) {
   return {
     runId: task.runId, client: task.client, profileId: task.definition.profileId, name: task.definition.name, state: task.state,
-    createdAt: task.createdAt, updatedAt: task.updatedAt, steps: structuredClone(task.steps),
-    evidenceCount: task.evidenceCount, ...(task.error ? { error: task.error } : {}),
+    createdAt: task.createdAt, updatedAt: task.updatedAt, steps: task.steps.map(({ result: _result, ...step }) => ({
+      ...step, actionKey: `${task.runId}:${step.id}`,
+      ...(step.state === "uncertain" ? { expectedAttempt: `${step.id}:${step.attempts}:${step.evidence ?? 0}` } : {}),
+    })),
+    evidenceCount: task.evidenceCount, firstEvidence: task.firstEvidence ?? 1,
+    ...(task.delegates?.length ? { delegates: [...task.delegates] } : {}), ...(task.error ? { error: task.error } : {}),
     ...(task.stopRequested ? { stopRequested: task.stopRequested } : {}),
     ...(task.queue ? { recoveries: task.queue.recoveries } : {}),
     ...(task.queue?.retryAt ? { retryAt: new Date(task.queue.retryAt).toISOString() } : {}),
@@ -137,6 +160,8 @@ interface ActiveTask {
   waiting: AbortController;
   stop?: "paused" | "cancelled" | "interrupted";
   done: Promise<void>;
+  lease?: ProfileWriteLease;
+  hostPermit?: HostWorkPermit;
 }
 
 export class BrowserTaskSupervisor {
@@ -146,15 +171,21 @@ export class BrowserTaskSupervisor {
   private closing = false;
   private order = 0;
   private queueTimer?: ReturnType<typeof setTimeout>;
+  private evidenceTimer?: ReturnType<typeof setInterval>;
+  private readonly receipts: { runId: string; sequence: number; bytes: number; at: number }[] = [];
+  private receiptBytes = 0;
+  private nextEvidencePrune = 0;
 
   constructor(private readonly options: {
     root: string;
-    open(profileId: string, client: string): Promise<BrowserTaskConnection>;
-    authorize(profileId: string, client: string, savedGroup?: string): string | void;
+    open(profileId: string, client: string, signal?: AbortSignal, hostPermit?: HostWorkPermit, actor?: BrowserTaskActor): Promise<BrowserTaskConnection>;
+    authorize(profileId: string, client: string, savedGroup?: string, actor?: BrowserTaskActor): string | void;
     capacity?(): number;
+    hostWork?: HostWorkBudget;
     writes?: ProfileWrites;
     hold?(profileId: string): () => void;
     log?(text: string): void;
+    record?(receipt: { runId: string; profileId: string; client: string; stepId: string; sequence: number; phase: Phase; ok: boolean }): void;
   }) {
     mkdirSync(options.root, { recursive: true, mode: 0o700 });
     for (const id of readdirSync(options.root)) {
@@ -167,7 +198,7 @@ export class BrowserTaskSupervisor {
         if (task.queue) this.order = Math.max(this.order, task.queue.order);
         if (task.state === "running") {
           task.state = task.steps.every(step => step.state === "completed") ? "completed"
-            : task.stopRequested ?? (task.queue ? "queued" : "interrupted");
+            : task.stopRequested ?? (task.definition.target ? "queued" : "interrupted");
           delete task.stopRequested;
           this.save(task);
         }
@@ -182,9 +213,28 @@ export class BrowserTaskSupervisor {
         if (file === `${skill.id}.json` && this.history.get(skill.sourceRunId)?.state === "completed") this.skills.set(skill.id, skill);
       } catch (error) { options.log?.(`Could not read site skill ${file}: ${message(error)}`); }
     }
+    for (const task of this.history.values()) try {
+      let first = task.evidenceCount + 1;
+      for (const file of readdirSync(this.path(task.runId))) {
+        const match = /^evidence-(\d+)\.json$/.exec(file);
+        if (!match) continue;
+        const sequence = Number(match[1]);
+        if (!Number.isSafeInteger(sequence) || sequence < 1) continue;
+        const stat = statSync(this.path(task.runId, file), { throwIfNoEntry: false });
+        if (!stat?.isFile()) continue;
+        this.trackReceipt(task.runId, sequence, stat.size, stat.mtimeMs);
+        first = Math.min(first, sequence);
+        task.evidenceCount = Math.max(task.evidenceCount, sequence);
+      }
+      task.firstEvidence = first;
+    } catch (error) { options.log?.(`Could not read receipts for ${task.runId}: ${message(error)}`); }
+    this.pruneEvidence();
   }
 
-  startRecovery() { this.wakeQueue(); }
+  startRecovery() {
+    this.evidenceTimer ??= setInterval(() => this.pruneEvidence(), 60_000).unref();
+    this.wakeQueue();
+  }
 
   private path(id: string, filename = ""): string { return join(this.options.root, id, filename); }
 
@@ -199,10 +249,34 @@ export class BrowserTaskSupervisor {
     return task;
   }
 
-  status(runId: string): BrowserTaskView { return view(this.get(runId)); }
+  private authorize(task: BrowserTask, client?: TaskClient, ownerOnly = false): void {
+    if (client === undefined) return; // Desktop and scheduler callers already cross their own local boundary.
+    const actor = taskActor(client), owner = ownerOf(task);
+    const legacyName = owner.scope === "local" && actor.scope === "local-auth" && agentKey(owner.name) === agentKey(actor.name);
+    if (actorKey(owner) !== actorKey(actor) && !legacyName &&
+      (ownerOnly || owner.scope !== actor.scope || !task.delegates?.includes(agentKey(actor.name)))) {
+      throw new BrowserTaskError("not_permitted", "This browser task belongs to a different Agent", 403);
+    }
+    this.options.authorize(task.definition.profileId, actor.name, undefined, actor);
+  }
 
-  list(allowed: (profileId: string) => boolean, offset = 0, limit = 50) {
-    const matches = [...this.history.values()].filter(task => allowed(task.definition.profileId))
+  queueStatus() {
+    let waiting = 0;
+    for (const task of this.history.values()) if (task.state === "queued" || task.state === "recovering") waiting++;
+    return { running: this.running.size, waiting };
+  }
+
+  status(runId: string, client?: TaskClient): BrowserTaskView {
+    const task = this.get(runId);
+    this.authorize(task, client);
+    return view(task);
+  }
+
+  list(allowed: (profileId: string) => boolean, offset = 0, limit = 50, client?: TaskClient) {
+    const matches = [...this.history.values()].filter(task => {
+      if (!allowed(task.definition.profileId)) return false;
+      try { this.authorize(task, client); return true; } catch { return false; }
+    })
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId));
     const tasks = matches.slice(offset, offset + limit).map(view);
     return { tasks, nextOffset: offset + tasks.length, hasMore: offset + tasks.length < matches.length };
@@ -221,9 +295,11 @@ export class BrowserTaskSupervisor {
     return { profileId, tabId: task.tab.id };
   }
 
-  saveSkill(runId: string, client: string, params: Record<string, unknown>) {
+  saveSkill(runId: string, client: TaskClient, params: Record<string, unknown>) {
     const task = this.get(runId);
-    const sourceGroup = this.options.authorize(task.definition.profileId, client);
+    this.authorize(task, client);
+    const actor = taskActor(client);
+    const sourceGroup = this.options.authorize(task.definition.profileId, actor.name, undefined, actor);
     if (task.state !== "completed") throw new BrowserTaskError("task_incomplete", "Complete the browser task before saving it as a site skill", 409);
     const source = task.definition.target?.startUrl;
     const site = webUrl(params.url ?? source, "url");
@@ -254,22 +330,25 @@ export class BrowserTaskSupervisor {
     return { skills, nextOffset: offset + skills.length, hasMore: offset + skills.length < matches.length };
   }
 
-  canUseProfile(profileId: string, client: string): boolean {
-    try { this.options.authorize(profileId, client); return true; } catch { return false; }
+  canUseProfile(profileId: string, client: TaskClient): boolean {
+    const actor = taskActor(client);
+    try { this.options.authorize(profileId, actor.name, undefined, actor); return true; } catch { return false; }
   }
 
-  checkSkill(skillId: unknown, client: string, startUrl?: unknown) {
+  checkSkill(skillId: unknown, client: TaskClient, startUrl?: unknown) {
     const skill = typeof skillId === "string" ? this.skills.get(skillId) : undefined;
     if (!skill) throw new BrowserTaskError("skill_not_found", "Site skill was not found", 404);
     const source = this.get(skill.sourceRunId);
-    this.options.authorize(source.definition.profileId, client, skill.sourceGroup);
+    const actor = taskActor(client);
+    this.options.authorize(source.definition.profileId, actor.name, skill.sourceGroup, actor);
     const site = webUrl(startUrl ?? skill.origin + skill.path, "startUrl");
     if (!matchesSite(skill, site)) badRequest("The task's startUrl must match the site skill");
     return { startUrl: site.href, steps: source.definition.steps, name: skill.name };
   }
 
-  start(profileId: string, client: string, params: Record<string, unknown>): BrowserTaskView {
-    this.options.authorize(profileId, client);
+  start(profileId: string, client: TaskClient, params: Record<string, unknown>, previousKey?: string): BrowserTaskView {
+    const owner = taskActor(client);
+    this.options.authorize(profileId, owner.name, undefined, owner);
     if (params.skillId !== undefined) {
       const plan = this.checkSkill(params.skillId, client, params.startUrl);
       params = { ...params, ...plan, name: params.name ?? plan.name };
@@ -277,19 +356,27 @@ export class BrowserTaskSupervisor {
     const definition = taskDefinition(profileId, params);
     const key = params.idempotencyKey;
     if (key !== undefined && (typeof key !== "string" || !key.trim() || key.length > 256)) badRequest("idempotencyKey must be 1 to 256 characters");
-    const runId = key ? createHash("sha256").update(JSON.stringify([profileId, key])).digest("hex").slice(0, 32) : randomUUID().replaceAll("-", "");
-    const previous = this.history.get(runId);
+    const legacyId = key ? createHash("sha256").update(JSON.stringify([profileId, key])).digest("hex").slice(0, 32) : undefined;
+    const runId = key && (owner.scope === "local" || owner.scope.startsWith("worker-legacy:")) ? legacyId!
+      : key ? createHash("sha256").update(JSON.stringify([profileId, actorKey(owner), key])).digest("hex").slice(0, 32)
+      : randomUUID().replaceAll("-", "");
+    const previous = this.history.get(runId) ?? (legacyId && owner.scope === "local-auth" ? this.history.get(legacyId) : undefined);
     if (previous) {
+      this.authorize(previous, owner, true);
       if (!isDeepStrictEqual(previous.definition, definition)) throw new BrowserTaskError("key_conflict", "This idempotency key already identifies a different plan", 409);
       return view(previous);
+    }
+    if (previousKey) {
+      const previousId = createHash("sha256").update(JSON.stringify([profileId, previousKey])).digest("hex").slice(0, 32);
+      if (this.history.has(previousId)) throw new BrowserTaskError("key_conflict", "A run with this key exists under the previous Worker identity", 409);
     }
     this.assertOpen();
     if (!definition.target) this.assertAvailable(profileId);
     const now = new Date().toISOString();
     const task: BrowserTask = {
-      version: 1, runId, client, definition, state: definition.target ? "queued" : "running", createdAt: now, updatedAt: now,
+      version: 1, runId, client: owner.name, owner, definition, state: "queued", createdAt: now, updatedAt: now,
       steps: definition.steps.map(step => ({ id: step.id, state: "pending", attempts: 0 })), evidenceCount: 0,
-      ...(definition.target ? { queue: { order: ++this.order, recoveries: 0, consecutiveRecoveries: 0 } } : {}),
+      queue: { order: ++this.order, recoveries: 0, consecutiveRecoveries: 0 },
     };
     const directory = this.path(runId);
     mkdirSync(directory, { mode: 0o700, recursive: true });
@@ -299,36 +386,53 @@ export class BrowserTaskSupervisor {
     syncDirectory(this.options.root);
     try { this.save(task); } catch (error) { rmSync(this.path(runId), { recursive: true, force: true }); throw error; }
     this.history.set(runId, task);
-    if (task.queue) this.wakeQueue();
-    else this.launch(task);
+    if (definition.target) this.wakeQueue();
+    else this.dispatch();
     return view(task);
   }
 
-  resume(runId: string, client: string, verify?: unknown): BrowserTaskView {
+  resume(runId: string, client?: TaskClient, verify?: unknown, expectedAttempt?: unknown): BrowserTaskView {
     const task = this.get(runId);
-    this.options.authorize(task.definition.profileId, client);
+    this.authorize(task, client);
     if (this.running.has(runId) || isFinished(task.state) || task.state === "queued" || task.state === "recovering") return view(task);
     this.assertOpen();
-    if (!task.queue) this.assertAvailable(task.definition.profileId);
+    if (!task.definition.target) this.assertAvailable(task.definition.profileId, runId);
     const step = task.steps.find(item => item.state === "uncertain");
-    if (verify !== undefined && (!step || typeof verify !== "string" || !verify.trim())) badRequest("Supply a verification function for the uncertain step");
-    task.client = client;
-    task.state = task.queue ? "queued" : "running";
+    if (verify !== undefined && (!step || typeof verify !== "string" || !verify.trim() || Buffer.byteLength(verify) > 256 * 1024)) {
+      badRequest("Supply a verification function for the uncertain step");
+    }
+    if (expectedAttempt !== undefined && (!step || expectedAttempt !== `${step.id}:${step.attempts}:${step.evidence ?? 0}`)) {
+      throw new BrowserTaskError("checkpoint_changed", "The task checkpoint changed. Reload the evidence before supplying a verifier.", 409);
+    }
+    const owner = ownerOf(task);
+    this.options.authorize(task.definition.profileId, owner.name, undefined, owner);
+    task.state = "queued";
     delete task.error;
     delete task.blocked;
-    if (task.queue) {
-      task.queue.consecutiveRecoveries = 0;
-      delete task.queue.retryAt;
-      if (typeof verify === "string" && step) task.queue.verifier = { stepId: step.id, code: verify };
-    }
+    const queue = task.queue ??= { order: ++this.order, recoveries: 0, consecutiveRecoveries: 0 };
+    queue.consecutiveRecoveries = 0;
+    delete queue.retryAt;
+    if (typeof verify === "string" && step) queue.verifier = { stepId: step.id, code: verify };
     this.save(task);
-    if (task.queue) this.wakeQueue();
-    else this.launch(task, typeof verify === "string" ? verify : undefined);
+    this.wakeQueue();
     return view(task);
   }
 
-  stop(runId: string, state: "paused" | "cancelled") {
+  setDelegates(runId: string, value: unknown, client?: TaskClient) {
     const task = this.get(runId);
+    this.authorize(task, client, true);
+    if (task.owner === undefined && client !== undefined) task.owner = taskActor(client);
+    if (!Array.isArray(value) || value.length > 32 || value.some(name => typeof name !== "string" || !name.trim() || name.length > 64)) {
+      badRequest("Provide up to 32 Agent names");
+    }
+    task.delegates = [...new Set(value.map(agentKey))].filter(name => name !== agentKey(ownerOf(task).name) && name !== "unknown");
+    this.save(task);
+    return view(task);
+  }
+
+  stop(runId: string, state: "paused" | "cancelled", client?: TaskClient) {
+    const task = this.get(runId);
+    this.authorize(task, client);
     const active = this.running.get(runId);
     if (active) {
       const requested = active.stop === "cancelled" ? active.stop : state;
@@ -347,16 +451,18 @@ export class BrowserTaskSupervisor {
     return { task: view(task), stopping: false };
   }
 
-  evidence(runId: string, sequence: number, part: string, offset: number, bytes: number) {
+  evidence(runId: string, sequence: number, part: string, offset: number, bytes: number, client?: TaskClient) {
     const task = this.get(runId);
+    this.authorize(task, client);
     if (!Number.isSafeInteger(sequence) || sequence < 1 || sequence > task.evidenceCount) throw new BrowserTaskError("evidence_not_found", "Evidence was not found", 404);
     const data = this.readEvidence(runId, sequence);
     if (part === "summary") {
-      const { sequence, stepId, attempt, phase, startedAt, endedAt, completed, error, screenshot, screenshotError, network, events, logs, value } = data;
-      return { sequence, stepId, attempt, phase, startedAt, endedAt, completed, error, screenshotError,
+      const { sequence, stepId, attempt, phase, startedAt, endedAt, completed, error, screenshot, screenshotError, network, events, logs, value, detailsExpired } = data;
+      return { sequence, stepId, actionKey: `${runId}:${stepId}`, attempt, phase, startedAt, endedAt, completed, error, screenshotError, detailsExpired,
         available: { screenshot: !!screenshot, network: !!network, events: !!events, logs: !!logs, value: value !== undefined } };
     }
     if (!["value", "network", "events", "logs", "screenshot"].includes(part)) badRequest("Unknown evidence part");
+    if (data.detailsExpired) throw new BrowserTaskError("evidence_too_large", "The evidence details exceeded the storage limit", 410);
     const browserEvents = (data.events as { records?: Array<{ kind: string }> } | undefined)?.records;
     const value = part === "logs" ? { program: data.logs ?? [], browser: browserEvents?.filter(event => ["console", "exception", "crash"].includes(event.kind)) ?? [] } : data[part];
     const buffer = Buffer.from(JSON.stringify(value ?? null));
@@ -368,6 +474,7 @@ export class BrowserTaskSupervisor {
   async shutdown(): Promise<void> {
     this.closing = true;
     clearTimeout(this.queueTimer);
+    clearInterval(this.evidenceTimer);
     for (const active of this.running.values()) {
       active.stop ??= "interrupted";
       active.waiting.abort();
@@ -379,9 +486,9 @@ export class BrowserTaskSupervisor {
     if (this.closing) throw new BrowserTaskError("shutting_down", "The browser task service is shutting down", 409);
   }
 
-  private assertAvailable(profileId: string) {
-    if ([...this.running.values()].some(run => run.task.definition.profileId === profileId)
-      || [...this.history.values()].some(task => task.definition.profileId === profileId && task.queue && !isFinished(task.state))) {
+  private assertAvailable(profileId: string, except?: string) {
+    if ([...this.history.values()].some(task => task.runId !== except && task.definition.profileId === profileId &&
+      (this.running.has(task.runId) || task.queue && !isFinished(task.state)))) {
       throw new BrowserTaskError("profile_task_running", "A browser task is running or waiting in this profile", 409);
     }
   }
@@ -411,60 +518,112 @@ export class BrowserTaskSupervisor {
         continue;
       }
       capacity ??= this.options.capacity?.() ?? 1;
-      if (this.running.size >= capacity) { next = Math.min(next, 1000); break; }
+      if (this.running.size >= capacity) { next = Math.min(next, 500); break; }
+      if (this.options.hostWork && !this.options.hostWork.canStart()) { next = Math.min(next, 500); break; }
+      const lease = this.options.writes?.tryAcquire(profileId);
+      if (this.options.writes && !lease) { next = Math.min(next, 250); continue; }
+      const hostPermit = this.options.hostWork?.acquire();
+      if (this.options.hostWork && !hostPermit) {
+        lease?.release();
+        next = Math.min(next, 500);
+        break;
+      }
       task.state = "running";
       delete queue.retryAt;
       try { this.save(task); }
       catch (error) {
+        lease?.release();
+        hostPermit?.release();
         task.state = "interrupted";
         task.error = message(error);
         this.options.log?.(`Could not queue browser task ${task.runId}: ${task.error}`);
         continue;
       }
-      this.launch(task);
+      this.launch(task, lease, hostPermit);
     }
     if (Number.isFinite(next)) this.wakeQueue(next);
   }
 
-  private launch(task: BrowserTask, verify?: string) {
-    const active: ActiveTask = { task, waiting: new AbortController(), done: Promise.resolve() };
+  private launch(task: BrowserTask, lease?: ProfileWriteLease, hostPermit?: HostWorkPermit) {
+    const active: ActiveTask = { task, waiting: new AbortController(), done: Promise.resolve(), lease, hostPermit };
     this.running.set(task.runId, active);
-    active.done = Promise.resolve().then(() => this.execute(active, verify)).catch(error => {
+    active.done = Promise.resolve().then(() => this.execute(active)).catch(error => {
       this.options.log?.(`Could not persist browser task ${task.runId}: ${message(error)}`);
     }).finally(() => {
+      active.lease?.release();
+      active.hostPermit?.release();
       if (this.running.get(task.runId) === active) this.running.delete(task.runId);
       this.wakeQueue();
     });
   }
 
   private readEvidence(runId: string, sequence: number) {
-    return JSON.parse(readFileSync(this.path(runId, `evidence-${sequence}.json`), "utf8")) as ProgramReceipt;
+    const path = this.path(runId, `evidence-${sequence}.json`);
+    try { return JSON.parse(readFileSync(path, "utf8")) as ProgramReceipt; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new BrowserTaskError("evidence_expired", "This evidence has expired", 410);
+      throw error;
+    }
+  }
+
+  private trackReceipt(runId: string, sequence: number, bytes: number, at: number) {
+    this.receipts.push({ runId, sequence, bytes, at });
+    this.receiptBytes += bytes;
+  }
+
+  private pruneEvidence() {
+    const now = Date.now();
+    if (this.receiptBytes <= MAX_EVIDENCE_BYTES && now < this.nextEvidencePrune) return;
+    this.nextEvidencePrune = now + 60_000;
+    if (this.receiptBytes <= MAX_EVIDENCE_BYTES && !this.receipts.some(receipt => now - receipt.at >= EVIDENCE_RETENTION_MS)) return;
+    const expired = new Set<(typeof this.receipts)[number]>();
+    for (const receipt of [...this.receipts].sort((a, b) => a.at - b.at)) {
+      if (this.receiptBytes <= MAX_EVIDENCE_BYTES && now - receipt.at < EVIDENCE_RETENTION_MS) break;
+      const task = this.history.get(receipt.runId);
+      if (!task) continue;
+      // Older manifests use the receipt itself to restore a previously completed step.
+      if (!isFinished(task.state) && task.steps.some(step =>
+        step.state === "completed" && step.evidence === receipt.sequence && !step.result)) continue;
+      try {
+        rmSync(this.path(receipt.runId, `evidence-${receipt.sequence}.json`), { force: true });
+        expired.add(receipt);
+        this.receiptBytes -= receipt.bytes;
+      } catch (error) { this.options.log?.(`Could not rotate browser task evidence ${receipt.runId}: ${message(error)}`); }
+    }
+    if (!expired.size) return;
+    const kept = this.receipts.filter(receipt => !expired.has(receipt));
+    this.receipts.length = 0;
+    for (const receipt of kept) this.receipts.push(receipt);
+    const first = new Map<string, number>();
+    for (const receipt of kept) first.set(receipt.runId, Math.min(first.get(receipt.runId) ?? receipt.sequence, receipt.sequence));
+    for (const task of this.history.values()) task.firstEvidence = first.get(task.runId) ?? task.evidenceCount + 1;
   }
 
   private recover(task: BrowserTask, fallback: RunState): RunState {
     const queue = task.queue;
-    if (!queue || queue.consecutiveRecoveries >= recoveryDelays.length) return fallback;
+    if (!task.definition.target || !queue || queue.consecutiveRecoveries >= recoveryDelays.length) return fallback;
     queue.retryAt = Date.now() + recoveryDelays[queue.consecutiveRecoveries++]!;
     queue.recoveries++;
     return "recovering";
   }
 
-  private async execute(active: ActiveTask, replacementVerifier?: string) {
+  private async execute(active: ActiveTask) {
     const { task } = active, { profileId, screenshots, argument, steps, target } = task.definition;
     const release = this.options.hold?.(profileId);
     let connection: BrowserTaskConnection | undefined;
-    let lease: ProfileWriteLease | undefined;
+    const owner = ownerOf(task);
+    const authorize = () => this.options.authorize(profileId, owner.name, undefined, owner);
     let state: RunState = "interrupted";
     const values: Record<string, unknown> = Object.create(null);
     const uncertain = () => task.steps.find(checkpoint => checkpoint.state === "uncertain");
     const block = (blocked: TaskBlock) => { task.blocked = blocked; state = "blocked"; };
     try {
-      if (!active.stop) lease = await this.options.writes?.acquire(profileId, active.waiting.signal);
       if (!active.stop) {
-        this.options.authorize(profileId, task.client);
-        connection = await this.options.open(profileId, task.client);
+        authorize();
+        connection = await this.options.open(profileId, owner.name, active.waiting.signal, active.hostPermit, owner);
       }
       if (!active.stop && target) {
+        authorize();
         if (!connection?.bindTab) throw new BrowserTaskError("unsupported", "This task runtime cannot bind a browser tab");
         const next = steps[task.steps.findIndex(checkpoint => checkpoint.state !== "completed")];
         const startUrl = task.tab && next?.recoveryUrl ? next.recoveryUrl : target.startUrl;
@@ -476,18 +635,20 @@ export class BrowserTaskSupervisor {
         if (active.stop) break;
         const step = steps[index]!;
         if (checkpoint.state === "completed") {
-          if (checkpoint.evidence) {
+          if (checkpoint.result) {
+            values[step.id] = checkpoint.result.value;
+          } else if (checkpoint.evidence) {
             const recorded = this.readEvidence(task.runId, checkpoint.evidence);
             values[step.id] = recorded.phase === "verify" ? (recorded.value as { value?: unknown })?.value : recorded.value;
           }
           continue;
         }
         const queuedVerifier = task.queue?.verifier?.stepId === step.id ? task.queue.verifier.code : undefined;
-        const verifier = checkpoint.state === "uncertain" ? queuedVerifier ?? replacementVerifier ?? step.verify : step.verify;
-        replacementVerifier = undefined;
+        const verifier = checkpoint.state === "uncertain" ? queuedVerifier ?? step.verify : step.verify;
         const complete = (value: unknown) => {
           checkpoint.state = "completed";
           delete checkpoint.error;
+          checkpoint.result = { value };
           values[step.id] = value;
           if (task.queue) {
             task.queue.consecutiveRecoveries = 0;
@@ -496,7 +657,7 @@ export class BrowserTaskSupervisor {
           this.save(task);
         };
         const act = async (phase: Phase, code: string) => {
-          this.options.authorize(profileId, task.client);
+          authorize();
           const startedAt = new Date().toISOString();
           const receipt: ProgramReceipt = await connection!.program({
             code, screenshots, timeoutMs: step.timeoutMs ?? 120_000, pageUrl: step.pageUrl, frameUrl: step.frameUrl, tabId: task.tab?.id, argument: {
@@ -504,51 +665,63 @@ export class BrowserTaskSupervisor {
           } }).catch(error => ({ completed: false, error: message(error), fault: faultOf(error) } satisfies ProgramReceipt));
           if (task.tab && receipt.fault === "task_tab_lost") task.tab.lost = true;
           const sequence = task.evidenceCount + 1;
-          atomicJson(this.path(task.runId, `evidence-${sequence}.json`), {
+          const evidence: ProgramReceipt = {
             ...receipt, sequence, stepId: step.id, attempt: checkpoint.attempts, phase, startedAt, endedAt: new Date().toISOString(),
-          });
+          };
+          const metadata = { sequence, stepId: step.id, attempt: checkpoint.attempts, phase, startedAt, endedAt: evidence.endedAt,
+            completed: receipt.completed, error: receipt.error };
+          const path = this.path(task.runId, `evidence-${sequence}.json`);
+          const size = Buffer.byteLength(JSON.stringify(evidence));
+          atomicJson(path, size > MAX_RECEIPT_BYTES ? { ...metadata, detailsExpired: true } : evidence);
+          this.trackReceipt(task.runId, sequence, statSync(path).size, Date.now());
           task.evidenceCount = sequence; checkpoint.evidence = sequence;
+          if ((task.firstEvidence ?? 1) > sequence) task.firstEvidence = sequence;
+          this.save(task);
+          this.options.record?.({ runId: task.runId, profileId, client: owner.name, stepId: step.id, sequence, phase, ok: receipt.completed });
           return receipt;
         };
         const reconcile = async (): Promise<"applied" | "absent" | "unknown"> => {
           state = "needs_verification";
+          checkpoint.verification = "unknown";
           if (!verifier) { checkpoint.error = "Provide a verifier to resolve the last attempt"; return "unknown"; }
           const receipt = await act("verify", verifier);
           const verified = receipt.value as { state?: unknown; value?: unknown } | undefined;
           if (receipt.completed && verified?.state === "applied") {
+            checkpoint.verification = "applied";
             // Store the verifier's value as the canonical receipt while keeping the full verifier evidence.
             complete(verified.value);
             return "applied";
           }
-          if (receipt.completed && verified?.state === "absent") return "absent";
+          if (receipt.completed && verified?.state === "absent") { checkpoint.verification = "absent"; return "absent"; }
           checkpoint.error = receipt.error ?? "The verifier could not confirm the effect of the action";
-          const blocked = task.queue && receipt.completed ? taskBlock(receipt.value) : undefined;
+          const blocked = target && receipt.completed ? taskBlock(receipt.value) : undefined;
           if (blocked) block(blocked);
           else if (recoverableFaults.has(receipt.fault ?? "")) state = this.recover(task, "needs_verification");
           return "unknown";
         };
         if (checkpoint.state === "uncertain") {
-          if (task.queue && step.readOnly) checkpoint.state = "pending";
+          if (target && step.readOnly) checkpoint.state = "pending";
           else {
             const verified = await reconcile();
             if (verified === "applied") continue;
             if (verified === "unknown" || active.stop) break;
           }
         }
-        this.options.authorize(profileId, task.client);
+        authorize();
+        delete checkpoint.verification;
         checkpoint.state = "uncertain"; checkpoint.attempts++; delete checkpoint.error;
         this.save(task);
         const receipt = await act("run", step.run);
         if (!receipt.completed) {
           checkpoint.error = receipt.error ?? "The action did not acknowledge completion";
-          if (receipt.invoked === false || (task.queue && step.readOnly)) checkpoint.state = "pending";
+          if (receipt.invoked === false || (target && step.readOnly)) checkpoint.state = "pending";
           state = checkpoint.state === "pending" ? "interrupted" : "needs_verification";
-          if (task.queue && !active.stop && (checkpoint.state === "uncertain" ? verifier : recoverableFaults.has(receipt.fault ?? ""))) {
+          if (target && !active.stop && (checkpoint.state === "uncertain" ? verifier : recoverableFaults.has(receipt.fault ?? ""))) {
             state = this.recover(task, state);
           }
           break;
         }
-        const blocked = task.queue ? taskBlock(receipt.value) : undefined;
+        const blocked = target ? taskBlock(receipt.value) : undefined;
         if (blocked) {
           // This result certifies the step stopped before issuing a write.
           checkpoint.state = "pending";
@@ -570,22 +743,22 @@ export class BrowserTaskSupervisor {
       const fault = faultOf(error);
       state = uncertain() ? "needs_verification" : "interrupted";
       if (!active.stop) task.error = message(error);
-      if (task.queue && (fault === "not_permitted" || fault === "no_such_profile" || fault === "profile_handed_off")) {
+      if (target && (fault === "not_permitted" || fault === "no_such_profile" || fault === "profile_handed_off")) {
         block({ code: fault, message: task.error });
       }
-      else if (task.queue && !active.stop && (recoverableFaults.has(fault ?? "") || (fault === "browser_launch_failed" && task.tab))) {
+      else if (target && !active.stop && (recoverableFaults.has(fault ?? "") || (fault === "browser_launch_failed" && task.tab))) {
         state = this.recover(task, state);
       }
     } finally {
       release?.();
       await connection?.close().catch(error => this.options.log?.(`Browser task detach: ${message(error)}`));
-      lease?.release();
       if (task.steps.every(step => step.state === "completed")) state = "completed";
-      else if (active.stop) state = active.stop === "interrupted" && task.queue ? "queued" : active.stop;
+      else if (active.stop) state = active.stop === "interrupted" && target ? "queued" : active.stop;
       task.state = state;
       if (task.queue && state !== "recovering") delete task.queue.retryAt;
       delete task.stopRequested;
       this.save(task);
+      this.pruneEvidence();
     }
   }
 }

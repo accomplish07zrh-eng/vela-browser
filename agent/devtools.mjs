@@ -111,9 +111,12 @@ export const DEVTOOLS_TOOLS = [
   }, ["action"]),
   tool("browser_devtools_observe", "Read a compact view of visible controls, headings, dialogs and alerts in the selected frame. Controls include portable anchors for browser_devtools_action when a locator can be inferred. No form values are collected.", {
     pageId, frameId: string, selector: string, limit: { type: "integer", minimum: 1, maximum: 40, default: 16 }, timeoutMs,
+    compact: { type: "boolean", description: "Return short, document-scoped control refs instead of portable anchors." },
   }),
   tool("browser_devtools_action", "Operate a uniquely located element by semantics, selector or a portable anchor. Verify a fresh response, popup, navigation, visible text or an element state. Event observers are registered before the action. Action completion and verification have separate results, with correlated evidence.", {
     pageId, frameId: string, action: { type: "string", enum: Object.keys(locatorActions) }, target: elementTarget, anchor: { type: "object", additionalProperties: true },
+    ref: { ...string, description: "A short control ref from a compact browser_devtools_observe result." },
+    observe: { type: "boolean", description: "Return an updated compact observation with the action and verification result." },
     value: { description: "Text for fill, a key for press, or one or more option values for select_option.", oneOf: [string, { type: "array", items: string }] },
     timeoutMs,
     verify: schema({
@@ -548,6 +551,9 @@ export class BrowserDevtools {
     this.sourceSessions = new Map();
     this.tracepoints = new Map();
     this.domSnapshots = new Map();
+    this.controlSnapshots = new Map();
+    this.frameNavigations = new WeakMap();
+    this.controlSnapshotId = 0;
     this.sequence = 0;
     this.maxEvents = maxEvents;
     this.maxRequests = maxRequests;
@@ -677,6 +683,7 @@ export class BrowserDevtools {
       }
     });
     this.listen(page, "framenavigated", frame => {
+      this.frameNavigations.set(frame, this.navigationCount(frame) + 1);
       const frameId = this.frameId(frame, page);
       const opener = this.popupOpeners.get(page);
       this.log("navigation", page, { frameId, url: frame.url(), ...(opener && frame === page.mainFrame() ? { openerPageId: this.pageIds.get(opener), popupPageId: this.pageIds.get(page) } : {}) });
@@ -1263,14 +1270,49 @@ export class BrowserDevtools {
     const { page, frame } = this.selectFrame(args);
     const timeout = integer(args.timeoutMs, 5000, 1, 20000), limit = integer(args.limit, 16, 1, 40);
     const locator = frame.locator(args.selector ?? ":root");
+    const navigations = this.navigationCount(frame);
     const observation = await locator.evaluate(readObservation, limit, { timeout });
     const scope = this.anchorScope(page, frame);
     const durableScope = [scope.page, ...scope.frames].every(segment => /^https?:\/\//.test(segment.path) && segment.path.length <= 2048);
     const url = urlPath(frame.url());
-    return { pageId: this.pageIds.get(page), frameId: this.frameId(frame, page), url: url.startsWith("data:") ? "data:" : url.slice(0, 2048),
+    const target = { pageId: this.pageIds.get(page), frameId: this.frameId(frame, page) };
+    const snapshotId = args.compact === true && navigations === this.navigationCount(frame)
+      ? `${this.id.slice(0, 8)}-${(++this.controlSnapshotId).toString(36)}` : undefined;
+    if (snapshotId) {
+      if (this.controlSnapshots.size >= 12) this.controlSnapshots.delete(this.controlSnapshots.keys().next().value);
+      this.controlSnapshots.set(snapshotId, { ...target, navigations, url: frame.url(), controls: observation.controls,
+        expires: Date.now() + 60_000 });
+    }
+    return { ...target, url: url.startsWith("data:") ? "data:" : url.slice(0, 2048),
       ...observation, controls: observation.controls.map(({ identity, candidates, ...control }) => ({
-        ...control, ...(candidates.length && durableScope ? { anchor: { ...scope, identity, candidates } } : {}),
+        ...control,
+        ...(candidates.length && args.compact !== true && durableScope ? { anchor: { ...scope, identity, candidates } } : {}),
+      })).map((control, index) => ({
+        ...control, ...(snapshotId && observation.controls[index].candidates.length ? { ref: `${snapshotId}:${index + 1}` } : {}),
       })) };
+  }
+  navigationCount(frame) { return this.frameNavigations.get(frame) ?? 0; }
+  async resolveControlRef(args, deadline) {
+    if (typeof args.ref !== "string") throw new Error("Choose a control ref from browser_devtools_observe");
+    const [id, position, extra] = args.ref.split(":");
+    const record = this.controlSnapshots.get(id);
+    if (!record || extra !== undefined || !/^[1-9]\d*$/.test(position) || record.expires <= Date.now()) {
+      throw new Error("The control ref expired. Observe the current page again");
+    }
+    const { page, frame } = this.selectFrame(record);
+    if (args.pageId && args.pageId !== record.pageId || args.frameId && args.frameId !== record.frameId) {
+      throw new Error("This control ref belongs to a different page or frame");
+    }
+    const current = () => !page.isClosed?.() && !frame.isDetached?.() &&
+      record.navigations === this.navigationCount(frame) && frame.url() === record.url;
+    const control = record.controls[Number(position) - 1];
+    if (control && current()) for (const candidate of control.candidates) {
+      const locator = elementLocator(frame, candidate);
+      if (await locator.count() !== 1) continue;
+      const identity = await locator.evaluate(elementIdentity, undefined, { timeout: Math.max(1, deadline - Date.now()) }).catch(() => undefined);
+      if (current() && identity && stableCandidate(control.identity, identity, candidate)) return { page, frame, locator, current };
+    }
+    throw new Error("The control ref no longer identifies a unique element in this document");
   }
   async createAnchor(args) {
     const { page, frame } = this.selectFrame(args);
@@ -1582,8 +1624,9 @@ export class BrowserDevtools {
       }
       const timeout = integer(args.timeoutMs, 5000, 1, 20000);
       const deadline = Date.now() + timeout;
-      if ((args.target === undefined) === (args.anchor === undefined)) throw new Error("Choose either target or anchor");
-      const { page, frame, locator: anchored, candidate } = args.anchor ? await this.resolveAnchor(args, deadline) : this.selectFrame(args);
+      if ([args.target, args.anchor, args.ref].filter(value => value !== undefined).length !== 1) throw new Error("Choose one of target, anchor or ref");
+      const { page, frame, locator: anchored, candidate, current } = args.ref !== undefined ? await this.resolveControlRef(args, deadline)
+        : args.anchor ? await this.resolveAnchor(args, deadline) : this.selectFrame(args);
       const verify = verifyAction(page, frame, args.verify);
       const locator = anchored ?? elementLocator(frame, args.target);
       const index = integer(args.target?.index, undefined, 0);
@@ -1593,14 +1636,24 @@ export class BrowserDevtools {
       const evidence = this.observeAction(page, frame, args.verify);
       try {
         let actionError, verification = null;
-        try { await locatorActions[args.action](target, { timeout: Math.max(1, deadline - Date.now()) }, args.value); }
+        try {
+          if (current && !current()) throw new Error("The document changed after the compact observation");
+          await locatorActions[args.action](target, { timeout: Math.max(1, deadline - Date.now()) }, args.value);
+        }
         catch (error) { actionError = errorText(error); }
         if (evidence.wait) verification = await evidence.wait();
         else if (verify && !actionError) {
           try { await verify(); verification = { passed: true }; }
           catch (error) { verification = { passed: false, error: errorText(error) }; }
         }
+        let observation, observationError;
+        if (args.observe === true && actionError === undefined) {
+          const frameId = frame.isDetached?.() ? undefined : scope.frameId;
+          try { observation = await this.compactObservation({ pageId: scope.pageId, frameId, compact: true, timeoutMs: Math.min(1000, timeout) }); }
+          catch (error) { observationError = errorText(error); }
+        }
         const reply = result({ ...scope, actionCompleted: actionError === undefined, verification, url: frame.url(),
+          ...(observation ? { observation } : {}), ...(observationError ? { observationError } : {}),
           ...(candidate ? { resolvedBy: candidate } : {}), ...(actionError === undefined ? {} : { error: actionError }),
           evidence: { since: evidence.since, until: this.sequence, records: evidence.entries } });
         return actionError === undefined ? reply : { ...reply, isError: true };
@@ -1931,6 +1984,7 @@ export class BrowserDevtools {
     for (const target of this.sourceSessions.keys()) this.closeTargetSource(target);
     this.runtimeSources.clear(); this.tracepoints.clear();
     this.domSnapshots.clear();
+    this.controlSnapshots.clear();
     for (const capture of this.captures.values()) capture.dispose();
     this.captures.clear();
     this.events.length = 0; this.requests.clear(); this.pages.clear(); this.frames.clear(); this.workers.clear();

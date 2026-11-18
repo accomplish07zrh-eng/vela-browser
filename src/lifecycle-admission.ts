@@ -1,3 +1,5 @@
+import type { HostWorkBudget, HostWorkPermit } from "./cooling.ts";
+
 export type LifecycleTransitionKind = "stop" | "cleanup" | "start";
 export type LifecycleState = "starting" | "stopping" | "uncertain";
 
@@ -28,31 +30,34 @@ export interface LifecycleAdmissionOptions {
   queueWaitMs?: number;
   /** Current start budget from host headroom. Stop and cleanup keep their own slots. */
   startBudget?: () => number;
+  hostWork?: HostWorkBudget;
 }
 
 export interface LifecycleAdmissionRequest {
   kind: LifecycleTransitionKind;
   profileIds?: Iterable<string>;
   signal?: AbortSignal;
+  /** Agent tasks reuse their memory reservation while acquiring a lifecycle slot. */
+  hostPermit?: HostWorkPermit;
+  onDispatch?(queueMs: number): void;
 }
 
 export class LifecycleAdmissionError extends Error {
-  constructor(message: string, readonly reason: "aborted" | "timeout") {
+  constructor(message: string, readonly reason: "aborted" | "timeout" | "cancelled") {
     super(message);
     this.name = "LifecycleAdmissionError";
   }
 }
 
-interface QueuedOperation {
+interface QueuedOperation extends LifecycleAdmissionRequest {
   id: number;
-  kind: LifecycleTransitionKind;
   profileIds: string[];
+  queuedAt: number;
   handler: () => unknown | Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
   timer?: ReturnType<typeof setTimeout>;
   abort?: () => void;
-  signal?: AbortSignal;
 }
 
 /** Host-wide admission for expensive browser lifecycle transitions. */
@@ -60,6 +65,8 @@ export class LifecycleAdmissionController {
   readonly limit: number;
   readonly queueWaitMs: number;
   private readonly startBudget?: () => number;
+  readonly hostWork?: HostWorkBudget;
+  private retry?: ReturnType<typeof setTimeout>;
   private nextId = 1;
   private queue: QueuedOperation[] = [];
   private running = new Map<number, QueuedOperation>();
@@ -73,6 +80,7 @@ export class LifecycleAdmissionController {
     this.limit = limit;
     this.queueWaitMs = queueWaitMs;
     this.startBudget = options.startBudget;
+    this.hostWork = options.hostWork;
   }
 
   run<T>(request: LifecycleAdmissionRequest, handler: () => T | Promise<T>): Promise<T> {
@@ -82,13 +90,13 @@ export class LifecycleAdmissionController {
 
     return new Promise<T>((resolve, reject) => {
       const operation: QueuedOperation = {
+        ...request,
         id: this.nextId++,
-        kind: request.kind,
         profileIds: [...new Set([...(request.profileIds ?? [])].map(String).filter(Boolean))],
+        queuedAt: performance.now(),
         handler,
         resolve: (value) => resolve(value as T),
         reject,
-        signal: request.signal,
       };
       const waitMs = this.queueWaitMs;
       operation.timer = setTimeout(() => {
@@ -112,6 +120,23 @@ export class LifecycleAdmissionController {
       this.drain();
     });
   }
+
+  /** Cancel only starts still queued for this profile. Running launches retain their permit. */
+  cancelStarts(profileId: string): number {
+    const cancelled = this.queue.filter(operation => operation.kind === "start" && operation.profileIds.includes(profileId));
+    for (const operation of cancelled) {
+      this.rejectQueued(operation, new LifecycleAdmissionError("The queued browser start was cancelled", "cancelled"), false);
+    }
+    if (cancelled.length) this.drain();
+    return cancelled.length;
+  }
+
+  capacity() {
+    const host = this.hostWork?.status();
+    return { size: Math.min(this.startLimit(), host?.limit ?? this.limit), host, ...this.stats() };
+  }
+
+  wake(): void { this.drain(); }
 
   stats(): LifecycleAdmissionStats {
     const byKind: LifecycleAdmissionStats["byKind"] = {
@@ -146,23 +171,35 @@ export class LifecycleAdmissionController {
     return starting ? "starting" : null;
   }
 
-  private rejectQueued(operation: QueuedOperation, error: LifecycleAdmissionError): void {
+  private rejectQueued(operation: QueuedOperation, error: LifecycleAdmissionError, drain = true): void {
     const index = this.queue.indexOf(operation);
     if (index < 0) return;
     this.queue.splice(index, 1);
     this.clearQueueHooks(operation);
     operation.reject(error);
-    this.drain();
+    if (drain) this.drain();
   }
 
   private drain(): void {
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = undefined;
     while (this.running.size < this.limit) {
       const index = this.nextEligibleIndex();
-      if (index < 0) return;
+      if (index < 0) break;
       const [operation] = this.queue.splice(index, 1);
       if (!operation) return;
       this.admit(operation);
     }
+    // Memory can recover without any lifecycle operation completing.
+    if ((this.hostWork || this.startBudget) && this.queue.some(operation => operation.kind === "start") && this.running.size < this.limit) {
+      this.retry = setTimeout(() => this.drain(), 500).unref();
+    }
+  }
+
+  private startLimit(): number {
+    const reservedLimit = Math.max(1, this.limit - 1);
+    const budget = this.startBudget?.() ?? reservedLimit;
+    return Number.isFinite(budget) ? Math.max(0, Math.min(reservedLimit, Math.floor(budget))) : reservedLimit;
   }
 
   private nextEligibleIndex(): number {
@@ -170,15 +207,15 @@ export class LifecycleAdmissionController {
     let best = -1;
     let bestPriority = -1;
     const blockedProfiles = new Set(this.runningProfiles);
-    const reservedLimit = Math.max(1, this.limit - 1);
-    const budget = this.startBudget?.() ?? reservedLimit;
-    const startLimit = Number.isFinite(budget) ? Math.max(1, Math.min(reservedLimit, Math.floor(budget))) : reservedLimit;
+    const startLimit = this.startLimit();
     const runningStarts = [...this.running.values()].filter((operation) => operation.kind === "start").length;
     for (let index = 0; index < this.queue.length; index++) {
       const operation = this.queue[index]!;
       const profileEligible = !operation.profileIds.some((id) => blockedProfiles.has(id));
-      const laneEligible = operation.kind !== "start" || runningStarts < startLimit;
-      for (const id of operation.profileIds) blockedProfiles.add(id);
+      const memoryEligible = this.hostWork?.canStart(operation.hostPermit) ?? true;
+      const laneEligible = operation.kind !== "start" || (runningStarts < startLimit && memoryEligible);
+      // A start parked by host capacity must not prevent a same-profile stop or cleanup.
+      if (operation.kind !== "start" || memoryEligible && startLimit > 0) for (const id of operation.profileIds) blockedProfiles.add(id);
       const priority = PRIORITY[operation.kind];
       if (profileEligible && laneEligible && priority > bestPriority) {
         best = index;
@@ -190,15 +227,18 @@ export class LifecycleAdmissionController {
 
   private admit(operation: QueuedOperation): void {
     this.clearQueueHooks(operation);
+    const permit = operation.kind === "start" && !operation.hostPermit ? this.hostWork?.acquire() : undefined;
     this.running.set(operation.id, operation);
     for (const id of operation.profileIds) this.runningProfiles.add(id);
 
     void (async () => {
       try {
+        operation.onDispatch?.(performance.now() - operation.queuedAt);
         operation.resolve(await operation.handler());
       } catch (error) {
         operation.reject(error);
       } finally {
+        permit?.release();
         this.running.delete(operation.id);
         for (const id of operation.profileIds) this.runningProfiles.delete(id);
         this.drain();
@@ -268,10 +308,14 @@ export async function dispatchWithLifecycleAdmission(
   const classified = await classifyLifecycleRequest(req);
   if (!classified) return dispatch();
   try {
-    return await admission.run(
-      { kind: classified.kind, profileIds: classified.profileIds, signal: req.signal },
+    let queueMs = 0;
+    const response = await admission.run(
+      { kind: classified.kind, profileIds: classified.profileIds, signal: req.signal,
+        onDispatch: elapsed => { queueMs = elapsed; } },
       dispatch,
     );
+    if (classified.kind === "start") response.headers.set("Server-Timing", `vela_queue;dur=${queueMs.toFixed(1)}`);
+    return response;
   } catch (error) {
     if (!(error instanceof LifecycleAdmissionError)) throw error;
     const message = `${error.message}; request was not dispatched`;
