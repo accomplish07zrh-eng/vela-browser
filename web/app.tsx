@@ -27,12 +27,14 @@ import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
 import { TitleBar, usesOwnTitleBar } from "./titlebar.tsx";
 import { Select } from "./select.tsx";
-import { DialogHost, confirmDialog, noticeDialog } from "./dialog.tsx";
+import { DialogHost, confirmDialog } from "./dialog.tsx";
 import { Tooltips } from "./tooltip.tsx";
 import { guardContextMenu } from "./controls.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
 import { localeTimezoneMismatch } from "../src/profile-locale.ts";
 import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
+import type { MigrationConflict, MigrationSummary } from "../src/inbox.ts";
+import type { MigrationCommitResult, MigrationPreviewResult } from "../src/migration-preview.ts";
 import { folderTree, folderScope, type FolderInfo } from "../src/folders.ts";
 import { THEME_KEY, readThemeChoice, themeCookie, type ThemeChoice } from "./theme.ts";
 import {
@@ -88,7 +90,9 @@ import {
   assignExtensionBulk,
   fetchGroupExtensionDefaults,
   setGroupExtensionDefaults,
-  uploadExports,
+  previewExportMigration,
+  commitExportMigration,
+  undoExportMigration,
   moveProfiles,
   deleteProfiles,
   createProfile,
@@ -791,18 +795,25 @@ const AUTOMATIC_FINGERPRINT_FIELDS = [
   ["WebRTC", "Automatic · proxy-aware"],
 ] as const;
 
-// A template literal, so the translation key holds the same line breaks as the source.
-/** What an import brought in, for the notice after it. */
-function importedSummary(
-  result: { profiles?: number; files?: number; errors?: readonly unknown[] },
+function migrationSummary(
+  { created, updated, unchanged }: MigrationSummary,
   t: (source: string, values?: Record<string, string | number>) => string,
 ): string {
-  const summary = t("Imported {profiles} profile(s) from {files} file(s).", { profiles: result.profiles ?? 0, files: result.files ?? 0 });
-  return result.errors?.length
-    ? summary + "\n\n" + t("{count} invalid record(s) were reported; invalid proxies were quarantined for repair.", { count: result.errors.length })
-    : summary;
+  return t("{created} new · {updated} updated · {unchanged} unchanged", { created, updated, unchanged });
 }
 
+const MIGRATION_CONFLICT_MESSAGES: Record<MigrationConflict["code"], string> = {
+  invalid_export: "This file could not be read as a profile export.",
+  invalid_records: "This file contains records that could not be read.",
+  invalid_fields: "This record has invalid profile fields.",
+  duplicate: "This profile ID occurs more than once in the upload.",
+  busy: "Close this profile and wait for any launch or cleanup to finish.",
+  trashed: "Restore this profile from Trash before importing.",
+  handed_off: "This profile was handed off to another worker.",
+  incompatible: "The supplied field cannot replace the stored value.",
+};
+
+// A template literal, so the translation key holds the same line breaks as the source.
 const FINGERPRINT_EDIT_WARNING = `These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.
 
 Save fingerprint changes?`;
@@ -1346,12 +1357,12 @@ function App() {
   const [bulkPlatform, setBulkPlatform] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkErr, setBulkErr] = useState<string | null>(null);
+  const [bulkPreview, setBulkPreview] = useState<MigrationPreviewResult | null>(null);
+  const [bulkResult, setBulkResult] = useState<(MigrationCommitResult & { trashed?: number }) | null>(null);
   const [bulkOver, setBulkOver] = useState(false);
   // One source at a time: two full-height inputs stacked made it ambiguous which
   // one the Import button would actually read.
   const [bulkSource, setBulkSource] = useState<"file" | "paste">("file");
-  // After an import, offer proxies for the profiles that have none, until dismissed.
-  const [showImportOffer, setShowImportOffer] = useState(false);
   const bulkFileRef = useRef<HTMLInputElement>(null);
   const publishedRuntimeReadiness = useRef<string | null>(null);
   const [runtimeReadinessAttempt, setRuntimeReadinessAttempt] = useState(0);
@@ -1945,56 +1956,72 @@ function App() {
   };
 
 
-  const doUpload = async (files: FileList | File[]) => {
-    setActionErr(null);
-    try {
-      const list = Array.from(files);
-      if (list.length === 0) return;
-      const r = await uploadExports(list);
-      await load();
-      if (r.ok) {
-        await noticeDialog(importedSummary(r, t), { title: t("Import finished") });
-      }
-      else setActionErr(r.error || "import failed");
-    } catch (e) {
-      setActionErr(String(e));
-    }
-  };
-
   // ---- Bulk add accounts from provider export files or AdsPower text ----
   const openBulk = () => {
+    if (bulkBusy) return;
     setBulkFiles([]);
     setBulkText("");
     setBulkGroup(group !== "all" && (true) ? group : "");
     setBulkPlatform("");
     setBulkErr(null);
+    setBulkPreview(null);
+    setBulkResult(null);
     setBulkSource("file");
     setShowBulk(true);
   };
   const closeBulk = () => {
+    if (bulkBusy) return;
     setShowBulk(false);
     setBulkFiles([]);
     setBulkText("");
     setBulkErr(null);
+    setBulkPreview(null);
+    setBulkResult(null);
   };
   const submitBulk = async () => {
-    if ((!bulkFiles.length && !bulkText.trim()) || (false)) return;
+    if (bulkBusy || bulkResult || (!bulkFiles.length && !bulkText.trim())) return;
     setBulkBusy(true);
     setBulkErr(null);
     try {
-      const uploads = [...bulkFiles];
-      if (bulkText.trim()) uploads.push(new File([bulkText], "pasted-adspower.txt", { type: "text/plain" }));
-      if (!uploads.length) throw new Error("no rows found in the file(s)");
-      const r = await uploadExports(uploads, { group: bulkGroup.trim(), platform: bulkPlatform });
-      if (r.ok) {
-        closeBulk();
+      if (bulkPreview?.previewId) {
+        const result = await commitExportMigration(bulkPreview.previewId);
+        if (!result.ok) {
+          setBulkErr(t(result.error));
+          setBulkPreview(null);
+          return;
+        }
+        setBulkResult(result);
+        setBulkPreview(null);
+        setBulkFiles([]);
+        setBulkText("");
         await load();
-        setShowImportOffer(true);
-        await noticeDialog(importedSummary(r, t), { title: t("Import finished") });
+      } else {
+        const uploads = [...bulkFiles];
+        if (bulkText.trim()) uploads.push(new File([bulkText], "pasted-adspower.txt", { type: "text/plain" }));
+        const preview = await previewExportMigration(uploads, { group: bulkGroup.trim(), platform: bulkPlatform });
+        if (preview.ok) setBulkPreview(preview);
+        else setBulkErr(t(preview.error));
       }
-      else setBulkErr(r.error || "import failed");
-    } catch (e) {
-      setBulkErr(String(e));
+    } catch {
+      setBulkErr(t("The migration could not be completed"));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+  const undoBulk = async () => {
+    if (bulkBusy || !bulkResult?.undoId) return;
+    setBulkBusy(true);
+    setBulkErr(null);
+    try {
+      const result = await undoExportMigration(bulkResult.undoId);
+      if (!result.ok) {
+        setBulkErr(t(result.error));
+        return;
+      }
+      setBulkResult({ ...bulkResult, undoId: undefined, trashed: result.trashed });
+      await load();
+    } catch {
+      setBulkErr(t("The migration could not be completed"));
     } finally {
       setBulkBusy(false);
     }
@@ -2683,19 +2710,23 @@ function App() {
     <div
       className="app"
       data-view={view}
-      onDragOver={(e) => { e.preventDefault();  if (!dragging) setDragging(true); }}
+      onDragOver={(e) => { e.preventDefault(); if (!showBulk && !dragging) setDragging(true); }}
       onDragLeave={(e) => { e.preventDefault();  if (e.currentTarget === e.target) setDragging(false); }}
       onDrop={(e) => {
         e.preventDefault();
 
         setDragging(false);
-        if (e.dataTransfer.files?.length) doUpload(e.dataTransfer.files);
+        if (!showBulk && e.dataTransfer.files?.length) {
+          openBulk();
+          setBulkGroup("");
+          setBulkFiles(Array.from(e.dataTransfer.files));
+        }
       }}
     >
       {dragging && (
         <div className="dropzone">
           <Icon name="fileImport" />
-          <span>Drop TXT, CSV, JSON, or XLSX profile exports to import</span>
+          <span>{t("Drop TXT, CSV, JSON, or XLSX profile exports to review")}</span>
         </div>
       )}
 
@@ -4435,15 +4466,49 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="bulk-import-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <Icon name="fileImport" /><span id="bulk-import-title">{t("Import profiles")}</span>
-              <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeBulk}><Icon name="close" className="sm" /></button>
+              <Icon name="fileImport" /><span id="bulk-import-title">{t(bulkResult ? "Import finished" : bulkPreview ? "Import preview" : "Import profiles")}</span>
+              <button type="button" className="modal-close" aria-label={t("Close")} disabled={bulkBusy} onClick={closeBulk}><Icon name="close" className="sm" /></button>
             </div>
-            <div className="modal-body">
-              {bulkErr && <div className="modal-err"><Icon name="alert" className="sm" />{bulkErr}</div>}
+            <div className="modal-body" aria-busy={bulkBusy}>
+              {bulkErr && <div className="modal-err" role="alert"><Icon name="alert" className="sm" />{bulkErr}</div>}
+              {bulkResult ? (
+                <>
+                  <p className="formnote" role="status">{migrationSummary(bulkResult, t)}</p>
+                  {bulkResult.trashed !== undefined && <p className="formnote">{t("{count} new profiles moved to Trash.", { count: bulkResult.trashed })}</p>}
+                  {bulkResult.undoId && bulkResult.undoExpiresAt && (
+                    <p className="formnote">
+                      {t("You can move the new profiles to Trash until {time}.", { time: new Date(bulkResult.undoExpiresAt).toLocaleTimeString(language, { hour: "numeric", minute: "2-digit" }) })}
+                    </p>
+                  )}
+                </>
+              ) : bulkPreview ? (
+                <>
+                  <p className="formnote" role="status">{migrationSummary(bulkPreview, t)}</p>
+                  {bulkPreview.cookiesStripped > 0 && <p className="formnote">{t("{count} provider extension cookies excluded.", { count: bulkPreview.cookiesStripped })}</p>}
+                  {bulkPreview.conflicts.length > 0 && (
+                    <>
+                      <p className="formnote">{t("Resolve these conflicts to continue.")}</p>
+                      <ul className="steps">
+                        {bulkPreview.conflicts.map((conflict, index) => (
+                          <li key={index}>
+                            {conflict.record === undefined
+                              ? t("File {file}", { file: conflict.file })
+                              : t("File {file}, record {record}", { file: conflict.file, record: conflict.record })}
+                            {conflict.profileId && <> · <code>{conflict.profileId}</code></>}
+                            {conflict.field && <> · <code>{conflict.field}</code></>}
+                            {" · "}{t(MIGRATION_CONFLICT_MESSAGES[conflict.code])}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                </>
+              ) : (
+              <fieldset disabled={bulkBusy} style={{ display: "contents" }}>
               <ol className="steps">
                 <li>{t("Export profiles from your previous browser as TXT, CSV, JSON, or XLSX.")}</li>
                 <li>{t("Add the files below and choose a destination group.")}</li>
-                <li>{t("Click Import profiles. Only data included in the export can transfer.")}</li>
+                <li>{t("Preview the import, then confirm the changes.")}</li>
               </ol>
               <p className="hint">{t("Encrypted or proprietary profile archives cannot be imported. Use a readable export instead.")}</p>
 
@@ -4483,10 +4548,15 @@ function App() {
                 <>
                   <div
                     className={`bulkdrop${bulkOver ? " over" : ""}`}
-                    onClick={() => bulkFileRef.current?.click()}
-                    onDragOver={(e) => { e.preventDefault(); if (!bulkOver) setBulkOver(true); }}
+                    onClick={() => { if (!bulkBusy) bulkFileRef.current?.click(); }}
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!bulkBusy && !bulkOver) setBulkOver(true); }}
                     onDragLeave={(e) => { e.preventDefault(); setBulkOver(false); }}
-                    onDrop={(e) => { e.preventDefault(); setBulkOver(false); if (e.dataTransfer.files?.length) setBulkFiles(Array.from(e.dataTransfer.files)); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setBulkOver(false);
+                      if (!bulkBusy && e.dataTransfer.files?.length) setBulkFiles(Array.from(e.dataTransfer.files));
+                    }}
                   >
                     <Icon name="fileImport" />
                     <b>{t("Drag & drop files, or click to choose")}</b>
@@ -4556,19 +4626,30 @@ function App() {
                 <code>fp_*</code> {t("columns are a")} <b>{t("record")}</b>{" "}
                 {t("of the fingerprint that was measured, not settings — they are checked after the browser opens, never applied to it.")}
               </p>
+              </fieldset>
+              )}
             </div>
             <div className="modal-foot">
-              <button className="tlink" onClick={() => downloadText("vela-template.csv", CSV_TEMPLATE, "text/csv")}>
-                <Icon name="export" className="sm" />{t("CSV template")}
-              </button>
-              <button className="tlink" onClick={() => downloadText("vela-example.txt", TXT_EXAMPLE, "text/plain")}>
-                <Icon name="export" className="sm" />{t(".txt example")}
-              </button>
+              {!bulkPreview && !bulkResult && (
+                <>
+                  <button className="tlink" onClick={() => downloadText("vela-template.csv", CSV_TEMPLATE, "text/csv")}>
+                    <Icon name="export" className="sm" />{t("CSV template")}
+                  </button>
+                  <button className="tlink" onClick={() => downloadText("vela-example.txt", TXT_EXAMPLE, "text/plain")}>
+                    <Icon name="export" className="sm" />{t(".txt example")}
+                  </button>
+                </>
+              )}
+              {bulkPreview && <button className="btn ghost" disabled={bulkBusy} onClick={() => { setBulkPreview(null); setBulkErr(null); }}>{t("Edit import")}</button>}
               <span className="spacer" />
-              <button className="btn ghost" onClick={closeBulk}>{t("Cancel")}</button>
-              <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim()) || (false)} onClick={submitBulk}>
-                <Icon name="fileImport" className="sm" />{bulkBusy ? t("Importing…") : t("Import profiles")}
-              </button>
+              {bulkResult?.undoId && <button className="btn ghost" disabled={bulkBusy} onClick={undoBulk}>{t("Move new profiles to Trash")}</button>}
+              <button className={bulkResult ? "btn primary" : "btn ghost"} disabled={bulkBusy} onClick={closeBulk}>{t(bulkResult ? "Done" : "Cancel")}</button>
+              {!bulkResult && (
+                <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim())} onClick={submitBulk}>
+                  <Icon name="fileImport" className="sm" />
+                  {t(bulkPreview?.previewId ? (bulkBusy ? "Importing…" : "Import profiles") : bulkBusy ? "Checking export…" : bulkPreview ? "Check again" : "Preview import")}
+                </button>
+              )}
             </div>
           </div>
         </div>

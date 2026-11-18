@@ -13,6 +13,7 @@ import type { PythonRuntimeStatus } from "../src/python-runtime.ts";
 import type { RuntimeDownload } from "../src/runtime-download.ts";
 import type { FolderInfo } from "../src/folders.ts";
 import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
+import type { MigrationCommitResult, MigrationPreviewResult, MigrationUndoResult } from "../src/migration-preview.ts";
 export type { RuntimeDownload } from "../src/runtime-download.ts";
 
 export type HealthStatus = "suspended" | "alive" | "no_data";
@@ -453,17 +454,47 @@ export async function setGroupExtensionDefaults(group: string, extensions: strin
   return apiJson(response, path);
 }
 
-export async function uploadExports(
+function exportUploadForm(
   files: FileList | File[],
   assign?: { group?: string; platform?: string },
-): Promise<any> {
+): FormData {
   const form = new FormData();
   for (const f of Array.from(files)) form.append("files", f);
   if (assign?.group) form.append("group", assign.group);
   if (assign?.platform) form.append("platform", assign.platform);
+  return form;
+}
+
+export async function uploadExports(
+  files: FileList | File[],
+  assign?: { group?: string; platform?: string },
+): Promise<any> {
   const path = "/ui/api/import/upload";
-  const r = await fetch(path, { method: "POST", body: form });
+  const r = await fetch(path, { method: "POST", body: exportUploadForm(files, assign) });
   return apiJson(r, path);
+}
+
+type MigrationApiResponse<T> = ({ ok: true } & T) | { ok: false; error: string };
+
+async function postExportMigration<T>(action: "preview" | "commit" | "undo", body: FormData): Promise<MigrationApiResponse<T>> {
+  const path = `/ui/api/import/upload?migration=${action}`;
+  return apiJson(await fetch(path, { method: "POST", body }), path);
+}
+
+export function previewExportMigration(files: FileList | File[], assign?: { group?: string; platform?: string }) {
+  return postExportMigration<MigrationPreviewResult>("preview", exportUploadForm(files, assign));
+}
+
+export function commitExportMigration(previewId: string) {
+  const form = new FormData();
+  form.append("previewId", previewId);
+  return postExportMigration<MigrationCommitResult>("commit", form);
+}
+
+export function undoExportMigration(undoId: string) {
+  const form = new FormData();
+  form.append("undoId", undoId);
+  return postExportMigration<MigrationUndoResult>("undo", form);
 }
 
 export async function updateProfileTags(ids: string[], add: string[], remove: string[]): Promise<{ ok: boolean; changed?: number; error?: string }> {

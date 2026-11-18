@@ -17,6 +17,8 @@ import { parseImportFile } from "./import-formats.ts";
 import { FP_BLOCK_KEYS } from "./fingerprint-attestation.ts";
 import { attachTimezones, type FetchLike } from "./geoip.ts";
 import { proxyIdentityKey } from "./proxy.ts";
+import { isSafeProfileId } from "./profile-id.ts";
+import { assertValidProfile } from "./profile-validation.ts";
 import type { Profile } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
 
@@ -80,6 +82,16 @@ function applyOverrides(entry: ParsedProfileImport, overrides: ImportOverrides):
 
 interface SourcedImport extends ParsedProfileImport {
   source: string;
+}
+
+type ImportFile = { name: string; bytes: Uint8Array };
+
+async function readSourcedImport(file: ImportFile, overrides: ImportOverrides, exists: (id: string) => boolean) {
+  const summary = await parseImportFile(file.name, file.bytes, exists);
+  return {
+    ...summary,
+    imports: summary.imports.map(entry => ({ ...applyOverrides(entry, overrides), source: file.name })),
+  };
 }
 
 export class ProfileImportError extends Error {
@@ -151,6 +163,148 @@ function mergeExisting(existing: Profile, incoming: SourcedImport): Profile {
   return out;
 }
 
+function importBrowser(entry: SourcedImport): Profile {
+  const { profile } = entry;
+  return profile.engine === "firefox" || profile.engine === "webkit" || profile.hardware || entry.sourceFields.chromium_runtime?.trim()
+    ? profile : withDefaultBrowser(profile);
+}
+
+function incompatibleFields(existing: Profile, entry: SourcedImport): Array<{ field: string; message: string }> {
+  const present = new Set(entry.presentFields);
+  const issues: Array<{ field: string; message: string }> = [];
+  const add = (field: string, message: string) => issues.push({ field, message });
+  if (present.has("engine") || present.has("firefox_config") || present.has("webkit_config")) {
+    if ((entry.profile.engine ?? "chromium") !== (existing.engine ?? "chromium")) {
+      add("engine", "profile engine cannot change in place");
+    } else if (existing.engine === "webkit" && JSON.stringify(existing.webkit) !== JSON.stringify(entry.profile.webkit)) {
+      add("webkit_config", "WebKit config cannot change through import");
+    } else if (existing.engine === "firefox" && !sameFirefoxConfig(existing, entry.profile)) {
+      add("firefox_config", "Firefox config cannot change through import");
+    }
+  }
+  if (present.has("chromium_runtime") && (entry.profile.chromiumRuntime ?? "") !== (existing.chromiumRuntime ?? "")) {
+    add("chromium_runtime", "Chrome version cannot change through import");
+  }
+  if (present.has("hardware_cores") && (entry.profile.hardware?.cores ?? 0) !== (existing.hardware?.cores ?? 0)) {
+    add("hardware_cores", "stored hardware cannot change through import");
+  }
+  if (present.has("proxy") && !entry.profile.proxy && (existing.proxy || existing.proxyError)) {
+    add("proxy", "blank proxy would erase the stored proxy; use profile edit to remove it explicitly");
+  }
+  if (present.has("ua") && !entry.profile.ua.trim() && existing.ua.trim()) {
+    add("ua", "blank ua would erase the stored browser identity");
+  }
+  if (
+    present.has("resolution") && !entry.sourceFields.resolution?.trim()
+    && (existing.screenWidth !== entry.profile.screenWidth || existing.screenHeight !== entry.profile.screenHeight)
+  ) {
+    add("resolution", "blank resolution would erase the stored screen identity");
+  }
+  if (!entry.sessionBundle && present.has("cookie") && existing.cookies.length) {
+    if (!entry.sourceFields.cookie?.trim()) {
+      add("cookie", "blank cookie field would erase stored cookies; use [] to clear them explicitly");
+    }
+    if (entry.cookiesStripped > 0 && entry.profile.cookies.length === 0) {
+      add("cookie", "cookie field contained only stripped extension cookies; use [] to clear stored cookies explicitly");
+    }
+  }
+  return issues;
+}
+
+export interface MigrationSummary {
+  files: number;
+  created: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  cookiesStripped: number;
+}
+
+export interface MigrationConflict {
+  file: number;
+  record?: number;
+  profileId?: string;
+  code: "invalid_export" | "invalid_records" | "invalid_fields" | "duplicate" | "busy" | "trashed" | "handed_off" | "incompatible";
+  field?: string;
+}
+
+export interface LocalMigrationPlan {
+  summary: MigrationSummary;
+  conflicts: MigrationConflict[];
+  profiles: Array<{ profile: Profile; action: "create" | "update" | "unchanged"; version: string | null; sessionBundle?: string }>;
+}
+
+/** Build an offline preview without persisting profiles or resolving proxies. */
+export async function prepareLocalMigration(
+  store: ProfileStore,
+  files: ImportFile[],
+  overrides: ImportOverrides,
+  busy: (id: string) => boolean,
+): Promise<LocalMigrationPlan> {
+  const summary: MigrationSummary = { files: files.length, created: 0, updated: 0, unchanged: 0, skipped: 0, cookiesStripped: 0 };
+  const conflicts: MigrationConflict[] = [];
+  const collected: Array<{ entry: SourcedImport; file: number; record: number }> = [];
+  const exists = (id: string) => !!store.getProfile(id) || store.isTrashed(id);
+  const counts = new Map<string, number>();
+  for (const [index, file] of files.entries()) {
+    try {
+      const imported = await readSourcedImport(file, overrides, id => counts.has(id) || exists(id));
+      summary.skipped += imported.skipped;
+      summary.cookiesStripped += imported.cookiesStripped;
+      if (imported.skipped) conflicts.push({ file: index + 1, code: "invalid_records" });
+      for (const [record, entry] of imported.imports.entries()) {
+        const id = entry.profile.id;
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+        collected.push({ entry, file: index + 1, record: record + 1 });
+      }
+    } catch {
+      // File names and parser errors can contain arbitrary input, including credentials.
+      conflicts.push({ file: index + 1, code: "invalid_export" });
+    }
+  }
+
+  return store.runTransaction(() => {
+    // Read the values used for merging and their version from one SQLite snapshot.
+    const profiles: LocalMigrationPlan["profiles"] = [];
+    for (const { entry, file, record } of collected) {
+      const id = entry.profile.id;
+      const location = { file, record, profileId: isSafeProfileId(id) ? id : undefined };
+      const before = conflicts.length;
+      if (counts.get(id)! > 1) conflicts.push({ ...location, code: "duplicate" });
+      if (!location.profileId || entry.validationErrors.length) conflicts.push({ ...location, code: "invalid_fields" });
+      if (!location.profileId) continue;
+      if (store.isTrashed(id)) conflicts.push({ ...location, code: "trashed" });
+      if (store.getLaunch(id) || busy(id)) conflicts.push({ ...location, code: "busy" });
+      if (store.profileHandoff(id)) conflicts.push({ ...location, code: "handed_off" });
+      const existing = store.getProfile(id);
+      if (existing && !entry.validationErrors.length) {
+        for (const { field } of incompatibleFields(existing, entry)) conflicts.push({ ...location, code: "incompatible", field });
+      }
+      if (conflicts.length !== before) continue;
+
+      const profile = existing ? mergeExisting(existing, entry) : importBrowser(entry);
+      try { assertValidProfile(profile); }
+      catch {
+        conflicts.push({ ...location, code: "invalid_fields" });
+        continue;
+      }
+      const sessionBundle = entry.sessionBundle;
+      const version = store.migrationProfileVersion(id);
+      if (!existing) {
+        summary.created++;
+        profiles.push({ profile, version, action: "create", sessionBundle });
+      } else if (!isDeepStrictEqual(existing, profile) || (sessionBundle !== undefined && store.getPendingSessionBundle(id) !== sessionBundle)) {
+        summary.updated++;
+        profiles.push({ profile, version, action: "update", sessionBundle });
+      } else {
+        summary.unchanged++;
+        profiles.push({ profile, version, action: "unchanged" });
+      }
+    }
+    return { summary, profiles, conflicts };
+  });
+}
+
 export interface PreparedImportBatch {
   imports: SourcedImport[];
   profiles: Profile[];
@@ -170,18 +324,18 @@ export async function prepareImportBuffers(
   let skipped = 0;
   const errors: InboxResult["errors"] = [];
   const collected: SourcedImport[] = [];
-  for (const { name, bytes } of files) {
+  for (const file of files) {
     let summary;
     try {
-      summary = await parseImportFile(name, bytes, exists);
+      summary = await readSourcedImport(file, overrides, exists);
     } catch (error) {
       if (error instanceof ProfileImportError) throw error;
       throw new ProfileImportError(error instanceof Error ? error.message : String(error));
     }
-    collected.push(...summary.imports.map((entry) => ({ ...applyOverrides(entry, overrides), source: name })));
+    collected.push(...summary.imports);
     cookiesStripped += summary.cookiesStripped;
     skipped += summary.skipped;
-    for (const error of summary.errors) errors.push({ file: name, ...error });
+    for (const error of summary.errors) errors.push({ file: file.name, ...error });
   }
 
   const problems: string[] = [];
@@ -209,9 +363,7 @@ export async function prepareImportBuffers(
   // A new profile whose import names no browser gets this computer's default. Stored
   // hardware belongs to CloakBrowser. A saved profile never changes its browser.
   for (const entry of collected) {
-    if (saved(entry.profile.id) || entry.profile.engine === "firefox" || entry.profile.engine === "webkit" || entry.profile.hardware) continue;
-    if (entry.sourceFields.chromium_runtime?.trim()) continue;
-    entry.profile = withDefaultBrowser(entry.profile);
+    if (!saved(entry.profile.id)) entry.profile = importBrowser(entry);
   }
 
   return {
@@ -252,40 +404,8 @@ export async function importBuffers(
       prepared.push(entry.profile);
       continue;
     }
-    const present = new Set(entry.presentFields);
-    if (present.has("engine") || present.has("firefox_config") || present.has("webkit_config")) {
-      if ((entry.profile.engine ?? "chromium") !== (existing.engine ?? "chromium")) {
-        problems.push(`${entry.source}: profile ${entry.profile.id}: profile engine cannot change in place`);
-      } else if (existing.engine === "webkit" && JSON.stringify(existing.webkit) !== JSON.stringify(entry.profile.webkit)) {
-        problems.push(`${entry.source}: profile ${entry.profile.id}: WebKit config cannot change through import`);
-      } else if (existing.engine === "firefox" && !sameFirefoxConfig(existing, entry.profile)) {
-        problems.push(`${entry.source}: profile ${entry.profile.id}: Firefox config cannot change through import`);
-      }
-    }
-    if (present.has("chromium_runtime") && (entry.profile.chromiumRuntime ?? "") !== (existing.chromiumRuntime ?? "")) {
-      problems.push(`${entry.source}: profile ${entry.profile.id}: Chrome version cannot change through import`);
-    }
-    if (present.has("hardware_cores") && (entry.profile.hardware?.cores ?? 0) !== (existing.hardware?.cores ?? 0)) {
-      problems.push(`${entry.source}: profile ${entry.profile.id}: stored hardware cannot change through import`);
-    }
-    if (present.has("proxy") && !entry.profile.proxy && (existing.proxy || existing.proxyError)) {
-      problems.push(`${entry.source}: profile ${entry.profile.id}: blank proxy would erase the stored proxy; use profile edit to remove it explicitly`);
-    }
-    if (present.has("ua") && !entry.profile.ua.trim() && existing.ua.trim()) {
-      problems.push(`${entry.source}: profile ${entry.profile.id}: blank ua would erase the stored browser identity`);
-    }
-    if (
-      present.has("resolution")
-      && !entry.sourceFields.resolution?.trim()
-      && (existing.screenWidth !== entry.profile.screenWidth || existing.screenHeight !== entry.profile.screenHeight)
-    ) {
-      problems.push(`${entry.source}: profile ${entry.profile.id}: blank resolution would erase the stored screen identity`);
-    }
-    if (!entry.sessionBundle && present.has("cookie") && !entry.sourceFields.cookie?.trim() && existing.cookies.length) {
-      problems.push(`${entry.source}: profile ${entry.profile.id}: blank cookie field would erase stored cookies; use [] to clear them explicitly`);
-    }
-    if (!entry.sessionBundle && present.has("cookie") && entry.cookiesStripped > 0 && entry.profile.cookies.length === 0 && existing.cookies.length) {
-      problems.push(`${entry.source}: profile ${entry.profile.id}: cookie field contained only stripped extension cookies; use [] to clear stored cookies explicitly`);
+    for (const { message } of incompatibleFields(existing, entry)) {
+      problems.push(`${entry.source}: profile ${entry.profile.id}: ${message}`);
     }
     prepared.push(mergeExisting(existing, entry));
   }

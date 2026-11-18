@@ -30,6 +30,7 @@ import {
   ProfileImportError,
   type ImportOverrides,
 } from "./inbox.ts";
+import { migrationPreviewService } from "./migration-preview.ts";
 import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { createLocalProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
 import { webkitSupported } from "./webkit-config.ts";
@@ -1428,13 +1429,33 @@ export async function handleUiRequest(
   }
 
   if (pathname === "/ui/api/import/upload" && req.method === "POST") {
+    const migrationAction = new URL(req.url).searchParams.get("migration");
+    if (migrationAction !== null) {
+      if (remote) return noStoreJson({ ok: false, error: "Migration previews require local profiles" }, 400);
+      if (migrationAction !== "preview" && migrationAction !== "commit" && migrationAction !== "undo") {
+        return noStoreJson({ ok: false, error: "Unknown migration action" }, 400);
+      }
+    }
     try {
       const form = await req.formData();
+      const busy = (id: string) => launcher.profileDeletionBlocked(id);
+      if (migrationAction === "commit" || migrationAction === "undo") {
+        const service = migrationPreviewService(store);
+        const result = migrationAction === "commit"
+          ? service.commit(form.get("previewId"), busy)
+          : service.undo(form.get("undoId"), busy);
+        return noStoreJson({ ok: true, ...result });
+      }
       const uploads: { name: string; bytes: Uint8Array }[] = [];
       const override = importOverridesFromForm(form);
 
       for (const [, value] of form) {
         if (value instanceof File) uploads.push({ name: value.name, bytes: new Uint8Array(await value.arrayBuffer()) });
+      }
+      if (migrationAction === "preview") {
+        if (!uploads.length) return noStoreJson({ ok: false, error: "Select at least one export file" }, 400);
+        const preview = await migrationPreviewService(store).preview(uploads, override, busy);
+        return noStoreJson({ ok: true, ...preview });
       }
       if (uploads.length === 0) return Response.json({ ok: false, error: "no files uploaded" }, { status: 400 });
 
@@ -1452,6 +1473,10 @@ export async function handleUiRequest(
       launcher.prefetchFirefoxFontPacks?.(store.listProfiles());
       return Response.json({ ok: true, ...imported });
     } catch (error) {
+      if (migrationAction !== null) {
+        if (error instanceof ProfileImportError) return noStoreJson({ ok: false, error: error.message }, error.status);
+        return noStoreJson({ ok: false, error: "The migration could not be completed" }, 500);
+      }
       const status = error instanceof ProfileImportError
         ? error.status
         : error instanceof CloudApiError ? error.status

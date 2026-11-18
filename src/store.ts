@@ -10,6 +10,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { folderTree } from "./folders.ts";
 import type {
   CookieRecord,
@@ -30,6 +31,13 @@ import { assertValidProfile } from "./profile-validation.ts";
 import { mergeCookies } from "./parse.ts";
 import { SecretBox, secretBoxForDatabase } from "./secret-box.ts";
 import { identityChanges, type SnapshotStore } from "./snapshots.ts";
+
+export interface MigrationUndoRecord {
+  id: string;
+  expiresAt: number;
+  created: Array<{ id: string; version: string }>;
+  updated: number;
+}
 
 export class ProfileStore {
   private db: Database;
@@ -168,7 +176,14 @@ export class ProfileStore {
         profile_id TEXT PRIMARY KEY,
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS migration_undo (
+        id TEXT PRIMARY KEY,
+        expires_at INTEGER NOT NULL,
+        created_versions TEXT NOT NULL,
+        updated_count INTEGER NOT NULL
+      );
     `);
+    this.pruneMigrationUndo(Date.now());
     // Uploaded browser extensions (files live on disk; this is the registry).
     // load_dir is the directory handed to --load-extension (has manifest.json).
     this.db.exec(`
@@ -398,7 +413,7 @@ export class ProfileStore {
   }
 
   /** Insert or replace a profile's identity. Preserves the existing seeded flag. */
-  upsertProfile(p: Profile): void {
+  upsertProfile(p: Profile, { notify = true }: { notify?: boolean } = {}): void {
     // Defense in depth for direct hub/API/remote callers that bypass the import
     // parser. Invalid full-profile JSON must never reach persistent identity.
     assertValidProfile(p);
@@ -533,7 +548,7 @@ export class ProfileStore {
     // An edit or re-import that omits the display scale keeps it; a Cloud copy that carries one sets it.
     if (p.displayScale !== undefined) this.setDisplayScale(p.id, p.displayScale);
     if (p.group) this.registerGroup(p.group);
-    this.onProfileSaved?.(p);
+    if (notify) this.onProfileSaved?.(p);
   }
 
   /** Pins the display scale a Chromium 155 profile's pages draw at. */
@@ -584,10 +599,14 @@ export class ProfileStore {
   }
 
   /** Apply a prevalidated profile batch atomically (all rows or none). */
-  upsertProfiles(profiles: Profile[], sessions: ReadonlyMap<string, string> = new Map()): void {
+  upsertProfiles(
+    profiles: Profile[],
+    sessions: ReadonlyMap<string, string> = new Map(),
+    options?: { notify?: boolean },
+  ): void {
     const apply = this.transaction((items: Profile[]) => {
       for (const profile of items) {
-        this.upsertProfile(profile);
+        this.upsertProfile(profile, options);
         const bundle = sessions.get(profile.id);
         if (bundle !== undefined) {
           this.saveSessionBundle(profile.id, bundle);
@@ -596,6 +615,36 @@ export class ProfileStore {
       }
     });
     apply(profiles);
+  }
+
+  /** Compare the persisted row, including lifecycle and session state, without opening its secrets. */
+  migrationProfileVersion(id: string): string | null {
+    const row = this.db.query<Record<string, string | number | null>, [string]>(
+      "SELECT rowid AS migration_rowid, * FROM profiles WHERE id = ?",
+    ).get(id);
+    return row ? createHash("sha256").update(JSON.stringify(row)).digest("hex") : null;
+  }
+
+  saveMigrationUndo(receipt: MigrationUndoRecord): void {
+    this.db.query(
+      "INSERT INTO migration_undo (id, expires_at, created_versions, updated_count) VALUES (?, ?, ?, ?)",
+    ).run(receipt.id, receipt.expiresAt, JSON.stringify(receipt.created), receipt.updated);
+  }
+
+  loadMigrationUndo(id: string): MigrationUndoRecord | null {
+    const row = this.db.query<{ expires_at: number; created_versions: string; updated_count: number }, [string]>(
+      "SELECT expires_at, created_versions, updated_count FROM migration_undo WHERE id = ?",
+    ).get(id);
+    if (!row) return null;
+    return { id, expiresAt: row.expires_at, created: JSON.parse(row.created_versions), updated: row.updated_count };
+  }
+
+  deleteMigrationUndo(id: string): void {
+    this.db.query("DELETE FROM migration_undo WHERE id = ?").run(id);
+  }
+
+  pruneMigrationUndo(now: number): void {
+    this.db.query("DELETE FROM migration_undo WHERE expires_at <= ?").run(now);
   }
 
   getSessionBundle(id: string): string | null {
