@@ -68,6 +68,13 @@ async function until<T>(read: () => Promise<T>, match: (value: T) => boolean): P
   } while (Date.now() < deadline);
   throw new Error("The worker did not finish");
 }
+async function verifyReleaseSession(target: ReturnType<typeof node>, ids: [string, string], phase: "seed" | "verify") {
+  const descriptor = join(root, "release-session-runtime.json");
+  writeFileSync(descriptor, JSON.stringify({ port: target.server.port, nonce: target.nonce }), { mode: 0o600 });
+  const check = Bun.spawn([process.execPath, join(import.meta.dir, "desktop-session-acceptance.mjs"),
+    descriptor, phase, "chromium", ...ids, site.url.href], { stdout: "inherit", stderr: "inherit" });
+  assert.equal(await check.exited, 0, "The desktop release session check completed");
+}
 const initial = String.raw`async ({page, argument}) => {
   await page.goto(argument);
   return page.evaluate(async () => {
@@ -122,6 +129,8 @@ try {
   const profile = buildNewProfile({ name: "Production QA", group: "qa", chromiumRuntime: "aliasmode" }, () => false);
   profileId = profile.id;
   source.store.upsertProfile(profile);
+  const canaryPeer = buildNewProfile({ name: "Canary peer", group: "qa", chromiumRuntime: "aliasmode" }, id => !!source.store.getProfile(id));
+  source.store.upsertProfile(canaryPeer);
   const peerToken = randomBytes(32).toString("base64url");
   writeFileSync(join(target.paths.root, "worker-nodes.json"), JSON.stringify({
     clients: [{ name: "qa", token: peerToken, groups: ["qa"], agents: ["production-qa", "other-agent"] }],
@@ -136,6 +145,8 @@ try {
   assert.equal(health.status.ready, true);
   const privateDashboard = await fetch(target.server.url, { tls: { ca: readFileSync(certFile, "utf8") } });
   assert.equal(privateDashboard.status, 404);
+  await assert.rejects(fetch(target.server.url), "A private certificate must require explicit trust");
+  await verifyReleaseSession(source, [profileId, canaryPeer.id], "seed");
   await source.launcher.start(profileId, [], { headless: true });
   const seed = await runPlaywrightWorker<{ completed: boolean; error?: string }>("devtools-program", {
     endpoint: source.store.getLaunch(profileId)!.ws, code: initial, argument: site.url.href,
@@ -143,14 +154,20 @@ try {
   assert.equal(seed.completed, true, seed.error);
   const data = source.launcher.userDataDir(profileId);
   writeFileSync(join(data, "qa-native-file"), "before-upgrade");
-  const rollout = await controller.call("kernels.upgrade_batch", { profileIds: [profileId], revision: previous });
+  const rollout = await controller.call("kernels.upgrade_batch", { profileIds: [profileId, canaryPeer.id], revision: previous, canaryCount: 1 });
   assert.equal(rollout.completed.length, 1);
+  assert.equal(rollout.awaitingVerification, true);
+  assert.deepEqual(rollout.pending, [canaryPeer.id]);
+  assert.equal(source.store.getProfile(canaryPeer.id)?.kernelRevision, undefined);
   assert.equal(source.store.getProfile(profileId)?.kernelRevision, previous);
   assert.equal(basename(dirname(source.store.getLaunch(profileId)!.binaryPath!)), "chromium-" + previous);
   writeFileSync(join(data, "qa-native-file"), "after-upgrade");
   await controller.call("kernels.rollback", { profileId });
   assert.equal(basename(dirname(source.store.getLaunch(profileId)!.binaryPath!)), "chromium-" + DEFAULT_CHROMIUM_REVISION);
   assert.equal(readFileSync(join(data, "qa-native-file"), "utf8"), "before-upgrade");
+  assert.ok(await source.launcher.stop(profileId));
+  await source.launcher.cacheCleanupSettled(profileId);
+  await verifyReleaseSession(source, [profileId, canaryPeer.id], "verify");
   console.log("Verified two actual Chromium builds and restored the previous native directory.");
 
   const handoff = { operation: "handoff", node: "target", profileId, idempotencyKey: "once" };
@@ -187,6 +204,8 @@ try {
   }, task => ["completed", "blocked", "interrupted", "needs_verification"].includes(task.state));
   assert.equal(completed.state, "completed", JSON.stringify(completed));
   assert.equal(completed.client, "production-qa");
+  const replayed = await reconnected.call("worker.call", { operation: "handoff", node: "target", profileId, idempotencyKey: "once" });
+  assert.equal(replayed.imported, false, "An acknowledged handoff remains idempotent after reconnect");
   console.log("Verified authenticated HTTPS, encrypted handoff, source fencing, restored browser state and Agent ownership on a second local Worker.");
 } finally {
   for (const runtime of connections) runtime.close();

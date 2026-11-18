@@ -79,8 +79,8 @@ export class WorkerNodes {
     const clients = Array.isArray(file.clients) ? file.clients.map(value => {
       const item = object(value);
       if (!token(item.token) || !Array.isArray(item.groups) || !item.groups.every(group => typeof group === "string")) throw new Error("Invalid worker client settings");
-      const name = field(item.name, "worker client name").trim();
-      if (name.length > 48 || /[\u0000-\u001f]/.test(name)) throw new Error("Invalid Worker client name");
+      const name = field(item.name, "worker client name").slice(0, 48);
+      if (/\p{Cc}/u.test(name)) throw new Error("Invalid Worker client name");
       return { name, token: item.token, groups: item.groups, agents: agentList(item.agents) };
     }) : [];
     if (new Set(clients.map(client => client.name)).size !== clients.length ||
@@ -109,7 +109,8 @@ export class WorkerNodes {
   async serve(request: Request, pathname: string): Promise<Response> {
     try {
       const supplied = request.headers.get("authorization")?.replace(/^Bearer /, "");
-      const client = token(supplied) ? this.config().clients.find(item => match(supplied, item.token)) : undefined;
+      const authenticate = () => token(supplied) ? this.config().clients.find(item => match(supplied, item.token)) : undefined;
+      const client = authenticate();
       if (!client) return Response.json({ ok: false, error: "Worker access denied" }, { status: 401 });
       if (request.method !== "POST") return Response.json({ ok: false, error: "Use POST" }, { status: 405 });
       const { tasks, portable, store } = this.options;
@@ -131,11 +132,15 @@ export class WorkerNodes {
       if (pathname === WORKER_PATH + "/handoff") {
         const packet = await body(request, MAX_PORTABLE_BYTES);
         const result = await portable.restore(packet, client.token, profile => {
-          if (!permitted(profile.group)) throw new Error("Worker access denied for this profile group");
-        });
+          if (authenticate()?.name !== client.name || !permitted(profile.group)) throw new Error("Worker access denied for this profile group");
+        }, request.signal);
         return Response.json({ ok: true, result });
       }
       const input = object(JSON.parse((await body(request, 1024 * 1024)).toString("utf8")));
+      const current = authenticate();
+      if (current?.name !== client.name || (agent === undefined ? current.agents !== undefined : !listed(current.agents, agent))) {
+        return Response.json({ ok: false, error: "Worker authorization changed" }, { status: 403 });
+      }
       const operation = input.operation;
       if (operation === "health") {
         const capacity = this.options.capacity?.(), queue = tasks.queueStatus();

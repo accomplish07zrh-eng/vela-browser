@@ -39,6 +39,7 @@ export interface LifecycleAdmissionRequest {
   signal?: AbortSignal;
   /** Agent tasks reuse their memory reservation while acquiring a lifecycle slot. */
   hostPermit?: HostWorkPermit;
+  cancelKey?: string;
   onDispatch?(queueMs: number): void;
 }
 
@@ -121,9 +122,10 @@ export class LifecycleAdmissionController {
     });
   }
 
-  /** Cancel only starts still queued for this profile. Running launches retain their permit. */
-  cancelStarts(profileId: string): number {
-    const cancelled = this.queue.filter(operation => operation.kind === "start" && operation.profileIds.includes(profileId));
+  /** Cancel only this dashboard request's queued start. */
+  cancelStarts(profileId: string, requestId: string): number {
+    const cancelled = this.queue.filter(operation => operation.kind === "start" && operation.profileIds.includes(profileId)
+      && operation.cancelKey === requestId);
     for (const operation of cancelled) {
       this.rejectQueued(operation, new LifecycleAdmissionError("The queued browser start was cancelled", "cancelled"), false);
     }
@@ -212,7 +214,7 @@ export class LifecycleAdmissionController {
     for (let index = 0; index < this.queue.length; index++) {
       const operation = this.queue[index]!;
       const profileEligible = !operation.profileIds.some((id) => blockedProfiles.has(id));
-      const memoryEligible = this.hostWork?.canStart(operation.hostPermit) ?? true;
+      const memoryEligible = operation.kind !== "start" || (this.hostWork?.canStart(operation.hostPermit) ?? true);
       const laneEligible = operation.kind !== "start" || (runningStarts < startLimit && memoryEligible);
       // A start parked by host capacity must not prevent a same-profile stop or cleanup.
       if (operation.kind !== "start" || memoryEligible && startLimit > 0) for (const id of operation.profileIds) blockedProfiles.add(id);
@@ -309,9 +311,11 @@ export async function dispatchWithLifecycleAdmission(
   if (!classified) return dispatch();
   try {
     let queueMs = 0;
+    const key = req.headers.get("x-vela-launch-request");
+    const cancelKey = classified.kind === "start" && classified.protocol === "ui" && key && /^[0-9a-f-]{36}$/.test(key) ? key : undefined;
     const response = await admission.run(
       { kind: classified.kind, profileIds: classified.profileIds, signal: req.signal,
-        onDispatch: elapsed => { queueMs = elapsed; } },
+        cancelKey, onDispatch: elapsed => { queueMs = elapsed; } },
       dispatch,
     );
     if (classified.kind === "start") response.headers.set("Server-Timing", `vela_queue;dur=${queueMs.toFixed(1)}`);

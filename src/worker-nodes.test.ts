@@ -74,3 +74,35 @@ test("Worker requests keep per-Agent ownership through reconnect, delegation and
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a disconnected Worker reports unavailable and becomes reachable after restart", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vela-worker-health-"));
+  const store = new ProfileStore(":memory:");
+  const tasks = new BrowserTaskSupervisor({ root: join(root, "tasks"), authorize() {}, async open() { throw new Error("No browser needed"); } });
+  const token = randomBytes(32).toString("base64url"), config = join(root, "worker-nodes.json");
+  const worker = new WorkerNodes({ config, store, tasks, portable: {} as PortableProfiles });
+  const serve = (port: number) => Bun.serve({ port, hostname: "127.0.0.1",
+    fetch: request => worker.serve(request, new URL(request.url).pathname),
+  });
+  let server = serve(0);
+  const port = server.port!;
+  writeFileSync(config, JSON.stringify({
+    nodes: { fixture: { url: `http://127.0.0.1:${port}`, token } },
+    clients: [{ name: "fixture", groups: [], token }],
+  }));
+  const probe = () => worker.call({ operation: "health", node: "fixture" }, "agent", () => {});
+  try {
+    expect(await probe()).toMatchObject({ reachable: true });
+    await server.stop(true);
+    await Bun.sleep(2100);
+    expect(await probe()).toMatchObject({ reachable: false });
+    server = serve(port);
+    await Bun.sleep(2100);
+    expect(await probe()).toMatchObject({ reachable: true, status: { ready: true } });
+  } finally {
+    await server.stop(true);
+    await tasks.shutdown();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 12_000);

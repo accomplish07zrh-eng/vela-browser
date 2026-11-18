@@ -5,7 +5,7 @@ import "./ai-settings.css";
 
 type Rule = "all" | "none" | string[];
 interface Access { default: Rule; agents: Record<string, Rule> }
-interface AccessListing { access: Access; agents: string[]; connected: string[]; groups: string[] }
+interface AccessListing { access: Access; agents: string[]; authenticated?: string[]; connected: string[]; groups: string[] }
 
 async function call<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, body === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -79,6 +79,7 @@ export function AiAccessCard({ flash }: { flash(message: string): void }) {
         <div className="ai-access-name">
           <strong>{name}</strong>
           <small>{listing.connected.includes(name) ? <><i className="ai-live" aria-hidden="true" />{t("Connected now")}</> : t("Seen before")}</small>
+          {listing.authenticated?.includes(name) && <small>{t("Credential required")}</small>}
         </div>
         <RuleEditor rule={access.agents[name]} groups={listing.groups} allowInherit inherited={access.default} onChange={(rule) => setAgent(name, rule)} />
       </div>)}
@@ -86,7 +87,7 @@ export function AiAccessCard({ flash }: { flash(message: string): void }) {
         <input className="input" value={adding} maxLength={64} placeholder={t("Add an AI by name, such as claude code or cursor")} onChange={(event) => setAdding(event.target.value)} />
         <button type="submit" className="btn" disabled={!adding.trim()}>{t("Add")}</button>
       </form>
-      <p className="cardnote">{t("An AI is known by the name its app gives when it connects. This keeps assistants apart; it is not a lock against other programs on this computer.")}</p>
+      <p className="cardnote">{t("Configured Agent credentials verify names and protect task access. Other Agent names are supplied by their client.")}</p>
     </div>
   </section>;
 }

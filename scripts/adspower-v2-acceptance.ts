@@ -1,6 +1,7 @@
 /** Exercises a migrated profile using the public local API and a real Selenium client. */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { aliasmodeChromiumArchive, aliasmodeChromiumExecutable } from "../src/aliasmode-chromium.ts";
@@ -19,7 +20,7 @@ mkdirSync("reports", { recursive: true });
 const directory = realpathSync("reports");
 const scratch = mkdtempSync(join(directory, "adspower-v2-qa-"));
 const driverRoot = join(scratch, "runtimes");
-const store = new ProfileStore(join(scratch, "profiles.sqlite"));
+const store = new ProfileStore(":memory:");
 const launcher = new Launcher({
   store, dataRoot: join(scratch, "data"), chromiumRuntimeRoot: driverRoot,
   headless: true, ensureAliasmodeChromium: async () => binary, log: () => {},
@@ -123,6 +124,6 @@ try {
   store.close();
   const actual = realpathSync(scratch);
   if (stopped && dirname(actual) === directory && basename(actual).startsWith("adspower-v2-qa-")) {
-    rmSync(actual, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    await rm(actual, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 });
   }
 }

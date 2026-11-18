@@ -27,11 +27,15 @@ export function BrowserTasksPanel({ receipt }: { receipt?: { runId: string; sequ
   const [error, setError] = useState("");
   const [verifier, setVerifier] = useState("");
   const [delegateEdit, setDelegateEdit] = useState<string | null>(null);
-  const task = tasks.find(item => item.runId === runId) ?? tasks[0];
+  const task = runId ? tasks.find(item => item.runId === runId) : tasks[0];
+  const uncertain = task?.steps.find(step => step.state === "uncertain");
 
   useEffect(() => {
     let mounted = true;
+    let inFlight = false;
     async function load() {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const records: BrowserTaskView[] = [];
         let offset = 0, more = false;
@@ -46,12 +50,14 @@ export function BrowserTasksPanel({ receipt }: { receipt?: { runId: string; sequ
         }
         if (mounted) { setTasks(records); setMore(more); }
       } catch (error) { if (mounted) setError(error instanceof Error ? error.message : String(error)); }
-      finally { if (mounted) setLoading(false); }
+      finally { inFlight = false; if (mounted) setLoading(false); }
     }
     const timer = setInterval(() => { void load(); }, 2000);
     void load();
     return () => { mounted = false; clearInterval(timer); };
   }, [count, busy, runId]);
+
+  useEffect(() => { setVerifier(""); }, [task?.runId, uncertain?.expectedAttempt]);
 
   const oldest = task?.firstEvidence ?? 1;
   const evidenceSequence = oldest <= (task?.evidenceCount ?? 0)
@@ -71,7 +77,6 @@ export function BrowserTasksPanel({ receipt }: { receipt?: { runId: string; sequ
     return () => abort.abort();
   }, [task?.runId, evidenceSequence, part]);
 
-  const uncertain = task?.steps.find(step => step.state === "uncertain");
   const change = async (operation: "pause" | "cancel" | "resume" | "delegate") => {
     if (!task) return;
     setBusy(true); setError("");

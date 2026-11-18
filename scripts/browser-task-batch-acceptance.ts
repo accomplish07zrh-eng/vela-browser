@@ -1,7 +1,8 @@
 /** Run against the installed Vela Chromium and the real desktop MCP transport. */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -26,7 +27,9 @@ assert.equal(await sha256File(binary), aliasmodeChromiumArchive(process.platform
 const temp = realpathSync(tmpdir()), root = mkdtempSync(join(temp, "vela-task-batch-"));
 const paths = statePaths(root);
 ensureStateDirectories(paths);
-const store = new ProfileStore(paths.database);
+// Restart recovery is exercised through the persisted task manifests. The profile
+// database can stay in memory, which avoids open SQLite handles during Windows cleanup.
+const store = new ProfileStore(":memory:");
 const launcher = new Launcher({ store, dataRoot: paths.profiles, headless: true, ensureAliasmodeChromium: async () => binary, log() {} });
 const nonce = randomBytes(32).toString("hex");
 const dashboard = serveDashboard({ store, launcher, paths, agentNonce: nonce, port: 0, log() {} });
@@ -260,6 +263,6 @@ try {
   store.close();
   const actual = realpathSync(root);
   if (stops.every(Boolean) && dirname(actual) === temp && actual === root) {
-    rmSync(actual, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    await rm(actual, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 });
   }
 }

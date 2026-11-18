@@ -682,7 +682,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
       },
     },
     fetch: async (req, server) => {
-      const deniedHost = loopbackHostGuard(req, hostname);
+      const deniedHost = opts.workerTls ? null : loopbackHostGuard(req, hostname);
       if (deniedHost) return deniedHost;
       const reqUrl = new URL(req.url);
       if (reqUrl.pathname === WORKER_PATH + "/tasks" || reqUrl.pathname === WORKER_PATH + "/handoff") {
@@ -769,6 +769,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
           ...(audit ? { audit } : {}),
           ...(snapshots ? { snapshots } : {}),
           connectedAgents: () => agentHub?.connectedAgents() ?? [],
+          authenticatedAgents: () => { try { return agentCredentials?.names() ?? []; } catch { return []; } },
           ...(mobileView ? { mobileView } : {}),
           ipScores,
           shutdownSignal: shutdownController.signal,

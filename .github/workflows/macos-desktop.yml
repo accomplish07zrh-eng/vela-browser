@@ -527,7 +527,12 @@ jobs:
           # A Chromium profile would start its browser download from github.com, which the fixture rejects.
           kept="$("$helper" profiles create --name keep-me --engine firefox | jq -er 'select(.ok) | .result.id')"
           peer="$("$helper" profiles create --name session-isolation-peer --engine firefox | jq -er 'select(.ok) | .result.id')"
-          bun scripts/desktop-session-acceptance.mjs "$data/agent-runtime.json" seed firefox "$kept" "$peer"
+          bun -e 'Bun.serve({hostname:"127.0.0.1",port:4497,fetch(){return new Response("<title>Session fixture</title>",{headers:{"content-type":"text/html"}})}})' &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          fixture_url="http://127.0.0.1:4497/"
+          curl --fail --silent --retry 5 --retry-connrefused "$fixture_url" >/dev/null
+          bun scripts/desktop-session-acceptance.mjs "$data/agent-runtime.json" seed firefox "$kept" "$peer" "$fixture_url"
           # The dashboard checks for updates by itself; wait until it has read the release feed.
           for attempt in $(seq 1 60); do
             [[ "$(sudo jq -r '.counts.manifest' "$work/fixture-state.json")" -ge 1 ]] && break
@@ -563,7 +568,7 @@ jobs:
           # The swapped bundle must keep a valid signature seal, and the profile data must survive.
           codesign --verify --deep --strict "$app"
           "$helper" profiles list | grep -q "\"$kept\""
-          bun scripts/desktop-session-acceptance.mjs "$data/agent-runtime.json" verify firefox "$kept" "$peer"
+          bun scripts/desktop-session-acceptance.mjs "$data/agent-runtime.json" verify firefox "$kept" "$peer" "$fixture_url"
           sudo jq -e '.counts.installer >= 1 and .counts.rejected == 0' "$work/fixture-state.json"
       - name: Restore name resolution
         if: always()

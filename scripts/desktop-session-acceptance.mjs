@@ -10,6 +10,7 @@ const [descriptorFile, phase, engine, first, second, originArg] = process.argv.s
 if (!descriptorFile || !["seed", "verify"].includes(phase) || !["firefox", "chromium"].includes(engine) || !first || !second || first === second) {
   throw new Error("Expected a fixture runtime descriptor, seed or verify, browser engine, and two disposable profile IDs");
 }
+if (engine === "firefox" && !originArg) throw new Error("Firefox session acceptance needs the same loopback fixture origin before and after the update");
 const { port, nonce } = JSON.parse(await readFile(descriptorFile, "utf8"));
 assert.ok(Number.isSafeInteger(port) && port > 0 && /^[a-f0-9]{64}$/.test(nonce));
 const fixture = new URL(originArg ?? `http://127.0.0.1:${port}/`);
@@ -58,8 +59,18 @@ try {
   for (const seed of rounds) {
     for (const id of ids) {
       const opened = await agent.call("browser.open", { profileId: id, headless: true });
-      try { await inspect(id, opened.ws, seed); }
-      finally { await agent.call("browser.close", { profileId: id }); }
+      try {
+        if (engine === "chromium") {
+          const endpoint = new URL(opened.ws);
+          assert.equal(endpoint.protocol, "ws:");
+          assert.equal(endpoint.hostname, "127.0.0.1");
+        }
+        await inspect(id, opened.ws, seed);
+      }
+      finally {
+        await agent.call("browser.close", { profileId: id });
+        assert.equal((await agent.call("browser.status", { profileId: id })).running, false);
+      }
     }
   }
   console.log(JSON.stringify({ phase, engine, profiles: ids.length, isolatedSessions: true, reopened: true }));

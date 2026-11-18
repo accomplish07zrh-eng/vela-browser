@@ -224,7 +224,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null), [preview, setPreview] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
   const [launchPressure, setLaunchPressure] = useState(false);
-  const batchStart = useRef<{ cancelled: boolean; pending: Set<string> } | null>(null);
+  const batchStart = useRef<{ cancelled: boolean; pending: Map<string, string> } | null>(null);
   useEffect(() => {
     if (!launching) return;
     let active = true;
@@ -593,7 +593,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
   const action = useCallback(async (kind: "start" | "stop" | "raise", ids: string[]) => {
     const isStart = kind === "start";
     if (busy || (isStart && batchStart.current)) return;
-    const batch = isStart ? { cancelled: false, pending: new Set<string>() } : undefined;
+    const batch = isStart ? { cancelled: false, pending: new Map<string, string>() } : undefined;
     if (batch) {
       batchStart.current = batch;
       setLaunchPressure(false);
@@ -606,8 +606,9 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
       await runProfilePool(ids, concurrency, async (id) => {
         try {
           if (batch?.cancelled) return;
-          batch?.pending.add(id);
-          const result = await (kind === "start" ? openProfile(id) : kind === "stop" ? closeProfile(id) : raiseProfile(id));
+          const requestId = batch ? crypto.randomUUID() : undefined;
+          if (requestId) batch?.pending.set(id, requestId);
+          const result = await (kind === "start" ? openProfile(id, false, requestId) : kind === "stop" ? closeProfile(id) : raiseProfile(id));
           if (!result.ok) throw new Error(result.error || t("Operation failed"));
           if (kind === "stop") {
             if (id === syncRef.current?.master) stopSync();
@@ -629,7 +630,7 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     const batch = batchStart.current;
     if (!batch) return;
     batch.cancelled = true;
-    void Promise.allSettled([...batch.pending].map(cancelProfileStart));
+    void Promise.allSettled([...batch.pending].map(([id, key]) => cancelProfileStart(id, key)));
   };
   const applyBatch = async () => {
     if (busy || !selected.size) return; setBusy(true); setError(null);

@@ -172,11 +172,12 @@ test("a task and a direct launch share one slot; an Agent start reuses its reser
   const admission = new LifecycleAdmissionController({ hostWork, queueWaitMs: 3000 });
   const permit = hostWork.acquire()!;
   expect(permit).toBeDefined();
-  const queued = admission.run({ kind: "start", profileIds: ["direct"] }, () => { throw new Error("Cancelled work must not dispatch"); });
+  const queued = admission.run({ kind: "start", profileIds: ["direct"], cancelKey: "dashboard" }, () => { throw new Error("Cancelled work must not dispatch"); });
   let called = false;
   await admission.run({ kind: "start", profileIds: ["task"], hostPermit: permit }, () => { called = true; });
   expect(called).toBe(true);
-  expect(admission.cancelStarts("direct")).toBe(1);
+  expect(admission.cancelStarts("direct", "another-request")).toBe(0);
+  expect(admission.cancelStarts("direct", "dashboard")).toBe(1);
   await expect(queued).rejects.toMatchObject({ reason: "cancelled" });
   permit.release();
 });

@@ -30,6 +30,8 @@ export class AgentCredentials {
     return this.entries().some(([key]) => key === agentKey(name));
   }
 
+  names(): string[] { return this.entries().map(([name]) => name).sort(); }
+
   resolve(token: string): string | undefined {
     if (!/^[A-Za-z0-9_-]{43,128}$/.test(token)) return;
     const digest = createHash("sha256").update(token).digest();

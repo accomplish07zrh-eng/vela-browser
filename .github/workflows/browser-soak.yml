@@ -1,0 +1,72 @@
+name: Browser capacity soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      profiles:
+        description: Concurrent resident profiles
+        required: true
+        default: "30"
+        type: choice
+        options: ["30", "60"]
+      duration:
+        description: Soak time
+        required: true
+        default: "3600"
+        type: choice
+        options: ["3600", "86400"]
+      engine:
+        description: Browser workload
+        required: true
+        default: mixed
+        type: choice
+        options: [mixed, chromium, firefox, adspower]
+      visible:
+        description: Run with visible windows on an interactive test host
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vela-browser-soak-windows
+
+jobs:
+  soak:
+    runs-on: [self-hosted, Windows, X64, vela-browser-soak]
+    timeout-minutes: 1500
+    env:
+      PROFILES: ${{ inputs.profiles }}
+      DURATION: ${{ inputs.duration }}
+      ENGINE: ${{ inputs.engine }}
+      VISIBLE: ${{ inputs.visible }}
+      ADSPOWER_LOCAL_API_KEY: ${{ secrets.ADSPOWER_LOCAL_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+      - run: bun install --frozen-lockfile
+      - name: Run the pinned browser workload
+        shell: pwsh
+        run: |
+          $arguments = @(
+            "--runtime-root", "${{ runner.tool_cache }}/vela-soak-runtimes",
+            "--profiles", $env:PROFILES, "--concurrency", "4",
+            "--fresh-only", "--first-action", "--soak-seconds", $env:DURATION,
+            "--sample-seconds", "60", "--report", "reports/ci-browser-soak.json"
+          )
+          if ($env:VISIBLE -eq "true") { $arguments += "--visible" }
+          if ($env:ENGINE -eq "adspower") {
+            $arguments += @("--engine", "chromium", "--adspower-url", "http://127.0.0.1:50325")
+          } else {
+            $arguments += @("--engine", $env:ENGINE)
+          }
+          bun scripts/launch-batch-acceptance.ts @arguments
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-soak-${{ inputs.engine }}-${{ inputs.profiles }}
+          path: reports/ci-browser-soak.json

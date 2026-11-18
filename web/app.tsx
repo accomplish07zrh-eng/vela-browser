@@ -1248,7 +1248,7 @@ function App() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [launchingBatch, setLaunchingBatch] = useState(false);
   const [launchPressure, setLaunchPressure] = useState(false);
-  const batchStart = useRef<{ cancelled: boolean; pending: Set<string> } | null>(null);
+  const batchStart = useRef<{ cancelled: boolean; pending: Map<string, string> } | null>(null);
   useEffect(() => {
     if (!launchingBatch) return;
     let active = true;
@@ -2464,8 +2464,8 @@ function App() {
   };
 
   // ---- Bulk open / close (bounded concurrency) ----
-  const bulkRun = async (op: (id: string) => Promise<any>, pick: (p: UiProfile) => boolean, batch = 4,
-    start?: { cancelled: boolean; pending: Set<string> }) => {
+  const bulkRun = async (op: (id: string, requestId?: string) => Promise<any>, pick: (p: UiProfile) => boolean, batch = 4,
+    start?: { cancelled: boolean; pending: Map<string, string> }) => {
     const eligible = new Set(profiles.filter(pick).map(p => p.id));
     const ids = [...selected].filter(id => eligible.has(id) && !busy[id]);
     if (!ids.length) return;
@@ -2475,9 +2475,11 @@ function App() {
     await runProfilePool(ids, batch, async (id) => {
       try {
         if (start?.cancelled) return;
-        start?.pending.add(id);
-        const r = await op(id);
-        if (r?.ok === false && !start?.cancelled) issues.push(`${id}: ${r.error || "action failed"}`);
+        const requestId = start ? crypto.randomUUID() : undefined;
+        if (requestId) start?.pending.set(id, requestId);
+        const r = await op(id, requestId);
+        if (start?.cancelled && r?.ok === false) return;
+        if (r?.ok === false) issues.push(`${id}: ${r.error || "action failed"}`);
         else if (r?.warning) issues.push(`${id}: ${actionWarning(r)}`);
       } catch (error) {
         if (!start?.cancelled) issues.push(`${id}: ${String(error)}`);
@@ -2491,12 +2493,13 @@ function App() {
   };
   const openSelected = async () => {
     if (batchStart.current) return;
-    const start = { cancelled: false, pending: new Set<string>() };
+    const start = { cancelled: false, pending: new Map<string, string>() };
     batchStart.current = start;
     setLaunchPressure(false);
     setLaunchingBatch(true);
     try {
-      await bulkRun(openProfile, (p) => !p.running && !p.mobilePersona, Math.max(1, (await profileLaunchStatus()).size), start);
+      await bulkRun((id, requestId) => openProfile(id, false, requestId), (p) => !p.running && !p.mobilePersona,
+        Math.max(1, (await profileLaunchStatus()).size), start);
     } finally {
       batchStart.current = null;
       setLaunchingBatch(false);
@@ -2506,7 +2509,7 @@ function App() {
     const batch = batchStart.current;
     if (!batch) return;
     batch.cancelled = true;
-    void Promise.allSettled([...batch.pending].map(cancelProfileStart));
+    void Promise.allSettled([...batch.pending].map(([id, key]) => cancelProfileStart(id, key)));
   };
   const closeSelected = () => bulkRun(closeProfile, (p) => p.running);
   const convertSelectedMobile = async () => {

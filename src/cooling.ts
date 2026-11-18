@@ -99,7 +99,7 @@ export class HostWorkBudget {
 
   canStart(permit?: HostWorkPermit): boolean {
     const { limit, inUse } = this.status();
-    return (permit !== undefined && this.active.has(permit)) || inUse < limit;
+    return limit > 0 && ((permit !== undefined && this.active.has(permit)) || inUse < limit);
   }
 
   acquire(): HostWorkPermit | undefined {

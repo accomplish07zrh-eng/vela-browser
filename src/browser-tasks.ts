@@ -242,8 +242,11 @@ export class BrowserTaskSupervisor {
   private path(id: string, filename = ""): string { return join(this.options.root, id, filename); }
 
   private save(task: BrowserTask) {
-    task.updatedAt = new Date().toISOString();
-    atomicJson(this.path(task.runId, "state.json"), task);
+    const updatedAt = new Date().toISOString();
+    const steps = isFinished(task.state) ? task.steps.map(({ result: _result, ...step }) => step) : task.steps;
+    atomicJson(this.path(task.runId, "state.json"), { ...task, updatedAt, steps });
+    task.steps = steps;
+    task.updatedAt = updatedAt;
   }
 
   private get(runId: string): BrowserTask {
@@ -368,7 +371,13 @@ export class BrowserTaskSupervisor {
     if (previous) {
       this.authorize(previous, owner, true);
       if (!isDeepStrictEqual(previous.definition, definition)) throw new BrowserTaskError("key_conflict", "This idempotency key already identifies a different plan", 409);
-      this.adoptLocalOwner(previous, owner);
+      if (this.canAdoptLocalOwner(previous, owner)) {
+        const savedOwner = previous.owner, savedDelegates = previous.delegates;
+        previous.owner = owner;
+        delete previous.delegates;
+        try { this.save(previous); }
+        catch (error) { previous.owner = savedOwner; previous.delegates = savedDelegates; throw error; }
+      }
       return view(previous);
     }
     if (previousKey) {
@@ -397,11 +406,12 @@ export class BrowserTaskSupervisor {
   }
 
   resume(runId: string, client?: TaskClient, verify?: unknown, expectedAttempt?: unknown): BrowserTaskView {
-    const task = this.get(runId);
-    this.authorize(task, client);
-    if (this.running.has(runId) || isFinished(task.state) || task.state === "queued" || task.state === "recovering") return view(task);
+    const saved = this.get(runId);
+    this.authorize(saved, client);
+    if (this.running.has(runId) || isFinished(saved.state) || saved.state === "queued" || saved.state === "recovering") return view(saved);
     this.assertOpen();
-    if (!task.definition.target) this.assertAvailable(task.definition.profileId, runId);
+    const task = structuredClone(saved);
+    if (!task.definition.target) this.assertAvailable(task.definition.profileId, task);
     const step = task.steps.find(item => item.state === "uncertain");
     if (verify !== undefined && (!step || typeof verify !== "string" || !verify.trim() || Buffer.byteLength(verify) > 256 * 1024)) {
       badRequest("Supply a verification function for the uncertain step");
@@ -409,7 +419,13 @@ export class BrowserTaskSupervisor {
     if (expectedAttempt !== undefined && (!step || expectedAttempt !== `${step.id}:${step.attempts}:${step.evidence ?? 0}`)) {
       throw new BrowserTaskError("checkpoint_changed", "The task checkpoint changed. Reload the evidence before supplying a verifier.", 409);
     }
-    if (client !== undefined) this.adoptLocalOwner(task, taskActor(client));
+    if (client !== undefined) {
+      const actor = taskActor(client);
+      if (this.canAdoptLocalOwner(task, actor)) {
+        task.owner = actor;
+        delete task.delegates;
+      }
+    }
     const owner = ownerOf(task);
     this.options.authorize(task.definition.profileId, owner.name, undefined, owner);
     task.state = "queued";
@@ -423,29 +439,27 @@ export class BrowserTaskSupervisor {
       queue.verifier = { stepId: step.id, code: verify, ...(client === undefined ? {} : { suppliedBy: taskActor(client) }) };
     }
     this.save(task);
+    this.history.set(runId, task);
     this.wakeQueue();
     return view(task);
   }
 
-  private adoptLocalOwner(task: BrowserTask, actor: BrowserTaskActor) {
-    if (actor.scope !== "local-auth" || ownerOf(task).scope !== "local" || agentKey(actor.name) !== agentKey(task.client)) return;
-    const previous = task.owner;
-    task.owner = actor;
-    try { this.save(task); }
-    catch (error) { task.owner = previous; throw error; }
+  private canAdoptLocalOwner(task: BrowserTask, actor: BrowserTaskActor) {
+    return actor.scope === "local-auth" && ownerOf(task).scope === "local" && agentKey(actor.name) === agentKey(task.client);
   }
 
   setDelegates(runId: string, value: unknown, client?: TaskClient) {
     const task = this.get(runId);
     this.authorize(task, client, true);
-    if (client !== undefined) this.adoptLocalOwner(task, taskActor(client));
     if (!Array.isArray(value) || value.length > 32 || value.some(name => typeof name !== "string" || !name.trim() || name.length > 64)) {
       badRequest("Provide up to 32 Agent names");
     }
+    const previousOwner = task.owner;
     const previous = task.delegates;
+    if (client !== undefined && this.canAdoptLocalOwner(task, taskActor(client))) task.owner = taskActor(client);
     task.delegates = [...new Set(value.map(agentKey))].filter(name => name !== agentKey(ownerOf(task).name) && name !== "unknown");
     try { this.save(task); }
-    catch (error) { task.delegates = previous; throw error; }
+    catch (error) { task.owner = previousOwner; task.delegates = previous; throw error; }
     return view(task);
   }
 
@@ -455,8 +469,10 @@ export class BrowserTaskSupervisor {
     const active = this.running.get(runId);
     if (active) {
       const requested = active.stop === "cancelled" ? active.stop : state;
+      const previous = task.stopRequested;
       task.stopRequested = requested;
-      this.save(task);
+      try { this.save(task); }
+      catch (error) { task.stopRequested = previous; throw error; }
       active.stop = requested;
       active.waiting.abort();
       return { task: view(task), stopping: true };
@@ -506,9 +522,10 @@ export class BrowserTaskSupervisor {
     if (this.closing) throw new BrowserTaskError("shutting_down", "The browser task service is shutting down", 409);
   }
 
-  private assertAvailable(profileId: string, except?: string) {
-    if ([...this.history.values()].some(task => task.runId !== except && task.definition.profileId === profileId &&
-      (this.running.has(task.runId) || task.queue && !isFinished(task.state)))) {
+  private assertAvailable(profileId: string, resuming?: BrowserTask) {
+    if ([...this.history.values()].some(task => task.runId !== resuming?.runId && task.definition.profileId === profileId &&
+      (this.running.has(task.runId) || task.queue && !isFinished(task.state) &&
+        (resuming?.queue === undefined || task.queue.order < resuming.queue.order)))) {
       throw new BrowserTaskError("profile_task_running", "A browser task is running or waiting in this profile", 409);
     }
   }
@@ -525,9 +542,11 @@ export class BrowserTaskSupervisor {
       .sort((a, b) => a.queue!.order - b.queue!.order);
     const lanes = new Set([...this.running.values()].map(active => active.task.definition.profileId));
     const now = Date.now();
+    const host = this.options.hostWork?.status();
     let capacity: number | undefined, next = Infinity;
     for (const task of tasks) {
       const profileId = task.definition.profileId;
+      delete task.waitReason;
       if (lanes.has(profileId)) continue;
       // An earlier unresolved task retains its place in this profile's queue.
       lanes.add(profileId);
@@ -538,7 +557,7 @@ export class BrowserTaskSupervisor {
         continue;
       }
       capacity ??= this.options.capacity?.() ?? 1;
-      if (this.options.hostWork?.status().paused) { task.waitReason = "memory"; next = Math.min(next, 500); continue; }
+      if (host?.paused) { task.waitReason = "memory"; next = Math.min(next, 500); continue; }
       if (this.running.size >= capacity || (this.options.hostWork && !this.options.hostWork.canStart())) {
         task.waitReason = "capacity"; next = Math.min(next, 500); continue;
       }
@@ -634,15 +653,18 @@ export class BrowserTaskSupervisor {
     const { task } = active, { profileId, screenshots, argument, steps, target } = task.definition;
     const release = this.options.hold?.(profileId);
     let connection: BrowserTaskConnection | undefined;
-    const owner = ownerOf(task);
-    const authorize = () => this.options.authorize(profileId, owner.name, undefined, owner);
+    const authorize = () => {
+      const owner = ownerOf(task);
+      this.options.authorize(profileId, owner.name, undefined, owner);
+      return owner;
+    };
     let state: RunState = "interrupted";
     const values: Record<string, unknown> = Object.create(null);
     const uncertain = () => task.steps.find(checkpoint => checkpoint.state === "uncertain");
     const block = (blocked: TaskBlock) => { task.blocked = blocked; state = "blocked"; };
     try {
       if (!active.stop) {
-        authorize();
+        const owner = authorize();
         connection = await this.options.open(profileId, owner.name, active.waiting.signal, active.hostPermit, owner);
       }
       if (!active.stop && target) {
@@ -680,7 +702,7 @@ export class BrowserTaskSupervisor {
           this.save(task);
         };
         const act = async (phase: Phase, code: string) => {
-          authorize();
+          const owner = authorize();
           const startedAt = new Date().toISOString();
           const receipt: ProgramReceipt = await connection!.program({
             code, screenshots, timeoutMs: step.timeoutMs ?? 120_000, pageUrl: step.pageUrl, frameUrl: step.frameUrl, tabId: task.tab?.id, argument: {
@@ -701,6 +723,7 @@ export class BrowserTaskSupervisor {
           if ((task.firstEvidence ?? 1) > sequence) task.firstEvidence = sequence;
           this.save(task);
           this.options.record?.({ runId: task.runId, profileId, client: owner.name, stepId: step.id, sequence, phase, ok: receipt.completed });
+          if (this.receiptBytes > MAX_EVIDENCE_BYTES) this.pruneEvidence();
           return receipt;
         };
         const reconcile = async (): Promise<"applied" | "absent" | "unknown"> => {

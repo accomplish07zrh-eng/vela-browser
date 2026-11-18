@@ -553,6 +553,7 @@ export interface UiRuntimeOptions {
   audit?: import("./audit.ts").AuditLog;
   /** The AIs connected right now. */
   connectedAgents?: () => string[];
+  authenticatedAgents?: () => string[];
   /** Snapshots of profiles and backups of their sign-ins. */
   snapshots?: import("./snapshots.ts").SnapshotStore;
   /** Watching from a phone on the same network. */
@@ -1078,7 +1079,9 @@ export async function handleUiRequest(
     try {
       const id = decodeURIComponent(cancelStart[1]!);
       if (!isSafeProfileId(id)) return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400);
-      return noStoreJson({ ok: true, cancelled: options.admission.cancelStarts(id) });
+      const { requestId } = await req.json();
+      if (typeof requestId !== "string" || !/^[0-9a-f-]{36}$/.test(requestId)) return noStoreJson({ ok: false, error: "Missing browser start request ID" }, 400);
+      return noStoreJson({ ok: true, cancelled: options.admission.cancelStarts(id, requestId) });
     } catch { return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400); }
   }
 
@@ -1248,12 +1251,14 @@ export async function handleUiRequest(
       options.appConfig.write({ ...config, aiAccess: access });
     } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
     const access = options.appConfig.read().aiAccess ?? AI_ACCESS_DEFAULT;
+    const authenticated = options.authenticatedAgents?.() ?? [];
     const known = new Set<string>([
       ...(options.connectedAgents?.() ?? []).map(agentKey),
       ...(options.audit?.actors().filter((actor) => actor.kind === "ai" && actor.name !== "unknown").map((actor) => agentKey(actor.name)) ?? []),
+      ...authenticated,
       ...Object.keys(access.agents),
     ]);
-    return noStoreJson({ ok: true, access, agents: [...known].sort(), connected: (options.connectedAgents?.() ?? []).map(agentKey), groups: store.listGroups() });
+    return noStoreJson({ ok: true, access, agents: [...known].sort(), authenticated, connected: (options.connectedAgents?.() ?? []).map(agentKey), groups: store.listGroups() });
   }
 
   if (pathname === "/ui/api/proxy-pool" || pathname.startsWith("/ui/api/proxy-pool/")) {

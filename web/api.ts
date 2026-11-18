@@ -354,12 +354,16 @@ export async function clearPendingCookies(id: string): Promise<{ ok: boolean; re
   return apiJson(await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), path);
 }
 
-export const openProfile = (id: string, force = false) =>
-  post(`/ui/api/profiles/${encodeURIComponent(id)}/open${force ? "?force=1" : ""}`);
+export async function openProfile(id: string, force = false, requestId?: string): Promise<any> {
+  const path = `/ui/api/profiles/${encodeURIComponent(id)}/open${force ? "?force=1" : ""}`;
+  if (!requestId) return post(path);
+  const response = await fetch(path, { method: "POST", headers: { "X-Vela-Launch-Request": requestId } });
+  return apiJson(response, path);
+}
 export const closeProfile = (id: string) => post(`/ui/api/profiles/${encodeURIComponent(id)}/close`);
-export async function cancelProfileStart(id: string): Promise<void> {
+export async function cancelProfileStart(id: string, requestId: string): Promise<void> {
   const path = `/ui/api/profiles/${encodeURIComponent(id)}/cancel-start`;
-  await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId }) });
 }
 /** Close and open again, so saved proxy and fingerprint changes apply. */
 export async function restartProfile(id: string): Promise<any> {

@@ -321,7 +321,7 @@ export class AgentControlSession {
 
   private accessRule() {
     let settings: AiAccessSettings | undefined;
-    try { settings = this.deps.aiAccess?.(); } catch { settings = undefined; }
+    try { settings = this.deps.aiAccess?.(); } catch { return "none" as const; }
     return ruleFor(settings, this.client);
   }
 
@@ -332,6 +332,7 @@ export class AgentControlSession {
 
   /** Refuses a profile outside the groups this AI was given. */
   private guard(profileId: string): void {
+    this.checkIdentity();
     this.deps.validateProfile?.(profileId);
     if (this.accessRule() === "all") return;
     const found = this.profileGroup(profileId);
@@ -344,7 +345,8 @@ export class AgentControlSession {
     const audit = this.deps.audit;
     // Reads are left out, except when one was refused: a refusal is worth seeing.
     const replayRead = method === "browser.replay" && (params.action === "tabs" || params.action === "play");
-    if (!audit || ((UNAUDITED.has(method) || replayRead) && !(error instanceof AgentControlError && error.code === "not_permitted"))) return;
+    if (!audit || ((UNAUDITED.has(method) || replayRead) &&
+        !((error instanceof AgentControlError || error instanceof BrowserTaskError) && error.code === "not_permitted"))) return;
     const profileId = typeof params.profileId === "string" ? params.profileId : undefined;
     const action = method === "firefox.tools.call" || method === "webkit.tools.call" ? `page.${typeof params.name === "string" ? params.name : "tool"}` : method;
     const args = params.arguments && typeof params.arguments === "object" ? params.arguments as Record<string, unknown> : {};
@@ -500,7 +502,7 @@ export class AgentControlSession {
       }
       case "worker.call":
         if (!this.deps.workers) throw agentError("unsupported", "Worker nodes require the local desktop");
-        return this.deps.workers.call(params, this.client, id => { this.checkIdentity(); this.guard(id); }, this.sessionAbort.signal);
+        return this.deps.workers.call(params, this.client, id => this.guard(id), this.sessionAbort.signal);
       case "session.identify": {
         // Named once, by the MCP client's own name; later calls cannot rename the connection.
         if (this.client === "unknown" && typeof params.name === "string" && params.name.trim() && agentKey(params.name) !== "unknown") {
@@ -607,7 +609,6 @@ export class AgentControlSession {
         } else profileId = stringParam(params, "profileId");
         return await replay.call(this.replayAbort.signal, profileId, params, () => {
           try {
-            this.checkIdentity();
             this.guard(profileId);
             if (typeof params.runId === "string") this.deps.browserTasks?.status(params.runId, this.taskActor());
             return true;
@@ -1182,7 +1183,6 @@ export class AgentControlSession {
     const opened = await this.deps.admission.run(
       { kind: "start", profileIds: [profileId], signal: this.openSignal ?? this.sessionAbort.signal, hostPermit: this.hostPermit },
       async () => {
-        this.checkIdentity();
         this.guard(profileId);
         const alreadyOpen = await this.deps.launcher.certifiedActive(profileId).catch(() => false);
         const existing = alreadyOpen ? this.deps.store.getLaunch(profileId) : null;

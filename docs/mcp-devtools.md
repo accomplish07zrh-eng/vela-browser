@@ -69,6 +69,8 @@ Use `browser_devtools_observe` for a short list of visible controls, headings, a
 
 For an interactive loop, set `compact: true` on the first observation and pass the selected control's `ref` to `browser_devtools_action`. Set `observe: true` on the action to get verification and the next compact observation in the same call. A ref is scoped to its browser session, page and frame for up to 60 seconds. Navigation invalidates the ref, including a reload at the same URL. An ambiguous reference asks the Agent to observe again.
 
+On the Windows fixture, Chromium, Firefox and WebKit all completed the same verified action in two tool calls. The standard observation and action sequence used three calls. Structured response data fell from roughly 1,774 bytes to 878 bytes per sequence.
+
 ## Form workflows
 
 Use `browser_devtools_form_workflow` with `action: "inspect"` in an open profile. Pass `pageId`, `frameId` or `selector` to narrow the view. The tool reads control labels and attributes and omits filled values. It recognizes common account fields, confirmation passwords, one-time codes, checkboxes, selects and step buttons. Each form can include a `suggestedStage`. Review unbound or ambiguous controls before adding them to the stage.
