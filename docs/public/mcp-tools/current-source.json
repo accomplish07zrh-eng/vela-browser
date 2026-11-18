@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.19",
+  "aliasModeVersion": "0.1.20",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
