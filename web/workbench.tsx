@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, 
 import { Select } from "./select.tsx";
 import { flushSync } from "react-dom";
 import { folderScope, folderTree, type FolderInfo } from "../src/folders.ts";
-import { closeProfile, fetchScriptRun, moveProfiles, openProfile, profileLaunchConcurrency, raiseProfile, updateProfile, type UiProfile, type ScriptRun } from "./api.ts";
+import { cancelProfileStart, closeProfile, fetchScriptRun, moveProfiles, openProfile, profileLaunchStatus, raiseProfile, updateProfile, type UiProfile, type ScriptRun } from "./api.ts";
 import { runProfilePool } from "./profile-management.ts";
 import { parsePastedProxy } from "./proxy-input.ts";
 import type { WorkbenchInput, WorkbenchRefreshTier } from "../src/workbench-protocol.ts";
@@ -222,6 +222,17 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
   const [morphing, setMorphing] = useState(false), [moving, setMoving] = useState(false), [filtering, setFiltering] = useState(false);
   const [health, setHealth] = useState<Record<string, ViewStatus>>({}), [sync, setSync] = useState<SyncSession | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null), [preview, setPreview] = useState<string | null>(null);
+  const [launching, setLaunching] = useState(false);
+  const [launchPressure, setLaunchPressure] = useState(false);
+  const batchStart = useRef<{ cancelled: boolean; pending: Map<string, string> } | null>(null);
+  useEffect(() => {
+    if (!launching) return;
+    let active = true;
+    const check = () => { void profileLaunchStatus().then(status => { if (active) setLaunchPressure(status.memoryPaused === true); }); };
+    check();
+    const timer = setInterval(check, 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, [launching]);
   const [batchMode, setBatchMode] = useState<"group" | "proxy" | null>(null), [batchValue, setBatchValue] = useState("");
   const batchEditor = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -580,24 +591,47 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
     syncRef.current = next; setSync(next); paintRef.current();
   };
   const action = useCallback(async (kind: "start" | "stop" | "raise", ids: string[]) => {
-    if (busy) return; setBusy(true); setError(null);
+    const isStart = kind === "start";
+    if (busy || (isStart && batchStart.current)) return;
+    const batch = isStart ? { cancelled: false, pending: new Map<string, string>() } : undefined;
+    if (batch) {
+      batchStart.current = batch;
+      setLaunchPressure(false);
+      setLaunching(true);
+    } else setBusy(true);
+    setError(null);
     try {
       const failures: string[] = [];
-      const concurrency = kind === "start" ? await profileLaunchConcurrency() : 3;
+      const concurrency = batch ? Math.max(1, (await profileLaunchStatus()).size) : 3;
       await runProfilePool(ids, concurrency, async (id) => {
         try {
-          const result = await (kind === "start" ? openProfile(id) : kind === "stop" ? closeProfile(id) : raiseProfile(id));
+          if (batch?.cancelled) return;
+          const requestId = batch ? crypto.randomUUID() : undefined;
+          if (requestId) batch?.pending.set(id, requestId);
+          const result = await (kind === "start" ? openProfile(id, false, requestId) : kind === "stop" ? closeProfile(id) : raiseProfile(id));
           if (!result.ok) throw new Error(result.error || t("Operation failed"));
           if (kind === "stop") {
             if (id === syncRef.current?.master) stopSync();
             else suspendFollowers([id]);
           }
         }
-        catch (cause) { failures.push(`${profilesRef.current.find((profile) => profile.id === id)?.name ?? id}: ${cause instanceof Error ? cause.message : String(cause)}`); }
+        catch (cause) {
+          if (!batch?.cancelled) failures.push(`${profilesRef.current.find((profile) => profile.id === id)?.name ?? id}: ${cause instanceof Error ? cause.message : String(cause)}`);
+        } finally { batch?.pending.delete(id); }
       });
       await onRefresh(); if (failures.length) setError(failures.join(" · "));
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally {
+      if (batch) { batchStart.current = null; setLaunching(false); }
+      else setBusy(false);
+    }
   }, [busy, onRefresh, stopSync, suspendFollowers, t]);
+  const cancelBatchStart = () => {
+    const batch = batchStart.current;
+    if (!batch) return;
+    batch.cancelled = true;
+    void Promise.allSettled([...batch.pending].map(([id, key]) => cancelProfileStart(id, key)));
+  };
   const applyBatch = async () => {
     if (busy || !selected.size) return; setBusy(true); setError(null);
     try {
@@ -706,6 +740,8 @@ export function WorkbenchPage({ profiles, groups, folders, group, onGroupChange,
         {query.trim() && <div className="workbench-search-results">{matches.length ? matches.map((profile) => <button type="button" key={profile.id} onClick={() => { locate(profile.id); setSelected(new Set([profile.id])); setQuery(""); }}>{profile.name}<span>#{numberOf(profile)}</span></button>) : <p>{t("No matching environments")}</p>}</div>}
       </div>
       <span className="workbench-count" role="status">{t("{running} running · {issues} issues", { running, issues })}{cooledCount ? ` · ${t("{count} cooled", { count: cooledCount })}` : ""}</span><span className="spacer" />
+      {launching && <><span role="status">{t(launchPressure ? "Waiting for available memory" : "Starting browsers…")}</span>
+        <button type="button" className="btn ghost xs" onClick={cancelBatchStart}>{t("Cancel pending starts")}</button></>}
       <button type="button" className={`iconbtn${showStopped ? " on" : ""}`} aria-pressed={showStopped} aria-label={t("Show stopped environments")} title={t("Show stopped environments")} onClick={() => setShowStopped(!showStopped)}><Glyph name="eye" /></button>
       <button type="button" className={`iconbtn${overview ? " on" : ""}`} aria-pressed={overview} aria-label={t(overview ? "Return to ring" : "Overview grid")} title={t(overview ? "Return to ring" : "Overview grid")} onClick={() => { if (focused) collapse(); setOverview(!overview); }}><Glyph name={overview ? "lanes" : "grid"} /></button>
       <span className="workbench-toolbar-divider" />

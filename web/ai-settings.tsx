@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { AuditEntry, AuditStatus } from "../src/audit.ts";
 import { useTranslation } from "./i18n.tsx";
 import "./ai-settings.css";
 
 type Rule = "all" | "none" | string[];
 interface Access { default: Rule; agents: Record<string, Rule> }
-interface AccessListing { access: Access; agents: string[]; connected: string[]; groups: string[] }
-interface AuditEntry { at: number; actor: { kind: "ai" | "script" | "task" | "user"; name: string }; action: string; profileId?: string; profileName?: string; detail?: string; ok: boolean; error?: string }
+interface AccessListing { access: Access; agents: string[]; authenticated?: string[]; connected: string[]; groups: string[] }
 
 async function call<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, body === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -79,6 +79,7 @@ export function AiAccessCard({ flash }: { flash(message: string): void }) {
         <div className="ai-access-name">
           <strong>{name}</strong>
           <small>{listing.connected.includes(name) ? <><i className="ai-live" aria-hidden="true" />{t("Connected now")}</> : t("Seen before")}</small>
+          {listing.authenticated?.includes(name) && <small>{t("Credential required")}</small>}
         </div>
         <RuleEditor rule={access.agents[name]} groups={listing.groups} allowInherit inherited={access.default} onChange={(rule) => setAgent(name, rule)} />
       </div>)}
@@ -86,12 +87,12 @@ export function AiAccessCard({ flash }: { flash(message: string): void }) {
         <input className="input" value={adding} maxLength={64} placeholder={t("Add an AI by name, such as claude code or cursor")} onChange={(event) => setAdding(event.target.value)} />
         <button type="submit" className="btn" disabled={!adding.trim()}>{t("Add")}</button>
       </form>
-      <p className="cardnote">{t("An AI is known by the name its app gives when it connects. This keeps assistants apart; it is not a lock against other programs on this computer.")}</p>
+      <p className="cardnote">{t("Configured Agent credentials verify names and protect task access. Other Agent names are supplied by their client.")}</p>
     </div>
   </section>;
 }
 
-const KINDS = [["", "Everything"], ["ai", "AI"], ["script", "Scripts"]] as const;
+const KINDS = [["", "Everything"], ["ai", "AI"], ["script", "Scripts"], ["task", "Browser tasks"]] as const;
 
 function actionLabel(entry: AuditEntry, t: (key: string, values?: Record<string, string | number>) => string): string {
   const known: Record<string, string> = {
@@ -99,6 +100,7 @@ function actionLabel(entry: AuditEntry, t: (key: string, values?: Record<string,
     "profiles.create": "Created a profile", "profiles.update": "Changed a profile", "profiles.delete": "Deleted a profile",
     "profiles.setProxy": "Changed the proxy", "scripts.save": "Saved a script", "scripts.run": "Ran a script", "scripts.stop": "Stopped a script",
     "plugins.save": "Saved a plugin", "proxyPool.check": "Checked pool nodes", "script.run": "Script run", "browser.status": "Looked at a profile",
+    "browserTask.run": "Action", "browserTask.verify": "Verification",
   };
   if (known[entry.action]) return t(known[entry.action]!);
   if (entry.action.startsWith("page.")) return t("Page: {tool}", { tool: entry.action.slice(5).replace(/^browser_/, "").replace(/_/g, " ") });
@@ -106,17 +108,20 @@ function actionLabel(entry: AuditEntry, t: (key: string, values?: Record<string,
 }
 
 /** Settings: what AIs and scripts did, newest first. */
-export function ActivityCard({ flash }: { flash(message: string): void }) {
+export function ActivityCard({ flash, onReceipt }: { flash(message: string): void; onReceipt(receipt: NonNullable<AuditEntry["task"]>): void }) {
   const { t } = useTranslation();
   const [kind, setKind] = useState<string>("");
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
+  const [health, setHealth] = useState<AuditStatus>();
   const [failedOnly, setFailedOnly] = useState(false);
   const params = useMemo(() => { const search = new URLSearchParams(); if (kind) search.set("kind", kind); if (query.trim()) search.set("q", query.trim()); return search.toString(); }, [kind, query]);
   useEffect(() => {
     let live = true;
     const timer = setTimeout(() => {
-      call<{ entries: AuditEntry[] }>(`/ui/api/audit?${params}&limit=300`).then((data) => { if (live) setEntries(data.entries); }, (error) => { if (live) { setEntries([]); flash(String(error.message ?? error)); } });
+      call<{ entries: AuditEntry[]; status?: AuditStatus }>(`/ui/api/audit?${params}&limit=300`).then((data) => {
+        if (live) { setEntries(data.entries); setHealth(data.status); }
+      }, (error) => { if (live) { setEntries([]); flash(String(error.message ?? error)); } });
     }, 200);
     return () => { live = false; clearTimeout(timer); };
   }, [params, flash]);
@@ -134,7 +139,11 @@ export function ActivityCard({ flash }: { flash(message: string): void }) {
   return <section className="settings-card activity-card">
     <header><svg className="icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5z" /><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4" /></svg><h2>{t("Activity record")}</h2></header>
     <div className="card-body">
-      <p>{t("What AIs and scripts did, kept for six months on this computer. Passwords, cookies and typed text are never written here.")}</p>
+      <p>{t("Activity is kept on this computer and rotated by age and size.")}</p>
+      {health?.issue && <p role="alert" className="modal-err">
+        {health.issue === "write_failed" ? t("Activity entries could not be saved ({count} dropped).", { count: health.dropped })
+          : t("The activity record could not rotate files.")}
+      </p>}
       <div className="activity-tools">
         <div className="segmented" role="radiogroup" aria-label={t("Show")}>
           {KINDS.map(([value, label]) => <button key={value} type="button" role="radio" aria-checked={kind === value} className={kind === value ? "active" : ""} onClick={() => setKind(value)}>{t(label)}</button>)}
@@ -150,6 +159,7 @@ export function ActivityCard({ flash }: { flash(message: string): void }) {
             <span className={`activity-actor ${entry.actor.kind}`}>{entry.actor.kind === "ai" ? "AI" : entry.actor.kind === "script" ? t("Script") : entry.actor.kind === "task" ? t("Task") : t("You")} · {entry.actor.name}</span>
             <span className="activity-action">{actionLabel(entry, t)}{entry.profileName || entry.profileId ? <em> · {entry.profileName ?? entry.profileId}</em> : null}</span>
             {(entry.detail || entry.error) && <span className="activity-detail" title={entry.error ?? entry.detail}>{entry.error ?? entry.detail}</span>}
+            {entry.task && <button className="btn ghost xs" type="button" onClick={() => onReceipt(entry.task!)}>{t("View step evidence")}</button>}
           </li>)}
         </ol>}
     </div>

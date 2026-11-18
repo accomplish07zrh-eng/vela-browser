@@ -47,7 +47,8 @@ const fixture = createServer((request, response) => { void (async () => {
   response.setHeader("content-type", "text/html; charset=utf-8");
   if (url.pathname === "/frame") { response.end("<!doctype html><p id=frame>iframe fixture</p>"); return; }
   response.end(`<!doctype html><meta charset=utf-8><title>MCP fixture</title><style>#target{color:rgb(32, 48, 64)}</style>
-    <p id=target data-original=yes>original</p><input aria-label="Input"><button onclick="this.textContent='clicked'">Run</button><iframe src=/frame></iframe>
+    <p id=target data-original=yes>original</p><input aria-label="Input">
+    <button id=run onclick="this.textContent='clicked'">Run</button><iframe src=/frame></iframe>
     <script>window.fixtureWorker = new Worker('/worker.js'); console.log('fixture-loaded');
     (async () => { const probe = (${fingerprintProbe.toString()}); await document.fonts.ready; await probe({details:true}); await document.fonts.ready;
     const value = await probe({details:true}); const output = document.createElement('pre'); output.id = 'baseline'; output.textContent = JSON.stringify(value); document.body.appendChild(output); })();</script>`);
@@ -172,6 +173,28 @@ try {
     const targets = pages.map(listing => listing.pages.find((page: any) => page.url === `${origin}/`));
     assert.ok(targets.every(Boolean), "existing pages remain attached");
     const a = { profileId: profiles[0]!.id, pageId: targets[0].pageId }, b = { profileId: profiles[1]!.id, pageId: targets[1].pageId };
+    const verify = { text: "clicked", timeoutMs: 3000 };
+    const standardStart = performance.now();
+    const standard = await developer("observe", a);
+    const saved = await developer("action", { ...a, action: "click", target: { role: "button", name: "Run" }, verify });
+    const standardNext = await developer("observe", a);
+    const standardMs = performance.now() - standardStart;
+    await developer("evaluate", { ...a, expression: "() => { document.getElementById('run').textContent = 'Run'; }" });
+    const compactStart = performance.now();
+    const compact = await developer("observe", { ...a, compact: true });
+    const ref = compact.controls.find((control: { name: string }) => control.name === "Run")?.ref;
+    check(`${engine}: compact observation returns a short control ref`, typeof ref === "string");
+    const compactNext = await developer("action", { ...a, ref, action: "click", verify, observe: true });
+    const compactMs = performance.now() - compactStart;
+    check(`${engine}: one MCP action returns both verification and the next observation`,
+      saved.verification.passed && compactNext.verification.passed &&
+      standardNext.controls.some((control: { name: string }) => control.name === "clicked") &&
+      compactNext.observation?.controls.some((control: { name: string }) => control.name === "clicked"));
+    evidence.compact = { standardCalls: 3, compactCalls: 2, standardMs, compactMs,
+      standardResponseBytes: Buffer.byteLength(JSON.stringify([standard, saved, standardNext])),
+      compactResponseBytes: Buffer.byteLength(JSON.stringify([compact, compactNext])) };
+    check(`${engine}: compact action transfers fewer response bytes`, evidence.compact.compactResponseBytes < evidence.compact.standardResponseBytes);
+    await developer("evaluate", { ...a, expression: "() => { document.getElementById('run').textContent = 'Run'; }" });
     check(`${engine}: plugin tools are listed with honest write hints`, tools.some(tool => tool.name === "plugin_vela_check_inspect" && tool.annotations?.destructiveHint === true));
     const batch: any = await client.callTool({ name: "browser_batch", arguments: { profileId: b.profileId, steps: [
       { tool: "browser_navigate", arguments: { url: `${origin}/` } },

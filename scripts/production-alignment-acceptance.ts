@@ -1,7 +1,8 @@
 /** Real Windows Chromium revisions, two isolated desktop workers, and a local site. */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import WebSocket from "ws";
@@ -28,33 +29,36 @@ const spec = chromiumRuntimeRevision(previous, process.platform, process.arch);
 assert.equal(await sha256File(stable), aliasmodeChromiumArchive(process.platform).executableSha256);
 assert.equal(await sha256File(previousArchive), spec.archiveSha256);
 const root = mkdtempSync(join(temp, "vela-production-qa-"));
+const tlsTool = Bun.which("openssl") ?? (process.platform === "win32"
+  ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git/usr/bin/openssl.exe") : "openssl");
 const runtime = join(root, "runtimes");
 const nodes: Array<ReturnType<typeof node>> = [];
+let primaryFailure: unknown;
 const connections: AgentRuntimeClient[] = [];
 let profileId = "";
-function node(name: string) {
+function node(name: string, workerTls?: Bun.TLSOptions) {
   const paths = statePaths(join(root, name));
   ensureStateDirectories(paths);
-  const store = new ProfileStore(paths.database);
+  const store = new ProfileStore(":memory:");
   const launcher = new Launcher({
     store, dataRoot: paths.profiles, headless: true, chromiumRuntimeRoot: runtime, ensureAliasmodeChromium: async () => stable, log() {},
     portRange: name === "source" ? { start: 12600, end: 12649 } : { start: 12900, end: 12949 },
   });
   const nonce = randomBytes(32).toString("hex");
-  const server = serveDashboard({ paths, launcher, store, agentNonce: nonce, port: 0, log() {} });
+  const server = serveDashboard({ paths, launcher, store, agentNonce: nonce, port: 0, workerTls, log() {} });
   return { paths, store, launcher, nonce, server };
 }
 const site = Bun.serve({
   hostname: "127.0.0.1", port: 0,
   fetch: () => new Response("<!doctype html><title>Portable state QA</title>", { headers: { "content-type": "text/html" } }),
 });
-async function connect(target: ReturnType<typeof node>) {
+async function connect(target: ReturnType<typeof node>, name = "production-qa") {
   const socket = new WebSocket("ws://127.0.0.1:" + target.server.port + AGENT_PATH, AGENT_PROTOCOL,
     { headers: { authorization: "Bearer " + target.nonce } });
   await new Promise<void>((ready, reject) => { socket.once("open", ready); socket.once("error", reject); });
   const runtime = new AgentRuntimeClient(socket);
   connections.push(runtime);
-  await runtime.call("session.identify", { name: "production-qa" });
+  await runtime.call("session.identify", { name });
   return runtime;
 }
 async function until<T>(read: () => Promise<T>, match: (value: T) => boolean): Promise<T> {
@@ -65,6 +69,13 @@ async function until<T>(read: () => Promise<T>, match: (value: T) => boolean): P
     await Bun.sleep(200);
   } while (Date.now() < deadline);
   throw new Error("The worker did not finish");
+}
+async function verifyReleaseSession(target: ReturnType<typeof node>, ids: [string, string], phase: "seed" | "verify") {
+  const descriptor = join(root, "release-session-runtime.json");
+  writeFileSync(descriptor, JSON.stringify({ port: target.server.port, nonce: target.nonce }), { mode: 0o600 });
+  const check = Bun.spawn([process.execPath, join(import.meta.dir, "desktop-session-acceptance.mjs"),
+    descriptor, phase, "chromium", ...ids, site.url.href], { stdout: "inherit", stderr: "inherit" });
+  assert.equal(await check.exited, 0, "The desktop release session check completed");
 }
 const initial = String.raw`async ({page, argument}) => {
   await page.goto(argument);
@@ -108,35 +119,60 @@ const check = String.raw`async ({page}) => page.evaluate(async () => {
 })`;
 
 try {
+  const certFile = join(root, "worker.pem"), keyFile = join(root, "worker.key");
+  const certificate = Bun.spawnSync([tlsTool, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+    "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", keyFile, "-out", certFile],
+  { env: { ...process.env, MSYS2_ARG_CONV_EXCL: "*" }, stdout: "ignore", stderr: "pipe" });
+  assert.equal(certificate.exitCode, 0, "A temporary TLS fixture certificate could not be made");
+  const workerTls = { key: readFileSync(keyFile), cert: readFileSync(certFile) };
   await ensurePinnedRuntime(spec, runtime, { async download(_url, output) { copyFileSync(previousArchive, output); } }, process.platform);
-  const source = node("source"), target = node("target");
+  const source = node("source"), target = node("target", workerTls);
   nodes.push(source, target);
   const profile = buildNewProfile({ name: "Production QA", group: "qa", chromiumRuntime: "aliasmode" }, () => false);
   profileId = profile.id;
   source.store.upsertProfile(profile);
+  const canaryPeer = buildNewProfile({ name: "Canary peer", group: "qa", chromiumRuntime: "aliasmode" }, id => !!source.store.getProfile(id));
+  source.store.upsertProfile(canaryPeer);
   const peerToken = randomBytes(32).toString("base64url");
-  writeFileSync(join(target.paths.root, "worker-nodes.json"), JSON.stringify({ clients: [{ name: "qa", token: peerToken, groups: ["qa"] }] }));
+  writeFileSync(join(target.paths.root, "worker-nodes.json"), JSON.stringify({
+    clients: [{ name: "qa", token: peerToken, groups: ["qa"], agents: ["production-qa", "other-agent"] }],
+  }));
   writeFileSync(join(source.paths.root, "worker-nodes.json"), JSON.stringify({ nodes: {
-    target: { url: "http://127.0.0.1:" + target.server.port, token: peerToken },
+    target: { url: "https://127.0.0.1:" + target.server.port, token: peerToken, caFile: certFile },
   } }));
   const controller = await connect(source);
+  const other = await connect(source, "other-agent");
+  const health = await controller.call("worker.call", { operation: "health", node: "target" });
+  assert.equal(health.reachable, true);
+  assert.equal(health.status.ready, true);
+  const privateDashboard = await fetch(target.server.url, { tls: { ca: readFileSync(certFile, "utf8") } });
+  assert.equal(privateDashboard.status, 404);
+  await assert.rejects(fetch(target.server.url), "A private certificate must require explicit trust");
+  await verifyReleaseSession(source, [profileId, canaryPeer.id], "seed");
   await source.launcher.start(profileId, [], { headless: true });
-  const seed = await runPlaywrightWorker<{ completed: boolean; error?: string }>("devtools-program", {
-    endpoint: source.store.getLaunch(profileId)!.ws, code: initial, argument: site.url.href,
-  });
-  assert.equal(seed.completed, true, seed.error);
   const data = source.launcher.userDataDir(profileId);
   writeFileSync(join(data, "qa-native-file"), "before-upgrade");
-  const rollout = await controller.call("kernels.upgrade_batch", { profileIds: [profileId], revision: previous });
+  const rollout = await controller.call("kernels.upgrade_batch", { profileIds: [profileId, canaryPeer.id], revision: previous, canaryCount: 1 });
   assert.equal(rollout.completed.length, 1);
+  assert.equal(rollout.awaitingVerification, true);
+  assert.deepEqual(rollout.pending, [canaryPeer.id]);
+  assert.equal(source.store.getProfile(canaryPeer.id)?.kernelRevision, undefined);
   assert.equal(source.store.getProfile(profileId)?.kernelRevision, previous);
   assert.equal(basename(dirname(source.store.getLaunch(profileId)!.binaryPath!)), "chromium-" + previous);
   writeFileSync(join(data, "qa-native-file"), "after-upgrade");
   await controller.call("kernels.rollback", { profileId });
   assert.equal(basename(dirname(source.store.getLaunch(profileId)!.binaryPath!)), "chromium-" + DEFAULT_CHROMIUM_REVISION);
   assert.equal(readFileSync(join(data, "qa-native-file"), "utf8"), "before-upgrade");
+  assert.ok(await source.launcher.stop(profileId));
+  await source.launcher.cacheCleanupSettled(profileId);
+  await verifyReleaseSession(source, [profileId, canaryPeer.id], "verify");
   console.log("Verified two actual Chromium builds and restored the previous native directory.");
 
+  await source.launcher.start(profileId, [], { headless: true });
+  const seed = await runPlaywrightWorker<{ completed: boolean; error?: string }>("devtools-program", {
+    endpoint: source.store.getLaunch(profileId)!.ws, code: initial, argument: site.url.href,
+  });
+  assert.equal(seed.completed, true, seed.error);
   const handoff = { operation: "handoff", node: "target", profileId, idempotencyKey: "once" };
   const transferred = await Promise.all([controller.call("worker.call", handoff), controller.call("worker.call", handoff)]);
   assert.equal(transferred.filter(result => result.imported).length, 1);
@@ -148,14 +184,35 @@ try {
       steps: [{ id: "verify", run: check, readOnly: true }],
     },
   }) as { task: BrowserTaskView };
+  await assert.rejects(other.call("worker.call", { operation: "task", node: "target",
+    request: { operation: "status", runId: started.task.runId },
+  }));
+  await controller.call("worker.call", { operation: "task", node: "target",
+    request: { operation: "delegate", runId: started.task.runId, delegates: ["other-agent"] },
+  });
+  controller.close();
+  const reconnected = await connect(source);
+  const duplicate = await reconnected.call("worker.call", {
+    operation: "task", node: "target", request: {
+      operation: "start", idempotencyKey: "verify-state", profileId, startUrl: site.url.href,
+      steps: [{ id: "verify", run: check, readOnly: true }],
+    },
+  }) as { task: BrowserTaskView };
+  assert.equal(duplicate.task.runId, started.task.runId);
   const completed = await until(async () => {
-    const result = await controller.call("worker.call", {
+    const result = await other.call("worker.call", {
       operation: "task", node: "target", request: { operation: "status", runId: started.task.runId },
     }) as { task: BrowserTaskView };
     return result.task;
   }, task => ["completed", "blocked", "interrupted", "needs_verification"].includes(task.state));
   assert.equal(completed.state, "completed", JSON.stringify(completed));
-  console.log("Verified encrypted handoff, source fencing, idempotent adoption, and restored state on a second local worker.");
+  assert.equal(completed.client, "production-qa");
+  const replayed = await reconnected.call("worker.call", { operation: "handoff", node: "target", profileId, idempotencyKey: "once" });
+  assert.equal(replayed.imported, false, "An acknowledged handoff remains idempotent after reconnect");
+  console.log("Verified authenticated HTTPS, encrypted handoff, source fencing, restored browser state and Agent ownership on a second local Worker.");
+} catch (error) {
+  primaryFailure = error;
+  throw error;
 } finally {
   for (const runtime of connections) runtime.close();
   for (const { server, launcher, store } of nodes) {
@@ -168,6 +225,10 @@ try {
   }
   await site.stop(true);
   if (existsSync(root) && realpathSync(root) === root && dirname(root) === temp) {
-    rmSync(root, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 });
+    try { await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 }); }
+    catch (error) {
+      if (!primaryFailure) throw error;
+      console.error("Could not remove the isolated acceptance fixture after failure");
+    }
   }
 }

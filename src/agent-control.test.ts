@@ -1,4 +1,9 @@
 import { expect, test } from "bun:test";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentCredentials } from "./agent-credentials.ts";
 import {
   AGENT_CONTROL_MAX_MESSAGE_BYTES,
   AGENT_CONTROL_PROTOCOL,
@@ -110,6 +115,33 @@ function harness(options: {
     },
   };
 }
+
+test("a configured Agent name requires its credential and a revoked connection loses access", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vela-agent-credential-test-"));
+  const file = join(root, "agent-credentials.json");
+  const token = randomBytes(32).toString("base64url");
+  const name = "fixture-agent";
+  writeFileSync(file, JSON.stringify({ [name]: createHash("sha256").update(token).digest("hex") }));
+  const registry = new AgentCredentials(file);
+  const { deps } = harness();
+  const hub = new AgentControlHub({ ...deps, agentCredentials: registry });
+  const legacy = hub.connect();
+  const authenticated = hub.connect({ token, name: registry.resolve(token)! });
+  try {
+    expect(registry.resolve(randomBytes(32).toString("base64url"))).toBeUndefined();
+    expect(await legacy.enqueue(wire("session.identify", { name: "Fixture-Agent" }))).toMatchObject({
+      ok: false, error: { code: "not_permitted" },
+    });
+    expect(await authenticated.enqueue(wire("session.identify", { name: "other" }))).toMatchObject({ ok: true, result: { agent: name } });
+    writeFileSync(file, "{}");
+    expect(await authenticated.enqueue(wire("browser.status", { profileId: "profile1" }))).toMatchObject({
+      ok: false, error: { code: "not_permitted" },
+    });
+  } finally {
+    await Promise.all([legacy.disconnect(), authenticated.disconnect()]);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("agent protocol validates message shape, size, and authorization", () => {
   expect(parseAgentControlRequest(wire("profiles.list", {}, 7))).toEqual({
@@ -466,9 +498,6 @@ test.each([
 // ---- Proxy pool and proxy changes for AI clients ----
 
 import { ProfileStore } from "./store.ts";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { CodeApprovalQueue, type AiCodePolicy } from "./code-approvals.ts";
 import { scanPlugins } from "./plugins.ts";
 import { ScriptLibrary } from "./scripts.ts";

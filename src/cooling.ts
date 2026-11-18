@@ -47,17 +47,67 @@ export function readMemory(platform = process.platform): MemorySample {
       if (available > 0) return { total, available: Math.min(total, available) };
     } catch {}
   }
+  if (platform === "linux") {
+    try {
+      const available = Number(/^MemAvailable:\s+(\d+)\s+kB/m.exec(readFileSync("/proc/meminfo", "utf8"))?.[1]);
+      if (Number.isFinite(available)) return { total, available: Math.min(total, available * 1024) };
+    } catch {}
+  }
   return { total, available: freemem() };
 }
 
+const MIB = 1024 * 1024;
+const START_MEMORY = 450 * MIB;
+
+function launchReserve(sample: MemorySample): number {
+  return Math.min(1536 * MIB, sample.total / 4);
+}
+
 /**
- * How many browsers to start at once: as many as the free memory holds (about 450 MB each, with
- * 1.5 GB left for the system), no more than the processor count, between 1 and 8. Starting more
- * at once than memory holds makes every one of them slower and can stall the computer.
+ * How many costly operations the host can admit, with up to 1.5 GiB reserved for the system.
  */
 export function launchBatchSize(sample: MemorySample, cpus: number): number {
-  const freeMb = sample.available / 1048576;
-  return Math.max(1, Math.min(8, Math.max(1, cpus), Math.floor((freeMb - 1536) / 450)));
+  return Math.max(0, Math.min(8, cpus, Math.floor((sample.available - launchReserve(sample)) / START_MEMORY)));
+}
+
+export interface HostWorkPermit { release(): void }
+
+/** One memory budget for browser launches and Agent jobs, including jobs that open a browser. */
+export class HostWorkBudget {
+  private readonly active = new Set<HostWorkPermit>();
+  private sample?: MemorySample;
+  private sampledAt = -Infinity;
+  private paused = false;
+
+  constructor(
+    private readonly processors: number,
+    private readonly memory = readMemory,
+    private readonly now = () => performance.now(),
+  ) {}
+
+  status() {
+    const now = this.now();
+    if (!this.sample || now - this.sampledAt >= 500) {
+      this.sample = this.memory();
+      this.sampledAt = now;
+      const threshold = launchReserve(this.sample) + START_MEMORY + (this.paused ? 128 * MIB : 0);
+      this.paused = this.sample.available < threshold;
+    }
+    const limit = this.paused ? 0 : launchBatchSize(this.sample, this.processors);
+    return { ...this.sample, limit, inUse: this.active.size, paused: this.paused };
+  }
+
+  canStart(permit?: HostWorkPermit): boolean {
+    const { limit, inUse } = this.status();
+    return limit > 0 && ((permit !== undefined && this.active.has(permit)) || inUse < limit);
+  }
+
+  acquire(): HostWorkPermit | undefined {
+    if (!this.canStart()) return;
+    const permit = { release: () => { this.active.delete(permit); } };
+    this.active.add(permit);
+    return permit;
+  }
 }
 
 export interface CoolingDeps {

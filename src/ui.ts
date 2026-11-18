@@ -30,6 +30,7 @@ import {
   ProfileImportError,
   type ImportOverrides,
 } from "./inbox.ts";
+import { migrationPreviewService } from "./migration-preview.ts";
 import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { createLocalProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
 import { webkitSupported } from "./webkit-config.ts";
@@ -530,6 +531,7 @@ export interface UiRuntimeOptions {
   /** Desktop: cools idle browsers when memory runs short. */
   cooling?: import("./cooling.ts").CoolingMonitor;
   activity?: import("./cooling.ts").ActivityLog;
+  admission?: import("./lifecycle-admission.ts").LifecycleAdmissionController;
   paths?: StatePaths;
 
 
@@ -551,6 +553,7 @@ export interface UiRuntimeOptions {
   audit?: import("./audit.ts").AuditLog;
   /** The AIs connected right now. */
   connectedAgents?: () => string[];
+  authenticatedAgents?: () => string[];
   /** Snapshots of profiles and backups of their sign-ins. */
   snapshots?: import("./snapshots.ts").SnapshotStore;
   /** Watching from a phone on the same network. */
@@ -630,8 +633,10 @@ export async function handleUiRequest(
               return noStoreJson({ ok: true, ...tasks.stop(body.runId, body.operation === "pause" ? "paused" : "cancelled") });
             }
             if (typeof body?.runId === "string" && body.operation === "resume") {
-              const task = tasks.status(body.runId);
-              return noStoreJson({ ok: true, task: tasks.resume(task.runId, task.client) });
+              return noStoreJson({ ok: true, task: tasks.resume(body.runId, undefined, body.verify, body.expectedAttempt) });
+            }
+            if (typeof body?.runId === "string" && body.operation === "delegate") {
+              return noStoreJson({ ok: true, task: tasks.setDelegates(body.runId, body.delegates) });
             }
           }
           return noStoreJson({ ok: false, error: "Unknown browser task operation" }, 404);
@@ -996,7 +1001,7 @@ export async function handleUiRequest(
       const { auditCsv } = await import("./audit.ts");
       return new Response("\ufeff" + auditCsv(entries), { headers: { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store", "Content-Disposition": "attachment; filename=\"vela-activity.csv\"" } });
     }
-    return noStoreJson({ ok: true, entries, actors: options.audit.actors() });
+    return noStoreJson({ ok: true, entries, actors: options.audit.actors(), status: options.audit.status() });
   }
 
   // Going around this computer's TUN proxy client, and the test that proves it works.
@@ -1055,10 +1060,29 @@ export async function handleUiRequest(
 
   // How many browsers to start at once, from the memory free right now.
   if (pathname === "/ui/api/launch-batch" && req.method === "GET") {
+    if (options.admission) {
+      const { size, host, byKind } = options.admission.capacity();
+      return noStoreJson({ ok: true, size, memoryPaused: host?.paused ?? false, queued: byKind.start.queued,
+        starting: byKind.start.inFlight, availableMb: host && Math.round(host.available / 1048576),
+        totalMb: host && Math.round(host.total / 1048576) });
+    }
     const { launchBatchSize, readMemory } = await import("./cooling.ts");
     const { availableParallelism } = await import("node:os");
     const sample = readMemory();
     return noStoreJson({ ok: true, size: launchBatchSize(sample, availableParallelism()), availableMb: Math.round(sample.available / 1048576), totalMb: Math.round(sample.total / 1048576) });
+  }
+
+  const cancelStart = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/cancel-start$/);
+  if (cancelStart && req.method === "POST" && options.admission) {
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    try {
+      const id = decodeURIComponent(cancelStart[1]!);
+      if (!isSafeProfileId(id)) return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400);
+      const { requestId } = await req.json();
+      if (typeof requestId !== "string" || !/^[0-9a-f-]{36}$/.test(requestId)) return noStoreJson({ ok: false, error: "Missing browser start request ID" }, 400);
+      return noStoreJson({ ok: true, cancelled: options.admission.cancelStarts(id, requestId) });
+    } catch { return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400); }
   }
 
   // Encryption of account passwords, 2FA secrets, cookies and saved sign-ins.
@@ -1227,12 +1251,14 @@ export async function handleUiRequest(
       options.appConfig.write({ ...config, aiAccess: access });
     } else if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
     const access = options.appConfig.read().aiAccess ?? AI_ACCESS_DEFAULT;
+    const authenticated = options.authenticatedAgents?.() ?? [];
     const known = new Set<string>([
       ...(options.connectedAgents?.() ?? []).map(agentKey),
       ...(options.audit?.actors().filter((actor) => actor.kind === "ai" && actor.name !== "unknown").map((actor) => agentKey(actor.name)) ?? []),
+      ...authenticated,
       ...Object.keys(access.agents),
     ]);
-    return noStoreJson({ ok: true, access, agents: [...known].sort(), connected: (options.connectedAgents?.() ?? []).map(agentKey), groups: store.listGroups() });
+    return noStoreJson({ ok: true, access, agents: [...known].sort(), authenticated, connected: (options.connectedAgents?.() ?? []).map(agentKey), groups: store.listGroups() });
   }
 
   if (pathname === "/ui/api/proxy-pool" || pathname.startsWith("/ui/api/proxy-pool/")) {
@@ -1408,13 +1434,33 @@ export async function handleUiRequest(
   }
 
   if (pathname === "/ui/api/import/upload" && req.method === "POST") {
+    const migrationAction = new URL(req.url).searchParams.get("migration");
+    if (migrationAction !== null) {
+      if (remote) return noStoreJson({ ok: false, error: "Migration previews require local profiles" }, 400);
+      if (migrationAction !== "preview" && migrationAction !== "commit" && migrationAction !== "undo") {
+        return noStoreJson({ ok: false, error: "Unknown migration action" }, 400);
+      }
+    }
     try {
       const form = await req.formData();
+      const busy = (id: string) => launcher.profileDeletionBlocked(id) || options.admission?.lifecycleState(id) != null;
+      if (migrationAction === "commit" || migrationAction === "undo") {
+        const service = migrationPreviewService(store);
+        const result = migrationAction === "commit"
+          ? service.commit(form.get("previewId"), busy)
+          : service.undo(form.get("undoId"), busy);
+        return noStoreJson({ ok: true, ...result });
+      }
       const uploads: { name: string; bytes: Uint8Array }[] = [];
       const override = importOverridesFromForm(form);
 
       for (const [, value] of form) {
         if (value instanceof File) uploads.push({ name: value.name, bytes: new Uint8Array(await value.arrayBuffer()) });
+      }
+      if (migrationAction === "preview") {
+        if (!uploads.length) return noStoreJson({ ok: false, error: "Select at least one export file" }, 400);
+        const preview = await migrationPreviewService(store).preview(uploads, override, busy);
+        return noStoreJson({ ok: true, ...preview });
       }
       if (uploads.length === 0) return Response.json({ ok: false, error: "no files uploaded" }, { status: 400 });
 
@@ -1432,6 +1478,10 @@ export async function handleUiRequest(
       launcher.prefetchFirefoxFontPacks?.(store.listProfiles());
       return Response.json({ ok: true, ...imported });
     } catch (error) {
+      if (migrationAction !== null) {
+        if (error instanceof ProfileImportError) return noStoreJson({ ok: false, error: error.message }, error.status);
+        return noStoreJson({ ok: false, error: "The migration could not be completed" }, 500);
+      }
       const status = error instanceof ProfileImportError
         ? error.status
         : error instanceof CloudApiError ? error.status

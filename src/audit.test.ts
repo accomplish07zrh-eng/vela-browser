@@ -10,6 +10,27 @@ test("summaries never keep passwords, tokens, proxy logins or browser endpoints"
   expect(scrubAudit("ws://127.0.0.1:9222/devtools/browser/x")).toBe("CDP endpoint");
 });
 
+test("audit rotation keeps recent step receipts and surfaces write failures", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vela-audit-rotation-"));
+  const now = () => Date.UTC(2026, 10, 18);
+  const entry = { actor: { kind: "task" as const, name: "test-agent" }, action: "browserTask.run", ok: true,
+    task: { runId: "b".repeat(32), stepId: "save", sequence: 1 } };
+  const notices: string[] = [];
+  try {
+    const log = new AuditLog(dir, now, 300);
+    for (let sequence = 1; sequence <= 5; sequence++) log.record({ ...entry, task: { ...entry.task, sequence } });
+    expect(readdirSync(dir)).toHaveLength(2);
+    const restored = new AuditLog(dir, now, 300);
+    expect(restored.query().map(row => row.task?.sequence)).toEqual([5, 4]);
+    const blocked = join(dir, "blocked");
+    writeFileSync(blocked, "fixture");
+    const unwritable = new AuditLog(blocked, now, 300, line => notices.push(line));
+    unwritable.record(entry);
+    expect(unwritable.status()).toEqual({ dropped: 1, lastFailureAt: now(), issue: "write_failed" });
+    expect(notices).toHaveLength(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("entries are kept by month, read newest first, filtered, and old months are removed", () => {
   const dir = mkdtempSync(join(tmpdir(), "vela-audit-"));
   try {

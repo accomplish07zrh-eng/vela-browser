@@ -25,11 +25,13 @@ import { preparePlugin, scanPlugins, writePlugin } from "./plugins.ts";
 import type { ScriptLibrary, ScriptSupervisor } from "./scripts.ts";
 import { BrowserTaskError, type BrowserTaskSupervisor } from "./browser-tasks.ts";
 import { existsSync as pathExists } from "node:fs";
-import { allowsGroup, ruleFor, type AiAccessSettings } from "./ai-access.ts";
+import { agentKey, allowsGroup, ruleFor, type AiAccessSettings } from "./ai-access.ts";
 import type { AuditLog } from "./audit.ts";
 import { join as joinPath } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ProfileWriteLease, ProfileWrites } from "./profile-writes.ts";
+import type { HostWorkPermit } from "./cooling.ts";
+import type { AgentCredentials } from "./agent-credentials.ts";
 import { TaskError, type TaskRunner } from "./tasks.ts";
 import type { KernelUpgrades } from "./kernel-upgrades.ts";
 import type { AndroidDevices } from "./android.ts";
@@ -103,6 +105,8 @@ export interface AgentControlDeps {
 
   /** Which groups each AI may use. */
   aiAccess?: () => AiAccessSettings | undefined;
+  agentCredentials?: AgentCredentials;
+  validateProfile?(profileId: string): void;
   /** Where what AIs did is recorded. */
   audit?: AuditLog;
   /** IP scores from many IP-intelligence services, shared with the dashboard. */
@@ -292,9 +296,23 @@ export class AgentControlSession {
   /** The AI on the other end, as its MCP client names itself. */
   private client = "unknown";
 
-  constructor(private readonly deps: AgentControlDeps, private readonly openSignal?: AbortSignal) {}
+  constructor(private readonly deps: AgentControlDeps, private readonly openSignal?: AbortSignal,
+    private readonly hostPermit?: HostWorkPermit, private readonly credential?: { name: string; token: string }) {
+    if (credential) this.client = credential.name;
+  }
 
   get agentName(): string { return this.client; }
+
+  private taskActor() {
+    return { name: this.client, scope: this.credential ? "local-auth" : "local" };
+  }
+
+  private checkIdentity() {
+    const registry = this.deps.agentCredentials;
+    if (this.credential ? registry?.resolve(this.credential.token) !== this.client : registry?.has(this.client)) {
+      throw agentError("not_permitted", "A current credential is required for this Agent");
+    }
+  }
 
   private profileGroup(profileId: string): { group: string; name?: string } | undefined {
     const profile = this.deps.store.getProfile(profileId);
@@ -303,7 +321,7 @@ export class AgentControlSession {
 
   private accessRule() {
     let settings: AiAccessSettings | undefined;
-    try { settings = this.deps.aiAccess?.(); } catch { settings = undefined; }
+    try { settings = this.deps.aiAccess?.(); } catch { return "none" as const; }
     return ruleFor(settings, this.client);
   }
 
@@ -314,6 +332,8 @@ export class AgentControlSession {
 
   /** Refuses a profile outside the groups this AI was given. */
   private guard(profileId: string): void {
+    this.checkIdentity();
+    this.deps.validateProfile?.(profileId);
     if (this.accessRule() === "all") return;
     const found = this.profileGroup(profileId);
     if (!found || !this.mayUseGroup(found.group)) {
@@ -325,7 +345,8 @@ export class AgentControlSession {
     const audit = this.deps.audit;
     // Reads are left out, except when one was refused: a refusal is worth seeing.
     const replayRead = method === "browser.replay" && (params.action === "tabs" || params.action === "play");
-    if (!audit || ((UNAUDITED.has(method) || replayRead) && !(error instanceof AgentControlError && error.code === "not_permitted"))) return;
+    if (!audit || ((UNAUDITED.has(method) || replayRead) &&
+        !((error instanceof AgentControlError || error instanceof BrowserTaskError) && error.code === "not_permitted"))) return;
     const profileId = typeof params.profileId === "string" ? params.profileId : undefined;
     const action = method === "firefox.tools.call" || method === "webkit.tools.call" ? `page.${typeof params.name === "string" ? params.name : "tool"}` : method;
     const args = params.arguments && typeof params.arguments === "object" ? params.arguments as Record<string, unknown> : {};
@@ -430,6 +451,7 @@ export class AgentControlSession {
   get isClosed(): boolean { return this.closed; }
 
   private async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
+    this.checkIdentity();
     if (typeof params.profileId === "string" && params.profileId) {
       this.guard(params.profileId.trim());
       this.deps.activity?.touch(params.profileId.trim());
@@ -445,7 +467,11 @@ export class AgentControlSession {
           throw agentError("invalid_request", "Provide 1 to 100 profile IDs for this rollout");
         }
         for (const id of ids) this.guard(id);
-        return kernels.upgradeBatch([...new Set<string>(ids)], stringParam(params, "revision"), this.sessionAbort.signal);
+        const canaryCount = params.canaryCount;
+        if (canaryCount !== undefined && (typeof canaryCount !== "number" || !Number.isSafeInteger(canaryCount) || canaryCount < 1)) {
+          throw agentError("invalid_request", "Canary count must be a positive integer");
+        }
+        return kernels.upgradeBatch(ids as string[], stringParam(params, "revision"), this.sessionAbort.signal, { canaryCount });
       }
       const profileId = stringParam(params, "profileId");
       if (method === "kernels.status") return kernels.status(profileId);
@@ -479,7 +505,11 @@ export class AgentControlSession {
         return this.deps.workers.call(params, this.client, id => this.guard(id), this.sessionAbort.signal);
       case "session.identify": {
         // Named once, by the MCP client's own name; later calls cannot rename the connection.
-        if (this.client === "unknown" && typeof params.name === "string" && params.name.trim()) this.client = params.name.trim().slice(0, 64);
+        if (this.client === "unknown" && typeof params.name === "string" && params.name.trim() && agentKey(params.name) !== "unknown") {
+          const name = params.name.trim().slice(0, 64);
+          if (this.deps.agentCredentials?.has(name)) throw agentError("not_permitted", "A current credential is required for this Agent");
+          this.client = name;
+        }
         return { agent: this.client, ...(this.deps.writes ? { profileWriteLeases: true } : {}) };
       }
       case "browser.write.begin":
@@ -560,7 +590,7 @@ export class AgentControlSession {
           const tasks = this.deps.browserTasks;
           if (!tasks) throw agentError("unsupported", "Task replay needs the local Vela Browser desktop app");
           const runId = stringParam(params, "runId");
-          const task = tasks.status(runId);
+          const task = tasks.status(runId, this.taskActor());
           profileId = task.profileId;
           this.guard(profileId);
           if ((params.profileId !== undefined && params.profileId !== profileId) || params.tabId !== undefined) {
@@ -578,7 +608,11 @@ export class AgentControlSession {
           }
         } else profileId = stringParam(params, "profileId");
         return await replay.call(this.replayAbort.signal, profileId, params, () => {
-          try { this.guard(profileId); return true; } catch { return false; }
+          try {
+            this.guard(profileId);
+            if (typeof params.runId === "string") this.deps.browserTasks?.status(params.runId, this.taskActor());
+            return true;
+          } catch { return false; }
         });
       }
       case "firefox.tools.list":
@@ -814,7 +848,7 @@ export class AgentControlSession {
           return { schedule: schedules.save({
             id: params.scheduleId, name: params.name, target: params.target, schedule: params.schedule, enabled: params.enabled,
             skill: { id: params.skillId, startUrl: params.startUrl, inputs: params.argument },
-          }, this.client) };
+          }, this.client, this.taskActor()) };
         }
         const id = stringParam(params, "scheduleId");
         if (operation === "schedule_run") return schedules.run(id, "manual", this.client);
@@ -836,9 +870,10 @@ export class AgentControlSession {
       return tasks.list(id => {
         const profile = this.profileGroup(id);
         return this.accessRule() === "all" || !!profile && this.mayUseGroup(profile.group);
-      }, number("offset", 0, 0), number("limit", 25, 1, 100));
+      }, number("offset", 0, 0), number("limit", 25, 1, 100), this.taskActor());
     }
-    if (operation === "start") return { task: tasks.start(stringParam(params, "profileId"), this.client, params) };
+    const actor = this.taskActor();
+    if (operation === "start") return { task: tasks.start(stringParam(params, "profileId"), actor, params) };
     if (operation === "start_batch") {
       if (params.unattended === false) throw agentError("invalid_request", "Batch tasks use unattended execution");
       if (!Array.isArray(params.runs) || params.runs.length < 1 || params.runs.length > 100) {
@@ -851,23 +886,22 @@ export class AgentControlSession {
           const profileId = stringParam(item, "profileId");
           const { argument = shared.argument, idempotencyKey = shared.idempotencyKey, name = shared.name,
             startUrl = shared.startUrl, tabId } = item;
-          const task = tasks.start(profileId, this.client, { ...shared, argument, idempotencyKey, name, startUrl, tabId, unattended: true });
+          const task = tasks.start(profileId, actor, { ...shared, argument, idempotencyKey, name, startUrl, tabId, unattended: true });
           return { index, ok: true, task };
         } catch (error) { return { index, ok: false, error: errorResponse(1, error).error }; }
       }) };
     }
     if (operation === "skill_find") return tasks.findSkills(this.client, params.url, number("offset", 0, 0), number("limit", 25, 1, 100));
     const runId = stringParam(params, "runId");
-    const task = tasks.status(runId);
-    this.guard(task.profileId);
     switch (operation) {
-      case "status": return { task };
-      case "skill_save": return { skill: tasks.saveSkill(runId, this.client, params) };
-      case "resume": return { task: tasks.resume(runId, this.client, params.verify) };
-      case "pause": return tasks.stop(runId, "paused");
-      case "cancel": return tasks.stop(runId, "cancelled");
+      case "status": return { task: tasks.status(runId, actor) };
+      case "skill_save": return { skill: tasks.saveSkill(runId, actor, params) };
+      case "resume": return { task: tasks.resume(runId, actor, params.verify, params.expectedAttempt) };
+      case "delegate": return { task: tasks.setDelegates(runId, params.delegates, actor) };
+      case "pause": return tasks.stop(runId, "paused", actor);
+      case "cancel": return tasks.stop(runId, "cancelled", actor);
       case "evidence": return tasks.evidence(runId, number("sequence", 0, 1), params.part === undefined ? "summary" : stringParam(params, "part"),
-        number("offset", 0, 0), number("bytes", 65536, 1, 1048576));
+        number("offset", 0, 0), number("bytes", 65536, 1, 1048576), actor);
       default: throw agentError("invalid_request", "Unknown browser task operation");
     }
   }
@@ -1147,8 +1181,9 @@ export class AgentControlSession {
         : (() => { throw agentError("invalid_request", "startupUrls must contain only HTTP(S) URLs"); })();
 
     const opened = await this.deps.admission.run(
-      { kind: "start", profileIds: [profileId], signal: this.openSignal },
+      { kind: "start", profileIds: [profileId], signal: this.openSignal ?? this.sessionAbort.signal, hostPermit: this.hostPermit },
       async () => {
+        this.guard(profileId);
         const alreadyOpen = await this.deps.launcher.certifiedActive(profileId).catch(() => false);
         const existing = alreadyOpen ? this.deps.store.getLaunch(profileId) : null;
         if (existing) {
@@ -1319,8 +1354,8 @@ export class AgentControlHub {
 
   private readonly sessions = new Set<AgentControlSession>();
 
-  connect(): AgentControlSession {
-    const session = new AgentControlSession(this.deps);
+  connect(credential?: { name: string; token: string }): AgentControlSession {
+    const session = new AgentControlSession(this.deps, undefined, undefined, credential);
     this.sessions.add(session);
     return session;
   }

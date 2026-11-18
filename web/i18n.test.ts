@@ -18,6 +18,7 @@ test("every bundled locale key is an English string used in the web source", asy
     ["app.tsx", "proxies.tsx", "scripts.tsx", "browser-tasks.tsx", "trash.tsx", "approval-queue.tsx", "code-approvals.tsx", "desktop-update-result.ts", "command-palette.tsx", "workbench.tsx", "workbench-client.ts", "profile-management.ts", "profile-management-controls.tsx", "profile-detail.tsx", "titlebar.tsx", "select.tsx", "dialog.tsx", "tasks.tsx", "../src/tasks.ts", "proxy-pool.tsx", "recording-dialog.tsx", "tags.tsx", "ai-settings.tsx", "snapshots.tsx", "health.tsx", "tun-bypass.tsx", "first-run.tsx", "shortcuts.tsx", "ip-score.tsx", "check-sites.tsx", "phone-app.tsx", "../src/workbench.ts", "../src/ip-score.ts", "../src/snapshots.ts", "../src/health.ts", "../src/store.ts", "../src/ui.ts", "../src/egress-binding.ts"]
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
+  sources.push(await Bun.file(new URL("../src/migration-preview.ts", import.meta.url)).text());
   const source = sources.join("\n").replaceAll("\r\n", "\n");
   for (const [locale, table] of Object.entries(tables)) {
     const stale = Object.keys(table).filter((key) => !key.startsWith("language.") && !source.includes(key));

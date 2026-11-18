@@ -13,6 +13,7 @@ import type { PythonRuntimeStatus } from "../src/python-runtime.ts";
 import type { RuntimeDownload } from "../src/runtime-download.ts";
 import type { FolderInfo } from "../src/folders.ts";
 import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
+import type { MigrationCommitResult, MigrationPreviewResult, MigrationUndoResult } from "../src/migration-preview.ts";
 export type { RuntimeDownload } from "../src/runtime-download.ts";
 
 export type HealthStatus = "suspended" | "alive" | "no_data";
@@ -353,9 +354,17 @@ export async function clearPendingCookies(id: string): Promise<{ ok: boolean; re
   return apiJson(await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), path);
 }
 
-export const openProfile = (id: string, force = false) =>
-  post(`/ui/api/profiles/${encodeURIComponent(id)}/open${force ? "?force=1" : ""}`);
+export async function openProfile(id: string, force = false, requestId?: string): Promise<any> {
+  const path = `/ui/api/profiles/${encodeURIComponent(id)}/open${force ? "?force=1" : ""}`;
+  if (!requestId) return post(path);
+  const response = await fetch(path, { method: "POST", headers: { "X-Vela-Launch-Request": requestId } });
+  return apiJson(response, path);
+}
 export const closeProfile = (id: string) => post(`/ui/api/profiles/${encodeURIComponent(id)}/close`);
+export async function cancelProfileStart(id: string, requestId: string): Promise<void> {
+  const path = `/ui/api/profiles/${encodeURIComponent(id)}/cancel-start`;
+  await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId }) });
+}
 /** Close and open again, so saved proxy and fingerprint changes apply. */
 export async function restartProfile(id: string): Promise<any> {
   const closed = await closeProfile(id);
@@ -449,17 +458,47 @@ export async function setGroupExtensionDefaults(group: string, extensions: strin
   return apiJson(response, path);
 }
 
-export async function uploadExports(
+function exportUploadForm(
   files: FileList | File[],
   assign?: { group?: string; platform?: string },
-): Promise<any> {
+): FormData {
   const form = new FormData();
   for (const f of Array.from(files)) form.append("files", f);
   if (assign?.group) form.append("group", assign.group);
   if (assign?.platform) form.append("platform", assign.platform);
+  return form;
+}
+
+export async function uploadExports(
+  files: FileList | File[],
+  assign?: { group?: string; platform?: string },
+): Promise<any> {
   const path = "/ui/api/import/upload";
-  const r = await fetch(path, { method: "POST", body: form });
+  const r = await fetch(path, { method: "POST", body: exportUploadForm(files, assign) });
   return apiJson(r, path);
+}
+
+type MigrationApiResponse<T> = ({ ok: true } & T) | { ok: false; error: string };
+
+async function postExportMigration<T>(action: "preview" | "commit" | "undo", body: FormData): Promise<MigrationApiResponse<T>> {
+  const path = `/ui/api/import/upload?migration=${action}`;
+  return apiJson(await fetch(path, { method: "POST", body }), path);
+}
+
+export function previewExportMigration(files: FileList | File[], assign?: { group?: string; platform?: string }) {
+  return postExportMigration<MigrationPreviewResult>("preview", exportUploadForm(files, assign));
+}
+
+export function commitExportMigration(previewId: string) {
+  const form = new FormData();
+  form.append("previewId", previewId);
+  return postExportMigration<MigrationCommitResult>("commit", form);
+}
+
+export function undoExportMigration(undoId: string) {
+  const form = new FormData();
+  form.append("undoId", undoId);
+  return postExportMigration<MigrationUndoResult>("undo", form);
 }
 
 export async function updateProfileTags(ids: string[], add: string[], remove: string[]): Promise<{ ok: boolean; changed?: number; error?: string }> {
@@ -721,15 +760,15 @@ export async function convertMobileProfile(id: string): Promise<any> {
   return post(`/ui/api/profiles/${encodeURIComponent(id)}/convert-mobile`);
 }
 
-export async function profileLaunchConcurrency(): Promise<number> {
+export async function profileLaunchStatus(): Promise<{ size: number; memoryPaused?: boolean; queued?: number; starting?: number }> {
   try {
     const response = await fetch("/ui/api/launch-batch");
     if (response.ok) {
-      const { size } = await response.json();
-      if (Number.isSafeInteger(size) && size > 0) return size;
+      const status = await response.json();
+      if (Number.isSafeInteger(status.size) && status.size >= 0) return status;
     }
   } catch { /* the dashboard still bounds requests when the sample is unavailable */ }
-  return 4;
+  return { size: 4 };
 }
 
 export type ExportFormat = "csv" | "txt" | "xlsx" | "bitwarden";
@@ -952,8 +991,13 @@ export async function fetchBrowserTasks(offset: number): Promise<{ tasks: Browse
   return await scriptRequest(`${BROWSER_TASKS}?offset=${offset}`);
 }
 
-export async function changeBrowserTask(runId: string, operation: "pause" | "cancel" | "resume"): Promise<void> {
-  await scriptRequest(BROWSER_TASKS, { method: "POST", body: JSON.stringify({ runId, operation }) });
+export async function fetchBrowserTask(runId: string): Promise<BrowserTaskView> {
+  return (await scriptRequest(`${BROWSER_TASKS}?runId=${encodeURIComponent(runId)}`)).task;
+}
+
+export async function changeBrowserTask(runId: string, operation: "pause" | "cancel" | "resume" | "delegate",
+  input?: { verify?: string; expectedAttempt?: string; delegates?: string[] }): Promise<void> {
+  await scriptRequest(BROWSER_TASKS, { method: "POST", body: JSON.stringify({ runId, operation, ...input }) });
 }
 
 export async function fetchBrowserTaskEvidence(runId: string, sequence: number, part: string, signal?: AbortSignal): Promise<unknown> {

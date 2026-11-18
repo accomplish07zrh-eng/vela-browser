@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -15,14 +15,22 @@ export interface AuditEntry {
   profileId?: string;
   profileName?: string;
   detail?: string;
+  task?: { runId: string; stepId: string; sequence: number };
   ok: boolean;
   error?: string;
 }
 export interface AuditQuery { since?: number; until?: number; actorKind?: AuditActorKind; actor?: string; profileId?: string; text?: string; limit?: number }
 
-const MONTH_FILE = /^(\d{4})-(\d{2})\.jsonl$/;
+const MONTH_FILE = /^\d{4}-\d{2}(?:\.([1-9]\d*))?\.jsonl$/;
 const KEEP_MONTHS = 6;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_MONTH_FILES = 2;
+
+export interface AuditStatus {
+  dropped: number;
+  lastFailureAt?: number;
+  issue?: "write_failed" | "retention_failed";
+}
 
 /** Removes anything that looks like a secret or an address with credentials from a short summary. */
 export function scrubAudit(text: string, max = 240): string {
@@ -36,11 +44,33 @@ export function scrubAudit(text: string, max = 240): string {
 }
 
 export class AuditLog {
-  constructor(private readonly dir: string, private readonly now: () => number = Date.now) {}
+  private health: AuditStatus = { dropped: 0 };
+  private current?: { month: string; segment: number };
 
-  private fileFor(at: number): string {
+  constructor(private readonly dir: string, private readonly now: () => number = Date.now,
+    private readonly maxFileBytes = MAX_FILE_BYTES, private readonly report?: (text: string) => void) {}
+
+  status(): AuditStatus { return { ...this.health }; }
+
+  private monthFor(at: number): string {
     const date = new Date(at);
-    return join(this.dir, `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}.jsonl`);
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+  }
+
+  private markFailure(issue: NonNullable<AuditStatus["issue"]>, dropped = false) {
+    if (this.health.issue !== issue) this.report?.(issue === "write_failed" ? "An audit entry could not be written" : "The activity record could not rotate files");
+    this.health = { dropped: this.health.dropped + Number(dropped), issue, lastFailureAt: this.now() };
+  }
+
+  private fileFor(month: string, bytes: number): string {
+    if (this.current?.month !== month) {
+      const last = this.files().filter(name => name.slice(0, 7) === month).at(-1);
+      this.current = { month, segment: Number(last && MONTH_FILE.exec(last)?.[1] || 0) };
+    }
+    const path = (segment: number) => join(this.dir, month + (segment ? `.${segment}` : "") + ".jsonl");
+    const current = path(this.current.segment);
+    if ((statSync(current, { throwIfNoEntry: false })?.size ?? 0) + bytes <= this.maxFileBytes) return current;
+    return path(++this.current.segment);
   }
 
   record(entry: Omit<AuditEntry, "at"> & { at?: number }): void {
@@ -53,30 +83,43 @@ export class AuditLog {
         ...(entry.profileId ? { profileId: entry.profileId.slice(0, 64) } : {}),
         ...(entry.profileName ? { profileName: scrubAudit(entry.profileName, 80) } : {}),
         ...(entry.detail ? { detail: scrubAudit(entry.detail) } : {}),
+        ...(entry.task && /^[0-9a-f]{32}$/.test(entry.task.runId) && Number.isSafeInteger(entry.task.sequence) && entry.task.sequence > 0
+          ? { task: { ...entry.task, stepId: scrubAudit(entry.task.stepId, 120) } } : {}),
         ok: entry.ok,
         ...(entry.error ? { error: scrubAudit(entry.error, 300) } : {}),
       };
       mkdirSync(this.dir, { recursive: true });
-      const file = this.fileFor(at);
-      if (existsSync(file) && statSync(file).size > MAX_FILE_BYTES) return;
-      appendFileSync(file, JSON.stringify(clean) + "\n", { encoding: "utf8", mode: 0o600 });
-      this.prune(at);
-    } catch { /* the record is best effort: never break the action it describes */ }
+      const line = JSON.stringify(clean) + "\n";
+      if (Buffer.byteLength(line) > this.maxFileBytes) { this.markFailure("write_failed", true); return; }
+      appendFileSync(this.fileFor(this.monthFor(at), Buffer.byteLength(line)), line, { encoding: "utf8", mode: 0o600 });
+    } catch { this.markFailure("write_failed", true); return; }
+    try { this.prune(entry.at ?? this.now()); }
+    catch { this.markFailure("retention_failed"); }
   }
 
   private pruned = "";
   /** Keeps the last six months. */
   private prune(at: number): void {
-    const month = this.fileFor(at);
-    if (this.pruned === month) return;
-    this.pruned = month;
-    const cutoff = new Date(at); cutoff.setUTCMonth(cutoff.getUTCMonth() - KEEP_MONTHS);
-    const keepFrom = `${cutoff.getUTCFullYear()}-${String(cutoff.getUTCMonth() + 1).padStart(2, "0")}`;
-    for (const name of this.files()) if (name.slice(0, 7) < keepFrom) rmSync(join(this.dir, name), { force: true });
+    const month = this.monthFor(at), key = `${month}:${this.current?.segment ?? 0}`;
+    if (this.pruned === key) return;
+    const cutoff = new Date(this.now());
+    cutoff.setUTCDate(1);
+    cutoff.setUTCMonth(cutoff.getUTCMonth() - KEEP_MONTHS);
+    const keepFrom = this.monthFor(cutoff.valueOf());
+    const kept: Record<string, number> = {};
+    for (const name of this.files().reverse()) {
+      const fileMonth = name.slice(0, 7);
+      kept[fileMonth] = (kept[fileMonth] ?? 0) + 1;
+      if (fileMonth < keepFrom || kept[fileMonth]! > MAX_MONTH_FILES) rmSync(join(this.dir, name), { force: true });
+    }
+    this.pruned = key;
   }
 
   private files(): string[] {
-    try { return readdirSync(this.dir).filter((name) => MONTH_FILE.test(name)).sort(); } catch { return []; }
+    try {
+      return readdirSync(this.dir).filter(name => MONTH_FILE.test(name)).sort((a, b) =>
+        a.slice(0, 7).localeCompare(b.slice(0, 7)) || Number(MONTH_FILE.exec(a)?.[1] ?? 0) - Number(MONTH_FILE.exec(b)?.[1] ?? 0));
+    } catch { return []; }
   }
 
   /** Newest first. */
@@ -123,7 +166,8 @@ export function auditCsv(entries: AuditEntry[]): string {
     if (/^[=+\-@]/.test(text)) text = "'" + text;
     return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  const rows = [["time", "actor_kind", "actor", "action", "profile_id", "profile", "detail", "ok", "error"]];
-  for (const entry of entries) rows.push([new Date(entry.at).toISOString(), entry.actor.kind, entry.actor.name, entry.action, entry.profileId ?? "", entry.profileName ?? "", entry.detail ?? "", entry.ok ? "yes" : "no", entry.error ?? ""]);
+  const rows = [["time", "actor_kind", "actor", "action", "profile_id", "profile", "detail", "ok", "error", "run_id", "step_id", "evidence"]];
+  for (const entry of entries) rows.push([new Date(entry.at).toISOString(), entry.actor.kind, entry.actor.name, entry.action, entry.profileId ?? "", entry.profileName ?? "", entry.detail ?? "", entry.ok ? "yes" : "no", entry.error ?? "",
+    entry.task?.runId ?? "", entry.task?.stepId ?? "", String(entry.task?.sequence ?? "")]);
   return rows.map((row) => row.map(cell).join(",")).join("\n") + "\n";
 }

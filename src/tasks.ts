@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ScriptRun } from "./scripts.ts";
-import type { BrowserTaskSupervisor, BrowserTaskView } from "./browser-tasks.ts";
+import type { BrowserTaskActor, BrowserTaskSupervisor, BrowserTaskView } from "./browser-tasks.ts";
 
 export type TaskSchedule =
   | { kind: "manual" }
@@ -30,6 +30,7 @@ export interface TaskDefinition {
   steps: TaskStep[];
   skill?: ScheduledSkill;
   client?: string;
+  actor?: BrowserTaskActor;
   concurrency: number;
   /** How many more times a step is tried for the profiles that failed it. */
   retries: number;
@@ -64,6 +65,7 @@ export interface TaskRunRecord {
   browser?: {
     skill: ScheduledSkill;
     client: string;
+    actor?: BrowserTaskActor;
     runs: Array<{ profileId: string; runId?: string; state?: BrowserTaskView["state"]; error?: string }>;
   };
 }
@@ -128,6 +130,7 @@ export function normalizeTask(input: unknown, existing?: TaskDefinition, now = D
     steps: normalizedSteps,
     ...(skill ? { skill } : {}),
     ...(existing?.client ? { client: existing.client } : {}),
+    ...(existing?.actor ? { actor: existing.actor } : {}),
     concurrency,
     retries,
     useCredentials: raw.useCredentials === true,
@@ -233,7 +236,7 @@ export class TaskRunner {
     };
   }
 
-  save(input: unknown, client?: string): TaskDefinition {
+  save(input: unknown, client?: string, actor?: BrowserTaskActor): TaskDefinition {
     const file = this.deps.store.read();
     const id = input && typeof input === "object" && typeof (input as { id?: unknown }).id === "string" ? (input as { id: string }).id : undefined;
     const existing = id ? file.tasks.find((task) => task.id === id) : undefined;
@@ -242,10 +245,11 @@ export class TaskRunner {
     if (client !== undefined) {
       if (!task.skill) throw new TaskError("MCP schedules require a saved site skill");
       task.client = client;
+      if (actor) task.actor = actor;
     }
     if (task.skill) {
       if (!this.deps.browserTasks) throw new TaskError("Site skill scheduling is unavailable", 503);
-      this.deps.browserTasks.checkSkill(task.skill.id, task.client ?? "Desktop scheduler", task.skill.startUrl);
+      this.deps.browserTasks.checkSkill(task.skill.id, task.actor ?? task.client ?? "Desktop scheduler", task.skill.startUrl);
     }
     file.tasks = existing ? file.tasks.map((item) => item.id === task.id ? task : item) : [...file.tasks, task];
     this.deps.store.write(file);
@@ -313,11 +317,11 @@ export class TaskRunner {
   private dispatchSkill(task: TaskDefinition, trigger: TaskRunRecord["trigger"], skill: ScheduledSkill): TaskRunRecord {
     const client = task.client ?? "Desktop scheduler";
     const profiles = [...new Set(this.deps.resolveProfiles(task.target))]
-      .filter(id => this.deps.browserTasks?.canUseProfile(id, client));
+      .filter(id => this.deps.browserTasks?.canUseProfile(id, task.actor ?? client));
     const startedAt = this.now();
     const record: TaskRunRecord = { id: randomUUID(), taskId: task.id, taskName: task.name, trigger, startedAt,
       outcome: "running", profiles: profiles.length, steps: [],
-      browser: { skill, client, runs: profiles.map(profileId => ({ profileId })) } };
+      browser: { skill, client, ...(task.actor ? { actor: task.actor } : {}), runs: profiles.map(profileId => ({ profileId })) } };
     this.record(record, startedAt);
     this.refreshSkillRuns();
     return this.deps.store.read().history.find(run => run.id === record.id) ?? record;
@@ -333,7 +337,7 @@ export class TaskRunner {
       for (const item of batch.runs) {
         if (item.error && !item.runId) continue;
         try {
-          const task = item.runId ? service.status(item.runId) : service.start(item.profileId, batch.client, {
+          const task = item.runId ? service.status(item.runId) : service.start(item.profileId, batch.actor ?? batch.client, {
             skillId: batch.skill.id, startUrl: batch.skill.startUrl, argument: batch.skill.inputs,
             name: record.taskName, idempotencyKey: `schedule:${record.id}`,
           });

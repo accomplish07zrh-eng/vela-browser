@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, scrypt } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { rename, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gunzip, gzip } from "node:zlib";
@@ -218,6 +218,8 @@ export class PortableProfiles {
     }
     return this.exclusive(profile.id, async () => {
       const { launcher, store } = this.options;
+      signal?.throwIfAborted();
+      authorize(profile);
       const digest = createHash("sha256").update(data).digest("hex");
       if (store.getProfile(profile.id) && store.portableProfileDigest(profile.id) === digest) {
         return { profileId: profile.id, imported: false, digest, nativeFiles: files.length };
@@ -246,7 +248,9 @@ export class PortableProfiles {
           writeFileSync(target, Buffer.from(file.data, "base64"), { mode: 0o600, flag: "wx" });
         }
         writeFileSync(join(staging, importMarker), digest, { mode: 0o600, flag: "wx", flush: true });
-        await rename(staging, destination);
+        signal?.throwIfAborted();
+        authorize(profile);
+        renameSync(staging, destination);
         store.commitPortableProfile(profile, payload.session, digest);
         await rm(marker, { force: true }).catch(() => {});
       } finally {

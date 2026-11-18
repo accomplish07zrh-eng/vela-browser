@@ -249,17 +249,18 @@ export class AgentRuntimeClient {
   }
 }
 
-async function connectAgent(descriptor) {
+async function connectAgent(descriptor, agentToken) {
   await verifyHealth(descriptor);
   const url = `ws://127.0.0.1:${descriptor.port}${AGENT_PATH}`;
   const bunNative = typeof process.versions.bun === "string";
+  const headers = { Authorization: `Bearer ${descriptor.nonce}`, ...(agentToken ? { "X-Vela-Agent-Token": agentToken } : {}) };
   const socket = bunNative
     ? new globalThis.WebSocket(url, {
         protocols: [AGENT_PROTOCOL],
-        headers: { Authorization: `Bearer ${descriptor.nonce}` },
+        headers,
       })
     : new NodeWebSocket(url, AGENT_PROTOCOL, {
-        headers: { Authorization: `Bearer ${descriptor.nonce}` },
+        headers,
         maxPayload: MAX_RESPONSE_BYTES,
         handshakeTimeout: 5_000,
         followRedirects: false,
@@ -340,7 +341,7 @@ export async function discoverRuntime(options = {}) {
         descriptorPath,
         options.version || VERSION,
       );
-      const client = await connectAgent(descriptor);
+      const client = await connectAgent(descriptor, (options.env ?? process.env).VELA_AGENT_TOKEN);
       return { client, descriptor };
     } catch (error) {
       lastError = error instanceof Error ? error : lastError;
