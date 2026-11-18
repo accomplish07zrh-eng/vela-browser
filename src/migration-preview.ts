@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { clearTimeout, setTimeout } from "node:timers";
-import type { ProfileStore, MigrationUndoRecord } from "./store.ts";
+import { MAX_MIGRATION_UNDO_BYTES, type ProfileStore, type MigrationUndoRecord } from "./store.ts";
 import { prepareLocalMigration, ProfileImportError } from "./inbox.ts";
 import type { ImportOverrides, LocalMigrationPlan, MigrationSummary, MigrationConflict } from "./inbox.ts";
 
 export type MigrationPreviewResult = MigrationSummary & { conflicts: MigrationConflict[]; previewId?: string };
 export type MigrationCommitResult = MigrationSummary & { undoId?: string; undoExpiresAt?: number };
-export type MigrationUndoResult = { trashed: number; updated: number };
+export type MigrationUndoResult = { trashed: number; restored: number };
 
 const MAX_PREVIEWS = 4;
 const PREVIEW_TTL_MS = 5 * 60_000;
@@ -39,7 +39,11 @@ function stalePreview(): ProfileImportError {
 }
 
 function unavailableUndo(): ProfileImportError {
-  return new ProfileImportError("Undo expired or a new profile changed or was opened.", 409);
+  return new ProfileImportError("Undo expired or an imported profile changed, was opened, or cannot be restored.", 409);
+}
+
+function journalFull(): ProfileImportError {
+  return new ProfileImportError("The import exceeds the undo storage limit. Use a smaller batch or wait for earlier receipts to expire.", 413);
 }
 
 export class MigrationPreviewService {
@@ -88,31 +92,39 @@ export class MigrationPreviewService {
       }
 
       const changed = profiles.filter(({ action }) => action !== "unchanged");
+      if (changed.length === 0) return { ...summary };
+
       const sessions = new Map<string, string>();
-      for (const { profile, sessionBundle } of changed) {
+      const preimages = new Map<string, string>();
+      let preimageBytes = 0;
+      for (const { action, profile, sessionBundle } of changed) {
         if (sessionBundle !== undefined) sessions.set(profile.id, sessionBundle);
+        if (action === "update") {
+          const before = this.store.captureMigrationProfile(profile.id);
+          preimageBytes += Buffer.byteLength(before);
+          if (preimageBytes > MAX_MIGRATION_UNDO_BYTES) throw journalFull();
+          preimages.set(profile.id, before);
+        }
       }
       this.store.pruneMigrationUndo(now);
-      if (changed.length > 0) {
-        this.store.upsertProfiles(changed.map(({ profile }) => profile), sessions, { notify: false });
-      }
+      this.store.upsertProfiles(changed.map(({ profile }) => profile), sessions, { notify: false });
 
       const created: MigrationUndoRecord["created"] = [];
+      const updated: MigrationUndoRecord["updated"] = [];
       for (const { profile: { id }, action } of changed) {
-        if (action !== "create") continue;
         const version = this.store.migrationProfileVersion(id);
-        if (version === null) throw new Error("Migration did not persist the created profile");
-        created.push({ id, version });
+        if (version === null) throw new Error("Migration did not persist the profile");
+        if (action === "create") created.push({ id, version });
+        else updated.push({ id, version, before: preimages.get(id)! });
       }
-      if (created.length === 0) return { ...summary };
 
       const receipt: MigrationUndoRecord = {
         id: randomToken(),
         expiresAt: this.now() + UNDO_TTL_MS,
         created,
-        updated: summary.updated,
+        updated,
       };
-      this.store.saveMigrationUndo(receipt);
+      if (!this.store.saveMigrationUndo(receipt)) throw journalFull();
       return { ...summary, undoId: receipt.id, undoExpiresAt: receipt.expiresAt };
     });
 
@@ -127,15 +139,18 @@ export class MigrationPreviewService {
       const now = this.now();
       const receipt = this.store.loadMigrationUndo(token);
       if (!receipt || receipt.expiresAt <= now) throw unavailableUndo();
-      for (const { id, version } of receipt.created) {
+      for (const { id, version } of [...receipt.created, ...receipt.updated]) {
         if (!this.profileMatches(id, version, busy)) throw unavailableUndo();
+      }
+      for (const { id, before } of receipt.updated) {
+        if (!this.store.restoreMigrationProfile(id, before)) throw unavailableUndo();
       }
       for (const { id } of receipt.created) {
         if (!this.store.trashProfile(id)) throw unavailableUndo();
       }
       this.store.deleteMigrationUndo(token);
       this.store.pruneMigrationUndo(now);
-      return { trashed: receipt.created.length, updated: receipt.updated };
+      return { trashed: receipt.created.length, restored: receipt.updated.length };
     });
   }
 

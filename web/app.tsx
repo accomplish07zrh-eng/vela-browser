@@ -34,7 +34,7 @@ import { I18nProvider, availableLanguages, languageNativeName, useTranslation } 
 import { localeTimezoneMismatch } from "../src/profile-locale.ts";
 import type { FingerprintAudit } from "../src/fingerprint-audit.ts";
 import type { MigrationConflict, MigrationSummary } from "../src/inbox.ts";
-import type { MigrationCommitResult, MigrationPreviewResult } from "../src/migration-preview.ts";
+import type { MigrationCommitResult, MigrationPreviewResult, MigrationUndoResult } from "../src/migration-preview.ts";
 import { folderTree, folderScope, type FolderInfo } from "../src/folders.ts";
 import { THEME_KEY, readThemeChoice, themeCookie, type ThemeChoice } from "./theme.ts";
 import {
@@ -1358,7 +1358,7 @@ function App() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkErr, setBulkErr] = useState<string | null>(null);
   const [bulkPreview, setBulkPreview] = useState<MigrationPreviewResult | null>(null);
-  const [bulkResult, setBulkResult] = useState<(MigrationCommitResult & { trashed?: number }) | null>(null);
+  const [bulkResult, setBulkResult] = useState<(MigrationCommitResult & { rollback?: MigrationUndoResult }) | null>(null);
   const [bulkOver, setBulkOver] = useState(false);
   // One source at a time: two full-height inputs stacked made it ambiguous which
   // one the Import button would actually read.
@@ -2018,7 +2018,7 @@ function App() {
         setBulkErr(t(result.error));
         return;
       }
-      setBulkResult({ ...bulkResult, undoId: undefined, trashed: result.trashed });
+      setBulkResult({ ...bulkResult, undoId: undefined, rollback: result });
       await load();
     } catch {
       setBulkErr(t("The migration could not be completed"));
@@ -4466,18 +4466,22 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="bulk-import-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <Icon name="fileImport" /><span id="bulk-import-title">{t(bulkResult ? "Import finished" : bulkPreview ? "Import preview" : "Import profiles")}</span>
+              <Icon name="fileImport" /><span id="bulk-import-title">{t(bulkResult?.rollback ? "Import undone" : bulkResult ? "Import finished" : bulkPreview ? "Import preview" : "Import profiles")}</span>
               <button type="button" className="modal-close" aria-label={t("Close")} disabled={bulkBusy} onClick={closeBulk}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body" aria-busy={bulkBusy}>
               {bulkErr && <div className="modal-err" role="alert"><Icon name="alert" className="sm" />{bulkErr}</div>}
               {bulkResult ? (
                 <>
-                  <p className="formnote" role="status">{migrationSummary(bulkResult, t)}</p>
-                  {bulkResult.trashed !== undefined && <p className="formnote">{t("{count} new profiles moved to Trash.", { count: bulkResult.trashed })}</p>}
+                  {bulkResult.rollback ? (
+                    <div role="status">
+                      {bulkResult.rollback.trashed > 0 && <p className="formnote">{t("{count} new profiles moved to Trash.", { count: bulkResult.rollback.trashed })}</p>}
+                      {bulkResult.rollback.restored > 0 && <p className="formnote">{t("{count} updated profiles restored.", { count: bulkResult.rollback.restored })}</p>}
+                    </div>
+                  ) : <p className="formnote" role="status">{migrationSummary(bulkResult, t)}</p>}
                   {bulkResult.undoId && bulkResult.undoExpiresAt && (
                     <p className="formnote">
-                      {t("You can move the new profiles to Trash until {time}.", { time: new Date(bulkResult.undoExpiresAt).toLocaleTimeString(language, { hour: "numeric", minute: "2-digit" }) })}
+                      {t("Undo is available until {time}. It restores updated profiles and moves new profiles to Trash.", { time: new Date(bulkResult.undoExpiresAt).toLocaleTimeString(language, { hour: "numeric", minute: "2-digit" }) })}
                     </p>
                   )}
                 </>
@@ -4642,7 +4646,7 @@ function App() {
               )}
               {bulkPreview && <button className="btn ghost" disabled={bulkBusy} onClick={() => { setBulkPreview(null); setBulkErr(null); }}>{t("Edit import")}</button>}
               <span className="spacer" />
-              {bulkResult?.undoId && <button className="btn ghost" disabled={bulkBusy} onClick={undoBulk}>{t("Move new profiles to Trash")}</button>}
+              {bulkResult?.undoId && <button className="btn ghost" disabled={bulkBusy} onClick={undoBulk}>{t("Undo import")}</button>}
               <button className={bulkResult ? "btn primary" : "btn ghost"} disabled={bulkBusy} onClick={closeBulk}>{t(bulkResult ? "Done" : "Cancel")}</button>
               {!bulkResult && (
                 <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim())} onClick={submitBulk}>
