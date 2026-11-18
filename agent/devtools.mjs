@@ -1284,11 +1284,10 @@ export class BrowserDevtools {
         expires: Date.now() + 60_000 });
     }
     return { ...target, url: url.startsWith("data:") ? "data:" : url.slice(0, 2048),
-      ...observation, controls: observation.controls.map(({ identity, candidates, ...control }) => ({
+      ...observation, controls: observation.controls.map(({ identity, candidates, ...control }, index) => ({
         ...control,
         ...(candidates.length && args.compact !== true && durableScope ? { anchor: { ...scope, identity, candidates } } : {}),
-      })).map((control, index) => ({
-        ...control, ...(snapshotId && observation.controls[index].candidates.length ? { ref: `${snapshotId}:${index + 1}` } : {}),
+        ...(snapshotId && candidates.length ? { ref: `${snapshotId}:${index + 1}` } : {}),
       })) };
   }
   navigationCount(frame) { return this.frameNavigations.get(frame) ?? 0; }

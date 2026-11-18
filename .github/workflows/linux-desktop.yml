@@ -590,6 +590,8 @@ jobs:
           old_pid="$(jq -er .desktopPid "$data/agent-runtime.json")"
           # A Chromium profile would start its browser download from github.com, which the fixture rejects.
           kept="$("$helper" profiles create --name keep-me --engine firefox | jq -er 'select(.ok) | .result.id')"
+          peer="$("$helper" profiles create --name session-isolation-peer --engine firefox | jq -er 'select(.ok) | .result.id')"
+          bun scripts/desktop-session-acceptance.mjs "$data/agent-runtime.json" seed firefox "$kept" "$peer"
           # The dashboard checks for updates by itself; wait until it has read the release feed.
           for attempt in $(seq 1 60); do
             [[ "$(sudo jq -r '.counts.manifest' "$work/fixture-state.json")" -ge 1 ]] && break
@@ -624,6 +626,7 @@ jobs:
           ls -a "$(dirname "$root")" | tee "$evidence/data-home.txt"
           ! grep -q "^\.aliasmode-" "$evidence/data-home.txt"
           "$helper" profiles list | grep -q "\"$kept\""
+          bun scripts/desktop-session-acceptance.mjs "$data/agent-runtime.json" verify firefox "$kept" "$peer"
           sudo jq -e '.counts.installer >= 1 and .counts.rejected == 0' "$work/fixture-state.json"
       - name: Restore name resolution
         if: always()

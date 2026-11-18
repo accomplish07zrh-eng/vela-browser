@@ -7,6 +7,7 @@ const LABELS = { queued: "Waiting in queue", running: "Running", recovering: "Re
   completed: "Completed", cancelled: "Cancelled", paused: "Paused",
   interrupted: "Interrupted", needs_verification: "Needs verification", uncertain: "Needs verification", pending: "Pending" } as const;
 const PARTS = { value: "Result", logs: "Console", network: "Network traffic", events: "Developer events", screenshot: "Screenshot" } as const;
+const WAIT_LABELS = { memory: "Waiting for available memory", profile_write: "Waiting for profile access", capacity: "Waiting for an execution slot" } as const;
 type EvidencePart = keyof typeof PARTS;
 type Summary = { stepId: string; actionKey: string; phase: "run" | "verify"; attempt: number; startedAt: string; endedAt: string;
   completed: boolean; error?: string; detailsExpired?: boolean; available: Record<EvidencePart, boolean> };
@@ -110,6 +111,7 @@ export function BrowserTasksPanel({ receipt }: { receipt?: { runId: string; sequ
           </header>
           {(task.blocked || task.error) && <p className="modal-err">{task.blocked?.message || task.error || task.blocked?.code}</p>}
           {task.retryAt && <p role="status">{t("Retry at {time}", { time: new Date(task.retryAt).toLocaleTimeString() })}</p>}
+          {task.waitReason && <p role="status">{t(WAIT_LABELS[task.waitReason])}</p>}
           {!!task.recoveries && <small>{t("Recovery attempts {count}", { count: task.recoveries })}</small>}
           {uncertain && !canPause && !["completed", "cancelled"].includes(task.state) && <label className="fld">
             <span>{t("Replacement verifier for {step}", { step: uncertain.id })}</span>

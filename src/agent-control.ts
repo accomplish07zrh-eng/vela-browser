@@ -25,7 +25,7 @@ import { preparePlugin, scanPlugins, writePlugin } from "./plugins.ts";
 import type { ScriptLibrary, ScriptSupervisor } from "./scripts.ts";
 import { BrowserTaskError, type BrowserTaskSupervisor } from "./browser-tasks.ts";
 import { existsSync as pathExists } from "node:fs";
-import { allowsGroup, ruleFor, type AiAccessSettings } from "./ai-access.ts";
+import { agentKey, allowsGroup, ruleFor, type AiAccessSettings } from "./ai-access.ts";
 import type { AuditLog } from "./audit.ts";
 import { join as joinPath } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -503,7 +503,7 @@ export class AgentControlSession {
         return this.deps.workers.call(params, this.client, id => { this.checkIdentity(); this.guard(id); }, this.sessionAbort.signal);
       case "session.identify": {
         // Named once, by the MCP client's own name; later calls cannot rename the connection.
-        if (this.client === "unknown" && typeof params.name === "string" && params.name.trim()) {
+        if (this.client === "unknown" && typeof params.name === "string" && params.name.trim() && agentKey(params.name) !== "unknown") {
           const name = params.name.trim().slice(0, 64);
           if (this.deps.agentCredentials?.has(name)) throw agentError("not_permitted", "A current credential is required for this Agent");
           this.client = name;

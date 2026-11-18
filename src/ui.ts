@@ -1438,7 +1438,7 @@ export async function handleUiRequest(
     }
     try {
       const form = await req.formData();
-      const busy = (id: string) => launcher.profileDeletionBlocked(id);
+      const busy = (id: string) => launcher.profileDeletionBlocked(id) || options.admission?.lifecycleState(id) != null;
       if (migrationAction === "commit" || migrationAction === "undo") {
         const service = migrationPreviewService(store);
         const result = migrationAction === "commit"

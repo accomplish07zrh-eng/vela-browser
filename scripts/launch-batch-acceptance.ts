@@ -35,6 +35,7 @@ const count = Number(values.profiles);
 const closeAfterReady = values["close-after-ready"] === true;
 const soakSeconds = Number(values["soak-seconds"]), sampleSeconds = Number(values["sample-seconds"]);
 const engine = values.engine;
+const headless = !values.visible;
 const adsOrigin = values["adspower-url"] ? new URL(values["adspower-url"]) : undefined;
 if (adsOrigin) {
   assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(adsOrigin.hostname) && ["http:", "https:"].includes(adsOrigin.protocol)
@@ -42,7 +43,8 @@ if (adsOrigin) {
   "AdsPower comparison uses a loopback API origin");
   assert.equal(engine, "chromium", "AdsPower comparison uses its Chrome kernel");
 }
-assert.ok(engine === "chromium" || engine === "firefox", "engine must be chromium or firefox");
+assert.ok(engine === "chromium" || engine === "firefox" || engine === "mixed", "engine must be chromium, firefox or mixed");
+const engineFor = (index: number) => engine === "mixed" ? (index % 2 === 0 ? "chromium" : "firefox") : engine;
 const hostWork = new HostWorkBudget(availableParallelism());
 const admission = new LifecycleAdmissionController({ hostWork });
 const concurrency = values.concurrency ? Number(values.concurrency) : Math.max(1, hostWork.status().limit);
@@ -52,11 +54,13 @@ assert.ok(Number.isSafeInteger(soakSeconds) && soakSeconds >= 0 && Number.isSafe
 assert.ok(!soakSeconds || !closeAfterReady, "A resident soak cannot close profiles during admission");
 const runtimeRoot = resolve(values["runtime-root"]);
 const chromium = aliasmodeChromiumExecutable(join(runtimeRoot, "reports/runtimes/chromium"));
-const firefox = engine === "firefox"
+const firefox = engine !== "chromium"
   ? JSON.parse(readFileSync(join(runtimeRoot, "src-tauri/generated/browser.json"), "utf8")).firefox : undefined;
-const executable = firefox ? join(runtimeRoot, "src-tauri/resources/firefox", firefox.executable) : chromium;
-const binarySha256 = firefox?.sha256 ?? ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
-if (!adsOrigin) assert.equal(await sha256File(executable), binarySha256, "Use the pinned Vela browser runtime");
+const firefoxExecutable = firefox ? join(runtimeRoot, "src-tauri/resources/firefox", firefox.executable) : undefined;
+const binarySha256 = engine === "mixed" ? { chromium: ALIASMODE_CHROMIUM_EXECUTABLE_SHA256, firefox: firefox.sha256 }
+  : firefox?.sha256 ?? ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
+if (!adsOrigin && engine !== "firefox") assert.equal(await sha256File(chromium), ALIASMODE_CHROMIUM_EXECUTABLE_SHA256, "Use the pinned Vela Chromium");
+if (firefoxExecutable) assert.equal(await sha256File(firefoxExecutable), firefox.sha256, "Use the pinned Vela Firefox");
 const output = resolve(values.report);
 mkdirSync(dirname(output), { recursive: true });
 const directory = realpathSync(dirname(output));
@@ -65,9 +69,9 @@ const store = new ProfileStore(":memory:");
 interface Timing { spawned?: number; connected?: number; fingerprintMs?: number; serverQueueMs?: number; firstActionMs?: number; warmupQueueMs?: number }
 const events = new Map<string, Timing>();
 const launcher = new Launcher({
-  store, dataRoot, headless: !values.visible,
+  store, dataRoot, headless,
   ensureAliasmodeChromium: async () => chromium,
-  ...(firefox ? { firefoxBinaryPath: executable, expectedFirefoxBinarySha256: binarySha256 } : {}),
+  ...(firefoxExecutable ? { firefoxBinaryPath: firefoxExecutable, expectedFirefoxBinarySha256: firefox.sha256 } : {}),
   async captureFingerprint(ws) {
     const launch = store.listLaunches().find(launch => launch.debugPort === Number(new URL(ws).port));
     const timing = launch && events.get(launch.profileId);
@@ -88,7 +92,7 @@ const launcher = new Launcher({
 });
 const server = !adsOrigin ? serveAutomationApi({ store, launcher, port: 0, lifecycleAdmission: admission, log: () => {} }) : undefined;
 let seedSession = true;
-const site = values["first-action"] || engine === "firefox" || soakSeconds > 0 ? Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(req) {
+const site = values["first-action"] || engine !== "chromium" || soakSeconds > 0 ? Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(req) {
   const profile = new URL(req.url).pathname.slice(1);
   return new Response("<!doctype html><title>Local session fixture</title>", { headers: {
     "Content-Type": "text/html", "Cache-Control": "no-store",
@@ -125,7 +129,7 @@ async function startProfile(index: number, id: string, label: string) {
   if (adsOrigin) {
     externalRunning.add(id);
     const data = await adsRequest<{ ws: { puppeteer: string } }>("start", {
-      profile_id: id, headless: values.visible ? "0" : "1", last_opened_tabs: "1", proxy_detection: "0", delete_cache: "0",
+      profile_id: id, headless: headless ? "1" : "0", last_opened_tabs: "1", proxy_detection: "0", delete_cache: "0",
     });
     const endpoint = new URL(data.ws?.puppeteer);
     assert.ok(endpoint.protocol === "ws:" && ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname), "AdsPower must return a loopback CDP endpoint");
@@ -139,7 +143,7 @@ async function startProfile(index: number, id: string, label: string) {
   if (queue && events.has(id)) events.get(id)!.serverQueueMs = Number(queue);
   const result = await response.json() as { code: number; msg: string; data: { engine?: string; ws?: { puppeteer?: string } } };
   if (result.code !== 0) throw new Error(result.msg);
-  const ready = engine === "firefox" ? result.data?.engine === "firefox" : !!result.data?.ws?.puppeteer;
+  const ready = engineFor(index) === "firefox" ? result.data?.engine === "firefox" : !!result.data?.ws?.puppeteer;
   if (!ready) throw new Error("Browser connection missing");
 }
 
@@ -179,7 +183,7 @@ const seededProfiles = new Set<number>();
 const checkCookie = async (index: number, id: string) => {
   if (!site || !seededProfiles.has(index)) return;
   const endpoint = adsOrigin ? endpoints.get(id)! : store.getLaunch(id)!.ws;
-  if (engine === "chromium") {
+  if (engineFor(index) === "chromium") {
     const cdp = await openCdp(endpoint, 8_000);
     try {
       const deadline = Date.now() + 4000;
@@ -270,6 +274,7 @@ try {
       externalProfiles.add(created.profile_id);
       ids.push(created.profile_id);
     } else {
+      const engine = engineFor(index);
       const profile = buildNewProfile({ engine, ...(engine === "chromium" ? { chromiumRuntime: "aliasmode" } : {}), screen: "1280x800",
         name: fixtureLabel + " " + index }, id => !!store.getProfile(id));
       store.upsertProfile(profile);
@@ -407,7 +412,7 @@ try {
   store.close();
   writeFileSync(output, JSON.stringify({ platform: process.platform, engine,
     ...(adsOrigin ? { backend: "adspower", browserVersion: adsVersion, requestSpacingMs: 1000 } : { backend: "vela", binarySha256 }),
-    profiles: count, concurrency, closeAfterReady, headless: !values.visible, generatedAt: new Date().toISOString(), runs, cleanupErrors }, null, 2) + "\n");
+    profiles: count, concurrency, closeAfterReady, headless, generatedAt: new Date().toISOString(), runs, cleanupErrors }, null, 2) + "\n");
   if (cleanupErrors.length) {
     for (const error of cleanupErrors) console.error(error);
     process.exitCode = 1;

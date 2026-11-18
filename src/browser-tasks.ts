@@ -17,10 +17,12 @@ type Checkpoint = { id: string; state: StepState; attempts: number; evidence?: n
   result?: { value?: unknown }; verification?: "applied" | "absent" | "unknown" };
 type TaskBlock = { code: string; message?: string };
 type SiteSkill = { id: string; sourceRunId: string; name: string; origin: string; path: string; createdAt: string; sourceGroup?: string };
-type QueueState = { order: number; recoveries: number; consecutiveRecoveries: number; retryAt?: number; verifier?: { stepId: string; code: string } };
+type QueueState = { order: number; recoveries: number; consecutiveRecoveries: number; retryAt?: number;
+  verifier?: { stepId: string; code: string; suppliedBy?: BrowserTaskActor } };
 type BrowserTask = {
   version: 1; runId: string; client: string; definition: Definition; state: RunState;
   owner?: BrowserTaskActor; delegates?: string[]; firstEvidence?: number;
+  waitReason?: "profile_write" | "memory" | "capacity";
   createdAt: string; updatedAt: string; steps: Checkpoint[]; evidenceCount: number; error?: string;
   stopRequested?: "paused" | "cancelled";
   queue?: QueueState; tab?: TaskTab; blocked?: TaskBlock;
@@ -148,6 +150,7 @@ function view(task: BrowserTask) {
     ...(task.delegates?.length ? { delegates: [...task.delegates] } : {}), ...(task.error ? { error: task.error } : {}),
     ...(task.stopRequested ? { stopRequested: task.stopRequested } : {}),
     ...(task.queue ? { recoveries: task.queue.recoveries } : {}),
+    ...(task.waitReason ? { waitReason: task.waitReason } : {}),
     ...(task.queue?.retryAt ? { retryAt: new Date(task.queue.retryAt).toISOString() } : {}),
     ...(task.tab && !task.tab.lost ? { tabId: task.tab.id } : {}),
     ...(task.blocked ? { blocked: { ...task.blocked } } : {}),
@@ -360,10 +363,12 @@ export class BrowserTaskSupervisor {
     const runId = key && (owner.scope === "local" || owner.scope.startsWith("worker-legacy:")) ? legacyId!
       : key ? createHash("sha256").update(JSON.stringify([profileId, actorKey(owner), key])).digest("hex").slice(0, 32)
       : randomUUID().replaceAll("-", "");
-    const previous = this.history.get(runId) ?? (legacyId && owner.scope === "local-auth" ? this.history.get(legacyId) : undefined);
+    const legacy = legacyId && owner.scope === "local-auth" ? this.history.get(legacyId) : undefined;
+    const previous = this.history.get(runId) ?? (legacy && agentKey(legacy.client) === agentKey(owner.name) ? legacy : undefined);
     if (previous) {
       this.authorize(previous, owner, true);
       if (!isDeepStrictEqual(previous.definition, definition)) throw new BrowserTaskError("key_conflict", "This idempotency key already identifies a different plan", 409);
+      this.adoptLocalOwner(previous, owner);
       return view(previous);
     }
     if (previousKey) {
@@ -404,29 +409,43 @@ export class BrowserTaskSupervisor {
     if (expectedAttempt !== undefined && (!step || expectedAttempt !== `${step.id}:${step.attempts}:${step.evidence ?? 0}`)) {
       throw new BrowserTaskError("checkpoint_changed", "The task checkpoint changed. Reload the evidence before supplying a verifier.", 409);
     }
+    if (client !== undefined) this.adoptLocalOwner(task, taskActor(client));
     const owner = ownerOf(task);
     this.options.authorize(task.definition.profileId, owner.name, undefined, owner);
     task.state = "queued";
+    delete task.waitReason;
     delete task.error;
     delete task.blocked;
     const queue = task.queue ??= { order: ++this.order, recoveries: 0, consecutiveRecoveries: 0 };
     queue.consecutiveRecoveries = 0;
     delete queue.retryAt;
-    if (typeof verify === "string" && step) queue.verifier = { stepId: step.id, code: verify };
+    if (typeof verify === "string" && step) {
+      queue.verifier = { stepId: step.id, code: verify, ...(client === undefined ? {} : { suppliedBy: taskActor(client) }) };
+    }
     this.save(task);
     this.wakeQueue();
     return view(task);
   }
 
+  private adoptLocalOwner(task: BrowserTask, actor: BrowserTaskActor) {
+    if (actor.scope !== "local-auth" || ownerOf(task).scope !== "local" || agentKey(actor.name) !== agentKey(task.client)) return;
+    const previous = task.owner;
+    task.owner = actor;
+    try { this.save(task); }
+    catch (error) { task.owner = previous; throw error; }
+  }
+
   setDelegates(runId: string, value: unknown, client?: TaskClient) {
     const task = this.get(runId);
     this.authorize(task, client, true);
-    if (task.owner === undefined && client !== undefined) task.owner = taskActor(client);
+    if (client !== undefined) this.adoptLocalOwner(task, taskActor(client));
     if (!Array.isArray(value) || value.length > 32 || value.some(name => typeof name !== "string" || !name.trim() || name.length > 64)) {
       badRequest("Provide up to 32 Agent names");
     }
+    const previous = task.delegates;
     task.delegates = [...new Set(value.map(agentKey))].filter(name => name !== agentKey(ownerOf(task).name) && name !== "unknown");
-    this.save(task);
+    try { this.save(task); }
+    catch (error) { task.delegates = previous; throw error; }
     return view(task);
   }
 
@@ -444,6 +463,7 @@ export class BrowserTaskSupervisor {
     }
     if (!isFinished(task.state) && (state === "cancelled" || task.state === "queued" || task.state === "recovering")) {
       task.state = state;
+      delete task.waitReason;
       if (task.queue) delete task.queue.retryAt;
       this.save(task);
       this.wakeQueue();
@@ -518,10 +538,12 @@ export class BrowserTaskSupervisor {
         continue;
       }
       capacity ??= this.options.capacity?.() ?? 1;
-      if (this.running.size >= capacity) { next = Math.min(next, 500); break; }
-      if (this.options.hostWork && !this.options.hostWork.canStart()) { next = Math.min(next, 500); break; }
+      if (this.options.hostWork?.status().paused) { task.waitReason = "memory"; next = Math.min(next, 500); continue; }
+      if (this.running.size >= capacity || (this.options.hostWork && !this.options.hostWork.canStart())) {
+        task.waitReason = "capacity"; next = Math.min(next, 500); continue;
+      }
       const lease = this.options.writes?.tryAcquire(profileId);
-      if (this.options.writes && !lease) { next = Math.min(next, 250); continue; }
+      if (this.options.writes && !lease) { task.waitReason = "profile_write"; next = Math.min(next, 250); continue; }
       const hostPermit = this.options.hostWork?.acquire();
       if (this.options.hostWork && !hostPermit) {
         lease?.release();
@@ -529,6 +551,7 @@ export class BrowserTaskSupervisor {
         break;
       }
       task.state = "running";
+      delete task.waitReason;
       delete queue.retryAt;
       try { this.save(task); }
       catch (error) {
@@ -643,8 +666,8 @@ export class BrowserTaskSupervisor {
           }
           continue;
         }
-        const queuedVerifier = task.queue?.verifier?.stepId === step.id ? task.queue.verifier.code : undefined;
-        const verifier = checkpoint.state === "uncertain" ? queuedVerifier ?? step.verify : step.verify;
+        const queuedVerifier = task.queue?.verifier?.stepId === step.id ? task.queue.verifier : undefined;
+        const verifier = checkpoint.state === "uncertain" ? queuedVerifier?.code ?? step.verify : step.verify;
         const complete = (value: unknown) => {
           checkpoint.state = "completed";
           delete checkpoint.error;
@@ -684,6 +707,14 @@ export class BrowserTaskSupervisor {
           state = "needs_verification";
           checkpoint.verification = "unknown";
           if (!verifier) { checkpoint.error = "Provide a verifier to resolve the last attempt"; return "unknown"; }
+          if (queuedVerifier?.suppliedBy) {
+            try { this.authorize(task, queuedVerifier.suppliedBy); }
+            catch {
+              if (task.queue) delete task.queue.verifier;
+              checkpoint.error = "The replacement verifier's Agent authorization was revoked";
+              return "unknown";
+            }
+          }
           const receipt = await act("verify", verifier);
           const verified = receipt.value as { state?: unknown; value?: unknown } | undefined;
           if (receipt.completed && verified?.state === "applied") {
@@ -755,6 +786,7 @@ export class BrowserTaskSupervisor {
       if (task.steps.every(step => step.state === "completed")) state = "completed";
       else if (active.stop) state = active.stop === "interrupted" && target ? "queued" : active.stop;
       task.state = state;
+      delete task.waitReason;
       if (task.queue && state !== "recovering") delete task.queue.retryAt;
       delete task.stopRequested;
       this.save(task);

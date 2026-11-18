@@ -1952,8 +1952,6 @@ export class Launcher {
       : undefined;
   }
 
-  starting(profileId: string): boolean { return this.startsInFlight.has(profileId); }
-
   /**
    * Start (or return the already-running) browser for `profileId`.
    * Returns the CDP ws endpoint and debug port, AdsPower-style.

@@ -1075,6 +1075,18 @@ try {
   $profileId = [string]$profile.id
   $profileName = "in-app-update-preservation-sentinel"
   $observations.profileCreated = $true
+  $peer = Invoke-RestMethod "$($oldRecord.Origin)/ui/api/profiles" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body '{"name":"session-isolation-peer","engine":"chromium","chromiumRuntime":"cloakbrowser"}' `
+    -TimeoutSec 30 -NoProxy
+  if ($peer.ok -ne $true -or [string]::IsNullOrWhiteSpace([string]$peer.id)) {
+    throw "could not create the session isolation profile"
+  }
+  $sessionFixture = Join-Path $PSScriptRoot "desktop-session-acceptance.mjs"
+  $agentDescriptor = Join-Path $appDataRoot "agent-runtime.json"
+  & $runtime $sessionFixture $agentDescriptor seed chromium $profileId ([string]$peer.id)
+  if ($LASTEXITCODE -ne 0) { throw "source browser session fixture failed" }
   $encodedProfileId = [Uri]::EscapeDataString($profileId)
   $opened = Invoke-RestMethod "$($oldRecord.Origin)/ui/api/profiles/$encodedProfileId/open" `
     -Method Post `
@@ -1283,6 +1295,8 @@ try {
       -not $observations.profilePreserved) {
     throw "signed candidate did not preserve installed state"
   }
+  & $runtime $sessionFixture $agentDescriptor verify chromium $profileId ([string]$peer.id)
+  if ($LASTEXITCODE -ne 0) { throw "candidate browser session fixture failed" }
 
   $routeCounts = Get-SafeRouteCounts $fixtureStatePath
   if ($routeCounts.releaseList -lt 4 -or
