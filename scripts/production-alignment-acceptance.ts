@@ -1,7 +1,8 @@
 /** Real Windows Chromium revisions, two isolated desktop workers, and a local site. */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import WebSocket from "ws";
@@ -32,12 +33,13 @@ const tlsTool = Bun.which("openssl") ?? (process.platform === "win32"
   ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git/usr/bin/openssl.exe") : "openssl");
 const runtime = join(root, "runtimes");
 const nodes: Array<ReturnType<typeof node>> = [];
+let primaryFailure: unknown;
 const connections: AgentRuntimeClient[] = [];
 let profileId = "";
 function node(name: string, workerTls?: Bun.TLSOptions) {
   const paths = statePaths(join(root, name));
   ensureStateDirectories(paths);
-  const store = new ProfileStore(paths.database);
+  const store = new ProfileStore(":memory:");
   const launcher = new Launcher({
     store, dataRoot: paths.profiles, headless: true, chromiumRuntimeRoot: runtime, ensureAliasmodeChromium: async () => stable, log() {},
     portRange: name === "source" ? { start: 12600, end: 12649 } : { start: 12900, end: 12949 },
@@ -148,10 +150,6 @@ try {
   await assert.rejects(fetch(target.server.url), "A private certificate must require explicit trust");
   await verifyReleaseSession(source, [profileId, canaryPeer.id], "seed");
   await source.launcher.start(profileId, [], { headless: true });
-  const seed = await runPlaywrightWorker<{ completed: boolean; error?: string }>("devtools-program", {
-    endpoint: source.store.getLaunch(profileId)!.ws, code: initial, argument: site.url.href,
-  });
-  assert.equal(seed.completed, true, seed.error);
   const data = source.launcher.userDataDir(profileId);
   writeFileSync(join(data, "qa-native-file"), "before-upgrade");
   const rollout = await controller.call("kernels.upgrade_batch", { profileIds: [profileId, canaryPeer.id], revision: previous, canaryCount: 1 });
@@ -170,6 +168,11 @@ try {
   await verifyReleaseSession(source, [profileId, canaryPeer.id], "verify");
   console.log("Verified two actual Chromium builds and restored the previous native directory.");
 
+  await source.launcher.start(profileId, [], { headless: true });
+  const seed = await runPlaywrightWorker<{ completed: boolean; error?: string }>("devtools-program", {
+    endpoint: source.store.getLaunch(profileId)!.ws, code: initial, argument: site.url.href,
+  });
+  assert.equal(seed.completed, true, seed.error);
   const handoff = { operation: "handoff", node: "target", profileId, idempotencyKey: "once" };
   const transferred = await Promise.all([controller.call("worker.call", handoff), controller.call("worker.call", handoff)]);
   assert.equal(transferred.filter(result => result.imported).length, 1);
@@ -207,6 +210,9 @@ try {
   const replayed = await reconnected.call("worker.call", { operation: "handoff", node: "target", profileId, idempotencyKey: "once" });
   assert.equal(replayed.imported, false, "An acknowledged handoff remains idempotent after reconnect");
   console.log("Verified authenticated HTTPS, encrypted handoff, source fencing, restored browser state and Agent ownership on a second local Worker.");
+} catch (error) {
+  primaryFailure = error;
+  throw error;
 } finally {
   for (const runtime of connections) runtime.close();
   for (const { server, launcher, store } of nodes) {
@@ -219,6 +225,10 @@ try {
   }
   await site.stop(true);
   if (existsSync(root) && realpathSync(root) === root && dirname(root) === temp) {
-    rmSync(root, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 });
+    try { await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 }); }
+    catch (error) {
+      if (!primaryFailure) throw error;
+      console.error("Could not remove the isolated acceptance fixture after failure");
+    }
   }
 }

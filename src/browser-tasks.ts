@@ -542,7 +542,7 @@ export class BrowserTaskSupervisor {
       .sort((a, b) => a.queue!.order - b.queue!.order);
     const lanes = new Set([...this.running.values()].map(active => active.task.definition.profileId));
     const now = Date.now();
-    const host = this.options.hostWork?.status();
+    const host = tasks.length ? this.options.hostWork?.status() : undefined;
     let capacity: number | undefined, next = Infinity;
     for (const task of tasks) {
       const profileId = task.definition.profileId;
