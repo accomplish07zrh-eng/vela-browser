@@ -649,10 +649,8 @@ Section Install
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
-  ; Copy main executable
-  File "${MAINBINARYSRCPATH}"
-
-  ; Copy resources
+  ; Finish copying the required payload before changing the version the desktop reports.
+  AllowSkipFiles off
   {{#each resources_dirs}}
     CreateDirectory "$INSTDIR\\{{this}}"
   {{/each}}
@@ -664,6 +662,13 @@ Section Install
   {{#each binaries}}
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
+
+  ClearErrors
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+  IfErrors 0 +2
+    Abort
+
+  File "${MAINBINARYSRCPATH}"
 
   ; Create file associations
   {{#each file_associations as |association| ~}}
@@ -679,9 +684,6 @@ Section Install
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}\DefaultIcon" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
   {{/each}}
-
-  ; Create uninstaller
-  WriteUninstaller "$INSTDIR\uninstall.exe"
 
   ; Save $INSTDIR in registry for future installations
   WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
