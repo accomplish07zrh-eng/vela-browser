@@ -3,7 +3,7 @@ import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect
 import { TOP_LAYER_PROPS, useTopLayer } from "./top-layer.ts";
 import { parseTags, TagBatchDialog, TagChip, TagInput, TagList } from "./tags.tsx";
 import { ActivityCard, AiAccessCard } from "./ai-settings.tsx";
-import { BackupsCard, DataEncryptionCard, TunBypassCard } from "./snapshots.tsx";
+import { BackupsCard, DataEncryptionCard, TunBypassCard, WorkspaceBackupCard } from "./snapshots.tsx";
 import { MobileViewCard } from "./phone-app.tsx";
 import { HealthScore, HealthSheet, type HealthRow } from "./health.tsx";
 import { keyLabel, SHORTCUTS, ShortcutsSheet, useShortcuts } from "./shortcuts.tsx";
@@ -69,6 +69,7 @@ import {
   fetchDiskSpace,
   type DiskSpace,
   fetchLogs,
+  fetchSupportDiagnostics,
   fetchDiagnose,
   checkProxy,
   ProxyCheckError,
@@ -95,6 +96,7 @@ import {
   undoExportMigration,
   moveProfiles,
   deleteProfiles,
+  setProfileDeletionProtection,
   createProfile,
   fetchProfileEdit,
   updateProfile,
@@ -1266,6 +1268,7 @@ function App() {
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [savingProtection, setSavingProtection] = useState(false);
   const deleteInFlight = useRef(false);
   const rosterLoader = useRef(serialLoader(() => loadRoster()));
   // Active profile export: null when idle, otherwise how far the server-side
@@ -1771,6 +1774,7 @@ function App() {
   const countFor = (g: string) => folderCounts.get(g) ?? 0;
   const canEditGroup = (name: string) => true;
   const selectedMovable = true;
+  const selectionProtected = selected.size > 0 && profiles.filter(profile => selected.has(profile.id) && profile.deletionProtected).length === selected.size;
   const editableDefaultGroups = groupExtensionDefaults.filter((item) => item.permission === "edit");
   const installedExtensionIds = new Set(extensions.map((item) => item.id));
   const storedGroupDefaultExts = groupExtensionDefaults.find((item) => item.name === groupDefaultName)?.extensions ?? [];
@@ -1846,7 +1850,7 @@ function App() {
     try {
       const r = await deleteProfiles(ids);
       if (r.ok === false) {
-        setActionErr(r.error || "delete failed");
+        setActionErr(t(r.error || "delete failed"));
         return;
       }
       const problems = [
@@ -1863,6 +1867,20 @@ function App() {
       deleteInFlight.current = false;
       setDeleting(false);
     }
+  };
+
+  const changeDeletionProtection = async () => {
+    if (!selected.size || savingProtection) return;
+    setSavingProtection(true);
+    setActionErr(null);
+    const enabled = !selectionProtected;
+    try {
+      const count = await setProfileDeletionProtection([...selected], enabled);
+      await load();
+      flash(t(enabled ? "Deletion protection enabled for {count} profiles." : "Deletion protection removed from {count} profiles.", { count }));
+    } catch (error) {
+      setActionErr(t(error instanceof Error ? error.message : "Could not change deletion protection."));
+    } finally { setSavingProtection(false); }
   };
 
   const actionWarning = (r: any): string => r.warning;
@@ -3255,8 +3273,11 @@ function App() {
             </>
           )}
           <span className="spacer" />
+          {!appMode?.legacyRemote && selected.size > 0 && <button type="button" className="btn" disabled={savingProtection || deleting} onClick={() => void changeDeletionProtection()}>
+            <Icon name="lock" className="sm" />{t(selectionProtected ? "Remove deletion protection" : "Protect from deletion")}
+          </button>}
           {(
-            <button className="btn danger tip" data-tip={appMode?.legacyRemote ? t("Delete selected profiles") : t("Move selected profiles to Trash")} disabled={!selected.size || deleting} onClick={deleteSelected}>
+            <button className="btn danger tip" data-tip={appMode?.legacyRemote ? t("Delete selected profiles") : t("Move selected profiles to Trash")} disabled={!selected.size || deleting || savingProtection} onClick={deleteSelected}>
               <Icon name="trash" className="sm" />{deleting ? t("Processing…") : appMode?.legacyRemote ? t("Delete") : t("Move {count} to Trash", { count: selected.size.toLocaleString() })}
             </button>
           )}
@@ -3310,6 +3331,7 @@ function App() {
                             {browserLabel(p.engine, p.chromiumRuntime)}
                           </span>
                           {p.running && <span className="live"><StatusDot running />{t("running")}</span>}
+                          {p.deletionProtected && <span className="lockedby" title={t("Deletion protection enabled")}><Icon name="lock" className="sm" />{t("Protected")}</span>}
                           {p.lockedBy && (
                             <span className="lockedby" title={`in use by ${p.lockedBy}`}>
                               <Icon name="lock" className="sm" />{p.lockedBy}
@@ -3846,7 +3868,7 @@ function App() {
 
           {settingsTab === "ai" && (
             <>
-              <AiAccessCard flash={flash} />
+              <AiAccessCard flash={flash} manageCredentials={!!desktopInvoke() && !!appMode && !appMode.legacyRemote} />
               <ActivityCard flash={flash} onReceipt={receipt => { setTaskReceipt(receipt); setView("scripts"); }} />
             </>
           )}
@@ -3854,6 +3876,7 @@ function App() {
           {settingsTab === "data" && (
             <>
               <BackupsCard flash={flash} />
+              {desktopInvoke() && !appMode.legacyRemote && <WorkspaceBackupCard onRestored={() => void load()} flash={flash} />}
               <DataEncryptionCard flash={flash} />
               <TunBypassCard />
               <MobileViewCard flash={flash} />
@@ -3906,10 +3929,21 @@ function App() {
             <header><Icon name="logs" className="sm" /><h2>{t("Logs")}</h2></header>
             <div className="card-body">
               <p>{t("The detailed log records launches, proxy setup and browser lifecycle for this installation.")}</p>
-              <button type="button" className="btn" onClick={() => {
-                setLogErr(null);
-                fetchLogs().then(setLogView).catch((e) => setLogErr(e instanceof Error ? e.message : String(e)));
-              }}><Icon name="logs" className="sm" />{t("View detailed logs")}</button>
+              <div className="plugin-actions">
+                <button type="button" className="btn" onClick={() => {
+                  setLogErr(null);
+                  fetchLogs().then(setLogView).catch((e) => setLogErr(e instanceof Error ? e.message : String(e)));
+                }}><Icon name="logs" className="sm" />{t("View detailed logs")}</button>
+                {desktopInvoke() && <button type="button" className="btn" onClick={() => {
+                  setLogErr(null);
+                  void fetchSupportDiagnostics().then(report => {
+                    const update = desktopUpdateResult
+                      ? { state: desktopUpdateResult.state, ...(desktopUpdateResult.state === "failedOrInterrupted" ? { reason: desktopUpdateResult.reason } : {}) }
+                      : undefined;
+                    downloadText("Vela-Support.json", JSON.stringify({ ...report, update }, null, 2) + "\n", "application/json");
+                  }).catch(error => setLogErr(error instanceof Error ? error.message : String(error)));
+                }}><Icon name="export" className="sm" />{t("Download support diagnostics")}</button>}
+              </div>
               {logErr && <p className="cardnote">{t("Logs")}: {t(logErr)}</p>}
               {logDir && <p className="cardnote">{t("File")}: {logDir}</p>}
             </div>

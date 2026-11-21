@@ -66,7 +66,8 @@ mkdirSync(dirname(output), { recursive: true });
 const directory = realpathSync(dirname(output));
 const dataRoot = mkdtempSync(join(directory, "launch-batch-qa-"));
 const store = new ProfileStore(":memory:");
-interface Timing { spawned?: number; connected?: number; fingerprintMs?: number; serverQueueMs?: number; firstActionMs?: number; warmupQueueMs?: number }
+interface FirefoxStartupTiming { verifyMs: number; runtimeMs: number; browserMs: number; identifyMs: number }
+interface Timing { spawned?: number; connected?: number; fingerprintMs?: number; serverQueueMs?: number; firstActionMs?: number; warmupQueueMs?: number; firefoxStartup?: FirefoxStartupTiming }
 const events = new Map<string, Timing>();
 const launcher = new Launcher({
   store, dataRoot, headless,
@@ -82,6 +83,10 @@ const launcher = new Launcher({
   log(line) {
     const warmup = /^(\S+): Firefox warmup queue ([\d.]+)ms$/.exec(line);
     if (warmup && events.has(warmup[1]!)) events.get(warmup[1]!)!.warmupQueueMs = Number(warmup[2]);
+    const startup = /^(\S+): Firefox launch timings verify=(\d+) runtime=(\d+) browser=(\d+) identify=(\d+)ms$/.exec(line);
+    if (startup && events.has(startup[1]!)) events.get(startup[1]!)!.firefoxStartup = {
+      verifyMs: Number(startup[2]), runtimeMs: Number(startup[3]), browserMs: Number(startup[4]), identifyMs: Number(startup[5]),
+    };
     const stage = /^(\S+): launch stage (browser spawned|CDP ready)$/.exec(line);
     if (stage) {
       const key = stage[2] === "browser spawned" ? "spawned" : "connected";
@@ -297,7 +302,7 @@ try {
     }, 150);
     const loaded: Array<{ index: number; ok: boolean; error?: string; queueMs: number; totalMs: number;
       requestMs: number; serverQueueMs?: number; toSpawnMs?: number; spawnToControlMs?: number; controlToReadyMs?: number;
-      apiToFirstActionMs?: number; firstActionMs?: number; fingerprintMs?: number; warmupQueueMs?: number }> = [];
+      apiToFirstActionMs?: number; firstActionMs?: number; fingerprintMs?: number; warmupQueueMs?: number; firefoxStartup?: FirefoxStartupTiming }> = [];
     let next = 0;
     try {
       const settled = await Promise.allSettled(Array.from({ length: Math.min(concurrency, count) }, async () => {
@@ -337,6 +342,7 @@ try {
               spawnToControlMs: ms(entry.connected - entry.spawned), controlToReadyMs: ms(ready - entry.connected),
             } : {}),
             ...(entry.fingerprintMs === undefined ? {} : { fingerprintMs: entry.fingerprintMs }),
+            ...(entry.firefoxStartup ? { firefoxStartup: entry.firefoxStartup } : {}),
             ...(entry.firstActionMs === undefined ? {} : { apiToFirstActionMs: ms(entry.firstActionMs - ready), firstActionMs: ms(entry.firstActionMs - start) }),
           });
           if (loaded.length % 10 === 0) console.log(`${engine} ${label} ${loaded.length}/${count} ready or failed`);

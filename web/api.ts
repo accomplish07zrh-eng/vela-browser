@@ -9,6 +9,8 @@ import type {
 } from "../contracts/cloud-v1.ts";
 import type { ScriptRun } from "../src/scripts.ts";
 import type { BrowserTaskView } from "../src/browser-tasks.ts";
+import type { AgentCredentialSettings } from "../src/agent-credentials.ts";
+import type { WorkspaceBackupPreview } from "../src/workspace-backup.ts";
 import type { PythonRuntimeStatus } from "../src/python-runtime.ts";
 import type { RuntimeDownload } from "../src/runtime-download.ts";
 import type { FolderInfo } from "../src/folders.ts";
@@ -20,6 +22,7 @@ export type HealthStatus = "suspended" | "alive" | "no_data";
 
 export interface UiProfile {
   id: string;
+  deletionProtected?: boolean;
   name: string;
   /** Browser family. Legacy profiles without a value are Chromium. */
   engine: "chromium" | "firefox" | "webkit";
@@ -524,6 +527,14 @@ export async function deleteProfiles(ids: string[]): Promise<any> {
   return apiJson(r, "/ui/api/profiles/delete");
 }
 
+export async function setProfileDeletionProtection(ids: string[], enabled: boolean): Promise<number> {
+  const path = "/ui/api/profiles/deletion-protection";
+  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, enabled }) });
+  const result = await apiJson(response, path);
+  if (!response.ok || result.ok !== true) throw new Error(result.error || "Could not change deletion protection.");
+  return result.changed;
+}
+
 export interface ProxyCheckInput {
   type?: string;
   host: string;
@@ -885,18 +896,54 @@ export function scriptsDesktopAvailable(): boolean {
     typeof (window as any).__TAURI_INTERNALS__?.invoke === "function";
 }
 
-async function scriptRequest(path: string, init: RequestInit = {}): Promise<any> {
+async function desktopRuntimeFetch(path: string, init: RequestInit, command: string): Promise<Response> {
   const invoke = (window as any).__TAURI_INTERNALS__?.invoke as ScriptInvoke | undefined;
-  if (!invoke) throw new Error("Scripts require the desktop app.");
-  const capability = await invoke("script_capability");
-  if (typeof capability !== "string" || !capability) throw new Error("Scripts are unavailable in this desktop app.");
+  const scripts = command === "script_capability";
+  if (!invoke) throw new Error(scripts ? "Scripts require the desktop app." : "This operation requires the local desktop app.");
+  const capability = await invoke(command);
+  if (typeof capability !== "string" || !capability) throw new Error(scripts ? "Scripts are unavailable in this desktop app." : "Desktop administration is unavailable.");
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${capability}`);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetch(path, { ...init, headers });
+  if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  return await fetch(path, { ...init, headers });
+}
+
+async function desktopRuntimeRequest(path: string, init: RequestInit = {}, command = "script_capability"): Promise<any> {
+  const response = await desktopRuntimeFetch(path, init, command);
   const body = await apiJson(response, path);
-  if (!response.ok || body.ok !== true) throw new Error(body.error || "Scripts request failed");
+  if (!response.ok || body.ok !== true) throw new Error(body.error || (command === "script_capability" ? "Scripts request failed" : "Desktop administration is unavailable."));
   return body;
+}
+
+const scriptRequest = desktopRuntimeRequest;
+
+export async function fetchSupportDiagnostics(): Promise<Record<string, unknown>> {
+  const body = await desktopRuntimeRequest("/ui/api/support-diagnostics", {}, "desktop_admin_capability");
+  return body.report;
+}
+
+export type AgentCredentialAction = { action: "issue" | "rotate" | "revoke"; name: string } | { action: "policy"; required: boolean };
+
+export async function agentCredentialSettings(action?: AgentCredentialAction): Promise<AgentCredentialSettings & { issued?: { name: string; token: string } }> {
+  const init: RequestInit = action ? { method: "POST", body: JSON.stringify(action) } : {};
+  const body = await desktopRuntimeRequest("/ui/api/agent-credentials", init, "desktop_admin_capability");
+  return { requireCredentials: body.requireCredentials, credentials: body.credentials, issued: body.issued };
+}
+
+export async function downloadWorkspaceBackup(passphrase: string, signal: AbortSignal): Promise<Blob> {
+  const path = "/ui/api/workspace-backup";
+  const response = await desktopRuntimeFetch(path, { method: "POST", body: JSON.stringify({ passphrase }), signal }, "desktop_admin_capability");
+  if (!response.ok) throw new Error((await apiJson(response, path)).error || "Could not process the workspace backup.");
+  return response.blob();
+}
+
+export async function inspectWorkspaceBackup(file: File, passphrase: string, action: "preview" | "restore", signal: AbortSignal): Promise<WorkspaceBackupPreview> {
+  const body = new FormData();
+  body.set("file", file);
+  body.set("passphrase", passphrase);
+  body.set("action", action);
+  const result = await desktopRuntimeRequest("/ui/api/workspace-backup", { method: "POST", body, signal }, "desktop_admin_capability");
+  return result.summary;
 }
 
 export interface ScriptLibraryInfo {

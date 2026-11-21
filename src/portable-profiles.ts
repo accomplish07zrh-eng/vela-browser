@@ -1,9 +1,8 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, scrypt } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
-import { gunzip, gzip } from "node:zlib";
+import { isArchive, openArchive, sealArchive } from "./encrypted-archive.ts";
 import type { Launcher } from "./launcher.ts";
 import type { LifecycleAdmissionController } from "./lifecycle-admission.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
@@ -13,9 +12,6 @@ import { parseCapturedSessionBundle } from "./session.ts";
 import type { ProfileStore } from "./store.ts";
 import type { Profile } from "./types.ts";
 
-const deriveKey = promisify(scrypt);
-const compress = promisify(gzip);
-const decompress = promisify(gunzip);
 const magic = Buffer.from("VELAPRF1");
 export const MAX_PORTABLE_BYTES = 96 * 1024 * 1024;
 const chromeFiles = [
@@ -39,23 +35,17 @@ function password(value: unknown): string {
 }
 
 export async function sealPortableProfile(value: PortablePayload, passphrase: string): Promise<Buffer> {
-  const salt = randomBytes(16), iv = randomBytes(12);
   const data = Buffer.from(JSON.stringify(value));
   if (data.length > MAX_PORTABLE_BYTES) throw new Error("The selected profile state exceeds the portable file size limit");
-  const cipher = createCipheriv("aes-256-gcm", await deriveKey(password(passphrase), salt, 32) as Buffer, iv);
-  cipher.setAAD(magic);
-  const sealed = Buffer.concat([cipher.update(await compress(data)), cipher.final()]);
-  return Buffer.concat([magic, salt, iv, cipher.getAuthTag(), sealed]);
+  return sealArchive(data, password(passphrase), magic);
 }
 
 export async function openPortableProfile(data: Buffer, passphrase: string): Promise<PortablePayload> {
-  if (data.length <= 52 || data.length > MAX_PORTABLE_BYTES || !data.subarray(0, 8).equals(magic)) throw new Error("Invalid Vela portable profile");
-  const cipher = createDecipheriv("aes-256-gcm", await deriveKey(password(passphrase), data.subarray(8, 24), 32) as Buffer, data.subarray(24, 36));
-  cipher.setAAD(magic);
-  cipher.setAuthTag(data.subarray(36, 52));
+  if (!isArchive(data, magic, MAX_PORTABLE_BYTES)) throw new Error("Invalid Vela portable profile");
+  const pass = password(passphrase);
   let raw: PortablePayload;
   try {
-    const plain = await decompress(Buffer.concat([cipher.update(data.subarray(52)), cipher.final()]), { maxOutputLength: MAX_PORTABLE_BYTES });
+    const plain = await openArchive(data, pass, magic, MAX_PORTABLE_BYTES);
     raw = JSON.parse(plain.toString("utf8"));
   } catch { throw new Error("The portable profile could not be decrypted or is damaged"); }
   assertValidProfile(raw?.profile);

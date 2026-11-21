@@ -44,6 +44,32 @@ function store(): ProfileStore {
   return s;
 }
 
+test("deletion protection survives profile edits and keeps mixed dashboard batches out of Trash", async () => {
+  const s = store();
+  const first = s.getProfile("k1d0cd11")!;
+  const second = { ...first, id: "k1d0cd12", name: "Second fixture" };
+  s.upsertProfile(second);
+  const launcher = { cacheCleanupSettled: async () => {}, profileDeletionBlocked: () => false } as unknown as Launcher;
+  const post = (path: string, body: unknown) => handleUiRequest(new Request(`http://127.0.0.1${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }), launcher, s);
+  const protect = (enabled: boolean) => post("/ui/api/profiles/deletion-protection", { ids: [first.id], enabled });
+  const deleteBoth = () => post("/ui/api/profiles/delete", { ids: [first.id, second.id] });
+  try {
+    expect(await (await protect(true))!.json()).toEqual({ ok: true, changed: 1 });
+    s.upsertProfile({ ...first, name: "Edited fixture" });
+    expect(listUiProfiles(s).find(({ id }) => id === first.id)?.deletionProtected).toBe(true);
+    expect(s.deleteProfile(first.id)).toBe(false);
+    const rejected = await deleteBoth();
+    expect(rejected?.status).toBe(409);
+    expect(await rejected!.json()).toMatchObject({ ok: false, deleted: 0, protected: [first.id] });
+    expect(s.listTrashed()).toEqual([]);
+    expect(await (await protect(false))!.json()).toEqual({ ok: true, changed: 1 });
+    expect(await (await deleteBoth())!.json()).toEqual({ ok: true, deleted: 2, locked: [] });
+    expect(s.listTrashed().map(({ id }) => id).sort()).toEqual([first.id, second.id]);
+  } finally { s.close(); }
+});
+
 function firefoxProfile(s: ProfileStore, id: string): Profile {
   const base = s.getProfile("k1d0cd11")!;
   return {

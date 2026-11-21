@@ -334,8 +334,12 @@ async function runAcquiredWorker<T>(
 }
 
 async function verifySourceNode(nodeExecutable: string): Promise<void> {
+  const required = "source Playwright runtime requires Node.js 18 or newer on PATH";
+  const path = process.env.PATH ?? (process.platform === "win32" ? process.env.Path : undefined);
+  const node = path?.trim() ? Bun.which(nodeExecutable, { PATH: path }) : null;
+  if (!node) throw new Error(required);
   try {
-    const child = Bun.spawn([nodeExecutable, "--version"], {
+    const child = Bun.spawn([node, "--version"], {
       stdout: "pipe",
       stderr: "ignore",
       env: playwrightWorkerEnvironment(),
@@ -347,7 +351,7 @@ async function verifySourceNode(nodeExecutable: string): Promise<void> {
     const major = Number(/^v?(\d+)(?:\.|$)/.exec(raw.trim())?.[1]);
     if (exitCode === 0 && Number.isInteger(major) && major >= 18) return;
   } catch {}
-  throw new Error("source Playwright runtime requires Node.js 18 or newer on PATH");
+  throw new Error(required);
 }
 
 export async function verifyPlaywrightRuntime(root?: string): Promise<void> {

@@ -29,7 +29,7 @@ export function agentKey(name: string): string {
 export function normalizeAiAccess(value: unknown): AiAccessSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
-  const agents: Record<string, AiAccessRule> = {};
+  const agents: Record<string, AiAccessRule> = Object.create(null);
   if (raw.agents && typeof raw.agents === "object" && !Array.isArray(raw.agents)) {
     for (const [name, rule] of Object.entries(raw.agents).slice(0, 100)) {
       const normalized = normalizeRule(rule);
@@ -41,7 +41,8 @@ export function normalizeAiAccess(value: unknown): AiAccessSettings | undefined 
 
 export function ruleFor(settings: AiAccessSettings | undefined, agent: string): AiAccessRule {
   const access = settings ?? AI_ACCESS_DEFAULT;
-  return access.agents[agentKey(agent)] ?? access.default;
+  const key = agentKey(agent);
+  return Object.hasOwn(access.agents, key) ? access.agents[key]! : access.default;
 }
 
 /** A group allows its subfolders too; "" stands for profiles without a group. */

@@ -197,6 +197,7 @@ $checks = [ordered]@{
   sentinelDataCreated = $false
   lockedPayloadPreservedOldVersion = $false
   passiveUpdateCompleted = $false
+  offlineRepairClearedInterruptedAttempt = $false
   versionTransition = $false
   instanceTransition = $false
   appDataRootPreserved = $false
@@ -358,6 +359,16 @@ try {
   }
 
   Set-AcceptanceStage "applying-passive-update"
+  $pendingAttemptPath = Join-Path $oldDataRoot "update-attempt.json"
+  [ordered]@{
+    schemaVersion = 1
+    id = [Guid]::NewGuid().ToString("N")
+    sourceVersion = $previousVersion
+    expectedVersion = $CandidateVersion
+    expectedRoot = $installRoot
+    state = "failedOrInterrupted"
+    failureReason = "installationUnconfirmed"
+  } | ConvertTo-Json -Compress | Set-Content -LiteralPath $pendingAttemptPath -Encoding utf8NoBOM
   $updater = Start-Process -PassThru $candidateInstaller -ArgumentList @("/P", "/R", "/UPDATE", "/ARGS")
   if (-not $updater.WaitForExit(300000)) {
     Stop-ProcessTree $updater
@@ -372,6 +383,11 @@ try {
   Set-AcceptanceStage "verifying-preserved-state"
   $activeRecord = Wait-VelaBrowserReady $appPath $CandidateVersion
   $checks.versionTransition = $true
+  for ($attempt = 0; $attempt -lt 30 -and (Test-Path -LiteralPath $pendingAttemptPath); $attempt++) {
+    Start-Sleep -Milliseconds 500
+  }
+  if (Test-Path -LiteralPath $pendingAttemptPath) { throw "offline repair left the interrupted update result in place" }
+  $checks.offlineRepairClearedInterruptedAttempt = $true
   if ($activeRecord.Health.root -ne $oldDataRoot) { throw "update changed the app-data root" }
   $checks.appDataRootPreserved = $true
   $updatedInstance = [string]$activeRecord.Health.instance

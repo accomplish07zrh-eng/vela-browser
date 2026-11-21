@@ -36,6 +36,17 @@ import { captureMigrationRow, restoreMigrationRow } from "./migration-row.ts";
 
 export const MAX_MIGRATION_UNDO_BYTES = 64 * 1024 * 1024;
 
+export interface WorkspaceBackupProfile {
+  profile: Profile;
+  session: string | null;
+  pendingCookies: CookieRecord[];
+  createdAt: number;
+  trashedAt: number;
+  deletionProtected: boolean;
+  handedOff: string | null;
+  portableDigest: string | null;
+}
+
 export interface MigrationUndoRecord {
   id: string;
   expiresAt: number;
@@ -180,6 +191,9 @@ export class ProfileStore {
       CREATE TABLE IF NOT EXISTS agent_temporary_profiles (
         profile_id TEXT PRIMARY KEY,
         created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS profile_deletion_protection (
+        profile_id TEXT PRIMARY KEY
       );
       CREATE TABLE IF NOT EXISTS migration_undo (
         id TEXT PRIMARY KEY,
@@ -745,15 +759,33 @@ export class ProfileStore {
     return !!this.db.query(`SELECT 1 FROM profiles WHERE id = ? AND trashed_at > 0`).get(id);
   }
 
-  listTrashed(): Array<{ id: string; name: string; group: string; trashedAt: number }> {
-    return this.db.query<{ id: string; name: string; group: string; trashedAt: number }, []>(
-      `SELECT id, name, "group", trashed_at AS trashedAt FROM profiles WHERE trashed_at > 0 ORDER BY trashed_at DESC, id`,
-    ).all();
+  listTrashed(): Array<{ id: string; name: string; group: string; trashedAt: number; deletionProtected?: boolean }> {
+    return this.db.query<{ id: string; name: string; group: string; trashedAt: number; protected_id: string | null }, []>(
+      `SELECT id, name, "group", trashed_at AS trashedAt, protection.profile_id AS protected_id
+       FROM profiles LEFT JOIN profile_deletion_protection AS protection ON protection.profile_id = profiles.id
+       WHERE trashed_at > 0 ORDER BY trashed_at DESC, id`,
+    ).all().map(({ protected_id, ...profile }) => ({ ...profile, ...(protected_id ? { deletionProtected: true } : {}) }));
+  }
+
+  isDeletionProtected(id: string): boolean {
+    return !!this.db.query("SELECT 1 FROM profile_deletion_protection WHERE profile_id = ?").get(id);
+  }
+
+  setDeletionProtection(ids: readonly string[], enabled: boolean): number {
+    return this.transaction(() => {
+      const update = this.db.query(enabled
+        ? "INSERT OR IGNORE INTO profile_deletion_protection (profile_id) SELECT id FROM profiles WHERE id = ? AND trashed_at = 0"
+        : "DELETE FROM profile_deletion_protection WHERE profile_id = ?");
+      let changed = 0;
+      for (const id of ids) changed += update.run(id).changes;
+      return changed;
+    })();
   }
 
   trashProfile(id: string): boolean {
     return this.transaction(() => {
-      const changed = this.db.query(`UPDATE profiles SET trashed_at = ? WHERE id = ? AND trashed_at = 0`).run(Date.now(), id);
+      const changed = this.db.query(`UPDATE profiles SET trashed_at = ? WHERE id = ? AND trashed_at = 0
+        AND NOT EXISTS (SELECT 1 FROM profile_deletion_protection WHERE profile_id = profiles.id)`).run(Date.now(), id);
       if (changed.changes) this.clearAgentTemporary(id);
       return changed.changes > 0;
     })();
@@ -792,6 +824,47 @@ export class ProfileStore {
     ).get(id);
     const value = row ? this.openField(row.pending_cookies_json) : "";
     return value && value !== UNREADABLE ? safeParse<CookieRecord[]>(value, []) : [];
+  }
+
+  workspaceBackupProfileIds(): string[] {
+    return this.db.query<{ id: string }, []>("SELECT id FROM profiles").all().map(row => row.id);
+  }
+
+  *workspaceBackupProfiles(): Iterable<WorkspaceBackupProfile> {
+    const rows = this.db.query(`SELECT profiles.*, protection.profile_id AS protected_id FROM profiles
+      LEFT JOIN profile_deletion_protection AS protection ON protection.profile_id = profiles.id ORDER BY profiles.rowid`);
+    for (const row of rows.iterate() as Iterable<Record<string, any>>) {
+      const profile = rowToProfile(row, this.openField);
+      const session = this.openField(row.session_json);
+      const pending = this.openField(row.pending_cookies_json);
+      if ([profile.password, profile.emailPassword, profile.twofa, session, pending].includes(UNREADABLE)
+        || profile.cookies === UNREADABLE_COOKIES) {
+        throw new Error("Some encrypted profile data could not be read for backup.");
+      }
+      yield {
+        profile,
+        session: session || null,
+        pendingCookies: JSON.parse(pending || "[]") as CookieRecord[],
+        createdAt: row.created_at,
+        trashedAt: row.trashed_at,
+        deletionProtected: !!row.protected_id,
+        handedOff: row.handoff_digest || null,
+        portableDigest: row.portable_digest || null,
+      };
+    }
+  }
+
+  /** Called within the workspace restore transaction after all conflicts have been checked. */
+  restoreWorkspaceBackupProfile(record: WorkspaceBackupProfile): void {
+    const { profile, session, pendingCookies, createdAt, trashedAt, deletionProtected, handedOff, portableDigest } = record;
+    this.upsertProfile({ ...profile, seeded: false }, { notify: false });
+    if (session) this.armSessionRestore(profile.id, session);
+    if (profile.kernelRevision) this.setKernelRevision(profile.id, profile.kernelRevision);
+    if (pendingCookies.length) this.addPendingCookies(profile.id, pendingCookies);
+    if (handedOff) this.setProfileHandoff(profile.id, handedOff);
+    if (deletionProtected) this.setDeletionProtection([profile.id], true);
+    this.db.query("UPDATE profiles SET created_at = ?, trashed_at = ?, portable_digest = ? WHERE id = ?")
+      .run(createdAt, trashedAt, portableDigest ?? "", profile.id);
   }
 
   /** Remove the pending cookies a launch set. Cookies added during that launch stay pending. */
@@ -839,12 +912,15 @@ export class ProfileStore {
 
   /** Delete a profile and its launch row. Returns true if a row was removed. */
   deleteProfile(id: string): boolean {
-    this.db.query(`DELETE FROM launches WHERE profile_id = ?`).run(id);
-    this.db.query(`DELETE FROM agent_temporary_profiles WHERE profile_id = ?`).run(id);
-    const res = this.db.query(`DELETE FROM profiles WHERE id = ?`).run(id);
+    const deleted = this.transaction(() => {
+      if (this.isDeletionProtected(id)) return false;
+      this.db.query(`DELETE FROM launches WHERE profile_id = ?`).run(id);
+      this.db.query(`DELETE FROM agent_temporary_profiles WHERE profile_id = ?`).run(id);
+      return this.db.query(`DELETE FROM profiles WHERE id = ?`).run(id).changes > 0;
+    })();
     // A profile deleted for good takes its snapshots with it.
-    if (Number(res.changes) > 0) { try { this.snapshots?.removeProfile(id); } catch { /* best effort */ } }
-    return Number(res.changes) > 0;
+    if (deleted) { try { this.snapshots?.removeProfile(id); } catch { /* best effort */ } }
+    return deleted;
   }
 
   markAgentTemporary(profileId: string): void {
@@ -1230,14 +1306,18 @@ export class ProfileStore {
    * the serial (rowid) plus creation/last-open timestamps. One query for a whole
    * roster render rather than a lookup per row.
    */
-  listProfileMeta(): Map<string, { serial: number; createdAt: number; lastOpenAt: number }> {
+  listProfileMeta(): Map<string, { serial: number; createdAt: number; lastOpenAt: number; deletionProtected?: boolean }> {
     return new Map(
       this.db
-        .query<{ id: string; s: number; c: number; l: number }, []>(
-          `SELECT id, rowid AS s, created_at AS c, last_open_at AS l FROM profiles WHERE trashed_at = 0`,
+        .query<{ id: string; s: number; c: number; l: number; protected_id: string | null }, []>(
+          `SELECT id, profiles.rowid AS s, created_at AS c, last_open_at AS l, protection.profile_id AS protected_id
+           FROM profiles LEFT JOIN profile_deletion_protection AS protection ON protection.profile_id = profiles.id WHERE trashed_at = 0`,
         )
         .all()
-        .map((row) => [row.id, { serial: row.s, createdAt: row.c ?? 0, lastOpenAt: row.l ?? 0 }] as const),
+        .map((row) => [row.id, {
+          serial: row.s, createdAt: row.c ?? 0, lastOpenAt: row.l ?? 0,
+          ...(row.protected_id ? { deletionProtected: true } : {}),
+        }] as const),
     );
   }
 

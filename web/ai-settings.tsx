@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AuditEntry, AuditStatus } from "../src/audit.ts";
+import type { AgentCredentialSettings } from "../src/agent-credentials.ts";
+import { agentCredentialSettings, type AgentCredentialAction } from "./api.ts";
 import { useTranslation } from "./i18n.tsx";
 import "./ai-settings.css";
 
@@ -49,7 +51,7 @@ function RuleEditor({ rule, groups, onChange, allowInherit, inherited }: {
 }
 
 /** Settings: which groups of profiles each AI may see and use. */
-export function AiAccessCard({ flash }: { flash(message: string): void }) {
+export function AiAccessCard({ flash, manageCredentials }: { flash(message: string): void; manageCredentials?: boolean }) {
   const { t } = useTranslation();
   const [listing, setListing] = useState<AccessListing | null>(null);
   const [adding, setAdding] = useState("");
@@ -63,11 +65,11 @@ export function AiAccessCard({ flash }: { flash(message: string): void }) {
   const { access } = listing;
   const agents = [...new Set([...listing.agents, ...Object.keys(access.agents)])].sort();
   const setAgent = (name: string, rule: Rule | undefined) => {
-    const next = { ...access.agents };
+    const next = Object.assign(Object.create(null) as Access["agents"], access.agents);
     if (rule === undefined) delete next[name]; else next[name] = rule;
     save({ ...access, agents: next });
   };
-  return <section className="settings-card ai-access-card">
+  return <><section className="settings-card ai-access-card">
     <header><svg className="icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6z" /><path d="m9 12 2 2 4-4" /></svg><h2>{t("What each AI may use")}</h2></header>
     <div className="card-body">
       <p>{t("Give each AI only the groups it works on. Profiles in other groups are hidden from it, and it cannot open, change or run scripts in them.")}</p>
@@ -81,13 +83,83 @@ export function AiAccessCard({ flash }: { flash(message: string): void }) {
           <small>{listing.connected.includes(name) ? <><i className="ai-live" aria-hidden="true" />{t("Connected now")}</> : t("Seen before")}</small>
           {listing.authenticated?.includes(name) && <small>{t("Credential required")}</small>}
         </div>
-        <RuleEditor rule={access.agents[name]} groups={listing.groups} allowInherit inherited={access.default} onChange={(rule) => setAgent(name, rule)} />
+        <RuleEditor rule={Object.hasOwn(access.agents, name) ? access.agents[name] : undefined} groups={listing.groups} allowInherit inherited={access.default} onChange={(rule) => setAgent(name, rule)} />
       </div>)}
       <form className="ai-access-add" onSubmit={(event) => { event.preventDefault(); const name = adding.trim().toLowerCase(); if (name) { setAgent(name, access.default === "all" ? [] : access.default); setAdding(""); } }}>
         <input className="input" value={adding} maxLength={64} placeholder={t("Add an AI by name, such as claude code or cursor")} onChange={(event) => setAdding(event.target.value)} />
         <button type="submit" className="btn" disabled={!adding.trim()}>{t("Add")}</button>
       </form>
       <p className="cardnote">{t("Configured Agent credentials verify names and protect task access. Other Agent names are supplied by their client.")}</p>
+    </div>
+  </section>
+    {manageCredentials && <AgentCredentialsCard onChanged={load} flash={flash} />}
+  </>;
+}
+
+function AgentCredentialsCard({ onChanged, flash }: { onChanged(): void; flash(message: string): void }) {
+  const { t } = useTranslation();
+  const [settings, setSettings] = useState<AgentCredentialSettings>();
+  const [name, setName] = useState("");
+  const [issued, setIssued] = useState<{ name: string; token: string }>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void agentCredentialSettings().then(value => { if (active) setSettings(value); }, () => {
+      if (active) setError("Agent credentials are unavailable.");
+    });
+    return () => { active = false; };
+  }, []);
+  const change = async (action: AgentCredentialAction) => {
+    setBusy(true);
+    setIssued(undefined);
+    setError("");
+    try {
+      const { credentials, requireCredentials, issued: refreshed } = await agentCredentialSettings(action);
+      setSettings({ credentials, requireCredentials });
+      setIssued(refreshed);
+      if (action.action === "issue") setName("");
+      onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Agent credentials are unavailable.");
+    } finally { setBusy(false); }
+  };
+  const copy = async (token: string) => {
+    try { await navigator.clipboard.writeText(token); flash(t("Copied")); }
+    catch { setError("Could not copy"); }
+  };
+  return <section className="settings-card ai-access-card">
+    <header><h2>{t("Agent credentials")}</h2></header>
+    <div className="card-body">
+      {error && <p role="alert" className="modal-err">{t(error)}</p>}
+      {settings ? <>
+        <label className="activity-failed">
+          <input type="checkbox" checked={settings.requireCredentials} disabled={busy}
+            onChange={event => void change({ action: "policy", required: event.target.checked })} />
+          {t("Require credentials for every MCP Agent")}
+        </label>
+        {settings.credentials.map(credential => <div key={credential.name} className="ai-access-row">
+          <div className="ai-access-name"><strong>{credential.name}</strong><small>{t(credential.revoked ? "Credential revoked" : "Credential active")}</small></div>
+          <div className="ai-credential-actions">
+            <button type="button" className="btn" disabled={busy} onClick={() => void change({ action: "rotate", name: credential.name })}>
+              {t(credential.revoked ? "Issue new credential" : "Rotate credential")}
+            </button>
+            {!credential.revoked && <button type="button" className="btn" disabled={busy} onClick={() => void change({ action: "revoke", name: credential.name })}>{t("Revoke credential")}</button>}
+          </div>
+        </div>)}
+        <form className="ai-access-add" onSubmit={event => { event.preventDefault(); if (!busy && name.trim()) void change({ action: "issue", name }); }}>
+          <input className="input" aria-label={t("Agent name")} placeholder={t("Agent name")} maxLength={64} value={name} onChange={event => setName(event.target.value)} />
+          <button type="submit" className="btn" disabled={busy || !name.trim()}>{t("Issue credential")}</button>
+        </form>
+        {issued && <div className="ai-credential-issued">
+          <p id="agent-credential-hint" className="formnote">{t("Set VELA_AGENT_TOKEN for {agent}. This value is shown once.", { agent: issued.name })}</p>
+          <div className="ai-credential-actions">
+            <input className="input ai-token" aria-label={t("Agent token")} aria-describedby="agent-credential-hint" readOnly value={issued.token} autoComplete="off" spellCheck={false} />
+            <button type="button" className="btn" onClick={() => void copy(issued.token)}>{t("Copy")}</button>
+            <button type="button" className="btn" onClick={() => setIssued(undefined)}>{t("Done")}</button>
+          </div>
+        </div>}
+      </> : !error && <p className="formnote">{t("Loading…")}</p>}
     </div>
   </section>;
 }

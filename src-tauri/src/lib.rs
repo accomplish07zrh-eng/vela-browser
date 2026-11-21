@@ -426,6 +426,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_descriptor::agent_runtime_ready,
             runtime_descriptor::script_capability,
+            runtime_descriptor::desktop_admin_capability,
             runtime_descriptor::workbench_capability,
             releases::check_for_updates,
             releases::last_update_result,
@@ -547,6 +548,7 @@ pub fn run() {
             }
             let nonce = hex::encode(random::<[u8; 32]>());
             let agent_nonce = hex::encode(random::<[u8; 32]>());
+            let desktop_admin_nonce = hex::encode(random::<[u8; 32]>());
             let handle = app.handle().clone();
             let (sidecar, port) = tauri::async_runtime::block_on(sidecar::launch_and_verify(
                 &handle,
@@ -555,6 +557,7 @@ pub fn run() {
                 &playwright_runtime,
                 &nonce,
                 &agent_nonce,
+                &desktop_admin_nonce,
                 background,
             ))
             .map_err(boxed)?;
@@ -572,6 +575,9 @@ pub fn run() {
             )
             .map_err(boxed)?;
             app.manage(runtime_descriptor);
+            app.manage(runtime_descriptor::DesktopAdministration(
+                desktop_admin_nonce,
+            ));
 
             let origin = format!("http://127.0.0.1:{port}");
             app.manage(WindowOrigin(origin.clone()));
@@ -583,6 +589,7 @@ pub fn run() {
                     .remote(format!("{origin}/*"))
                     .permission("allow-runtime-ready")
                     .permission("allow-script-capability")
+                    .permission("allow-desktop-admin-capability")
                     .permission("allow-workbench-capability")
                     .permission("allow-update-bridge")
                     // The window draws its own title bar in the app's colours (Windows and Linux):

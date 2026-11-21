@@ -10,6 +10,9 @@
  */
 
 import { BrowserLaunchError, defaultSetCookies, launchIdentityChanged, type Launcher } from "./launcher.ts";
+import { AGENT_CREDENTIALS_PATH, AgentCredentialError, type AgentCredentials } from "./agent-credentials.ts";
+import { MAX_WORKSPACE_BACKUP_BYTES, WORKSPACE_BACKUP_PATH, WorkspaceBackupError, type WorkspaceBackup } from "./workspace-backup.ts";
+import { ALIASMODE_VERSION } from "./version.ts";
 import { serializeBitwarden } from "./bitwarden-export.ts";
 import { taskbarModeSupported } from "./taskbar.ts";
 import type { ProfileStore } from "./store.ts";
@@ -76,6 +79,7 @@ export interface UiHealthMetadata {
 /** Redacted, dashboard-safe view of a profile + its live status. */
 export interface UiProfile {
   id: string;
+  deletionProtected?: boolean;
   /** Closed by cooling when memory ran short; its tile stays on the workbench until it starts again. */
   cooled?: boolean;
   name: string;
@@ -163,6 +167,7 @@ export function listUiProfiles(store: ProfileStore, cooledAt?: (id: string) => n
     const l = launches.get(p.id);
     return {
       id: p.id,
+      ...(meta.get(p.id)?.deletionProtected ? { deletionProtected: true } : {}),
       name: p.name,
       engine: profileEngine(p),
       ...(p.chromiumRuntime ? { chromiumRuntime: p.chromiumRuntime } : {}),
@@ -554,6 +559,7 @@ export interface UiRuntimeOptions {
   /** The AIs connected right now. */
   connectedAgents?: () => string[];
   authenticatedAgents?: () => string[];
+  desktopAdministration?: { nonce: string; credentials: AgentCredentials; workspaceBackup: WorkspaceBackup; changed(): void };
   /** Snapshots of profiles and backups of their sign-ins. */
   snapshots?: import("./snapshots.ts").SnapshotStore;
   /** Watching from a phone on the same network. */
@@ -581,6 +587,8 @@ function exitIpScore(score: import("./ip-score.ts").IpScore): import("./health.t
   return { score: score.score, grade: score.grade, kind: score.kind, summary };
 }
 
+export const SUPPORT_DIAGNOSTICS_PATH = "/ui/api/support-diagnostics";
+
 export async function handleUiRequest(
   req: Request,
   launcher: Launcher,
@@ -590,6 +598,92 @@ export async function handleUiRequest(
 ): Promise<Response | null> {
   const { pathname } = new URL(req.url);
   if (!pathname.startsWith("/ui/api/")) return null;
+
+  if (pathname === AGENT_CREDENTIALS_PATH) {
+    const admin = options.desktopAdministration;
+    if (remote || !admin) return noStoreJson({ ok: false, error: "Agent credential settings require the local desktop app." }, 503);
+    if (!validAgentAuthorization(req.headers.get("authorization"), admin.nonce)) {
+      return noStoreJson({ ok: false, error: "Agent administration authorization failed." }, 401);
+    }
+    if (req.method !== "GET" && req.method !== "POST") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    const rejected = req.method === "POST" ? rejectUntrustedJsonMutation(req) : rejectCrossOriginRequest(req);
+    if (rejected) return rejected;
+    try {
+      if (req.method === "GET") return noStoreJson({ ok: true, ...admin.credentials.settings() });
+      const body = await req.json().catch(() => null);
+      const action = body?.action;
+      let issued: { name: string; token: string } | undefined;
+      let target: string | undefined;
+      if (action === "issue" || action === "rotate") {
+        issued = admin.credentials.issue(body.name, action === "rotate");
+        target = issued.name;
+      } else if (action === "revoke") target = admin.credentials.revoke(body.name);
+      else if (action === "policy") admin.credentials.setRequired(body.required);
+      else return noStoreJson({ ok: false, error: "Unknown Agent credential action." }, 400);
+      admin.changed();
+      options.audit?.record({ actor: { kind: "user", name: "Desktop" }, action: `agent.credential.${action}`, ok: true, detail: target });
+      return noStoreJson({ ok: true, ...admin.credentials.settings(), ...(issued ? { issued } : {}) });
+    } catch (error) {
+      if (error instanceof AgentCredentialError) return noStoreJson({ ok: false, error: error.message }, error.status);
+      return noStoreJson({ ok: false, error: "Agent credentials are unavailable." }, 503);
+    }
+  }
+
+  if (pathname === SUPPORT_DIAGNOSTICS_PATH) {
+    const admin = options.desktopAdministration;
+    if (remote || !admin) return noStoreJson({ ok: false, error: "This operation requires the local desktop app." }, 503);
+    if (!validAgentAuthorization(req.headers.get("authorization"), admin.nonce)) {
+      return noStoreJson({ ok: false, error: "Desktop administration authorization failed." }, 401);
+    }
+    if (req.method !== "GET") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    const rejected = rejectCrossOriginRequest(req);
+    if (rejected) return rejected;
+    return noStoreJson({ ok: true, report: {
+      schemaVersion: 1, recordedAt: new Date().toISOString(), version: ALIASMODE_VERSION,
+      platform: process.platform, architecture: process.arch,
+      lifecycle: options.admission?.capacity(),
+      browserTasks: options.scripts?.browserTasks?.queueStatus(),
+      recentStarts: launcher.launchDiagnostics(),
+    } });
+  }
+
+  if (pathname === WORKSPACE_BACKUP_PATH) {
+    const admin = options.desktopAdministration;
+    if (remote || !admin) return noStoreJson({ ok: false, error: "Workspace backups require the local desktop app." }, 503);
+    if (!validAgentAuthorization(req.headers.get("authorization"), admin.nonce)) {
+      return noStoreJson({ ok: false, error: "Desktop administration authorization failed." }, 401);
+    }
+    if (req.method !== "POST") return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    const rejected = rejectCrossOriginRequest(req);
+    if (rejected) return rejected;
+    const contentType = req.headers.get("content-type")?.toLowerCase() ?? "";
+    try {
+      if (contentType.startsWith("application/json")) {
+        const body = await req.json().catch(() => null);
+        const data = await admin.workspaceBackup.export(body?.passphrase, req.signal);
+        const date = new Date().toISOString().slice(0, 10);
+        options.audit?.record({ actor: { kind: "user", name: "Desktop" }, action: "workspace.backup", ok: true });
+        return new Response(new Uint8Array(data), { headers: {
+          "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="Vela-Workspace-${date}.vela-workspace"`, "Cache-Control": "no-store",
+        } });
+      }
+      if (!contentType.startsWith("multipart/form-data")) return noStoreJson({ ok: false, error: "Choose a Vela workspace backup file." }, 415);
+      if (Number(req.headers.get("content-length")) > MAX_WORKSPACE_BACKUP_BYTES + 65536) {
+        return noStoreJson({ ok: false, error: "Workspace data exceeds the backup size limit." }, 413);
+      }
+      const form = await req.formData();
+      const action = form.get("action"), file = form.get("file");
+      if (!(file instanceof Blob) || (action !== "preview" && action !== "restore")) {
+        return noStoreJson({ ok: false, error: "Choose a Vela workspace backup file." }, 400);
+      }
+      const summary = await admin.workspaceBackup.inspect(file, form.get("passphrase"), action === "restore", req.signal);
+      if (action === "restore") options.audit?.record({ actor: { kind: "user", name: "Desktop" }, action: "workspace.restore", ok: true, detail: String(summary.profiles) });
+      return noStoreJson({ ok: true, summary });
+    } catch (error) {
+      if (error instanceof WorkspaceBackupError) return noStoreJson({ ok: false, error: error.message }, error.status);
+      return noStoreJson({ ok: false, error: "Could not process the workspace backup." }, 500);
+    }
+  }
 
   // Retired account endpoints cannot restore a session or contact a Cloud service.
   if (/^\/ui\/api\/cloud(?:[-/]|$)/.test(pathname) || (pathname === "/ui/api/app-mode" && req.method !== "GET") || /^\/ui\/api\/scripts\/[^/]+\/publication$/.test(pathname) || /^\/ui\/api\/profiles\/[^/]+\/restore-session$/.test(pathname)) {
@@ -1387,6 +1481,24 @@ export async function handleUiRequest(
     }
   }
 
+  if (pathname === "/ui/api/profiles/deletion-protection" && req.method === "POST") {
+    if (remote) return noStoreJson({ ok: false, error: "Deletion protection requires the local desktop workspace." }, 503);
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    const body = await req.json().catch(() => null);
+    if (typeof body?.enabled !== "boolean" || !Array.isArray(body.ids) || !body.ids.length || !body.ids.every(isSafeProfileId)) {
+      return noStoreJson({ ok: false, error: "Select profiles and choose deletion protection." }, 400);
+    }
+    const ids = [...new Set<string>(body.ids)];
+    try {
+      const changed = store.setDeletionProtection(ids, body.enabled);
+      if (changed) options.audit?.record({ actor: { kind: "user", name: "Desktop" }, action: body.enabled ? "profiles.protectDeletion" : "profiles.unprotectDeletion", ok: true, detail: String(changed) });
+      return noStoreJson({ ok: true, changed });
+    } catch {
+      return noStoreJson({ ok: false, error: "Could not change deletion protection." }, 500);
+    }
+  }
+
   if (pathname === "/ui/api/profiles/delete" && req.method === "POST") {
     try {
       const body = (await req.json()) as { ids?: unknown };
@@ -1401,6 +1513,10 @@ export async function handleUiRequest(
       // full selection before mutation so a mixed open/closed batch is atomic.
       const existing = ids.filter((id) => store.getProfile(id));
       await Promise.all(existing.map((id) => launcher.cacheCleanupSettled(id)));
+      const protectedIds = existing.filter(id => store.isDeletionProtected(id));
+      if (protectedIds.length) {
+        return noStoreJson({ ok: false, error: "Remove deletion protection before moving selected profiles to Trash.", deleted: 0, protected: protectedIds }, 409);
+      }
       const locked = existing.filter((id) => launcher.profileDeletionBlocked(id));
       if (locked.length > 0) {
         return Response.json({
@@ -1410,10 +1526,7 @@ export async function handleUiRequest(
           locked,
         }, { status: 409 });
       }
-      let deleted = 0;
-      for (const id of existing) {
-        if (store.trashProfile(id)) deleted++;
-      }
+      const deleted = store.runTransaction(() => existing.reduce((count, id) => count + Number(store.trashProfile(id)), 0));
       return Response.json({ ok: true, deleted, locked: [] });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });

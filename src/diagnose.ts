@@ -288,6 +288,49 @@ export async function fingerprintProbe(options: { details?: boolean } = {}): Pro
   } catch (e) {
     err("uaData", e);
   }
+  const sha = async (s: string) => {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  // Start offline audio while the rendering and environment probes run.
+  const audio = (async () => {
+    try {
+      const Ctx = (globalThis as any).OfflineAudioContext || (globalThis as any).webkitOfflineAudioContext;
+      if (!Ctx) throw new Error("OfflineAudioContext unavailable in this context");
+      const ac = new Ctx(1, 5000, 44100);
+      const osc = ac.createOscillator();
+      osc.type = "triangle";
+      osc.frequency.value = 10000;
+      const comp = ac.createDynamicsCompressor();
+      osc.connect(comp);
+      comp.connect(ac.destination);
+      osc.start(0);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const buf: AudioBuffer = await Promise.race([
+        ac.startRendering(),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("audio rendering timed out")), 3000); }),
+      ]).finally(() => clearTimeout(timer));
+      const data = buf.getChannelData(0).slice(0, 1000);
+      let sum = 0;
+      for (const x of data) sum += Math.abs(x);
+      out.audioHash = await sha(String(sum));
+      out.audioSampleHash = await sha(`audio-samples-v1:${Array.from(data).join(",")}`);
+      const copied = new Float32Array(1000);
+      buf.copyFromChannel(copied, 0);
+      out.consistency = { ...out.consistency, audio: data.every((sample, index) => Object.is(sample, copied[index])) };
+      const exact: AudioBuffer = ac.createBuffer(1, 128, 44100);
+      const values = new Float32Array(128).fill(0.25); values[0] = -0.5; values[127] = 1;
+      exact.copyToChannel(values, 0);
+      const copiedExact = new Float32Array(128); exact.copyFromChannel(copiedExact, 0);
+      out.consistency.audioWrites = exact.getChannelData(0).every((sample, index) => sample === values[index])
+        && copiedExact.every((sample, index) => sample === values[index]);
+      const silence: AudioBuffer = ac.createBuffer(1, 128, 44100);
+      out.consistency.audioSilence = silence.getChannelData(0).every((sample) => sample === 0);
+      out.details = { ...out.details, audio: { sampleRate: buf.sampleRate, channels: buf.numberOfChannels, length: buf.length } };
+    } catch (e) {
+      err("audio", e);
+    }
+  })();
   try {
     const c = createCanvas();
     const gl = (c.getContext("webgl") || c.getContext("experimental-webgl")) as WebGLRenderingContext | null;
@@ -301,10 +344,6 @@ export async function fingerprintProbe(options: { details?: boolean } = {}): Pro
   } catch (e) {
     err("webgl", e);
   }
-  const sha = async (s: string) => {
-    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  };
   try {
     const c = createCanvas();
     c.width = 240;
@@ -338,42 +377,6 @@ export async function fingerprintProbe(options: { details?: boolean } = {}): Pro
     out.consistency.canvasWrites = image.data.every((byte, index) => byte === readback[index]);
   } catch (e) {
     err("canvas", e);
-  }
-  try {
-    const Ctx = (globalThis as any).OfflineAudioContext || (globalThis as any).webkitOfflineAudioContext;
-    if (!Ctx) throw new Error("OfflineAudioContext unavailable in this context");
-    const ac = new Ctx(1, 5000, 44100);
-    const osc = ac.createOscillator();
-    osc.type = "triangle";
-    osc.frequency.value = 10000;
-    const comp = ac.createDynamicsCompressor();
-    osc.connect(comp);
-    comp.connect(ac.destination);
-    osc.start(0);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const buf: AudioBuffer = await Promise.race([
-      ac.startRendering(),
-      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("audio rendering timed out")), 3000); }),
-    ]).finally(() => clearTimeout(timer));
-    const data = buf.getChannelData(0).slice(0, 1000);
-    let sum = 0;
-    for (const x of data) sum += Math.abs(x);
-    out.audioHash = await sha(String(sum));
-    out.audioSampleHash = await sha(`audio-samples-v1:${Array.from(data).join(",")}`);
-    const copied = new Float32Array(1000);
-    buf.copyFromChannel(copied, 0);
-    out.consistency = { ...out.consistency, audio: data.every((sample, index) => Object.is(sample, copied[index])) };
-    const exact: AudioBuffer = ac.createBuffer(1, 128, 44100);
-    const values = new Float32Array(128).fill(0.25); values[0] = -0.5; values[127] = 1;
-    exact.copyToChannel(values, 0);
-    const copiedExact = new Float32Array(128); exact.copyFromChannel(copiedExact, 0);
-    out.consistency.audioWrites = exact.getChannelData(0).every((sample, index) => sample === values[index])
-      && copiedExact.every((sample, index) => sample === values[index]);
-    const silence: AudioBuffer = ac.createBuffer(1, 128, 44100);
-    out.consistency.audioSilence = silence.getChannelData(0).every((sample) => sample === 0);
-    out.details = { ...out.details, audio: { sampleRate: buf.sampleRate, channels: buf.numberOfChannels, length: buf.length } };
-  } catch (e) {
-    err("audio", e);
   }
   try {
     const canvas = createCanvas();
@@ -444,6 +447,7 @@ export async function fingerprintProbe(options: { details?: boolean } = {}): Pro
     finally { clearTimeout(timer); }
   };
   await Promise.all([
+    audio,
     inspect("identity", async () => {
       const nav = navigator as any;
       const uaData = nav.userAgentData;

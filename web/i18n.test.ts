@@ -19,6 +19,9 @@ test("every bundled locale key is an English string used in the web source", asy
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
   sources.push(await Bun.file(new URL("../src/migration-preview.ts", import.meta.url)).text());
+  sources.push(await Bun.file(new URL("../src/agent-credentials.ts", import.meta.url)).text());
+  sources.push(await Bun.file(new URL("../src/workspace-backup.ts", import.meta.url)).text());
+  sources.push(await Bun.file(new URL("./api.ts", import.meta.url)).text());
   const source = sources.join("\n").replaceAll("\r\n", "\n");
   for (const [locale, table] of Object.entries(tables)) {
     const stale = Object.keys(table).filter((key) => !key.startsWith("language.") && !source.includes(key));

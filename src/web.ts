@@ -27,11 +27,13 @@ import {
   isLoopbackAddress,
   type BrowserLifecycleContext,
 } from "./server.ts";
-import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
+import { handleUiRequest, SUPPORT_DIAGNOSTICS_PATH, type UiHealthMetadata } from "./ui.ts";
 import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
 import { TaskRunner, TaskStore } from "./tasks.ts";
 import { BrowserTaskError, BrowserTaskSupervisor, type BrowserTaskConnection } from "./browser-tasks.ts";
-import { AgentCredentials } from "./agent-credentials.ts";
+import { AGENT_CREDENTIALS_PATH, AgentCredentials } from "./agent-credentials.ts";
+import { WORKSPACE_BACKUP_PATH, WorkspaceBackup } from "./workspace-backup.ts";
+import { lstatSync } from "node:fs";
 import { ProfileWrites } from "./profile-writes.ts";
 import { KernelUpgrades } from "./kernel-upgrades.ts";
 import { AndroidDevices } from "./android.ts";
@@ -101,6 +103,7 @@ export interface DashboardServerOptions {
   health?: UiHealthMetadata | null;
   /** Desktop-generated nonce used by the installed agent adapter. */
   agentNonce?: string;
+  desktopAdminNonce?: string;
   /** Direct TLS listener for a dedicated Worker host. */
   workerTls?: Bun.TLSOptions;
 }
@@ -478,6 +481,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const aiAccess = () => opts.appConfig?.read().aiAccess;
   const agentCredentials = agentNonce && opts.paths && !opts.remote
     ? new AgentCredentials(join(opts.paths.root, "agent-credentials.json")) : undefined;
+  const workspaceBackup = opts.desktopAdminNonce && agentCredentials
+    ? new WorkspaceBackup(store, id => !!lstatSync(launcher.userDataDir(id), { throwIfNoEntry: false })) : undefined;
   const authorizeTask = (profileId: string, client: string, savedGroup?: string, actor?: import("./browser-tasks.ts").BrowserTaskActor) => {
     const profile = store.getProfile(profileId);
     if (!profile && savedGroup === undefined) throw new BrowserTaskError("no_such_profile", "The browser task profile was not found", 404);
@@ -486,8 +491,8 @@ export function serveDashboard(opts: DashboardServerOptions) {
       if (!workers?.allows(actor, group)) throw new BrowserTaskError("not_permitted", "Worker permission for the profile was revoked", 403);
       return group;
     }
-    if ((actor?.scope === "local-auth" && !agentCredentials?.has(client)) ||
-      (actor?.scope === "local" && agentCredentials?.has(client)) ||
+    if ((actor?.scope === "local-auth" && !agentCredentials?.isActive(client)) ||
+      (actor?.scope === "local" && agentCredentials?.permitsNameOnly(client) === false) ||
       !allowsGroup(ruleFor(aiAccess(), client), group, store.listFolders())) {
       throw new BrowserTaskError("not_permitted", "This AI may not use the profile's group", 403);
     }
@@ -710,6 +715,11 @@ export function serveDashboard(opts: DashboardServerOptions) {
           return undefined;
         } catch { return Response.json({ ok: false, error: "Environment is unavailable" }, { status: 409 }); }
       }
+      if ((reqUrl.pathname === AGENT_CREDENTIALS_PATH || reqUrl.pathname === WORKSPACE_BACKUP_PATH || reqUrl.pathname === SUPPORT_DIAGNOSTICS_PATH
+        || reqUrl.pathname === "/ui/api/profiles/deletion-protection")
+        && (!isAllowedLoopbackHostHeader(req.headers.get("host")) || !isLoopbackAddress(server.requestIP(req)?.address))) {
+        return Response.json({ ok: false, error: "loopback access only" }, { status: 403 });
+      }
       if ((reqUrl.pathname === "/ui/api/scripts" || reqUrl.pathname.startsWith("/ui/api/scripts/"))
         && !isLoopbackAddress(server.requestIP(req)?.address)) {
         return Response.json({ ok: false, error: "loopback access only" }, { status: 403 });
@@ -729,11 +739,12 @@ export function serveDashboard(opts: DashboardServerOptions) {
         }
         const token = req.headers.get("x-vela-agent-token");
         let name: string | undefined;
-        if (token !== null) {
-          try { name = agentCredentials?.resolve(token); }
-          catch { return Response.json({ ok: false, error: "Agent credentials are unavailable" }, { status: 503 }); }
-          if (!name) return Response.json({ ok: false, error: "Agent credential rejected" }, { status: 401 });
-        }
+        try {
+          if (token !== null) name = agentCredentials?.resolve(token);
+          if (token !== null ? !name : agentCredentials?.permitsNameOnly("unknown") === false) {
+            return Response.json({ ok: false, error: "Agent credential required or rejected" }, { status: 401 });
+          }
+        } catch { return Response.json({ ok: false, error: "Agent credentials are unavailable" }, { status: 503 }); }
         const session = agentHub.connect(token !== null && name ? { token, name } : undefined);
         const upgraded = server.upgrade(req, {
           data: { session },
@@ -770,6 +781,9 @@ export function serveDashboard(opts: DashboardServerOptions) {
           ...(snapshots ? { snapshots } : {}),
           connectedAgents: () => agentHub?.connectedAgents() ?? [],
           authenticatedAgents: () => { try { return agentCredentials?.names() ?? []; } catch { return []; } },
+          ...(agentCredentials && opts.desktopAdminNonce && workspaceBackup ? { desktopAdministration: {
+            nonce: opts.desktopAdminNonce, credentials: agentCredentials, workspaceBackup, changed: () => agentHub?.disconnectInvalidIdentities(),
+          } } : {}),
           ...(mobileView ? { mobileView } : {}),
           ipScores,
           shutdownSignal: shutdownController.signal,

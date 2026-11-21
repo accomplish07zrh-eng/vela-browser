@@ -59,6 +59,7 @@ function harness(options: {
       temporary = false;
     },
     getProfile: (id: string) => id === "profile1" && profileExists ? { id } : null,
+    isDeletionProtected: () => false,
     deleteProfile: (id: string) => {
       events.push(`delete:${id}`);
       profileExists = false;
@@ -141,6 +142,42 @@ test("a configured Agent name requires its credential and a revoked connection l
     await Promise.all([legacy.disconnect(), authenticated.disconnect()]);
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("requiring Agent credentials preserves the desktop's temporary profile cleanup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vela-agent-cleanup-test-"));
+  const h = harness({ temporary: true });
+  const registry = new AgentCredentials(join(root, "agent-credentials.json"));
+  registry.setRequired(true);
+  const hub = new AgentControlHub({ ...h.deps, agentCredentials: registry });
+  const anonymous = hub.connect();
+  try {
+    expect(await anonymous.enqueue(wire("profiles.delete", { profileId: "profile1" }))).toMatchObject({ ok: false, error: { code: "not_permitted" } });
+    expect(h.profileExists()).toBe(true);
+    await hub.cleanupTemporaryProfiles();
+    expect(h.profileExists()).toBe(false);
+  } finally {
+    await anonymous.disconnect();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Agent deletion respects protection set while waiting for browser cache cleanup", async () => {
+  const h = harness();
+  let protectedProfile = false;
+  h.deps.store.isDeletionProtected = () => protectedProfile;
+  h.deps.launcher.cacheCleanupSettled = async () => { protectedProfile = true; };
+  expect(await h.session.enqueue(wire("profiles.delete", { profileId: "profile1" }))).toMatchObject({ ok: false, error: { code: "profile_protected" } });
+  expect(h.profileExists()).toBe(true);
+  expect(h.events).toEqual([]);
+});
+
+test("a protected temporary profile closes and keeps its stored data", async () => {
+  const h = harness({ active: true, temporary: true });
+  h.deps.store.isDeletionProtected = () => true;
+  expect(await h.session.enqueue(wire("browser.close", { profileId: "profile1" }))).toMatchObject({ ok: true, result: { closed: true } });
+  expect(h.profileExists()).toBe(true);
+  expect(h.events).not.toContain("remove-data:profile1");
 });
 
 test("agent protocol validates message shape, size, and authorization", () => {

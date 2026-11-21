@@ -307,9 +307,17 @@ export class AgentControlSession {
     return { name: this.client, scope: this.credential ? "local-auth" : "local" };
   }
 
-  private checkIdentity() {
+  hasCurrentIdentity(): boolean {
     const registry = this.deps.agentCredentials;
-    if (this.credential ? registry?.resolve(this.credential.token) !== this.client : registry?.has(this.client)) {
+    try {
+      return this.credential ? registry?.matches(this.client, this.credential.token) === true : registry?.permitsNameOnly(this.client) ?? true;
+    } catch {
+      return false;
+    }
+  }
+
+  private checkIdentity() {
+    if (!this.hasCurrentIdentity()) {
       throw agentError("not_permitted", "A current credential is required for this Agent");
     }
   }
@@ -507,7 +515,7 @@ export class AgentControlSession {
         // Named once, by the MCP client's own name; later calls cannot rename the connection.
         if (this.client === "unknown" && typeof params.name === "string" && params.name.trim() && agentKey(params.name) !== "unknown") {
           const name = params.name.trim().slice(0, 64);
-          if (this.deps.agentCredentials?.has(name)) throw agentError("not_permitted", "A current credential is required for this Agent");
+          if (this.deps.agentCredentials?.permitsNameOnly(name) === false) throw agentError("not_permitted", "A current credential is required for this Agent");
           this.client = name;
         }
         return { agent: this.client, ...(this.deps.writes ? { profileWriteLeases: true } : {}) };
@@ -1300,7 +1308,7 @@ export class AgentControlSession {
         const temporary = this.deps.store.listAgentTemporary().includes(profileId);
         let deleted = false;
         if (temporary && (sync === undefined || sync === "complete")) {
-          deleted = await this.deleteClosedProfile(profileId);
+          deleted = await this.deleteClosedProfile(profileId, true);
         }
         return {
           profileId,
@@ -1324,7 +1332,7 @@ export class AgentControlSession {
     );
   }
 
-  private async deleteClosedProfile(profileId: string): Promise<boolean> {
+  private async deleteClosedProfile(profileId: string, temporaryCleanup = false): Promise<boolean> {
 
     if (this.deps.remote) {
       const result = await this.deps.remote.deleteProfiles([profileId]);
@@ -1339,6 +1347,10 @@ export class AgentControlSession {
     }
     // The cache delete after a close runs on after stop() returns; the profile is closed, so wait for it.
     await this.deps.launcher.cacheCleanupSettled(profileId);
+    if (this.deps.store.isDeletionProtected(profileId)) {
+      if (temporaryCleanup) return false;
+      throw agentError("profile_protected", "Deletion protection is enabled for this profile");
+    }
     if (this.deps.launcher.profileDeletionBlocked(profileId)) {
       throw agentError("profile_open", "close the profile before deleting it");
     }
@@ -1358,6 +1370,15 @@ export class AgentControlHub {
     const session = new AgentControlSession(this.deps, undefined, undefined, credential);
     this.sessions.add(session);
     return session;
+  }
+
+  disconnectInvalidIdentities(): void {
+    for (const session of this.sessions) {
+      if (session.isClosed || !session.hasCurrentIdentity()) {
+        this.sessions.delete(session);
+        void session.disconnect().catch(() => this.deps.log?.("Agent credential change could not confirm session cleanup"));
+      }
+    }
   }
 
   /** The AIs connected right now, by the name their MCP client gives. */
@@ -1389,8 +1410,9 @@ export class AgentControlHub {
 
   private async doCleanupTemporaryProfiles(): Promise<void> {
     for (const profileId of this.deps.store.listAgentTemporary()) {
-      if (this.deps.store.getLaunch(profileId) || this.deps.browserTasks?.keeps(profileId)) continue;
-      const session = new AgentControlSession(this.deps);
+      if (this.deps.store.getLaunch(profileId) || this.deps.browserTasks?.keeps(profileId) || this.deps.store.isDeletionProtected(profileId)) continue;
+      // Cleanup uses the desktop's record of profiles created as temporary.
+      const session = new AgentControlSession({ ...this.deps, agentCredentials: undefined });
       await session.enqueue(JSON.stringify({
         protocol: AGENT_CONTROL_PROTOCOL,
         id: 1,

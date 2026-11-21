@@ -261,31 +261,44 @@ export function trackFirefoxPages(context) {
   return () => crashed || context.pages().length > 0;
 }
 
-async function launchOwner(input) {
-  if (await sha256File(input.executablePath) !== input.executableSha256) throw typed("operation_failed");
+async function launchOwner(input, startup) {
   // Native page-world execution is part of the default developer tools. The engine
   // keeps ordinary automation in its original isolated world until an mw: call is made.
   camouEnvironment({ ...input.config, allowMainWorld: true }, input.prefs);
   globalThis[Symbol.for("aliasmode.firefoxOwnerStartup")] = true;
   process.env.ALIASMODE_FIREFOX_SESSION_GENERATION = input.sessionGeneration ?? input.owner.generation;
-  let runtime;
-  try { runtime = await import(pathToFileURL(join(ROOT, "node_modules", "playwright-core", "index.mjs")).href); } catch { throw typed("runtime_unavailable"); }
+  const start = performance.now();
+  const load = import(pathToFileURL(join(ROOT, "node_modules", "playwright-core", "index.mjs")).href).then(runtime => {
+    startup.runtimeMs = Math.round(performance.now() - start);
+    return runtime;
+  }, () => { throw typed("runtime_unavailable"); });
+  const verify = sha256File(input.executablePath).then(sha256 => {
+    startup.verifyMs = Math.round(performance.now() - start);
+    if (sha256 !== input.executableSha256) throw typed("operation_failed");
+  }, () => { throw typed("operation_failed"); });
+  const [runtime] = await Promise.all([load, verify]);
   if (!runtime.firefox) throw typed("runtime_unavailable");
   try {
-    return await runtime.firefox.launchPersistentContext(input.userDataDir, firefoxLaunchOptions(input));
+    const launching = performance.now();
+    const context = await runtime.firefox.launchPersistentContext(input.userDataDir, firefoxLaunchOptions(input));
+    startup.browserMs = Math.round(performance.now() - launching);
+    return context;
   } catch {
     throw typed("operation_failed");
   }
 }
 
 async function run() {
+  const startup = {};
   const input = await readConfig();
   if (!process.argv.includes(`--aliasmode-firefox-owner=${input.owner.generation}`)) throw typed("invalid_request");
-  const context = await launchOwner(input);
+  const context = await launchOwner(input, startup);
   const browser = context.browser?.();
   let browserPid;
+  const identify = performance.now();
   try { browserPid = await browserPidOf(context, input); }
   catch (error) { await context.close().catch(() => {}); throw error; }
+  startup.identifyMs = Math.round(performance.now() - identify);
   const pageIds = new WeakMap();
   let nextPageId = 1;
   const observedOrigins = new Set();
@@ -533,7 +546,8 @@ async function run() {
     await context.close().catch(() => {});
     throw error;
   }
-  const ready = { version: VERSION, ok: true, result: { endpoint: input.owner.endpoint, pid: process.pid, browserPid, generation: input.owner.generation } };
+  const ready = { version: VERSION, ok: true, startup,
+    result: { endpoint: input.owner.endpoint, pid: process.pid, browserPid, generation: input.owner.generation } };
   process.stdout.write(`${JSON.stringify(ready)}\n`);
   browser?.once?.("disconnected", () => { if (!closing) void shutdown(); });
   context.once?.("close", () => { if (!closing) void shutdown(); });

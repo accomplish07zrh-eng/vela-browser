@@ -40,6 +40,16 @@ const post = (path: string, body: unknown) =>
     body: JSON.stringify(body),
   });
 
+test("AdsPower V2 delete reports protected profiles without touching their browsers", async () => {
+  const { store } = setup();
+  try {
+    store.setDeletionProtection(["k1d0cd11"], true);
+    const response = await handleUserApi(post("/api/v2/browser-profile/delete", { profile_id: ["k1d0cd11"] }), {} as Launcher, store);
+    expect(await response!.json()).toMatchObject({ code: 0, data: { deleted: 0, locked: [], protected: ["k1d0cd11"] } });
+    expect(store.getProfile("k1d0cd11")).not.toBeNull();
+  } finally { store.close(); }
+});
+
 test("V2 create and update preserve launch settings, stage cookies, and return the displayed number", async () => {
   const { store, launcher } = setup();
   const v2 = (op: string, body: unknown) => handleUserApi(post("/api/v2/browser-profile/" + op, body), launcher, store, null, geoip)

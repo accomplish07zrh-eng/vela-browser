@@ -1,8 +1,7 @@
 /** Run against the installed Vela Chromium and the real desktop MCP transport. */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -138,6 +137,12 @@ async function waitFor<T>(read: () => T | Promise<T>, condition: (value: T) => b
 }
 
 const taskTool = "vela_browser_task", replayTool = "vela_browser_replay";
+interface ReplayClip { frameTotal: number; playbackUrl?: string; expiresAt?: string }
+function replayRequest(clip: ReplayClip, frameId?: number, authorized = true) {
+  const playback = new URL(clip.playbackUrl!);
+  const headers = authorized ? { authorization: "Bearer " + playback.hash.slice(1) } : undefined;
+  return fetch(new URL("/ui/replay/frames" + (frameId === undefined ? "" : "/" + frameId), playback), { headers });
+}
 const taskStatus = async (connection: Link, runId: string) =>
   (await connection.call<{ task: BrowserTaskView }>(taskTool, { operation: "status", runId })).task;
 const manifest = (runId: string) => {
@@ -146,6 +151,7 @@ const manifest = (runId: string) => {
     Pick<BrowserTaskView, "profileId" | "state" | "steps" | "evidenceCount" | "error"> & { queue?: { recoveries: number } };
 };
 const acceptedRuns: BrowserTaskView[] = [];
+let failed = false;
 
 try {
   const first = await connect();
@@ -211,14 +217,31 @@ try {
   await assert.rejects(second.call(replayTool, { action: "play", runId: lostRun.runId }), /Start a replay/);
   const replay = await second.call<{ tabId: string }>(replayTool, { action: "start", runId: lostRun.runId, durationSeconds: 3 });
   assert.equal(replay.tabId, after.tabId);
-  await waitFor(() => second.call<{ frameTotal: number }>(replayTool, {
+  const clip = await waitFor(() => second.call<ReplayClip>(replayTool, {
     action: "play", runId: lostRun.runId, fromSecondsAgo: 5, toSecondsAgo: 0, frameCount: 0,
   }), view => view.frameTotal >= 1, "The task's explicitly enabled memory replay");
+  assert.equal((await replayRequest(clip, undefined, false)).status, 404);
+  const frames = await (await replayRequest(clip)).json() as { id: number; remainingMs: number }[];
+  assert.ok(frames.length >= 1 && frames.every(frame => frame.remainingMs > 0 && frame.remainingMs <= 60_000));
+  const jpeg = await replayRequest(clip, frames[0]!.id);
+  assert.equal(jpeg.headers.get("content-type"), "image/jpeg");
+  assert.equal(jpeg.headers.get("cache-control"), "no-store");
+  assert.ok((await jpeg.arrayBuffer()).byteLength > 0);
   await second.call(replayTool, { action: "stop", runId: lostRun.runId });
+  assert.equal((await replayRequest(clip)).status, 404);
   await assert.rejects(second.call(replayTool, { action: "play", runId: lostRun.runId }), /Start a replay/);
 
   assert.equal(await launcher.stop(rebuild), true);
   assert.equal(store.deleteProfile(rebuild), true, "A saved skill can outlive the profile that created it");
+  const tabsOnPeer = await second.call<{ tabs: Array<{ tabId: string; url: string }> }>(replayTool, { action: "tabs", profileId: independent });
+  const peerTab = tabsOnPeer.tabs.find(tab => tab.url.startsWith(startUrl));
+  assert.ok(peerTab);
+  await second.call(replayTool, { action: "start", profileId: independent, tabId: peerTab.tabId, durationSeconds: 2 });
+  const expiring = await waitFor(() => second.call<ReplayClip>(replayTool, { action: "play", profileId: independent, frameCount: 0 }),
+    view => view.frameTotal > 0, "Separate recording for retention verification");
+  const stranger = await connect();
+  await assert.rejects(stranger.call(replayTool, { action: "play", profileId: independent }), /Start a replay/);
+  await stranger.close();
   const { schedule } = await second.call<{ schedule: { id: string } }>(taskTool, {
     operation: "schedule_save", name: "Reuse site skill", skillId: skill.id, argument: { slot: "skill" },
     target: { profileIds: [independent] }, schedule: { kind: "manual" },
@@ -241,8 +264,13 @@ try {
   } finally { await connection.close(); }
   await second.call(taskTool, { operation: "resume", runId: blockedRun.runId });
   await waitFor(() => taskStatus(second, blockedRun.runId), task => task.state === "completed", "Restored account can resume its queue");
-  console.log("Verified MCP disconnect, actual Chromium crash and relaunch, one committed write, profile isolation, observation, skill reuse and opt-in replay.");
+  const expires = Date.parse(expiring.expiresAt!);
+  assert.ok(Number.isFinite(expires) && expires <= Date.now() + 60_000);
+  while (Date.now() < expires + 100) await Bun.sleep(Math.min(5_000, expires + 100 - Date.now()));
+  assert.equal((await replayRequest(expiring)).status, 404);
+  console.log("Verified task crash recovery, single committed writes, profile isolation, and opt-in replay with a selected time range, stop and 60-second expiry.");
 } catch (error) {
+  failed = true;
   console.error("Site writes", [...commits].map(([slot, entry]) => [slot, entry.count]));
   for (const run of acceptedRuns) {
     const task = manifest(run.runId);
@@ -263,6 +291,21 @@ try {
   store.close();
   const actual = realpathSync(root);
   if (stops.every(Boolean) && dirname(actual) === temp && actual === root) {
-    await rm(actual, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 });
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          rmSync(actual, { recursive: true, force: true });
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt === 40) throw error;
+          Bun.gc(true);
+          await Bun.sleep(250);
+        }
+      }
+    }
+    catch (error) {
+      if (!failed) throw error;
+      console.error("The isolated browser task fixture could not be removed after the failure");
+    }
   }
 }

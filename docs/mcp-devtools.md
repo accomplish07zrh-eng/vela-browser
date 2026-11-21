@@ -111,7 +111,11 @@ Task evidence rotates after 30 days or 128 MiB of stored receipts, with older ch
 
 The task creator keeps ownership when a delegate resumes a run. Use `operation: "delegate"` with `runId` and `delegates` to replace the list of Agents that can inspect the run or act on it. Each Agent also needs access to the profile's group. Desktop users can manage the same list in **Browser tasks**.
 
-For authenticated local Agent names, create `agent-credentials.json` in the Vela state directory as a JSON object mapping each Agent name to the lowercase SHA-256 hex digest of a random base64url token. Give each MCP process its matching raw token through `VELA_AGENT_TOKEN`. The desktop binds the session to the name in the registry and rejects name-only identification for an enrolled name. Removing a registry entry revokes the authenticated Agent's next operation. Use enrolled identities on both sides of a delegation between authenticated Agents.
+In **Settings → AI → Agent credentials**, issue a credential and configure the MCP client's `VELA_AGENT_TOKEN` with the value shown. The desktop stores its SHA-256 digest and binds the MCP session to the enrolled name. Group rules continue to apply. Enable **Require credentials for every MCP Agent** when clients have been enrolled. This setting applies to the local MCP control connection. The separate AdsPower-compatible Local API keeps its own access controls.
+
+Rotate a credential to replace its token without changing task ownership. Revoking an entry immediately invalidates its control session and reserves the name, and its suspended tasks require a valid credential before resuming. An existing `agent-credentials.json` created with the earlier name-to-digest format is accepted. Use enrolled identities on both sides of a delegation between authenticated Agents.
+
+In the local profile list, select profiles and choose **Protect from deletion** to retain them during cleanup. MCP profile deletion returns `profile_protected` when protection is enabled. The compatibility API includes those profile IDs in `protected`.
 
 Run the Chromium acceptance check with the pinned runtime in an existing Vela checkout.
 

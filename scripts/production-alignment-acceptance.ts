@@ -1,7 +1,7 @@
 /** Real Windows Chromium revisions, two isolated desktop workers, and a local site. */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -20,26 +20,29 @@ import { ProfileStore } from "../src/store.ts";
 import { serveDashboard } from "../src/web.ts";
 
 assert.equal(process.platform, "win32");
-const runtimeRoot = resolve(process.argv[2] ?? ".");
+const targetProcess = process.argv[2] === "--worker-process";
+const runtimeRoot = resolve(process.argv[targetProcess ? 3 : 2] ?? ".");
 const temp = realpathSync(tmpdir());
 const previousArchive = resolve(process.argv[3] ?? join(temp, "vela-verified-kernels", "aliasmode-chromium-155.0.8059.85-windows-x64.zip"));
 const stable = aliasmodeChromiumExecutable(join(runtimeRoot, "reports/runtimes/chromium"));
 const previous = "155.0.8059.85-aliasmode.4";
 const spec = chromiumRuntimeRevision(previous, process.platform, process.arch);
 assert.equal(await sha256File(stable), aliasmodeChromiumArchive(process.platform).executableSha256);
-assert.equal(await sha256File(previousArchive), spec.archiveSha256);
-const root = mkdtempSync(join(temp, "vela-production-qa-"));
+if (!targetProcess) assert.equal(await sha256File(previousArchive), spec.archiveSha256);
+const root = targetProcess ? realpathSync(process.argv[4]!) : mkdtempSync(join(temp, "vela-production-qa-"));
+assert.ok(dirname(root) === temp && basename(root).startsWith("vela-production-qa-"));
 const tlsTool = Bun.which("openssl") ?? (process.platform === "win32"
   ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git/usr/bin/openssl.exe") : "openssl");
 const runtime = join(root, "runtimes");
 const nodes: Array<ReturnType<typeof node>> = [];
 let primaryFailure: unknown;
 const connections: AgentRuntimeClient[] = [];
+let stopTarget: (() => Promise<void>) | undefined;
 let profileId = "";
 function node(name: string, workerTls?: Bun.TLSOptions) {
   const paths = statePaths(join(root, name));
   ensureStateDirectories(paths);
-  const store = new ProfileStore(":memory:");
+  const store = new ProfileStore(name === "target" ? paths.database : ":memory:");
   const launcher = new Launcher({
     store, dataRoot: paths.profiles, headless: true, chromiumRuntimeRoot: runtime, ensureAliasmodeChromium: async () => stable, log() {},
     portRange: name === "source" ? { start: 12600, end: 12649 } : { start: 12900, end: 12949 },
@@ -48,6 +51,41 @@ function node(name: string, workerTls?: Bun.TLSOptions) {
   const server = serveDashboard({ paths, launcher, store, agentNonce: nonce, port: 0, workerTls, log() {} });
   return { paths, store, launcher, nonce, server };
 }
+const targetReceipt = join(root, "target-ready.json");
+if (targetProcess) {
+  const target = node("target", { key: readFileSync(join(root, "worker.key")), cert: readFileSync(join(root, "worker.pem")) });
+  try {
+    writeFileSync(targetReceipt, JSON.stringify({ port: target.server.port, pid: process.pid }));
+    // The controller closes this pipe to stop the independent Worker.
+    await Bun.stdin.stream().getReader().read();
+  } finally {
+    await target.server.stop(true);
+    for (const launch of target.store.listLaunches()) {
+      assert.ok(await target.launcher.stop(launch.profileId), "The dedicated Worker releases each browser");
+      await target.launcher.cacheCleanupSettled(launch.profileId);
+    }
+    target.store.close();
+  }
+  process.exit(0);
+}
+
+async function launchTarget() {
+  rmSync(targetReceipt, { force: true });
+  const child = Bun.spawn([process.execPath, "--no-env-file", import.meta.path, "--worker-process", runtimeRoot, root],
+    { stdin: "pipe", stdout: "ignore", stderr: "inherit", timeout: 12 * 60_000 });
+  stopTarget = async () => {
+    child.stdin.end();
+    assert.equal(await child.exited, 0, "The dedicated Worker exited cleanly");
+  };
+  const receipt = await until(() => {
+    if (child.exitCode !== null) throw new Error("The dedicated Worker exited before listening");
+    try { return JSON.parse(readFileSync(targetReceipt, "utf8")) as { port: number; pid: number }; }
+    catch { return undefined; }
+  }, value => value?.pid === child.pid && Number.isSafeInteger(value?.port));
+  assert.ok(receipt && receipt.pid !== process.pid);
+  return "https://127.0.0.1:" + receipt.port;
+}
+
 const site = Bun.serve({
   hostname: "127.0.0.1", port: 0,
   fetch: () => new Response("<!doctype html><title>Portable state QA</title>", { headers: { "content-type": "text/html" } }),
@@ -61,7 +99,7 @@ async function connect(target: ReturnType<typeof node>, name = "production-qa") 
   await runtime.call("session.identify", { name });
   return runtime;
 }
-async function until<T>(read: () => Promise<T>, match: (value: T) => boolean): Promise<T> {
+async function until<T>(read: () => T | Promise<T>, match: (value: T) => boolean): Promise<T> {
   const deadline = Date.now() + 60_000;
   do {
     const value = await read();
@@ -124,30 +162,33 @@ try {
     "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", keyFile, "-out", certFile],
   { env: { ...process.env, MSYS2_ARG_CONV_EXCL: "*" }, stdout: "ignore", stderr: "pipe" });
   assert.equal(certificate.exitCode, 0, "A temporary TLS fixture certificate could not be made");
-  const workerTls = { key: readFileSync(keyFile), cert: readFileSync(certFile) };
   await ensurePinnedRuntime(spec, runtime, { async download(_url, output) { copyFileSync(previousArchive, output); } }, process.platform);
-  const source = node("source"), target = node("target", workerTls);
-  nodes.push(source, target);
+  const source = node("source");
+  nodes.push(source);
   const profile = buildNewProfile({ name: "Production QA", group: "qa", chromiumRuntime: "aliasmode" }, () => false);
   profileId = profile.id;
   source.store.upsertProfile(profile);
   const canaryPeer = buildNewProfile({ name: "Canary peer", group: "qa", chromiumRuntime: "aliasmode" }, id => !!source.store.getProfile(id));
   source.store.upsertProfile(canaryPeer);
   const peerToken = randomBytes(32).toString("base64url");
-  writeFileSync(join(target.paths.root, "worker-nodes.json"), JSON.stringify({
+  const targetPaths = statePaths(join(root, "target"));
+  ensureStateDirectories(targetPaths);
+  writeFileSync(join(targetPaths.root, "worker-nodes.json"), JSON.stringify({
     clients: [{ name: "qa", token: peerToken, groups: ["qa"], agents: ["production-qa", "other-agent"] }],
   }));
-  writeFileSync(join(source.paths.root, "worker-nodes.json"), JSON.stringify({ nodes: {
-    target: { url: "https://127.0.0.1:" + target.server.port, token: peerToken, caFile: certFile },
-  } }));
+  const registerTarget = (url: string) => writeFileSync(join(source.paths.root, "worker-nodes.json"), JSON.stringify({
+    nodes: { target: { url, token: peerToken, caFile: certFile } },
+  }));
+  const targetUrl = await launchTarget();
+  registerTarget(targetUrl);
   const controller = await connect(source);
   const other = await connect(source, "other-agent");
   const health = await controller.call("worker.call", { operation: "health", node: "target" });
   assert.equal(health.reachable, true);
   assert.equal(health.status.ready, true);
-  const privateDashboard = await fetch(target.server.url, { tls: { ca: readFileSync(certFile, "utf8") } });
+  const privateDashboard = await fetch(targetUrl, { tls: { ca: readFileSync(certFile, "utf8") } });
   assert.equal(privateDashboard.status, 404);
-  await assert.rejects(fetch(target.server.url), "A private certificate must require explicit trust");
+  await assert.rejects(fetch(targetUrl), "A private certificate must require explicit trust");
   await verifyReleaseSession(source, [profileId, canaryPeer.id], "seed");
   await source.launcher.start(profileId, [], { headless: true });
   const data = source.launcher.userDataDir(profileId);
@@ -209,12 +250,24 @@ try {
   assert.equal(completed.client, "production-qa");
   const replayed = await reconnected.call("worker.call", { operation: "handoff", node: "target", profileId, idempotencyKey: "once" });
   assert.equal(replayed.imported, false, "An acknowledged handoff remains idempotent after reconnect");
-  console.log("Verified authenticated HTTPS, encrypted handoff, source fencing, restored browser state and Agent ownership on a second local Worker.");
+  const shutdown = stopTarget!;
+  stopTarget = undefined;
+  await shutdown();
+  registerTarget(await launchTarget());
+  const restored = await other.call("worker.call", { operation: "task", node: "target",
+    request: { operation: "status", runId: started.task.runId },
+  }) as { task: BrowserTaskView };
+  assert.equal(restored.task.state, "completed", "The delegated task receipt survives a Worker restart");
+  const afterRestart = await reconnected.call("worker.call", { operation: "handoff", node: "target", profileId, idempotencyKey: "once" });
+  assert.equal(afterRestart.imported, false);
+  console.log("Verified authenticated HTTPS, encrypted handoff, source fencing, restored browser state and persistent Agent delegation across separate Worker processes.");
 } catch (error) {
   primaryFailure = error;
   throw error;
 } finally {
   for (const runtime of connections) runtime.close();
+  try { await stopTarget?.(); }
+  catch (error) { primaryFailure ??= error; }
   for (const { server, launcher, store } of nodes) {
     await server.stop(true);
     if (profileId) {
@@ -231,4 +284,5 @@ try {
       console.error("Could not remove the isolated acceptance fixture after failure");
     }
   }
+  if (primaryFailure) throw primaryFailure;
 }

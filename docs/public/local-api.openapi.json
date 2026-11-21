@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Vela Local API",
-    "version": "0.1.20",
+    "version": "0.1.21",
     "summary": "Vela Local API: an AdsPower-compatible loopback HTTP API served by a running Vela Browser.",
     "description": "Vela Browser serves this API on the loopback interface only (http://127.0.0.1:50400). It has no authentication by design: any process on the same machine can call it. Local calls use the default AI access scope from Vela Browser settings, which initially grants access to all profiles. Never expose the listener beyond loopback with a reverse proxy, port forward, or tunnel. A CDP WebSocket URL returned by a browser start or active operation grants full control of that browser and its logged-in sessions; treat it like a credential.\n\nVela implements the routes listed here. It offers AdsPower V1 compatibility and V2 profile listing and browser control. The Vela extensions include browserCookies, the fp_verdict and fp_captured_at list fields, and the engine and chromium_runtime creation fields.\n\nResponses use HTTP status 200 and the JSON envelope { code, msg, data }. Check code for success (0) or failure (-1). V2 routes and V1 group and user routes require the documented HTTP method. V1 browser-control routes accept other methods for compatibility.\n\nThe x-aliasmode-version-introduced field marks the earliest documented release for each operation.",
     "license": {
@@ -1930,6 +1930,13 @@
               "type": "string"
             },
             "description": "Profile ids kept because their browser could not be stopped."
+          },
+          "protected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Profile ids kept because deletion protection is enabled. Present when there are protected profiles in the request."
           }
         },
         "additionalProperties": false

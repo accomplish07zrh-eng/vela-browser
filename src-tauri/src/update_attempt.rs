@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
+#[cfg(any(windows, target_os = "linux", test))]
+use std::fs::File;
+#[cfg(any(windows, test))]
+use std::io::Read;
 use std::{
     ffi::{OsStr, OsString},
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -10,6 +14,8 @@ const ATTEMPT_FILE: &str = "update-attempt.json";
 const ATTEMPT_TEMP_FILE: &str = "update-attempt.tmp";
 const ATTEMPT_ARGUMENT: &str = "--aliasmode-update-attempt=";
 const ATTEMPT_SCHEMA: u8 = 1;
+#[cfg(any(windows, test))]
+const OFFLINE_INSTALL_MARKER: &str = ".vela-offline-install-version";
 const MANUFACTURER_KEY: &str = r"Software\Vela Browser\Vela Browser";
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser";
 const MAX_REGISTRY_STRING_BYTES: u32 = 32 * 1024;
@@ -535,20 +541,37 @@ pub fn reconcile_after_startup(
             same_root,
         )
     };
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let marker_matches =
-        read_marker(&attempt).is_ok_and(|version| version == attempt.expected_version);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let registration_matches = read_registration_snapshot()
-        .and_then(|registration| {
-            validate_registration_snapshot(
-                &current_executable,
-                &attempt.expected_version,
-                &registration,
-                Some(&attempt.expected_root),
-            )
-        })
-        .is_ok();
+    #[cfg(windows)]
+    let (marker_matches, registration_matches) = {
+        let marker_matches =
+            read_marker(&attempt).is_ok_and(|version| version == attempt.expected_version);
+        let registration = read_registration_snapshot();
+        if !marker_matches
+            && matches!(relaunch, RelaunchArgument::Missing)
+            && registration.as_ref().is_ok_and(|registration| {
+                offline_repair_completed(
+                    &attempt,
+                    &current_executable,
+                    env!("CARGO_PKG_VERSION"),
+                    registration,
+                )
+            })
+        {
+            return fs::remove_file(data_dir.join(ATTEMPT_FILE))
+                .map_err(|_| UpdateAttemptError::Persistence);
+        }
+        let registration_matches = registration
+            .and_then(|registration| {
+                validate_registration_snapshot(
+                    &current_executable,
+                    &attempt.expected_version,
+                    &registration,
+                    Some(&attempt.expected_root),
+                )
+            })
+            .is_ok();
+        (marker_matches, registration_matches)
+    };
     let current_version_matches = env!("CARGO_PKG_VERSION") == attempt.expected_version;
     let relaunch_matches = matches!(relaunch, RelaunchArgument::Valid(id) if id == &attempt.id);
 
@@ -568,13 +591,47 @@ pub fn reconcile_after_startup(
     Ok(())
 }
 
+#[cfg(any(windows, test))]
+fn offline_repair_completed(
+    attempt: &StoredUpdateAttempt,
+    executable: &Path,
+    current_version: &str,
+    registration: &RegistrationSnapshot,
+) -> bool {
+    let (Ok(current), Ok(expected)) = (
+        semver::Version::parse(current_version),
+        semver::Version::parse(&attempt.expected_version),
+    ) else {
+        return false;
+    };
+    current >= expected
+        && read_version_marker(&attempt.expected_root.join(OFFLINE_INSTALL_MARKER))
+            .is_ok_and(|version| version == current_version)
+        && validate_registration_snapshot(
+            executable,
+            current_version,
+            registration,
+            Some(&attempt.expected_root),
+        )
+        .is_ok()
+}
+
+#[cfg(windows)]
 fn read_marker(attempt: &StoredUpdateAttempt) -> Result<String, UpdateAttemptError> {
+    read_version_marker(&marker_path(attempt))
+}
+
+#[cfg(any(windows, test))]
+fn read_version_marker(path: &Path) -> Result<String, UpdateAttemptError> {
     let mut value = String::new();
-    File::open(marker_path(attempt))
-        .and_then(|mut file| file.read_to_string(&mut value))
+    File::open(path)
+        .and_then(|file| file.take(129).read_to_string(&mut value))
         .map_err(|_| UpdateAttemptError::InvalidRecord)?;
+    if value.len() > 128 {
+        return Err(UpdateAttemptError::InvalidRecord);
+    }
     let value = value.trim();
-    if value.is_empty() || value.len() > 128 {
+    if value.is_empty() {
         return Err(UpdateAttemptError::InvalidRecord);
     }
     Ok(value.to_owned())
@@ -900,6 +957,59 @@ mod tests {
             ),
             Err(UpdateAttemptError::RegistrationMismatch)
         );
+    }
+
+    #[test]
+    fn offline_repair_requires_a_completed_install_at_the_registered_root() {
+        let (_directory, executable, mut registration) = create_registered_install();
+        let root = fs::canonicalize(executable.parent().unwrap()).unwrap();
+        let attempt = stored_attempt(&root);
+        let marker = root.join(OFFLINE_INSTALL_MARKER);
+        let version = "0.1.0-beta.47";
+        assert!(!offline_repair_completed(
+            &attempt,
+            &executable,
+            version,
+            &registration
+        ));
+        fs::write(&marker, format!("{version}\r\n")).unwrap();
+        assert!(offline_repair_completed(
+            &attempt,
+            &executable,
+            version,
+            &registration
+        ));
+
+        registration.display_version = Some("0.1.0-beta.46".to_owned());
+        assert!(!offline_repair_completed(
+            &attempt,
+            &executable,
+            version,
+            &registration
+        ));
+        fs::write(&marker, "0.1.0-beta.46").unwrap();
+        assert!(!offline_repair_completed(
+            &attempt,
+            &executable,
+            "0.1.0-beta.46",
+            &registration
+        ));
+
+        registration.display_version = Some("0.1.0-beta.48".to_owned());
+        fs::write(&marker, "0.1.0-beta.48").unwrap();
+        assert!(offline_repair_completed(
+            &attempt,
+            &executable,
+            "0.1.0-beta.48",
+            &registration
+        ));
+        fs::write(&marker, format!("0.1.0-beta.48{}", " ".repeat(200))).unwrap();
+        assert!(!offline_repair_completed(
+            &attempt,
+            &executable,
+            "0.1.0-beta.48",
+            &registration
+        ));
     }
 
     #[test]

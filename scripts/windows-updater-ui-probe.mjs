@@ -84,6 +84,38 @@ async function findDashboardPage(browser, dashboardOrigin) {
   throw new Error("installed Vela Browser dashboard target was not found");
 }
 
+async function verifyDesktopAdministration(page) {
+  const verified = await page.evaluate(async () => {
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (typeof invoke !== "function") return false;
+    const [owner, scripts] = await Promise.all([invoke("desktop_admin_capability"), invoke("script_capability")]);
+    if (!/^[a-f0-9]{64}$/.test(owner) || !/^[a-f0-9]{64}$/.test(scripts) || owner === scripts) return false;
+    const headers = { Authorization: "Bearer " + owner };
+    const denied = await fetch("/ui/api/agent-credentials", { headers: { Authorization: "Bearer " + scripts } });
+    if (denied.status !== 401) return false;
+    const settings = await fetch("/ui/api/agent-credentials", { headers });
+    if (!settings.ok || !Array.isArray((await settings.json()).credentials)) return false;
+    const diagnostics = await fetch("/ui/api/support-diagnostics", { headers });
+    if (!diagnostics.ok || (await diagnostics.json()).report?.schemaVersion !== 1) return false;
+    const passphrase = Array.from(crypto.getRandomValues(new Uint8Array(24)), part => part.toString(16).padStart(2, "0")).join("");
+    const backup = await fetch("/ui/api/workspace-backup", {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ passphrase }),
+    });
+    if (!backup.ok || backup.headers.get("cache-control") !== "no-store") return false;
+    const file = await backup.blob();
+    if (await file.slice(0, 8).text() !== "VELAWKS1") return false;
+    const form = new FormData();
+    form.set("file", file, "acceptance.vela-workspace");
+    form.set("passphrase", passphrase);
+    form.set("action", "preview");
+    const preview = await fetch("/ui/api/workspace-backup", { method: "POST", headers, body: form });
+    if (!preview.ok) return false;
+    const summary = (await preview.json()).summary;
+    return summary.profiles >= 2 && summary.conflicts.length >= 2;
+  });
+  if (!verified) throw new Error("installed desktop administration or encrypted workspace preview failed");
+}
+
 async function main() {
   const input = await readInput();
   const browser = await connectToBrowser(input.endpoint);
@@ -105,6 +137,7 @@ async function main() {
           !texts("Updated from {fromVersion} and verified the installed app after restart.", { fromVersion: input.sourceVersion }).includes(detail)) {
         throw new Error("durable updater result did not confirm the exact version handoff");
       }
+      await verifyDesktopAdministration(page);
       await writeResult({ ok: true, action: "verified-durable-success" });
       return;
     }
