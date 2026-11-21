@@ -94,26 +94,34 @@ test("internal migration command exits before normal startup creates state", asy
 test("source start reports when Node is unavailable", async () => {
   const parent = mkdtempSync(join(tmpdir(), "aliasmode-cli-source-node-"));
   const stateRoot = join(parent, "state");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+  const port = await freeLoopbackPort();
   const child = Bun.spawn([
     process.execPath,
+    "--no-env-file",
     join(import.meta.dir, "cli.ts"),
     "start",
+    "--port", String(port),
     "--state-root", stateRoot,
   ], {
+    cwd: parent,
     stdout: "ignore",
     stderr: "pipe",
-    env: { ...process.env, PATH: "", ALIASMODE_PLAYWRIGHT_RUNTIME: "" },
+    timeout: 8000,
+    env: { ...env, PATH: parent, ALIASMODE_PLAYWRIGHT_RUNTIME: "" },
   });
-  const [stderr, exitCode] = await Promise.all([
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  expect(exitCode).toBe(1);
-  expect(stderr).toContain("source Playwright runtime requires Node.js 18 or newer on PATH");
-  expect(stderr).toContain("bun cli.ts setup");
-  expect(existsSync(stateRoot)).toBe(false);
-  await removeTemporaryRoot(parent);
-});
+  try {
+    const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("source Playwright runtime requires Node.js 18 or newer on PATH");
+    expect(stderr).toContain("bun cli.ts setup");
+    expect(existsSync(stateRoot)).toBe(false);
+  } finally {
+    child.kill();
+    await child.exited;
+    await removeTemporaryRoot(parent);
+  }
+}, 10000);
 
 test("source start loads a managed runtime from its custom state root before verification", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "aliasmode-cli-source-runtime-"));

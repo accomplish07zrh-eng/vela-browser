@@ -35,6 +35,8 @@ pub struct RuntimeDescriptorState {
     write_lock: Mutex<()>,
 }
 
+pub struct DesktopAdministration(pub String);
+
 impl RuntimeDescriptorState {
     pub fn new(
         data_dir: &Path,
@@ -126,6 +128,16 @@ pub fn script_capability(
 ) -> Result<String, String> {
     crate::window_origin::authorize(&window, &origin)?;
     Ok(state.base.nonce.clone())
+}
+
+#[tauri::command]
+pub fn desktop_admin_capability(
+    window: tauri::WebviewWindow,
+    origin: tauri::State<'_, crate::window_origin::WindowOrigin>,
+    state: tauri::State<'_, DesktopAdministration>,
+) -> Result<String, String> {
+    crate::window_origin::authorize(&window, &origin)?;
+    Ok(state.0.clone())
 }
 
 #[tauri::command]

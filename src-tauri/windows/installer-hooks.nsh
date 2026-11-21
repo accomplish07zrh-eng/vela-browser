@@ -42,7 +42,9 @@
 
   ClearErrors
   ${GetOptions} $CMDLINE "/AMATTEMPT=" $R0
-  ${IfNot} ${Errors}
+  ${If} ${Errors}
+    StrCpy $R4 ".vela-offline-install-version"
+  ${Else}
     StrLen $R1 $R0
     ${If} $R1 != 32
       Abort
@@ -62,17 +64,20 @@
       Abort
 
     aliasmode_attempt_valid:
-      ClearErrors
-      FileOpen $R1 "$INSTDIR\.aliasmode-update-$R0.complete" w
-      ${If} ${Errors}
-        Abort
-      ${EndIf}
-      FileWrite $R1 "${VERSION}$\r$\n"
-      FileClose $R1
-      ${If} ${Errors}
-        Abort
-      ${EndIf}
+      StrCpy $R4 ".aliasmode-update-$R0.complete"
   ${EndIf}
+
+  ClearErrors
+  FileOpen $R1 "$INSTDIR\$R4" w
+  ${If} ${Errors}
+    Abort
+  ${EndIf}
+  FileWrite $R1 "${VERSION}$\r$\n"
+  ${If} ${Errors}
+    FileClose $R1
+    Abort
+  ${EndIf}
+  FileClose $R1
 
   Pop $R4
   Pop $R3

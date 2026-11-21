@@ -72,6 +72,14 @@ export function agentControlNonce(
   return nonce;
 }
 
+export function takeDesktopAdminNonce(env: Record<string, string | undefined>): string | undefined {
+  const nonce = env.ALIASMODE_DESKTOP_ADMIN_NONCE;
+  if (nonce === undefined) return undefined;
+  delete env.ALIASMODE_DESKTOP_ADMIN_NONCE;
+  if (!NONCE_RE.test(nonce)) throw new Error("Invalid desktop administration capability");
+  return nonce;
+}
+
 export function desktopHealthMetadata(
   env: Record<string, string | undefined>,
   root: string | undefined,

@@ -6,12 +6,20 @@ import {
   DesktopCredentialBridge,
   ManagedDesktopRuntime,
   agentControlNonce,
+  takeDesktopAdminNonce,
   desktopHealthMetadata,
   desktopReadyRecord,
   isDesktopShutdownCommand,
 } from "./desktop-runtime.ts";
 
 const NONCE = "ab".repeat(32);
+
+test("the desktop administration capability is consumed before launching children", () => {
+  const env: Record<string, string | undefined> = { ALIASMODE_DESKTOP_ADMIN_NONCE: NONCE };
+  expect(takeDesktopAdminNonce(env)).toBe(NONCE);
+  expect(env).toEqual({});
+  expect(takeDesktopAdminNonce(env)).toBeUndefined();
+});
 
 function admission(inFlight = 0, queued = 0): any {
   return { stats: () => ({ inFlight, queued }) };

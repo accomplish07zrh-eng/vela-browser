@@ -46,8 +46,11 @@ export interface StartContextOwnerInput {
 export interface ContextOwnerCallbacks {
   reservation?: ContextReservation;
   onSpawn?: (owner: ContextOwner) => void | Promise<void>;
-  onReady?: (owner: ContextOwner) => void | Promise<void>;
+  onReady?: (owner: ContextOwner, startup?: ContextStartupTiming) => void | Promise<void>;
 }
+
+interface ContextStartupTiming { verifyMs: number; runtimeMs: number; browserMs: number; identifyMs: number }
+interface ContextOwnerReadiness { owner: ContextOwner; startup?: ContextStartupTiming }
 
 export interface ContextOwnerErrorDetails {
   operation?: string;
@@ -162,7 +165,7 @@ async function reserveContextOwner(): Promise<ContextReservation> {
   };
 }
 
-function contextOwnerReady(response: unknown): ContextOwner {
+function contextOwnerReady(response: unknown): ContextOwnerReadiness {
   const value: any = response;
   if (value?.version !== PLAYWRIGHT_PROTOCOL_VERSION) {
     throw new ErrorType("invalid_response", `${label} owner readiness is invalid`);
@@ -176,10 +179,15 @@ function contextOwnerReady(response: unknown): ContextOwner {
     || !Number.isSafeInteger(value.result?.browserPid) || value.result.browserPid <= 0) {
     throw new ErrorType("invalid_response", `${label} owner readiness is invalid`);
   }
-  return value.result;
+  const startup = value.startup as ContextStartupTiming | undefined;
+  return {
+    owner: value.result,
+    ...(startup && [startup.verifyMs, startup.runtimeMs, startup.browserMs, startup.identifyMs]
+      .every(ms => Number.isSafeInteger(ms) && ms >= 0 && ms <= 600_000) ? { startup } : {}),
+  };
 }
 
-function readReady(child: ChildProcess, timeoutMs?: number): Promise<ContextOwner> {
+function readReady(child: ChildProcess, timeoutMs?: number): Promise<ContextOwnerReadiness> {
   return new Promise((resolve, reject) => {
     let output = "";
     let settled = false;
@@ -193,11 +201,11 @@ function readReady(child: ChildProcess, timeoutMs?: number): Promise<ContextOwne
       if (timer) clearTimeout(timer);
       reject(error);
     };
-    const succeed = (owner: ContextOwner) => {
+    const succeed = (ready: ContextOwnerReadiness) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      resolve(owner);
+      resolve(ready);
     };
     child.once("error", () => fail(new ErrorType("runtime_unavailable", `${label} owner could not start`)));
     child.once("close", () => fail(new ErrorType("runtime_unavailable", `${label} owner stopped before ready`)));
@@ -283,13 +291,13 @@ async function startContextOwner(
   child.stdin.end(JSON.stringify({ version: PLAYWRIGHT_PROTOCOL_VERSION, ...input, owner: reservation }));
   let owner: ContextOwner;
   try {
-    const result = await ready;
+    const { owner: result, startup } = await ready;
     if (result.endpoint !== reservation.endpoint || result.generation !== reservation.generation || result.pid !== child.pid) {
       throw new ErrorType("invalid_response", `${label} owner readiness is invalid`);
     }
     owner = { ...provisional, browserPid: result.browserPid };
     contextEndpoint(owner);
-    await callbacks.onReady?.(owner);
+    await callbacks.onReady?.(owner, startup);
   } catch (error) {
     child.kill();
     throw error;
@@ -363,7 +371,7 @@ async function closeContextOwner(owner: ContextOwner, options: { signal?: AbortS
 }
 
   return {
-    reserve: reserveContextOwner, ready: contextOwnerReady, start: startContextOwner,
+    reserve: reserveContextOwner, ready: (response: unknown) => contextOwnerReady(response).owner, start: startContextOwner,
     endpoint: contextEndpoint, ownerForEndpoint: contextOwnerForEndpoint,
     forget: forgetContextOwner, call: callContextOwner, close: closeContextOwner,
   };

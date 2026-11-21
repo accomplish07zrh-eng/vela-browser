@@ -324,6 +324,7 @@ pub async fn launch_and_verify(
     playwright_runtime: &Path,
     nonce: &str,
     agent_nonce: &str,
+    desktop_admin_nonce: &str,
     background: bool,
 ) -> Result<(SidecarSupervisor, u16), String> {
     let mut command = scrubbed_sidecar_command(app)?
@@ -331,6 +332,7 @@ pub async fn launch_and_verify(
         .current_dir(data_dir)
         .env("ALIASMODE_DESKTOP_NONCE", nonce)
         .env("ALIASMODE_AGENT_NONCE", agent_nonce)
+        .env("ALIASMODE_DESKTOP_ADMIN_NONCE", desktop_admin_nonce)
         .env("ALIASMODE_BACKGROUND", if background { "1" } else { "0" })
         .env("ALIASMODE_DESKTOP_VERSION", VERSION)
         .env("ALIASMODE_PLAYWRIGHT_RUNTIME", playwright_runtime)

@@ -9,7 +9,7 @@ export async function handleTrashRequest(req: Request, store: ProfileStore, laun
   try {
     const current = () => !req.signal.aborted;
     if (!current()) return json({ ok: false, error: "Request cancelled; reload Trash" }, 409);
-    const profiles: TrashProfileView[] = store.listTrashed().map((p) => ({ ...p, canRestore: true, canPurge: true }));
+    const profiles: TrashProfileView[] = store.listTrashed().map(({ deletionProtected, ...profile }) => ({ ...profile, canRestore: true, canPurge: !deletionProtected }));
     if (!current()) return json({ ok: false, error: "Request cancelled; reload Trash" }, 409);
     const path = new URL(req.url).pathname;
     if (req.method === "GET" && path === "/ui/api/trash") return json({ ok: true, profiles });
@@ -30,6 +30,7 @@ export async function handleTrashRequest(req: Request, store: ProfileStore, laun
       try {
         if (purge) {
           if (!store.isTrashed(id)) return { id, status: "failed", code: "not_in_trash" };
+          if (store.isDeletionProtected(id)) return { id, status: "failed", code: "profile_protected" };
           if (!launcher.removeUserDataDir(id)) throw new Error("cleanup refused");
           store.deleteProfile(id);
         } else if (!store.restoreProfile(id)) {

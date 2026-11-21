@@ -484,8 +484,13 @@ export async function handleUserApi(
     // Standalone: stop, remove the persistent user-data dir, drop the row.
     let deleted = 0;
     const locked: string[] = [];
+    const protectedIds: string[] = [];
     for (const id of ids) {
       if (!store.getProfile(id)) continue;
+      if (store.isDeletionProtected(id)) {
+        protectedIds.push(id);
+        continue;
+      }
       // stop() also waits for an in-flight start that has not recorded its
       // launch row yet, so deletion cannot race a late browser spawn.
       if ((await launcher.stop(id)) !== true) {
@@ -494,13 +499,17 @@ export async function handleUserApi(
       }
       // The cache delete after stop() runs on; let it end before the folder is removed.
       await launcher.cacheCleanupSettled(id);
+      if (store.isDeletionProtected(id)) {
+        protectedIds.push(id);
+        continue;
+      }
       // removeUserDataDir refuses any path outside the data root (a crafted or
       // legacy "../" id), so rmSync can't escape; the row is dropped regardless.
       launcher.removeUserDataDir(id);
       store.deleteProfile(id);
       deleted++;
     }
-    return ok({ deleted, locked });
+    return ok({ deleted, locked, ...(protectedIds.length ? { protected: protectedIds } : {}) });
   }
 
   const updateV2 = pathname === "/api/v2/browser-profile/update";

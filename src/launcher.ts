@@ -1084,6 +1084,7 @@ export class Launcher {
    * overlap during that window.
    */
   private startsInFlight = new Map<string, Promise<LaunchStartResult>>();
+  private readonly recentStarts: Array<{ durationMs: number; outcome: string }> = [];
   private startModesInFlight = new Map<string, boolean>();
   private firefoxStarted = false;
   private readonly firefoxColdStarts = new LifecycleAdmissionController({
@@ -1981,6 +1982,7 @@ export class Launcher {
     // until after the map entry exists so even a synchronously-reentrant injected
     // fetch/spawn cannot start a duplicate. Capturing also avoids a wait cycle:
     // only the later transition waits for the one that was already registered.
+    const requestedAt = performance.now();
     let promise!: Promise<LaunchStartResult>;
     promise = Promise.resolve()
       .then(async () => {
@@ -1988,12 +1990,15 @@ export class Launcher {
           this.log(`start ${profileId}: waiting for in-flight stop to settle`);
           await stopping;
         }
-        return await this.doStart(profileId, launchArgs, opts);
+        const result = await this.doStart(profileId, launchArgs, opts);
+        this.recordStartOutcome(requestedAt, "ready");
+        return result;
       })
       .catch((error) => {
         // A kernel started for this launch (to look up the exit) has no browser to serve.
         if (!this.store.getLaunch(profileId) && !this.relays.has(profileId)) this.kernels.release(profileId);
         if (error instanceof BrowserLaunchError || error instanceof SessionRestoreError) {
+          this.recordStartOutcome(requestedAt, error instanceof BrowserLaunchError ? error.preflightReason ?? error.failure : "session_restore");
           if (error instanceof BrowserLaunchError && error.guidance) this.log(`start ${profileId} rejected: ${error.guidance}`);
           throw error;
         }
@@ -2002,6 +2007,7 @@ export class Launcher {
         const normalized = new BrowserLaunchError("preflight", error instanceof LaunchRefusal
           ? error.reason
           : error instanceof FirefoxOwnerError ? "firefox_unresponsive" : error instanceof WebKitOwnerError ? "webkit_unresponsive" : "unexpected");
+        this.recordStartOutcome(requestedAt, normalized.preflightReason ?? normalized.failure);
         const retained = this.failedStartGeneration(error);
         if (retained) this.rememberFailedStartGeneration(normalized, retained);
         throw normalized;
@@ -2018,6 +2024,16 @@ export class Launcher {
     if (stopping) this.startAfterStop.set(profileId, stopping);
     else this.startAfterStop.delete(profileId);
     return promise;
+  }
+
+  /** Recent distinct launches, with closed outcome codes and elapsed time only. */
+  launchDiagnostics() {
+    return this.recentStarts.slice();
+  }
+
+  private recordStartOutcome(requestedAt: number, outcome: "ready" | "session_restore" | BrowserLaunchFailure | PreflightReason): void {
+    this.recentStarts.push({ durationMs: Math.round(performance.now() - requestedAt), outcome });
+    if (this.recentStarts.length > 64) this.recentStarts.shift();
   }
 
   private async doStart(
@@ -2979,8 +2995,9 @@ export class Launcher {
           launch.firefoxOwner = { ...owner, ...spawned };
           this.store.recordLaunch(launch);
         },
-        onReady: (ready) => {
+        onReady: (ready, startup) => {
           this.log(`${profileId}: launch stage CDP ready`);
+          if (startup) this.log(`${profileId}: Firefox launch timings verify=${startup.verifyMs} runtime=${startup.runtimeMs} browser=${startup.browserMs} identify=${startup.identifyMs}ms`);
           launch.firefoxOwner = ready;
           launch.pid = ready.browserPid;
           launch.ws = firefoxEndpoint(ready);

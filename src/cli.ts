@@ -77,6 +77,7 @@ import {
   DESKTOP_PROTOCOL,
   ManagedDesktopRuntime,
   agentControlNonce,
+  takeDesktopAdminNonce,
   desktopHealthMetadata,
   desktopReadyRecord,
   isDesktopShutdownCommand,
@@ -1486,6 +1487,7 @@ function installFileLogging(root: string): void {
 }
 
 async function main() {
+  const desktopAdminNonce = takeDesktopAdminNonce(process.env);
   const argv = process.argv.slice(2);
   if (argv[0] === CLOAKPIT_IMPORT_COMMAND) {
     const result = await runCloakpitImportCommand(argv.slice(1));
@@ -1682,6 +1684,7 @@ async function main() {
         paths,
         health: desktopHealth,
         agentNonce: agentNonce ?? undefined,
+        desktopAdminNonce,
       });
       if (desktopHealth) {
         const assignedPort = server.port;

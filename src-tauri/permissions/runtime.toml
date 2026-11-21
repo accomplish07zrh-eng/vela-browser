@@ -9,6 +9,11 @@ description = "Allows the trusted Vela Browser window to authenticate script ope
 commands.allow = ["script_capability"]
 
 [[permission]]
+identifier = "allow-desktop-admin-capability"
+description = "Allows the main Vela Browser dashboard to administer the local workspace."
+commands.allow = ["desktop_admin_capability"]
+
+[[permission]]
 identifier = "allow-workbench-capability"
 description = "Allows the trusted Vela Browser window to authenticate isolated workbench viewports."
 commands.allow = ["workbench_capability"]

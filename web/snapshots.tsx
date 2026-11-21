@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { WorkspaceBackupPreview } from "../src/workspace-backup.ts";
+import { downloadWorkspaceBackup, inspectWorkspaceBackup } from "./api.ts";
 import { confirmDialog } from "./dialog.tsx";
 import { useTranslation } from "./i18n.tsx";
 import "./snapshots.css";
@@ -82,6 +84,84 @@ export function BackupsCard({ flash }: { flash(message: string): void }) {
         <button type="button" className="btn" disabled={busy} onClick={() => { setBusy(true); call<any>("/ui/api/snapshots/backup", "POST").then((result) => { setState((current) => current ? { ...current, usage: result.usage } : current); flash(t("Backed up the sign-ins of {count} profiles.", { count: result.saved })); }, (error) => flash(String(error.message ?? error))).finally(() => setBusy(false)); }}>{t("Back up now")}</button>
       </div>
       <p className="cardnote">{t("Saved in")}: <span className="mono">{state.directory}</span></p>
+    </div>
+  </section>;
+}
+
+export function WorkspaceBackupCard({ onRestored, flash }: { onRestored(): void; flash(message: string): void }) {
+  const { t } = useTranslation();
+  const [passphrase, setPassphrase] = useState("");
+  const [file, setFile] = useState<File>();
+  const [preview, setPreview] = useState<WorkspaceBackupPreview>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const pending = useRef<AbortController | null>(null);
+  useEffect(() => () => pending.current?.abort(), []);
+  const act = async (action: "export" | "preview" | "restore") => {
+    if (pending.current || (action !== "export" && !file)) return;
+    const controller = new AbortController();
+    pending.current = controller;
+    setBusy(true);
+    setError("");
+    try {
+      if (action === "export") {
+        const archive = await downloadWorkspaceBackup(passphrase, controller.signal);
+        const url = URL.createObjectURL(archive);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `Vela-Workspace-${new Date().toISOString().slice(0, 10)}.vela-workspace`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setPassphrase("");
+        setPreview(undefined);
+      } else {
+        const summary = await inspectWorkspaceBackup(file!, passphrase, action, controller.signal);
+        setPreview(summary);
+        if (action === "restore") {
+          setPassphrase("");
+          setPreview(undefined);
+          onRestored();
+          flash(t("Restored {count} profiles from the workspace backup.", { count: summary.profiles }));
+        }
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Could not process the workspace backup.");
+    } finally {
+      pending.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  };
+  const ready = passphrase.trim().length >= 12 && !busy;
+  return <section className="settings-card">
+    <header><h2>{t("Workspace backup")}</h2></header>
+    <div className="card-body">
+      <p>{t("Save profiles, folders, deletion protection and the latest saved browser sessions in a passphrase-protected file.")}</p>
+      <label className="settings-row"><span>{t("Backup passphrase")}</span>
+        <input type="password" className="input" value={passphrase} maxLength={4096} autoComplete="new-password" disabled={busy}
+          onChange={event => { setPassphrase(event.target.value); setPreview(undefined); }} />
+      </label>
+      <div className="plugin-actions">
+        <button type="button" className="btn" disabled={!ready} onClick={() => void act("export")}>{t("Download workspace backup")}</button>
+      </div>
+      <label className="settings-row"><span>{t("Workspace backup file")}</span>
+        <input type="file" accept=".vela-workspace" disabled={busy} onChange={event => { setFile(event.target.files?.[0]); setPreview(undefined); }} />
+      </label>
+      <div className="plugin-actions">
+        <button type="button" className="btn" disabled={!ready || !file} onClick={() => void act("preview")}>{t("Preview workspace restore")}</button>
+        {preview && <button type="button" className="btn accent" disabled={!ready || !!preview.conflicts.length} onClick={() => void act("restore")}>{t("Restore workspace backup")}</button>}
+      </div>
+      {busy && <p className="formnote" role="status">{t("Processing…")}</p>}
+      {error && <p className="modal-err" role="alert">{t(error)}</p>}
+      {preview && <div aria-live="polite">
+        <p className="formnote">{t("{profiles} profiles, {folders} folders, {sessions} saved sessions and {protected} protected profiles.", {
+          profiles: preview.profiles, folders: preview.folders, sessions: preview.savedSessions, protected: preview.protectedProfiles,
+        })}</p>
+        {preview.trashed > 0 && <p className="formnote">{t("{count} profiles will return to Trash.", { count: preview.trashed })}</p>}
+        {preview.conflicts.length > 0 && <p className="modal-err">{t("{count} profile or folder conflicts block restoration.", { count: preview.conflicts.length })} {preview.conflicts.slice(0, 8).map(item => item.id).join(" · ")}</p>}
+        {preview.heldProxies > 0 && <p className="formnote">{t("Choose a proxy for {count} restored profiles before opening them.", { count: preview.heldProxies })}</p>}
+      </div>}
     </div>
   </section>;
 }

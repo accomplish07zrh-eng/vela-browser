@@ -175,9 +175,10 @@ $temporaryRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
 $runRoot = Join-Path $temporaryRoot "aliasmode-previous-upgrade-$([Guid]::NewGuid().ToString('N'))"
 $installRoot = Join-Path $runRoot "aliasmode update acceptance"
 $defaultDataRoot = Join-Path $env:APPDATA "com.velabrowser.desktop"
+$uninstallKey = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser"
 $registrationKeys = @(
   "Registry::HKEY_CURRENT_USER\Software\Vela Browser\Vela Browser",
-  "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vela Browser"
+  $uninstallKey
 )
 $stage = "validating-inputs"
 $previousVersion = ""
@@ -194,7 +195,9 @@ $checks = [ordered]@{
   previousVersionReady = $false
   sentinelProfileCreated = $false
   sentinelDataCreated = $false
+  lockedPayloadPreservedOldVersion = $false
   passiveUpdateCompleted = $false
+  offlineRepairClearedInterruptedAttempt = $false
   versionTransition = $false
   instanceTransition = $false
   appDataRootPreserved = $false
@@ -333,7 +336,39 @@ try {
   Stop-VelaBrowser $activeRecord
   $activeRecord = $null
 
+  Set-AcceptanceStage "rejecting-update-with-locked-sidecar"
+  $sidecarPath = Join-Path $installRoot "aliasmode-sidecar.exe"
+  $appHash = (Get-FileHash -LiteralPath $appPath -Algorithm SHA256).Hash
+  $sidecarLock = [IO.File]::Open($sidecarPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $blocked = Start-Process -FilePath $candidateInstaller -ArgumentList @("/S", "/UPDATE", "/D=$installRoot") -WindowStyle Hidden -PassThru
+    if (-not $blocked.WaitForExit(300000)) {
+      Stop-ProcessTree $blocked
+      throw "locked-sidecar update did not exit"
+    }
+    if ($blocked.ExitCode -eq 0) {
+      throw "candidate unexpectedly installed with the sidecar locked"
+    }
+    if ((Get-FileHash -LiteralPath $appPath -Algorithm SHA256).Hash -cne $appHash -or
+        (Get-ItemProperty -LiteralPath $uninstallKey).DisplayVersion -cne $previousVersion) {
+      throw "failed update changed the desktop version or its registration"
+    }
+    $checks.lockedPayloadPreservedOldVersion = $true
+  } finally {
+    $sidecarLock.Dispose()
+  }
+
   Set-AcceptanceStage "applying-passive-update"
+  $pendingAttemptPath = Join-Path $oldDataRoot "update-attempt.json"
+  [ordered]@{
+    schemaVersion = 1
+    id = [Guid]::NewGuid().ToString("N")
+    sourceVersion = $previousVersion
+    expectedVersion = $CandidateVersion
+    expectedRoot = $installRoot
+    state = "failedOrInterrupted"
+    failureReason = "installationUnconfirmed"
+  } | ConvertTo-Json -Compress | Set-Content -LiteralPath $pendingAttemptPath -Encoding utf8NoBOM
   $updater = Start-Process -PassThru $candidateInstaller -ArgumentList @("/P", "/R", "/UPDATE", "/ARGS")
   if (-not $updater.WaitForExit(300000)) {
     Stop-ProcessTree $updater
@@ -348,6 +383,11 @@ try {
   Set-AcceptanceStage "verifying-preserved-state"
   $activeRecord = Wait-VelaBrowserReady $appPath $CandidateVersion
   $checks.versionTransition = $true
+  for ($attempt = 0; $attempt -lt 30 -and (Test-Path -LiteralPath $pendingAttemptPath); $attempt++) {
+    Start-Sleep -Milliseconds 500
+  }
+  if (Test-Path -LiteralPath $pendingAttemptPath) { throw "offline repair left the interrupted update result in place" }
+  $checks.offlineRepairClearedInterruptedAttempt = $true
   if ($activeRecord.Health.root -ne $oldDataRoot) { throw "update changed the app-data root" }
   $checks.appDataRootPreserved = $true
   $updatedInstance = [string]$activeRecord.Health.instance
