@@ -1,5 +1,7 @@
 import type { WorkbenchAdapter, WorkbenchFrame, WorkbenchInput, WorkbenchStreamOptions, WorkbenchTab } from "./workbench-protocol.ts";
 
+const MAX_THUMBNAIL_INPUT_PIXELS = 16 * 1024 * 1024;
+
 const RECORDABLE_ROLES = new Set(["button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "combobox", "listbox", "option", "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "treeitem", "slider", "spinbutton"]);
 
 interface LiveStream { session: string; onFrame(frame: WorkbenchFrame): void; minInterval: number; lastAck: number; stopped: boolean }
@@ -81,12 +83,22 @@ export class CdpWorkbench implements WorkbenchAdapter {
     const session = this.session;
     const metrics = await this.send("Page.getLayoutMetrics", {}, session);
     const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
-    // Captured at the size the card shows it, not the page's full size: far fewer bytes per frame.
-    const scale = maxWidth && viewport.clientWidth > maxWidth ? maxWidth / viewport.clientWidth : undefined;
-    const { data } = await this.send("Page.captureScreenshot", {
-      format: "jpeg", quality: focused ? 85 : 65, fromSurface: true, captureBeyondViewport: false,
-      ...(scale ? { clip: { x: viewport.pageX ?? 0, y: viewport.pageY ?? 0, width: viewport.clientWidth, height: viewport.clientHeight, scale } } : {}),
+    const quality = focused ? 85 : 65;
+    // Chromium temporarily resizes the live renderer for a screenshot clip. Two
+    // overlapping clips can restore the temporary size and leave gutters in the window.
+    let { data } = await this.send("Page.captureScreenshot", {
+      format: "jpeg", quality, fromSurface: true, captureBeyondViewport: false,
     }, session);
+    if (maxWidth) {
+      try {
+        const image = new Bun.Image(Buffer.from(data, "base64"), { maxPixels: MAX_THUMBNAIL_INPUT_PIXELS });
+        if ((await image.metadata()).width > maxWidth) {
+          data = Buffer.from(await image.resize(maxWidth, undefined, { filter: "bilinear" }).jpeg({ quality }).bytes()).toString("base64");
+        }
+      } catch {
+        // Keep the captured JPEG if it is too large or the thumbnail codec is unavailable.
+      }
+    }
     return { data, width: viewport.clientWidth, height: viewport.clientHeight };
   }
 
