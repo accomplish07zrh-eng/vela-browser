@@ -230,6 +230,7 @@ export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
     "humanize.mjs",
     "devtools.mjs",
     "devtools-live.mjs",
+    "devtools-har.mjs",
     "devtools-sources.mjs",
     "devtools-dom.mjs",
     "form-inspection.mjs",

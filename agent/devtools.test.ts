@@ -90,6 +90,38 @@ test("developer observation leaves browser configuration, page execution and mod
   expect(context.closes).toBe(0);
 });
 
+test("HAR keeps redirect hops and timing without reading or exporting private request data", async () => {
+  const { context, observer, call } = setup({ engine: "firefox" });
+  try {
+    const first = requestFixture(context, Buffer.from("private-body"), 302), second = requestFixture(context, Buffer.from("private-reply"), 503);
+    first.req.url = () => "https://private-user:private-pass@private-host.test/private-path?auth=private-query#private-fragment";
+    first.req.headers = () => ({ "authorization": "private-auth", "cookie": "private-cookie" });
+    first.response.headers = () => ({ "Set-Cookie": "private-set-cookie", location: "https://private-other.test/private-dest" });
+    second.req.url = () => "https://private-other.test/private-dest";
+    second.req.redirectedFrom = () => first.req;
+    second.req.timing = () => ({ startTime: 1_700_000_000_000, domainLookupStart: 1, domainLookupEnd: 2,
+      connectStart: 2, secureConnectionStart: 3, connectEnd: 5, requestStart: 5, responseStart: 7, responseEnd: 10 });
+    for (const hop of [first, second]) {
+      context.emit("request", hop.req); context.emit("response", hop.response); context.emit("requestfinished", hop.req);
+    }
+    const { har, hasMore } = await call("har");
+    const [entry, redirected] = har.log.entries;
+    expect(har.log.version).toBe("1.2");
+    expect(hasMore).toBe(false);
+    expect(entry.response.redirectURL).toBe(redirected.request.url);
+    expect(redirected._vela.redirectedFrom).toBe(entry._vela.hop);
+    expect(redirected.response.status).toBe(503);
+    expect(redirected.time).toBe(10);
+    expect(redirected.timings.ssl).toBe(2);
+    expect(JSON.stringify(har)).not.toContain("private-");
+    expect(first.bodyReads() + second.bodyReads()).toBe(0);
+    const firstPage = await call("har", { limit: 1 });
+    expect(firstPage.hasMore).toBe(true);
+    const more = await call("har", { since: firstPage.nextCursor });
+    expect(more.har.log.entries).toHaveLength(1);
+  } finally { observer.dispose(); }
+});
+
 test("disk capture wakes a waiting reader and returns exact oversized socket payloads across cursor pages", async () => {
   const { observer, context, call } = setup();
   try {

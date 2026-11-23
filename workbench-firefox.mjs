@@ -165,7 +165,8 @@ export class FirefoxWorkbench {
       if (pages.length === 1) await this.context.newPage();
       await page.close(); return null;
     }
-    if (payload.action === "viewport") return page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    if (payload.action === "viewport") return page.evaluate(diagnostics => ({ width: innerWidth, height: innerHeight,
+      ...(diagnostics ? { devicePixelRatio: window.devicePixelRatio, pageScale: window.visualViewport?.scale } : {}) }), payload.diagnostics === true);
     if (payload.action === "frame") {
       if (payload.stream === true) {
         const number = (value, low, high, fallback) => typeof value === "number" && Number.isFinite(value) ? Math.min(high, Math.max(low, value)) : fallback;

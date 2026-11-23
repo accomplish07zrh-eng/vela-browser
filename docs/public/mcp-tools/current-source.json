@@ -1,6 +1,6 @@
 {
   "catalogSchemaVersion": 1,
-  "aliasModeVersion": "0.1.21",
+  "aliasModeVersion": "0.1.22",
   "status": "source",
   "sourceRef": "source",
   "playwrightMcpVersion": "0.0.56",
@@ -252,7 +252,7 @@
     },
     {
       "name": "vela_browser_replay",
-      "description": "Record a browser tab in memory and replay up to the previous 60 seconds. Use tabs to find a tabId, or use runId for a task's bound tab. Start before the action, play to get timestamped images and a local playback link, or stop to erase the recording. Play accepts a time range in seconds ago. Recording starts on request, stops taking frames after durationSeconds, and expires frame by frame.",
+      "description": "Record a browser tab in memory and replay up to the previous 60 seconds. Use tabs to find a tabId, or use runId for a task's bound tab. Start before the action, play to view a time range, diagnose with runId to find the failed step's requests, errors and picture, or stop to erase the recording. Recording starts on request, stops after durationSeconds, and expires frame by frame.",
       "annotations": {
         "title": "Replay a Vela Browser tab",
         "readOnlyHint": false,
@@ -268,6 +268,7 @@
               "tabs",
               "start",
               "play",
+              "diagnose",
               "stop"
             ]
           },
@@ -309,8 +310,12 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 4,
-            "default": 4,
-            "description": "Maximum number of images for play. Set to 0 for the playback link alone."
+            "description": "Image limit for play (default 4) or diagnose (default 2). Set to 0 for the playback link alone."
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "For diagnose. Select a task evidence sequence, or omit to choose the latest failed step."
           }
         },
         "required": [
@@ -1216,8 +1221,10 @@
               "events",
               "logs",
               "screenshot",
-              "value"
-            ]
+              "value",
+              "har"
+            ],
+            "description": "For evidence. Use har for paginated UTF-8 JSON bytes of a sanitized HAR 1.2."
           },
           "offset": {
             "type": "integer",
@@ -1484,6 +1491,41 @@
         "required": [
           "requestId"
         ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser_devtools_har",
+      "description": "Return a sanitized HAR 1.2 from retained requests. Save the returned har object as a .har file when needed. URLs are replaced with aliases. The report includes timing, status and redirect links, and excludes headers, cookies, bodies and browser error text.",
+      "annotations": {
+        "title": "Browser har",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "description": "Stable page id from browser_devtools_pages. Required to choose a page when several are open."
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Return records updated after this cursor. Reading does not consume records."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 100
+          },
+          "profileId": {
+            "type": "string",
+            "description": "Optional. The open Vela Browser profile to act on; defaults to the selected one. Calls for different profiles run in parallel, each browser with its own pointer and keyboard."
+          }
+        },
         "additionalProperties": false
       }
     },

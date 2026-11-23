@@ -100,6 +100,7 @@ function workspace(): string {
     "playwright-proxy.mjs",
     "devtools.mjs",
     "devtools-live.mjs",
+    "devtools-har.mjs",
     "devtools-sources.mjs",
     "devtools-dom.mjs",
     "form-inspection.mjs",

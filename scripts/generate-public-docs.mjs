@@ -29,7 +29,7 @@ export const CURRENT_CATALOG_PATH = `${CATALOG_DIR}/current-source.json`;
 const CATALOG_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
 const TAG_AGENT_FILES = ["mcp-host.mjs", "playwright-proxy.mjs", "runtime-client.mjs", "humanize.mjs", "devtools.mjs",
-  "devtools-live.mjs", "devtools-sources.mjs", "devtools-dom.mjs", "form-inspection.mjs", "form-workflow.mjs", "visual-match.mjs",
+  "devtools-live.mjs", "devtools-har.mjs", "devtools-sources.mjs", "devtools-dom.mjs", "form-inspection.mjs", "form-workflow.mjs", "visual-match.mjs",
   "plugins.mjs", "downloads.mjs", "guides.mjs"];
 
 export function serialize(value) {

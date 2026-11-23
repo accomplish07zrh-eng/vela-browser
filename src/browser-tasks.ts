@@ -5,6 +5,8 @@ import { isDeepStrictEqual } from "node:util";
 import type { ProfileWriteLease, ProfileWrites } from "./profile-writes.ts";
 import type { HostWorkBudget, HostWorkPermit } from "./cooling.ts";
 import { agentKey } from "./ai-access.ts";
+import { sanitizedHar } from "../agent/devtools-har.mjs";
+import type { ReplayStepInput } from "./browser-replay.ts";
 
 type StepState = "pending" | "uncertain" | "completed";
 type RunState = "queued" | "running" | "recovering" | "blocked" | "paused" | "interrupted" | "needs_verification" | "completed" | "cancelled";
@@ -189,6 +191,7 @@ export class BrowserTaskSupervisor {
     hold?(profileId: string): () => void;
     log?(text: string): void;
     record?(receipt: { runId: string; profileId: string; client: string; stepId: string; sequence: number; phase: Phase; ok: boolean }): void;
+    observeStep?(step: ReplayStepInput): void;
   }) {
     mkdirSync(options.root, { recursive: true, mode: 0o700 });
     for (const id of readdirSync(options.root)) {
@@ -497,10 +500,11 @@ export class BrowserTaskSupervisor {
       return { sequence, stepId, actionKey: `${runId}:${stepId}`, attempt, phase, startedAt, endedAt, completed, error, screenshotError, detailsExpired,
         available: { screenshot: !!screenshot, network: !!network, events: !!events, logs: !!logs, value: value !== undefined } };
     }
-    if (!["value", "network", "events", "logs", "screenshot"].includes(part)) badRequest("Unknown evidence part");
+    if (!["value", "network", "events", "logs", "screenshot", "har"].includes(part)) badRequest("Unknown evidence part");
     if (data.detailsExpired) throw new BrowserTaskError("evidence_too_large", "The evidence details exceeded the storage limit", 410);
     const browserEvents = (data.events as { records?: Array<{ kind: string }> } | undefined)?.records;
-    const value = part === "logs" ? { program: data.logs ?? [], browser: browserEvents?.filter(event => ["console", "exception", "crash"].includes(event.kind)) ?? [] } : data[part];
+    const value = part === "logs" ? { program: data.logs ?? [], browser: browserEvents?.filter(event => ["console", "exception", "crash"].includes(event.kind)) ?? [] }
+      : part === "har" ? sanitizedHar((data.network as { records?: object[] } | undefined)?.records ?? []) : data[part];
     const buffer = Buffer.from(JSON.stringify(value ?? null));
     const page = buffer.subarray(offset, offset + bytes);
     return { part, offset, returnedBytes: page.length, totalBytes: buffer.length, nextOffset: offset + page.length,
@@ -703,6 +707,7 @@ export class BrowserTaskSupervisor {
         };
         const act = async (phase: Phase, code: string) => {
           const owner = authorize();
+          const tab = task.tab;
           const startedAt = new Date().toISOString();
           const receipt: ProgramReceipt = await connection!.program({
             code, screenshots, timeoutMs: step.timeoutMs ?? 120_000, pageUrl: step.pageUrl, frameUrl: step.frameUrl, tabId: task.tab?.id, argument: {
@@ -710,10 +715,11 @@ export class BrowserTaskSupervisor {
           } }).catch(error => ({ completed: false, error: message(error), fault: faultOf(error) } satisfies ProgramReceipt));
           if (task.tab && receipt.fault === "task_tab_lost") task.tab.lost = true;
           const sequence = task.evidenceCount + 1;
+          const endedAt = new Date().toISOString();
           const evidence: ProgramReceipt = {
-            ...receipt, sequence, stepId: step.id, attempt: checkpoint.attempts, phase, startedAt, endedAt: new Date().toISOString(),
+            ...receipt, sequence, stepId: step.id, attempt: checkpoint.attempts, phase, startedAt, endedAt,
           };
-          const metadata = { sequence, stepId: step.id, attempt: checkpoint.attempts, phase, startedAt, endedAt: evidence.endedAt,
+          const metadata = { sequence, stepId: step.id, attempt: checkpoint.attempts, phase, startedAt, endedAt,
             completed: receipt.completed, error: receipt.error };
           const path = this.path(task.runId, `evidence-${sequence}.json`);
           const size = Buffer.byteLength(JSON.stringify(evidence));
@@ -722,6 +728,12 @@ export class BrowserTaskSupervisor {
           task.evidenceCount = sequence; checkpoint.evidence = sequence;
           if ((task.firstEvidence ?? 1) > sequence) task.firstEvidence = sequence;
           this.save(task);
+          if (tab && this.options.observeStep) {
+            try {
+              this.options.observeStep({ runId: task.runId, profileId, tabId: tab.id, generation: tab.generation, stepId: step.id,
+                sequence, phase, attempt: checkpoint.attempts, startedAt, endedAt, receipt });
+            } catch { this.options.log?.("Could not attach browser task evidence to replay"); }
+          }
           this.options.record?.({ runId: task.runId, profileId, client: owner.name, stepId: step.id, sequence, phase, ok: receipt.completed });
           if (this.receiptBytes > MAX_EVIDENCE_BYTES) this.pruneEvidence();
           return receipt;

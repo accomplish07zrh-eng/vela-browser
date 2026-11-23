@@ -561,6 +561,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
       }
     },
     hold: (profileId) => activity.hold(profileId),
+    observeStep: replay ? step => replay.noteTaskStep(step) : undefined,
     record: ({ runId, profileId, client, stepId, sequence, phase, ok }) => audit?.record({
       actor: { kind: "task", name: client }, profileId, action: "browserTask." + phase, ok,
       task: { runId, stepId, sequence },

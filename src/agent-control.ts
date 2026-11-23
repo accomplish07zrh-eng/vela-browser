@@ -604,7 +604,7 @@ export class AgentControlSession {
           if ((params.profileId !== undefined && params.profileId !== profileId) || params.tabId !== undefined) {
             throw agentError("invalid_request", "Use runId to select the task's profile and tab");
           }
-          if (params.action === "start") {
+          if (params.action === "start" || params.action === "diagnose") {
             const target = tasks.replayTarget(runId, id => {
               const launch = this.deps.store.getLaunch(id);
               return launch ? workbenchGeneration(launch) : undefined;

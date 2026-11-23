@@ -1,4 +1,5 @@
-import type { WorkbenchAdapter, WorkbenchFrame, WorkbenchInput, WorkbenchStreamOptions, WorkbenchTab } from "./workbench-protocol.ts";
+import type { WorkbenchAdapter, WorkbenchFrame, WorkbenchInput, WorkbenchStreamOptions, WorkbenchTab, WorkbenchViewport } from "./workbench-protocol.ts";
+import { ReplayNetworkObserver, type ReplayRequestEvent } from "./replay-network.ts";
 
 const MAX_THUMBNAIL_INPUT_PIXELS = 16 * 1024 * 1024;
 
@@ -16,6 +17,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
   private target?: string;
   private disposed = false;
   private live?: LiveStream;
+  private network?: ReplayNetworkObserver;
   private accessible?: string;
 
   constructor(endpoint: string) {
@@ -33,6 +35,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
       let message: any;
       try { message = JSON.parse(String(event.data)); } catch { return; }
       if (message.method === "Page.screencastFrame") { this.onScreencastFrame(message); return; }
+      if (message.method) { this.network?.receive(message); return; }
       const call = this.pending.get(message.id);
       if (!call) return;
       clearTimeout(call.timer); this.pending.delete(message.id);
@@ -65,6 +68,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
     const previous = this.session;
     const { sessionId } = await this.send("Target.attachToTarget", { targetId, flatten: true });
     await this.stopStream();
+    await this.stopNetwork();
     this.session = sessionId; this.target = targetId;
     if (previous) await this.send("Target.detachFromTarget", { sessionId: previous }).catch(() => {});
   }
@@ -142,11 +146,33 @@ export class CdpWorkbench implements WorkbenchAdapter {
     }, at - Date.now());
   }
 
-  async viewport(): Promise<{ width: number; height: number }> {
+  async viewport(diagnostics = false): Promise<WorkbenchViewport> {
     if (!this.session) throw new Error("Select a tab first");
-    const metrics = await this.send("Page.getLayoutMetrics", {}, this.session);
+    const session = this.session;
+    const [metrics, ratio] = await Promise.all([
+      this.send("Page.getLayoutMetrics", {}, session),
+      diagnostics ? this.send("Runtime.evaluate", { expression: "globalThis.devicePixelRatio", returnByValue: true,
+        silent: true, throwOnSideEffect: true }, session).catch(() => undefined) : undefined,
+    ]);
     const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
-    return { width: viewport.clientWidth, height: viewport.clientHeight };
+    return { width: viewport.clientWidth, height: viewport.clientHeight,
+      ...(diagnostics ? { devicePixelRatio: ratio?.result?.value, pageScale: viewport.scale } : {}) };
+  }
+
+  async observeNetwork(onRequest: (event: ReplayRequestEvent) => void): Promise<() => Promise<void>> {
+    if (!this.session) throw new Error("Select a tab first");
+    await this.stopNetwork();
+    const observer = this.network = new ReplayNetworkObserver(this.session,
+      (method, params, session) => this.send(method, params, session), onRequest);
+    try { await observer.start(); }
+    catch (error) { if (this.network === observer) await this.stopNetwork(); throw error; }
+    return async () => { if (this.network === observer) await this.stopNetwork(); };
+  }
+
+  private async stopNetwork(): Promise<void> {
+    const observer = this.network;
+    this.network = undefined;
+    await observer?.stop();
   }
 
   async describe(x: number, y: number): Promise<{ role: string; name: string } | null> {
@@ -191,6 +217,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.network = undefined;
     if (this.live) { this.live.stopped = true; this.live = undefined; }
     for (const call of this.pending.values()) { clearTimeout(call.timer); call.reject(new Error("Browser disconnected")); }
     this.pending.clear();

@@ -55,7 +55,12 @@ async function show(frame, verify = false) {
     image.src = imageUrl;
     image.hidden = false;
     shown = frame;
-    status.textContent = '';
+    const view = frame.viewport;
+    const label = view ? Math.round(view.width) + ' × ' + Math.round(view.height) + ' CSS px' : '';
+    const ratio = view?.devicePixelRatio ? ' · DPR ' + view.devicePixelRatio.toFixed(2) : '';
+    const scale = view?.pageScale && view.pageScale !== 1 ? ' · Zoom ' + Math.round(view.pageScale * 100) + '%' : '';
+    const metadata = label + ratio + scale;
+    if (status.textContent !== metadata) status.textContent = metadata;
   } catch {
     setPlaying(false);
     retryAt = performance.now() + 750;
@@ -106,7 +111,8 @@ async function load() {
     if (!result.ok) { expired(); return; }
     frames = await result.json();
     seek.max = frames.at(-1).offsetMs;
-    seek.min = seek.value = frames[0].offsetMs;
+    seek.min = frames[0].offsetMs;
+    seek.value = frames.find(frame => frame.focus)?.offsetMs ?? frames[0].offsetMs;
     play.disabled = seek.disabled = frames.length < 2;
     timer = setInterval(tick, 60);
     tick();
