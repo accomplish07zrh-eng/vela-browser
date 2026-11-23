@@ -247,6 +247,14 @@ try {
     check(`${engine}: POST body, duplicate response headers and failure status are readable`, detail.requestBody.text === "original-post"
       && detail.responseHeadersArray.filter((header: any) => header.name.toLowerCase() === "set-cookie").length === 2
       && requests.records.some((record: any) => record.status === 404) && requests.records.some((record: any) => record.redirectedFrom));
+    const { har } = await developer("har", a);
+    const exported = JSON.stringify(har);
+    check(`${engine}: sanitized HAR retains status and redirect links with anonymized addresses`, har.log.version === "1.2"
+      && har.log.entries.some((entry: any) => entry.response.status === 404)
+      && har.log.entries.some((entry: any) => entry.response.status === 302 && har.log.entries.some((next: any) =>
+        next._vela.redirectedFrom === entry._vela.hop && next.request.url === entry.response.redirectURL))
+      && har.log.entries.every((entry: any) => new URL(entry.request.url).hostname.endsWith(".invalid"))
+      && ![origin, "original-post", "response_a=1", "private-a-websocket"].some(value => exported.includes(value)));
     const streaming = requests.records.find((record: any) => record.url.endsWith("/stream"));
     const started = Date.now();
     const streamingDetail = await developer("request", { profileId: a.profileId, requestId: streaming.requestId, responseBody: true });

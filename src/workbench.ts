@@ -8,7 +8,7 @@ import { callWebKitOwner } from "./webkit-runtime.ts";
 import { callFirefoxOwner } from "./firefox-runtime.ts";
 import { CdpWorkbench } from "./workbench-cdp.ts";
 import { addStep, RECORDED_KEYS, recordingSource, type RecordedStep, type RecordedTarget } from "./recording.ts";
-import { validWorkbenchInput, workbenchFrameInterval, workbenchFrameWidth, workbenchStreamInterval, type WorkbenchRefreshTier, type WorkbenchAdapter, type WorkbenchFrame, type WorkbenchInput, type WorkbenchStreamOptions, type WorkbenchTab } from "./workbench-protocol.ts";
+import { validWorkbenchInput, workbenchFrameInterval, workbenchFrameWidth, workbenchStreamInterval, type WorkbenchRefreshTier, type WorkbenchAdapter, type WorkbenchFrame, type WorkbenchInput, type WorkbenchStreamOptions, type WorkbenchTab, type WorkbenchViewport } from "./workbench-protocol.ts";
 
 export const WORKBENCH_PATH = "/ui/api/workbench/connect";
 export const WORKBENCH_PROTOCOL = "vela-workbench-v1";
@@ -70,7 +70,7 @@ class ContextAdapter implements WorkbenchAdapter {
     })();
     return async () => { active = false; await this.run("stop-stream").catch(() => {}); };
   }
-  viewport(): Promise<{ width: number; height: number }> { return this.run("viewport"); }
+  viewport(diagnostics = false): Promise<WorkbenchViewport> { return this.run("viewport", { diagnostics }); }
   async input(input: WorkbenchInput): Promise<void> { await this.run("input", { input }); }
   async dispose(): Promise<void> {
     if (this.replayId) await this.run("stop-stream").catch(() => {});
@@ -131,10 +131,10 @@ export class WorkbenchHub {
     const { launch, adapter } = await this.openAdapter(id);
     return new WorkbenchConnection(this, launch, adapter);
   }
-  async replaySource(id: string): Promise<{ adapter: WorkbenchAdapter; current(): boolean }> {
+  async replaySource(id: string): Promise<{ adapter: WorkbenchAdapter; generation: string; current(): boolean }> {
     const { launch, adapter } = await this.openAdapter(id, randomUUID());
     const generation = workbenchGeneration(launch);
-    return { adapter, current: () => {
+    return { adapter, generation, current: () => {
       const running = this.options.store.getLaunch(id);
       return !!running && workbenchGeneration(running) === generation;
     } };

@@ -4,6 +4,7 @@ import { createHash, randomUUID, webcrypto } from "node:crypto";
 import { formatWithOptions } from "node:util";
 import { runInNewContext } from "node:vm";
 import { DevtoolsJournal, captureNativeNetwork } from "./devtools-live.mjs";
+import { sanitizedHar } from "./devtools-har.mjs";
 import { TRACE_PREFIX, addTracepoint, observeRuntimeSources, sourceMapData, sourceMapReference, originalPosition, generatedPosition } from "./devtools-sources.mjs";
 import { compareSnapshots, domSnapshot } from "./devtools-dom.mjs";
 import { describeForms, readFormControls } from "./form-inspection.mjs";
@@ -60,6 +61,9 @@ export const DEVTOOLS_TOOLS = [
     requestId: string, requestBody: { type: "boolean", default: true }, responseBody: { type: "boolean", default: false },
     offset: { type: "integer", minimum: 0, default: 0 }, bytes: { type: "integer", minimum: 1, maximum: 1048576, default: 65536 },
   }, ["requestId"]),
+  tool("browser_devtools_har", "Return a sanitized HAR 1.2 from retained requests. Save the returned har object as a .har file when needed. URLs are replaced with aliases. The report includes timing, status and redirect links, and excludes headers, cookies, bodies and browser error text.", {
+    pageId, since: cursor, limit: { ...limit, maximum: 200 },
+  }),
   tool("browser_devtools_events", "Read developer events from this profile: WebSocket sent/received frames, socket errors, page lifecycle, downloads and workers. Console output and page exceptions are also available. Frame payloads include encoding, byte counts and explicit truncation metadata.", {
     ...filters, kind: string,
   }),
@@ -764,12 +768,20 @@ export class BrowserDevtools {
     let frameId;
     try { frameId = this.frameId(request.frame(), page); } catch {} // service worker requests have no frame
     const previous = request.redirectedFrom?.();
+    const previousId = previous && this.requestIds.get(previous);
+    const previousItem = previousId && this.requests.get(previousId);
+    const worker = request.serviceWorker?.();
+    const workerId = worker && this.workerIds.get(worker);
     const item = { request, data: { requestId: id, sequence: ++this.sequence, timestamp: new Date().toISOString(),
       ...(page ? { pageId: this.pageIds.get(page) } : {}), ...(frameId ? { frameId } : {}), url: request.url(), method: request.method(),
       resourceType: request.resourceType(), requestHeaders: request.headers(), state: "pending",
-      ...(previous && this.requestIds.has(previous) ? { redirectedFrom: this.requestIds.get(previous) } : {}) } };
+      ...(workerId ? { workerId } : {}), ...(previousId ? { redirectedFrom: previousId } : {}) } };
     item.data.startedSequence = item.data.sequence;
     this.requests.set(id, item);
+    if (previousItem) {
+      previousItem.data.redirectedTo = id;
+      previousItem.data.sequence = ++this.sequence;
+    }
     this.publish({ kind: "request-started", ...item.data });
     if ([...this.captures.values()].some(capture => capture.live && capture.accepts(item.data))) {
       const body = request.postDataBuffer();
@@ -1546,6 +1558,12 @@ export class BrowserDevtools {
       (!args.failedOnly || e.failure || e.status >= 400) && (!args.resourceType || e.resourceType === args.resourceType)
       && (args.status === undefined || e.status === args.status)), args, this.droppedRequests));
     if (name === "browser_devtools_request") return result(await this.requestDetail(args));
+    if (name === "browser_devtools_har") {
+      const limit = integer(args.limit, 100, 1, 200);
+      const { records, ...history } = this.query([...this.requests.values()].map(item => item.data),
+        { pageId: args.pageId, since: args.since, limit }, this.droppedRequests);
+      return result({ har: sanitizedHar(records.sort((a, b) => a.startedSequence - b.startedSequence), limit), ...history });
+    }
     if (name === "browser_devtools_program") return this.runProgram(args);
     if (name === "browser_devtools_evaluate") {
       if (typeof args.expression !== "string" || !args.expression.trim()) throw new Error("expression must be non-empty JavaScript");

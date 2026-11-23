@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { BrowserReplay } from "./browser-replay.ts";
 import { browserReplayView } from "./browser-replay-view.ts";
 import type { WorkbenchAdapter, WorkbenchFrame } from "./workbench-protocol.ts";
+import { ReplayNetworkObserver } from "./replay-network.ts";
 
 type ReplayResult = {
   playbackUrl?: string;
@@ -16,17 +17,24 @@ function fixture() {
   let allowed = true;
   let stops = 0;
   let push: ((frame: WorkbenchFrame) => void) | undefined;
+  let network: ReplayNetworkObserver | undefined;
   const adapter = {
     tabs: async () => [{ id: "tab-a", title: "Fixture A", url: "http://example.test/a" }],
     select: async () => {},
     frame: async () => { throw new Error("No fallback frame"); },
+    viewport: async () => ({ width: 1096, height: 810, devicePixelRatio: 1.5 }),
+    async observeNetwork(emit) {
+      const observer = network = new ReplayNetworkObserver("root", async () => ({}), emit);
+      await observer.start();
+      return () => observer.stop();
+    },
     async stream(_options, onFrame) {
       push = onFrame;
       return async () => { stops++; };
     },
     dispose() {},
-  } satisfies Pick<WorkbenchAdapter, "tabs" | "select" | "frame" | "stream" | "dispose">;
-  const replay = new BrowserReplay(async () => ({ adapter, current: () => current }), () => "http://127.0.0.1:50400", () => now);
+  } satisfies Pick<WorkbenchAdapter, "tabs" | "select" | "frame" | "stream" | "viewport" | "observeNetwork" | "dispose">;
+  const replay = new BrowserReplay(async () => ({ adapter, generation: "generation-a", current: () => current }), () => "http://127.0.0.1:50400", () => now);
   const controller = new AbortController();
   const call = (action: string, options: Record<string, unknown> = {}, owner = controller.signal, profileId = "profile-a") =>
     replay.call(owner, profileId, { action, ...options }, () => allowed);
@@ -41,8 +49,59 @@ function fixture() {
     path, replay,
   );
   return { replay, call, frame, fetchFrame, controller, setNow: (value: number) => { now = value; },
+    receive: (at: number, sessionId: string, method: string, params: object) => { now = at; network?.receive({ method, sessionId, params }); },
     replaceLaunch: () => { current = false; }, revoke: () => { allowed = false; }, stops: () => stops };
 }
+
+test("diagnose pairs a failed step with its frames and worker redirects and expires all evidence on time", async () => {
+  const { replay, call, frame, receive, setNow, fetchFrame } = fixture();
+  try {
+    const start = await call("start") as { captureEndsAt: string; nativeNetwork: boolean };
+    expect(start.nativeNetwork).toBe(true);
+    const origin = Date.parse(start.captureEndsAt) - 60_000;
+    const at = (elapsed: number) => new Date(origin + elapsed).toISOString();
+    frame(400);
+    receive(600, "root", "Target.attachedToTarget", { sessionId: "worker", targetInfo: { type: "worker" } });
+    const request = { requestId: "same", request: { url: "https://fixture.test/first?secret=1", method: "GET" }, timestamp: 1,
+      initiator: { type: "script", stack: { callFrames: [{ url: "https://fixture.test/worker.js?secret=2", lineNumber: 2, columnNumber: 4 }] } } };
+    receive(700, "worker", "Network.requestWillBeSent", request);
+    receive(750, "other-tab", "Network.requestWillBeSent", { ...request, request: { url: "https://unrelated.test/", method: "GET" } });
+    receive(800, "root", "Network.requestWillBeSent", { ...request, request: { url: "https://fixture.test/page", method: "GET" } });
+    receive(900, "worker", "Network.requestWillBeSent", { ...request, timestamp: 1.2, redirectResponse: { status: 302 },
+      request: { url: "https://fixture.test/second", method: "GET" } });
+    receive(1100, "worker", "Network.responseReceived", { requestId: "same", response: { status: 503 } });
+    receive(1200, "worker", "Network.loadingFinished", { requestId: "same", timestamp: 1.5 });
+    frame(1800);
+    const step = { profileId: "profile-a", tabId: "tab-a", generation: "generation-a", runId: "run-a", stepId: "fixture",
+      sequence: 1, attempt: 1, phase: "run" as const, startedAt: at(500), endedAt: at(1850), receipt: {
+        completed: false, error: "Failed to submit", events: { records: [{ kind: "console", type: "error", text: "Fixture error", timestamp: at(1650) }] },
+        network: { records: [{ status: 503, url: "https://fixture.test/second?secret=3", finishedAt: at(1200), timing: { responseEnd: 300 } }] },
+      } };
+    setNow(1900);
+    replay.noteTaskStep({ ...step, runId: "other-run", generation: "old-generation" });
+    replay.noteTaskStep(step);
+    const args = { runId: "run-a", tabId: "tab-a" };
+    const result = await call("diagnose", args) as ReplayResult & { requests: any[]; events: any[]; step: any; focusOffsetMs: number };
+    expect(result.step).toMatchObject({ stepId: "fixture", sequence: 1, completed: false });
+    expect(result.focusOffsetMs).toBe(1400);
+    expect(result.requests).toHaveLength(3);
+    expect(result.requests[0]).toMatchObject({ status: 302, redirectedTo: 3, origin: { target: "worker",
+      location: { url: "https://fixture.test/worker.js", line: 3, column: 5 } } });
+    expect(result.requests[2]).toMatchObject({ status: 503, redirectedFrom: 1, durationMs: 300 });
+    expect(result.events).toContainEqual(expect.objectContaining({ kind: "console", message: "Fixture error" }));
+    expect(JSON.stringify(result)).not.toContain("secret=");
+    expect(await call("diagnose", { ...args, runId: "other-run" })).not.toHaveProperty("step");
+    await expect(call("diagnose", args, new AbortController().signal)).rejects.toThrow("Start a replay");
+    const token = new URL(result.playbackUrl!).hash.slice(1);
+    expect(await fetchFrame("/ui/replay/frames", token).json()).toContainEqual(expect.objectContaining({ focus: true, viewport: { width: 1096, height: 810, devicePixelRatio: 1.5 } }));
+    setNow(61_700);
+    const remaining = await call("diagnose", { ...args, frameCount: 0 });
+    expect(remaining).toMatchObject({ requests: [], events: [expect.objectContaining({ kind: "step-error" })] });
+    setNow(62_000);
+    expect(await call("diagnose", args)).not.toHaveProperty("step");
+    expect(fetchFrame("/ui/replay/frames", token).status).toBe(404);
+  } finally { replay.close(); }
+});
 
 test("replay selects a time range and the link inherits each frame's original expiration", async () => {
   const { replay, call, frame, fetchFrame, setNow } = fixture();

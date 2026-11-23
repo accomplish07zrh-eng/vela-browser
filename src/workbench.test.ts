@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { CdpWorkbench } from "./workbench-cdp.ts";
 import type { Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { LaunchInfo } from "./types.ts";
@@ -35,6 +36,46 @@ test("workbench requires both the exact dashboard origin and a desktop capabilit
   expect(validWorkbenchAuthorization(request("https://evil.test", nonce), nonce)).toBe(false);
   expect(validWorkbenchAuthorization(request("http://127.0.0.1:50400", "b".repeat(64)), nonce)).toBe(false);
   expect(validWorkbenchAuthorization(request("http://127.0.0.1:50400", "!".repeat(64)), nonce)).toBe(false);
+});
+
+test("Chromium preview scales the captured JPEG without setting a screenshot clip or altering input coordinates", async () => {
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGMUNy1lYGBgYgADAAjYAMUbUHnfAAAAAElFTkSuQmCC", "base64");
+  const jpeg = Buffer.from(await new Bun.Image(png).resize(1200, 750).jpeg().bytes()).toString("base64");
+  const viewport = { clientWidth: 800, clientHeight: 500 };
+  const requests: Array<{ method: string; params: object }> = [];
+  const results: Record<string, object> = {
+    "Target.getTargets": { targetInfos: [{ type: "page", targetId: "tab", url: "about:blank" }] },
+    "Target.attachToTarget": { sessionId: "fixture-session" },
+    "Page.getLayoutMetrics": { cssVisualViewport: viewport },
+    "Page.captureScreenshot": { data: jpeg },
+  };
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 400 }),
+    websocket: {
+      message(socket, value) {
+        const { id, method, params } = JSON.parse(String(value));
+        requests.push({ method, params });
+        socket.send(JSON.stringify({ id, result: results[method] }));
+      },
+    },
+  });
+  const adapter = new CdpWorkbench(`ws://127.0.0.1:${server.port}`);
+  try {
+    await adapter.select("tab");
+    const preview = await adapter.frame(false, 480);
+    expect(preview).toMatchObject({ width: 800, height: 500 });
+    expect(await new Bun.Image(Buffer.from(preview.data, "base64")).metadata()).toMatchObject({ width: 480, height: 300, format: "jpeg" });
+    expect((await adapter.frame(false, 1600)).data).toBe(jpeg);
+    expect(requests.filter(({ method }) => method === "Page.captureScreenshot")).toEqual(
+      Array.from({ length: 2 }, () => ({
+        method: "Page.captureScreenshot", params: { format: "jpeg", quality: 65, fromSurface: true, captureBeyondViewport: false },
+      })),
+    );
+  } finally {
+    adapter.dispose();
+    await server.stop(true);
+  }
 });
 
 test("inputs stay in their own browser, and stale tabs and generations cannot receive them", async () => {

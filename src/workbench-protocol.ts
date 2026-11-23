@@ -1,6 +1,9 @@
 /** Browser-independent workbench commands. No endpoint, script, or profile secrets cross this boundary. */
+import type { ReplayRequestEvent } from "./replay-network.ts";
+
 export interface WorkbenchTab { id: string; title: string; url: string }
 export interface WorkbenchFrame { data: string; width: number; height: number }
+export interface WorkbenchViewport { width: number; height: number; devicePixelRatio?: number; pageScale?: number }
 export type WorkbenchRefreshTier = "hidden" | "edge" | "visible" | "interactive";
 export function workbenchFrameInterval(tier: WorkbenchRefreshTier): number {
   return tier === "interactive" ? 50 : tier === "visible" ? 320 : tier === "edge" ? 2000 : 0;
@@ -50,7 +53,8 @@ export interface WorkbenchAdapter {
    */
   stream?(options: WorkbenchStreamOptions, onFrame: (frame: WorkbenchFrame) => void,
     onPointer?: (pointer: { x: number; y: number; phase: "move" | "down" | "up" }) => void): Promise<() => Promise<void>>;
-  viewport?(): Promise<{ width: number; height: number }>;
+  viewport?(diagnostics?: boolean): Promise<WorkbenchViewport>;
+  observeNetwork?(onRequest: (event: ReplayRequestEvent) => void): Promise<() => Promise<void>>;
   /** What a person would call the control at this point of the page, for recording; read from the browser's accessibility tree, never by running code in the page. */
   describe?(x: number, y: number): Promise<{ role: string; name: string } | null>;
   /** Recording stopped: let the browser drop what describe() needed. */

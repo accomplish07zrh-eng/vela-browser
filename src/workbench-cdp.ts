@@ -1,4 +1,7 @@
-import type { WorkbenchAdapter, WorkbenchFrame, WorkbenchInput, WorkbenchStreamOptions, WorkbenchTab } from "./workbench-protocol.ts";
+import type { WorkbenchAdapter, WorkbenchFrame, WorkbenchInput, WorkbenchStreamOptions, WorkbenchTab, WorkbenchViewport } from "./workbench-protocol.ts";
+import { ReplayNetworkObserver, type ReplayRequestEvent } from "./replay-network.ts";
+
+const MAX_THUMBNAIL_INPUT_PIXELS = 16 * 1024 * 1024;
 
 const RECORDABLE_ROLES = new Set(["button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "combobox", "listbox", "option", "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "treeitem", "slider", "spinbutton"]);
 
@@ -14,6 +17,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
   private target?: string;
   private disposed = false;
   private live?: LiveStream;
+  private network?: ReplayNetworkObserver;
   private accessible?: string;
 
   constructor(endpoint: string) {
@@ -31,6 +35,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
       let message: any;
       try { message = JSON.parse(String(event.data)); } catch { return; }
       if (message.method === "Page.screencastFrame") { this.onScreencastFrame(message); return; }
+      if (message.method) { this.network?.receive(message); return; }
       const call = this.pending.get(message.id);
       if (!call) return;
       clearTimeout(call.timer); this.pending.delete(message.id);
@@ -63,6 +68,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
     const previous = this.session;
     const { sessionId } = await this.send("Target.attachToTarget", { targetId, flatten: true });
     await this.stopStream();
+    await this.stopNetwork();
     this.session = sessionId; this.target = targetId;
     if (previous) await this.send("Target.detachFromTarget", { sessionId: previous }).catch(() => {});
   }
@@ -81,12 +87,22 @@ export class CdpWorkbench implements WorkbenchAdapter {
     const session = this.session;
     const metrics = await this.send("Page.getLayoutMetrics", {}, session);
     const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
-    // Captured at the size the card shows it, not the page's full size: far fewer bytes per frame.
-    const scale = maxWidth && viewport.clientWidth > maxWidth ? maxWidth / viewport.clientWidth : undefined;
-    const { data } = await this.send("Page.captureScreenshot", {
-      format: "jpeg", quality: focused ? 85 : 65, fromSurface: true, captureBeyondViewport: false,
-      ...(scale ? { clip: { x: viewport.pageX ?? 0, y: viewport.pageY ?? 0, width: viewport.clientWidth, height: viewport.clientHeight, scale } } : {}),
+    const quality = focused ? 85 : 65;
+    // Chromium temporarily resizes the live renderer for a screenshot clip. Two
+    // overlapping clips can restore the temporary size and leave gutters in the window.
+    let { data } = await this.send("Page.captureScreenshot", {
+      format: "jpeg", quality, fromSurface: true, captureBeyondViewport: false,
     }, session);
+    if (maxWidth) {
+      try {
+        const image = new Bun.Image(Buffer.from(data, "base64"), { maxPixels: MAX_THUMBNAIL_INPUT_PIXELS });
+        if ((await image.metadata()).width > maxWidth) {
+          data = Buffer.from(await image.resize(maxWidth, undefined, { filter: "bilinear" }).jpeg({ quality }).bytes()).toString("base64");
+        }
+      } catch {
+        // Keep the captured JPEG if it is too large or the thumbnail codec is unavailable.
+      }
+    }
     return { data, width: viewport.clientWidth, height: viewport.clientHeight };
   }
 
@@ -130,11 +146,33 @@ export class CdpWorkbench implements WorkbenchAdapter {
     }, at - Date.now());
   }
 
-  async viewport(): Promise<{ width: number; height: number }> {
+  async viewport(diagnostics = false): Promise<WorkbenchViewport> {
     if (!this.session) throw new Error("Select a tab first");
-    const metrics = await this.send("Page.getLayoutMetrics", {}, this.session);
+    const session = this.session;
+    const [metrics, ratio] = await Promise.all([
+      this.send("Page.getLayoutMetrics", {}, session),
+      diagnostics ? this.send("Runtime.evaluate", { expression: "globalThis.devicePixelRatio", returnByValue: true,
+        silent: true, throwOnSideEffect: true }, session).catch(() => undefined) : undefined,
+    ]);
     const viewport = metrics.cssVisualViewport ?? metrics.visualViewport;
-    return { width: viewport.clientWidth, height: viewport.clientHeight };
+    return { width: viewport.clientWidth, height: viewport.clientHeight,
+      ...(diagnostics ? { devicePixelRatio: ratio?.result?.value, pageScale: viewport.scale } : {}) };
+  }
+
+  async observeNetwork(onRequest: (event: ReplayRequestEvent) => void): Promise<() => Promise<void>> {
+    if (!this.session) throw new Error("Select a tab first");
+    await this.stopNetwork();
+    const observer = this.network = new ReplayNetworkObserver(this.session,
+      (method, params, session) => this.send(method, params, session), onRequest);
+    try { await observer.start(); }
+    catch (error) { if (this.network === observer) await this.stopNetwork(); throw error; }
+    return async () => { if (this.network === observer) await this.stopNetwork(); };
+  }
+
+  private async stopNetwork(): Promise<void> {
+    const observer = this.network;
+    this.network = undefined;
+    await observer?.stop();
   }
 
   async describe(x: number, y: number): Promise<{ role: string; name: string } | null> {
@@ -179,6 +217,7 @@ export class CdpWorkbench implements WorkbenchAdapter {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.network = undefined;
     if (this.live) { this.live.stopped = true; this.live = undefined; }
     for (const call of this.pending.values()) { clearTimeout(call.timer); call.reject(new Error("Browser disconnected")); }
     this.pending.clear();

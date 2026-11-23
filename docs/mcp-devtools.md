@@ -12,6 +12,7 @@ Each environment uses its persistent context, process, cookies, proxy, and nativ
 | `browser_devtools_network` | Requests including static resources, response status, failures, timing and redirect relationships |
 | `browser_devtools_request` | Full request and response headers including duplicate headers, POST data, response bytes, TLS details and transfer sizes |
 | `browser_devtools_events` | WebSocket frames, socket errors, downloads, navigation, crashes and page/worker lifecycle |
+| `browser_devtools_har` | Export anonymous HAR 1.2 metadata for retained requests, including status, timing and redirect links |
 | `browser_devtools_stream` | Disk-backed live event cursor and full binary payload ranges, including WebSocket messages and streamed HTTP |
 | `browser_devtools_sources` | Script, source map, worker, and request provenance. Chromium also supports runtime-loaded code and tracepoints |
 | `browser_devtools_evaluate` | JavaScript expressions, function source or statements, with an argument, in a selected page, iframe or worker |
@@ -215,7 +216,17 @@ Use `vela_browser_replay` to review a visual change after it happens. It uses th
 
 To capture from the first task step, start replay on an existing tab and pass that `tabId` to `vela_browser_task` when starting the plan.
 
+Use `{"action":"diagnose","runId":"<task id>"}` on the connection that started the recording. It selects the latest failed step, or the latest step if no retained step failed. Pass `sequence` to choose a specific attempt. The result includes a short clip focused near the failure, timestamped console errors and failed requests observed during the step, and changes to the sampled viewport dimensions and scale. Chromium adds request origins and available call sites from that tab's CDP events, including related iframe and dedicated worker targets. Each observed redirect hop has its own ID. Firefox and WebKit include failed requests and timing from their existing task observers. Overlapping requests show activity on the task's tab during the step.
+
 Replay is off until started. Capture stops after 60 seconds by default. For longer operations, set `durationSeconds` on start, up to 300. Vela keeps JPEG frames in memory, at up to about six frames per second, with a 24 MiB limit per recording and up to four recordings across profiles, including recordings with frames still available after capture stops. One MCP connection owns each profile's recording. Frames expire 60 seconds after capture, and the memory limit can shorten the available interval. Playback links share the original frame expiration times. Closing the tab or the profile, disconnecting MCP, or revoking profile access discards the recording. The player uses the recorded tab's visual content without audio. MCP clients may retain images they receive according to their own settings.
+
+Replay retains step highlights and at most 256 Chromium request hops per recording in memory. Each expires within 60 seconds of observation and is cleared when the replay is discarded. Durable task receipts continue to follow task evidence retention.
+
+## Shareable network reports
+
+Call `browser_devtools_har` with the optional `pageId` to export retained requests. Save the returned `har` object as a `.har` file or pass it to a HAR reader. When `hasMore` is true, use `nextCursor` as `since` for another page. To export one durable task step, call `vela_browser_task` with `operation: "evidence"`, its `runId` and `sequence`, and `part: "har"`. The returned Base64 chunks reconstruct the UTF-8 HAR JSON at the given byte offsets.
+
+Each export replaces origins and paths with report-local aliases and includes timings, statuses and redirect links among the exported requests. Headers, cookies, bodies, query values and error messages are excluded. Vela produces the report in the tool response when requested.
 
 ## Proxies from the pool
 

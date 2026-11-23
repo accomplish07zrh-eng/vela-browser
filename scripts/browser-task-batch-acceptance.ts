@@ -13,8 +13,10 @@ import { AGENT_PATH, AGENT_PROTOCOL, AgentRuntimeClient } from "../agent/runtime
 import { aliasmodeChromiumArchive, aliasmodeChromiumExecutable } from "../src/aliasmode-chromium.ts";
 import { sha256File } from "../src/browser-install.ts";
 import type { BrowserTaskView } from "../src/browser-tasks.ts";
+import { HostWorkBudget } from "../src/cooling.ts";
 import { buildNewProfile } from "../src/create.ts";
 import { Launcher } from "../src/launcher.ts";
+import { LifecycleAdmissionController } from "../src/lifecycle-admission.ts";
 import { ensureStateDirectories, statePaths } from "../src/paths.ts";
 import { ProfileStore } from "../src/store.ts";
 import { serveDashboard } from "../src/web.ts";
@@ -31,7 +33,11 @@ ensureStateDirectories(paths);
 const store = new ProfileStore(":memory:");
 const launcher = new Launcher({ store, dataRoot: paths.profiles, headless: true, ensureAliasmodeChromium: async () => binary, log() {} });
 const nonce = randomBytes(32).toString("hex");
-const dashboard = serveDashboard({ store, launcher, paths, agentNonce: nonce, port: 0, log() {} });
+// This fixture exercises task ordering and recovery with three small profiles. Keep its admission
+// capacity deterministic even when other apps are using memory on the workstation.
+const hostWork = new HostWorkBudget(4, () => ({ total: 16 * 1024 ** 3, available: 8 * 1024 ** 3 }));
+const dashboard = serveDashboard({ store, launcher, paths, agentNonce: nonce, port: 0, log() {},
+  lifecycleAdmission: new LifecycleAdmissionController({ hostWork }) });
 const profiles = ["Rebuild", "Sign-in required", "Independent"].map(name => {
   const profile = buildNewProfile({ name, chromiumRuntime: "aliasmode" }, () => false);
   store.upsertProfile(profile);
@@ -46,6 +52,11 @@ const site = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url);
     const slot = url.searchParams.get("slot") ?? "";
+    if (url.pathname === "/diagnostic-worker.js") return new Response(
+      "onmessage = async () => postMessage((await fetch('/diagnostic-redirect?key=private-fixture-key')).status);",
+      { headers: { "content-type": "text/javascript" } });
+    if (url.pathname === "/diagnostic-redirect") return Response.redirect(new URL("/diagnostic-error?key=private-fixture-key", url), 302);
+    if (url.pathname === "/diagnostic-error") return new Response("Fixture failure", { status: 503, headers: { "set-cookie": "private-fixture-cookie=yes" } });
     if (url.pathname === "/commit" && request.method === "POST") {
       const key = request.headers.get("Idempotency-Key") ?? "";
       commits.set(slot, { count: (commits.get(slot)?.count ?? 0) + 1, key });
@@ -236,6 +247,46 @@ try {
   const tabsOnPeer = await second.call<{ tabs: Array<{ tabId: string; url: string }> }>(replayTool, { action: "tabs", profileId: independent });
   const peerTab = tabsOnPeer.tabs.find(tab => tab.url.startsWith(startUrl));
   assert.ok(peerTab);
+  const diagnosticStart = await second.call<{ nativeNetwork: boolean }>(replayTool, { action: "start", profileId: independent, tabId: peerTab.tabId });
+  assert.equal(diagnosticStart.nativeNetwork, true);
+  const { task: diagnosticRun } = await second.call<{ task: BrowserTaskView }>(taskTool, {
+    operation: "start", profileId: independent, tabId: peerTab.tabId, startUrl, name: "Diagnostic failure fixture", idempotencyKey: "diagnostic-failure",
+    steps: [{ id: "worker-failure", readOnly: true, timeoutMs: 10_000, run: `async ({page}) => {
+      await page.evaluate(async () => {
+        await fetch('/diagnostic-error?key=private-fixture-key');
+        const worker = new Worker('/diagnostic-worker.js');
+        try {
+          const response = new Promise(resolve => { worker.onmessage = event => resolve(event.data); });
+          await new Promise(resolve => setTimeout(resolve, 500));
+          worker.postMessage('start');
+          const status = await response;
+          document.body.append('Diagnostic response ' + status);
+          console.error('Diagnostic fixture console error');
+        } finally { worker.terminate(); }
+      });
+      throw new Error('Diagnostic fixture step failed');
+    }` }],
+  });
+  acceptedRuns.push(diagnosticRun);
+  await waitFor(() => taskStatus(second, diagnosticRun.runId), task => task.evidenceCount > 0, "Diagnostic evidence was recorded");
+  const diagnosis = await second.call<ReplayClip & { step: { sequence: number; stepId: string }; events: Array<{ message?: string }>; requests: Array<{
+    id: number; status?: number; redirectedFrom?: number; origin: { target: string; targetUrl?: string; documentUrl?: string; location?: { url?: string } };
+  }> }>(replayTool, { action: "diagnose", runId: diagnosticRun.runId });
+  assert.equal(diagnosis.step.stepId, "worker-failure");
+  assert.ok(diagnosis.frameTotal && diagnosis.playbackUrl);
+  assert.ok(diagnosis.events.some(event => event.message?.includes("Diagnostic fixture console error")));
+  const failedRequest = diagnosis.requests.find(request => request.status === 503 && request.origin.target === "worker");
+  assert.ok(failedRequest && diagnosis.requests.some(request => request.id === failedRequest.redirectedFrom && request.status === 302), JSON.stringify(diagnosis.requests));
+  assert.ok([failedRequest.origin.location?.url, failedRequest.origin.targetUrl, failedRequest.origin.documentUrl]
+    .includes(new URL("/diagnostic-worker.js", site.url).href), JSON.stringify(failedRequest.origin));
+  const harBytes = await second.call<{ base64: string }>(taskTool, {
+    operation: "evidence", runId: diagnosticRun.runId, sequence: diagnosis.step.sequence, part: "har", bytes: 64 * 1024,
+  });
+  const har = Buffer.from(harBytes.base64, "base64").toString("utf8");
+  assert.equal(JSON.parse(har).log.version, "1.2");
+  assert.ok(JSON.parse(har).log.entries.length > 0 && !har.includes("private-fixture"));
+  await second.call(replayTool, { action: "stop", runId: diagnosticRun.runId });
+  await second.call(taskTool, { operation: "cancel", runId: diagnosticRun.runId });
   await second.call(replayTool, { action: "start", profileId: independent, tabId: peerTab.tabId, durationSeconds: 2 });
   const expiring = await waitFor(() => second.call<ReplayClip>(replayTool, { action: "play", profileId: independent, frameCount: 0 }),
     view => view.frameTotal > 0, "Separate recording for retention verification");
@@ -268,7 +319,7 @@ try {
   assert.ok(Number.isFinite(expires) && expires <= Date.now() + 60_000);
   while (Date.now() < expires + 100) await Bun.sleep(Math.min(5_000, expires + 100 - Date.now()));
   assert.equal((await replayRequest(expiring)).status, 404);
-  console.log("Verified task crash recovery, single committed writes, profile isolation, and opt-in replay with a selected time range, stop and 60-second expiry.");
+  console.log("Verified task recovery, opt-in replay and expiry, failed step diagnosis, worker redirects, and sanitized HAR export.");
 } catch (error) {
   failed = true;
   console.error("Site writes", [...commits].map(([slot, entry]) => [slot, entry.count]));
