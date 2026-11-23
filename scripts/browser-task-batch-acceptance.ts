@@ -286,6 +286,7 @@ try {
   assert.equal(JSON.parse(har).log.version, "1.2");
   assert.ok(JSON.parse(har).log.entries.length > 0 && !har.includes("private-fixture"));
   await second.call(replayTool, { action: "stop", runId: diagnosticRun.runId });
+  await second.call(taskTool, { operation: "cancel", runId: diagnosticRun.runId });
   await second.call(replayTool, { action: "start", profileId: independent, tabId: peerTab.tabId, durationSeconds: 2 });
   const expiring = await waitFor(() => second.call<ReplayClip>(replayTool, { action: "play", profileId: independent, frameCount: 0 }),
     view => view.frameTotal > 0, "Separate recording for retention verification");
